@@ -64,6 +64,7 @@
   },
   "files": [
     "dist",
+    "skills/archmax-harness",
     "README.md",
     "LICENSE"
   ],

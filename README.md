@@ -47,6 +47,13 @@ whose output a person reads runs on a capable one.
 See [configuration](https://harness.archmax.ai/reference/configuration/) for
 every variable.
 
+To have a coding agent (Claude Code, Cursor, Codex, …) author workflows for you, install the
+authoring skill:
+
+```bash
+npx skills add archmax-ai/harness
+```
+
 ## Quickstart
 
 ### A workspace
@@ -155,10 +162,22 @@ The last two are browser-safe, with no runtime behind them. See the
 
 ### Authoring with a coding agent
 
-The package ships an authoring skill at `dist/authoring-skill/archmax-harness/`. It teaches a coding agent
-the schema, the hook contract, governance, human states, cases and the CLI. The
-`BUNDLED_AUTHORING_SKILL_DIR` export resolves to its parent directory, and the source is
-`skills/archmax-harness/`.
+The authoring skill teaches a coding agent the schema, the hook contract, governance, human
+states, cases and the CLI. Install it with the [skills CLI](https://skills.sh):
+
+```bash
+npx skills add archmax-ai/harness
+```
+
+That installs the latest version from GitHub. To pin the skill to the SDK version your project
+depends on, install the copy shipped inside the package instead, after `npm install`:
+
+```bash
+npx skills add ./node_modules/@archmax-ai/harness
+```
+
+For skills middleware in your own agent, the `BUNDLED_AUTHORING_SKILL_DIR` export resolves to
+the packaged copy. The source is `skills/archmax-harness/`.
 
 ## Documentation
 

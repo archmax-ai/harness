@@ -63,6 +63,9 @@ declarative YAML documents, interpreted host-side by `archmax test`.
   it, so it ships inside the code; edit the Markdown and run
   `npm run generate:prompt` (a unit test fails while the two differ).
 - `skills/archmax-harness/` is the authoring skill, shipped as `dist/authoring-skill/archmax-harness`.
+  `npx skills add archmax-ai/harness` discovers it as the repo's only public skill: the
+  contributor skills under `.claude/skills/` carry `metadata.internal: true` so the skills
+  CLI hides them. Keep that flag when `openspec update` regenerates them.
 - `examples/customer-support/` is the reference workspace.
 - `docs/` is this documentation site (Astro + Starlight), self-contained with
   its own `package.json`. Build it with `npm run docs:build` from the repo root.

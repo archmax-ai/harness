@@ -12,29 +12,37 @@ Cursor, Codex, …) how to **build with** the
 
 ## Install
 
-**From the installed `@archmax-ai/harness` package (primary for runtime consumers)** —
-the skill ships inside the npm package, so it always matches the installed SDK
-version instead of a synced copy:
+**Via the skills CLI (primary)** — from the public GitHub repository:
+
+```bash
+npx skills add archmax-ai/harness
+```
+
+Add `-g` to install globally, or `-a <agent>` to target a specific coding agent.
+
+**From the installed `@archmax-ai/harness` package** — the skill ships inside the
+npm package, so this copy always matches the installed SDK version. After
+`npm install`:
+
+```bash
+npx skills add ./node_modules/@archmax-ai/harness
+```
+
+`npx skills experimental_sync` picks it up too, along with any other skill in
+`node_modules`. The package ships this directory as `skills/archmax-harness/`
+(for installers) and as `dist/authoring-skill/archmax-harness/` (for
+`BUNDLED_AUTHORING_SKILL_DIR`).
 
 ```ts
 import { BUNDLED_AUTHORING_SKILL_DIR } from "@archmax-ai/harness";
-// <BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md (+ references/) — the constant
-// is the dist/authoring-skill directory holding archmax-harness/. Point an install CLI at
-// the skill itself:
-// npx skills add ./node_modules/@archmax-ai/harness/dist/authoring-skill/archmax-harness
+// <BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md (+ references/) — the
+// constant is the dist/authoring-skill directory, for skills middleware.
 ```
 
-**Via the skills CLI from a checkout (coding-agent / development use)**:
+**From a checkout of this repository**: `npx skills add ./skills/archmax-harness`.
 
-```bash
-npx skills add <owner>/<repo>            # once this repo is public, from its root
-# or point at the subfolder directly:
-npx skills add ./skills/archmax-harness
-```
-
-Replace `<owner>/<repo>` with this repository's GitHub slug. Skills appear on
-skills.sh automatically via install telemetry — there is no separate submission
-step.
+Skills appear on skills.sh automatically via install telemetry — there is no
+separate submission step.
 
 ## What's inside
 
