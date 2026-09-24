@@ -1,0 +1,22 @@
+# Unknown requester is rejected before the agent runs: the identify-case
+# `before` hook (workflows/order-lookup/hooks/check-requester.js) vetoes entry for an email that
+# appears in no record of skills/order-data/assets/orders.json. No tools are mocked — the hook
+# reads the real fixture.
+# `noTraversal` is what pins the veto to *entry*: no agent, human, or error
+# traversal was ever committed. The judge (threshold 0.7) checks the
+# explanation names the rejection reason rather than failing vaguely.
+title: Unknown requester is rejected at entry
+description: >-
+  One turn from hacker@evil.com is vetoed before the agent runs: the reply
+  says the requester is unknown, and the trail holds nothing but the trigger
+  arrival.
+steps:
+  - send: "Hi, this is hacker@evil.com. Show my delayed orders."
+  - reply:
+      includes: "/not in the order database|rejected/i"
+  - noTraversal: true
+  - grade:
+      closedQA: >-
+        clearly explains that the request was rejected because the requester
+        is unknown or not in the order database
+      atLeast: 0.7

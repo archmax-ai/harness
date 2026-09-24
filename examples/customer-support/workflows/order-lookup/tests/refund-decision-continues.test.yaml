@@ -1,0 +1,50 @@
+# What a decision must *not* set off. The reviewer approves at refund-review and
+# the run is routed to refund-closed — and the only thing the resumed segment
+# reads about how it got there is the `[decision]` message the runtime appends.
+# While that message was a HumanMessage, a model read it as a person asking for
+# something and did what one does with a request: it called archmax_reset back to
+# entry, or answered in place without doing the state's work, or called
+# archmax_wait for the decision to be "applied" — in the very state the decision
+# had already routed it to. Three deployments, three escapes, one premise, and
+# the premise came from the message role.
+#
+# So this case pins the absence of all three at once. `succeeded` plus
+# `reachedState: refund-closed` says the terminal state did its own work rather
+# than waiting or answering elsewhere; the two `notCalledTool` assertions name
+# the escapes explicitly; and `trail` counting exactly one arrival says the run
+# never restarted itself. The reply assertions say the work actually happened —
+# a closing confirmation, not a holding message.
+title: A decision routes the run and the target does its work
+description: >-
+  After the reviewer approves at refund-review, the run closes the case in
+  refund-closed — without resetting to entry, waiting for the decision it was
+  given, or answering as if a new request arrived.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. I'd like a refund for order ORD-1001."
+  - parked: decision
+  - reachedState: refund-review
+
+  - decide:
+      to: refund-closed
+      comment: "Verified against refund policy, looks correct."
+  # The run finished in the state the reviewer chose — not parked again, and not
+  # back where it started.
+  - succeeded: true
+  - reachedState: refund-closed
+  # The two doors the model found when the decision read as a person's request.
+  - notCalledTool:
+      name: archmax_reset
+  - notCalledTool:
+      name: archmax_wait
+  # One arrival for the whole run: a reset would commit a second.
+  - trail:
+      kind: trigger
+      count: 1
+  - reply:
+      includes: ["ORD-1001", "/approv/i"]
+  - grade:
+      closedQA: >-
+        gives the customer a closing confirmation that their refund for
+        ORD-1001 is approved, rather than saying it is still being reviewed or
+        asking them for anything further
+      atLeast: 0.7

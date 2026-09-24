@@ -1,0 +1,59 @@
+# The park path: a request too vague to answer parks the run *in the state that
+# asked*, and the reply resumes that same state rather than starting over.
+#
+# The case starts at `clarify` via the `clarify_requested` trigger — whose entry
+# state is wired from the `triggers` block rather than from the state — because
+# what it tests is the park/deliver/resume path, not identify-case's routing
+# judgment. Entering through identify-case would make the case's outcome depend
+# on the model reading one vague request the way this case assumes; the
+# routing itself is covered by the cases that exercise it directly.
+#
+# `conversation_id` is the variable the workflow's `triggers` block names as the
+# session path, so this run belongs to conversation AAQk-test-1 exactly as a
+# real firing would.
+# `parked: { channel: input, state: clarify }` pins both the suspension channel and
+# the state the run stopped in — a run that parked at the human review state
+# instead would not satisfy it, so the assertion can only pass for the flow this
+# case describes.
+#
+# The `deliver` step is the analogue of `decide`: the trigger id becomes the
+# run's current trigger and the variables carry what the event brought, locked
+# for the rest of the run. No edge is selected — the run continues in `clarify`,
+# which then decides where to go. Nothing is mocked: the agent works from the
+# real skills/order-data/assets/orders.json fixture.
+title: Clarify by email, then answer from the reply
+description: >-
+  A clarification request parks in clarify; delivering email_reply resumes that
+  same state, which answers with the order the reply named.
+trigger:
+  id: clarify_requested
+variables:
+  conversation_id: "AAQk-test-1"
+steps:
+  - send: >-
+      Hi, I'm support@acmecorp.com. About the thing we discussed on the phone
+      yesterday - can you sort it out?
+  # Pinning both the channel and the state: parking commits no transition, so
+  # where the run stopped is asserted here rather than with `reachedState`.
+  - parked: { channel: input, state: clarify }
+  # No assertion on the question's wording: this case exists to prove the
+  # park/deliver/resume path, and grading phrasing would make it fail for
+  # reasons that have nothing to do with that.
+  - deliver:
+      trigger: email_reply
+      variables:
+        reply_body: "It's ORD-1001."
+  - succeeded: true
+  - triggerArrival: email_reply
+  # Resumed in `clarify`, which read the reply and then advanced itself.
+  - reachedState: orders-question
+  - reply:
+      includes: ["ORD-1001"]
+      excludes: ["ORD-2001"]
+  # The delivered value is a locked run fact for the rest of the run, exactly
+  # like a host's variables seed.
+  - variables:
+      expect:
+        reply_body: "It's ORD-1001."
+      locked:
+        reply_body: true

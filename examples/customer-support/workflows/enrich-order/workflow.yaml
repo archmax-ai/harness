@@ -1,0 +1,86 @@
+# A delegated machine: one run of this workflow enriches exactly ONE order.
+#
+# It is reached by another workflow *calling* it — a caller names it in its
+# `tools.allow` as `archmax_workflow_enrich-order`, and the `manual` trigger's
+# `requires:` and `returns:` become the call's parameters and its result. A caller
+# that fans out makes one call per order, each with its own `order_id`, each
+# writing its own file.
+#
+# The same `manual` entry makes it runnable directly, which is how you develop it:
+#
+#   archmax run enrich-order --variables '{"order_id":"ORD-1003"}'
+#
+# One trigger, one signature, both ingresses — a run entered by a caller and a run
+# entered from the CLI differ in nothing this machine can observe.
+title: Enrich order
+instructions: |-
+  You are enriching exactly one order, named by the `order_id` run variable.
+
+  Read that order from skills/order-data/assets/orders.json and nothing else: this run is about one
+  order, and the requester's other orders are not yours to touch.
+
+  Never invent an order, a status, or a date. If the id matches no record, say
+  so plainly rather than guessing.
+
+runtime:
+  engine: archmax-harness
+  version: "2"
+
+settings:
+  timeoutMs: 15000
+
+# The capability this machine reads: order records live in a skill bundle, and a
+# bundle is reachable only where a list names it. `allow_always` names it once,
+# for the whole workflow — the skills half of `tools.allow_always` — so every
+# state has it and no state repeats it. A capability only some states should have
+# goes on those states' own `skills.allow` instead, which adds to this list.
+skills:
+  allow_always: [order-data]
+
+states:
+  enrich:
+    title: Enrich one order
+    summary: Read the order and write its enrichment file.
+    # No `skills` block: the workflow grants `order-data` in every state, and
+    # enabling a bundle is the whole grant — reading skills/order-data/** needs
+    # no `tools.allow` entry beside it.
+    # The trigger is declared on the state it enters — this one, the only state
+    # a run starts in — and carries the run's signature: what a firing must
+    # supply, and what this machine guarantees it has set by the time it
+    # finishes. Both are enforced whichever ingress started the run — a dispatch
+    # (or a CLI run) missing `order_id` is refused before this workflow is
+    # composed, and a run that finishes without both returns set is rejected
+    # rather than handing a caller half a contract. `archmax validate` checks a
+    # caller against the same declaration, so a caller reading a field this
+    # machine does not produce is caught before any model call.
+    #
+    # Names only, deliberately: what each variable *holds* is said by the state
+    # instructions that set it, which is where every other variable's meaning
+    # lives. A sub-run carries no prose instruction either — the guidance is
+    # here and in the workflow's own `instructions`, and the inputs arrive as
+    # locked run variables.
+    triggers:
+      manual:
+        requires: [order_id]
+        returns: [enrichment_file, delayed]
+    instructions: >-
+      Read `order_id` with archmax_get_variables, then read skills/order-data/assets/orders.json and
+      find that order. Write scratchpad/enrichment/<order_id>.json as
+      { "id": "<order id>", "customer": "<customer>", "status": "<status>",
+      "delayed": <true|false> } - the file name carries the order id so
+      concurrent sub-runs never overwrite each other.
+
+      Then set the two variables this workflow returns, with
+      archmax_set_variables: `enrichment_file` is the path you just wrote, and
+      `delayed` is true when the order is late and false otherwise. Your caller
+      reads them by name, so the run does not complete until both are set.
+
+      Finally reply with one sentence naming the order and its status. This state
+      is terminal - stop once the file is written, the returns are set, and you
+      have summarized.
+    # No `tools` block. The enrichment file lands under `scratchpad/`, the run's
+    # single working area, which every state may write — so a path guard naming
+    # `${{order_id}}` there would look like it isolated one sub-run from another
+    # without doing so. What actually keeps concurrent sub-runs from colliding is
+    # that each writes its own file name (and each has its own run folder to
+    # begin with, since a sub-run is its own session).

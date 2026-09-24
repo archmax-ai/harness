@@ -1,0 +1,68 @@
+# Test/build, typecheck, and lint on every push/PR. typecheck and lint are
+# separate jobs so each shows as its own PR check (like ruff/ty do), and both
+# register a problem matcher so failures annotate inline on the PR diff.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Name each matrix leg by its node version so the checks read as
+    # "unit tests (node 22)" / "(node 24)" instead of the bare "test (22)".
+    name: unit tests (node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines.node is ">=22"; verify the floor and current LTS.
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Build (emit dist + copy assets)
+        run: npm run build
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck (incl. tests)
+        run: |
+          echo "::add-matcher::.github/matchers/tsc.json"
+          npm run typecheck -- --pretty false
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: |
+          echo "::add-matcher::.github/matchers/eslint-stylish.json"
+          npm run lint

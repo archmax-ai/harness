@@ -1,0 +1,9 @@
+dist/
+docs/
+node_modules/
+package-lock.json
+# Bundled example data and run artifacts.
+examples/customer-support/data/
+**/run/
+# Generated from src/core/platform-prompt.md by scripts/generate-platform-prompt.mjs.
+src/core/platform-prompt.generated.ts

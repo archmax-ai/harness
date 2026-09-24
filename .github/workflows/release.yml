@@ -1,0 +1,164 @@
+# Release @archmax-ai/harness when a PR labelled `release` (patch), `release:minor` or
+# `release:major` merges into main, or on manual dispatch. Two jobs, one workflow:
+#
+#   release  gates on the CI checks, then tags vX.Y.Z and creates the GitHub Release
+#            (release notes generated). The first release is v0.1.0.
+#   publish  checks out that tag, stamps its version into package.json, and publishes
+#            to npm through trusted publishing (OIDC; no npm token), with provenance.
+#
+# The tag is the source of truth for the version; package.json on main is never
+# bumped. Publish runs in this workflow rather than on `release: published`, because
+# a release created with GITHUB_TOKEN does not trigger other workflows.
+#
+# npm authenticates this workflow file itself: the package's trusted publisher on
+# npmjs.com names archmax-ai/harness and release.yml, and the job's OIDC token is
+# exchanged for a short-lived publish credential. No long-lived secret exists.
+# Publishing is gated on the NPM_PUBLISH repository variable: until it is `true`,
+# `publish` only packs (npm pack); setting it activates publishing, no edit needed.
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version increment"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      dry-run:
+        description: "Run the checks and log the next version; create no release and publish nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.merged == true &&
+        (
+          contains(github.event.pull_request.labels.*.name, 'release') ||
+          contains(github.event.pull_request.labels.*.name, 'release:minor') ||
+          contains(github.event.pull_request.labels.*.name, 'release:major')
+        )
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Gate the release on the same checks CI runs, so a red build is never tagged.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Determine version increment strategy
+        id: strategy
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "bump=${{ inputs.bump }}" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q '"release:major"'; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q '"release:minor"'; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: dexwritescode/release-on-merge-action@v1
+        with:
+          version-increment-strategy: ${{ steps.strategy.outputs.bump }}
+          initial-version: "0.1.0"
+          tag-prefix: v
+          generate-release-notes: true
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version from tag
+        id: version
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry-run) }}
+        run: |
+          git fetch --tags --force
+          TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          if [ -z "$TAG" ]; then
+            echo "::error::No v* tag found after creating the release."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: release
+    if: needs.release.outputs.version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    env:
+      NPM_PUBLISH: ${{ vars.NPM_PUBLISH }}
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 bundles npm 10.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The tag carries the version; package.json on main stays as it is.
+      - name: Stamp version from tag
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      # Publishing not enabled => pack only, so the artifact is still built and checked.
+      - name: Pack (dry run)
+        if: ${{ env.NPM_PUBLISH != 'true' }}
+        run: npm run build && npm pack
+
+      # prepublishOnly builds; prepack refuses a dist containing an .env file.
+      - name: Publish to npm
+        if: ${{ env.NPM_PUBLISH == 'true' }}
+        run: npm publish --provenance --access public

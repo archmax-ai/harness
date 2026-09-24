@@ -1,0 +1,54 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+context: |
+  @archmax-ai/harness is a single npm package (Node/TypeScript) — archmax harness, a thin
+  governed layer over LangChain Deep Agents: one Deep Agent per workflow,
+  governed by a declarative workflow.yaml state machine. Tooling is npm
+  (package-lock.json); it is not a monorepo. Vocabulary follows
+  docs/src/content/docs/reference/glossary.md (session, turn, state, hook,
+  verdict, case, grade; "runtime"/"kernel", never "harness").
+
+  Documentation is published as an Astro + Starlight site living in a
+  self-contained `docs/` project at the repo root. Content is authored as
+  markdown/MDX under `docs/src/content/docs/**` (sidebar sections: Getting
+  Started, Guides, Reference, Contributing) and deployed to GitHub Pages by
+  `.github/workflows/docs.yml` on push to `main`.
+
+  Releases are cut by merging a PR labelled `release`, `release:minor` or
+  `release:major` into `main`: `.github/workflows/release.yml` tags vX.Y.Z (the tag
+  is the version; package.json on main is never bumped) and publishes to npm via
+  trusted publishing, no npm token (see openspec/specs/release/spec.md).
+
+  Docs are treated as part of the product: any change that affects user-facing
+  behavior (CLI, configuration/environment variables, the authoring model,
+  the workflow/subagent/skill schema, or the public API) MUST update the
+  relevant pages under `docs/` in the same change so the site never drifts
+  from the code.
+
+  README.md is also treated as part of the product: any significant change
+  that makes a difference to users of the SDK MUST update README.md in the
+  same change so it never drifts from the code.
+
+  The distributable authoring skill at `skills/archmax-harness/` (SKILL.md plus
+  `references/*.md`) is likewise part of the product: it is the playbook
+  coding agents use to author workflows and wire the runtime. Any change to
+  the authoring surface (the workflow.yaml machine schema, lifecycle hooks
+  and hand-authored hook scripts, tool governance, human states,
+  cases, CLI commands, or the public wiring API)
+  MUST update `skills/archmax-harness/` in the same change — alongside the README.md
+  and `docs/` updates required above — so the skill never drifts from the
+  code. Consuming repos mount the skill from the installed package
+  (`BUNDLED_AUTHORING_SKILL_DIR`).
+
+# Per-artifact rules (optional)
+rules:
+  proposal:
+    - When a change affects user-facing behavior (CLI, config, authoring model, public API), call out the required `docs/` updates in the Impact section.
+    - When a change makes a significant difference to users of the SDK, call out the required README.md updates in the Impact section.
+    - When a change affects the authoring surface (workflow schema, hooks, governance, cases, sandbox script contracts, CLI, wiring API), call out the required `skills/archmax-harness/` updates in the Impact section.
+  tasks:
+    - For any user-facing change, include an explicit task to update the relevant pages under `docs/` (the Astro Starlight site) so documentation ships with the feature.
+    - For any significant change affecting users of the SDK, include an explicit task to update README.md so it ships with the feature.
+    - For any change affecting the authoring surface, include an explicit task to update the `skills/archmax-harness/` skill (SKILL.md and the relevant `references/*.md`) so the authoring playbook ships with the feature.

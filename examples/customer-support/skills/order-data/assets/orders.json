@@ -1,0 +1,8 @@
+[
+  { "id": "ORD-1001", "customer": "Acme Corp", "email": "support@acmecorp.com", "placed": "2026-01-12", "total": 1200.0, "currency": "EUR", "status": "delivered" },
+  { "id": "ORD-1002", "customer": "Acme Corp", "email": "support@acmecorp.com", "placed": "2026-02-09", "total": 980.5, "currency": "EUR", "status": "shipped" },
+  { "id": "ORD-1003", "customer": "Acme Corp", "email": "support@acmecorp.com", "placed": "2026-03-15", "total": 2300.0, "currency": "EUR", "status": "delayed" },
+  { "id": "ORD-2001", "customer": "Globex", "email": "support@globex.com", "placed": "2026-01-30", "total": 540.0, "currency": "USD", "status": "delivered" },
+  { "id": "ORD-2002", "customer": "Globex", "email": "support@globex.com", "placed": "2026-04-02", "total": 1750.25, "currency": "USD", "status": "processing" },
+  { "id": "ORD-3001", "customer": "Initech", "email": "support@initech.com", "placed": "2026-02-21", "total": 430.0, "currency": "USD", "status": "delivered" }
+]

@@ -1,0 +1,43 @@
+name: Bug report
+description: Report something that is broken or behaves incorrectly
+title: "[fix] "
+labels: ["fix"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and the actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps, plus the workflow or command involved if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: @archmax-ai/harness version, Node version, OS.
+      placeholder: |
+        @archmax-ai/harness: 0.1.0
+        node: 22.x
+        os: linux
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      render: shell
+    validations:
+      required: false

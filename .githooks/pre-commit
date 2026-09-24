@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-commit secret scan. Blocks a commit whose staged changes contain a
+# credential that gitleaks recognizes. Wired repo-wide via core.hooksPath (set
+# by the package.json "prepare" script on install, or run: npm run hooks:install).
+#
+# Bypass in an emergency with:  git commit --no-verify
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so staged changes were NOT scanned for secrets." >&2
+  echo "  Install it: https://github.com/gitleaks/gitleaks#installing (e.g. 'brew install gitleaks')." >&2
+  echo "  Then commit again, or bypass this check with: git commit --no-verify" >&2
+  exit 1
+fi
+
+# 'git --staged' scans only what is staged (the diff about to be committed), so
+# it is fast. --redact keeps any matched secret out of the terminal output.
+gitleaks git --staged --redact --no-banner --config .gitleaks.toml

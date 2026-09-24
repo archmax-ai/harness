@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# Docs site (Astro Starlight) build output and caches.
+docs/dist/
+docs/.astro/
+docs/node_modules/
+
+# Throwaway local test workspace
+.tmp-test-ws/
+
+# Default filesystem session store: the agent's workspace root per session —
+# checkpoints, artifacts, scratchpad/, and offloaded context all live under
+# sessions/<sessionId>/, kept out of the authored tree.
+/sessions/
+examples/customer-support/sessions/
+
+# Local skills.sh install state (records this machine's absolute path; never portable).
+.agents/
+skills-lock.json
+
+# Local CLI sessions from the July 2026 layout (pre-`sessions/`); kept untracked, not data of this tree.
+/run/

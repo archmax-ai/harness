@@ -1,0 +1,92 @@
+# Builds the docs on every push to main; publishes to GitHub Pages only once
+# the repository is public. While the repo is private the deploy job is
+# skipped, because a Pages site on this plan would be reachable by anyone with
+# the URL. No repo setup needed: the deploy job enables Pages on first run.
+name: Deploy docs to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The theme renders the header badge as "v<APP_VERSION>", so pass the bare
+      # number: the latest release tag, or package.json before the first release.
+      - name: Resolve latest version
+        id: version
+        run: |
+          TAG="$(git tag -l 'v*' --sort=-v:refname | head -1)"
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          echo "APP_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        working-directory: docs
+        run: npm ci
+
+      - name: Build site
+        working-directory: docs
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/dist/
+
+      # Private preview while the repo is private: download this artifact from
+      # the run page (repo access required), unzip, and open index.html or
+      # serve the folder (e.g. npx serve).
+      - name: Upload docs preview artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-preview
+          path: docs/dist/
+          retention-days: 14
+
+  deploy:
+    # Skipped while the repo is private: a Pages site here would be reachable
+    # by anyone with the URL. Deploys automatically once the repo is public.
+    if: ${{ !github.event.repository.private }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Enable GitHub Pages for the repo if it isn't already. Without this,
+      # deploy-pages 404s ("Ensure GitHub Pages has been enabled").
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+        with:
+          enablement: true
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

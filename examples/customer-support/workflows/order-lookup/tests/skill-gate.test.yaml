@@ -1,0 +1,30 @@
+# Skill governance, end to end — `general-question` declares `skills.allow: []`,
+# so "there is no data source here" is enforced rather than merely stated: the
+# order records cannot be read from that state, and its prompt does not name the
+# `order-data` skill at all.
+#
+# The request is deliberately a *clean* general question. An earlier draft mixed
+# in a demand for the order file and the case failed correctly: identify-case
+# routed it to orders-question, which DOES enable order-data, so the reply listed
+# the requester's own orders. Routing is the model's decision and this case is not
+# about routing — so it pins the general path and asserts what the empty skill set
+# guarantees there.
+#
+# The kernel-level proof that a read into a non-enabled bundle is refused (and
+# that `ls skills/` does not even list it) lives in the unit suite, where it does
+# not depend on the model choosing to attempt the violation. A case that needs to
+# assert the refusal itself has `blockedTool` for it.
+title: A state with no skills enabled has no data surface
+description: >-
+  A general question is answered from general-question, which enables no skill,
+  and no order record reaches the reply.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. Out of curiosity — what is the capital of France?"
+  - succeeded: true
+  - reachedState: general-question
+  - reply:
+      includes: "/paris/i"
+      excludes: ["ORD-1001", "ORD-1002", "ORD-1003", "ORD-2001"]
+  - notCalledTool:
+      name: read_file
+      input: { file_path: "/orders\\.json/" }

@@ -1,0 +1,119 @@
+{
+  "name": "@archmax-ai/harness",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Agents can't reliably follow a process. archmax harness makes them: a governed layer over LangChain Deep Agents that enforces a declarative workflow state machine on every step.",
+  "keywords": [
+    "agent",
+    "agents",
+    "ai",
+    "langchain",
+    "deepagents",
+    "llm",
+    "state-machine",
+    "workflow",
+    "governance",
+    "guardrails",
+    "typescript"
+  ],
+  "homepage": "https://harness.archmax.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/archmax-ai/harness.git"
+  },
+  "bugs": {
+    "url": "https://github.com/archmax-ai/harness/issues"
+  },
+  "author": "Archmax AI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sandbox": {
+      "types": "./dist/public/sandbox.d.ts",
+      "import": "./dist/public/sandbox.js"
+    },
+    "./testing": {
+      "types": "./dist/public/testing.d.ts",
+      "import": "./dist/public/testing.js"
+    },
+    "./cli": {
+      "types": "./dist/public/cli.d.ts",
+      "import": "./dist/public/cli.js"
+    },
+    "./spec": {
+      "types": "./dist/public/spec.d.ts",
+      "import": "./dist/public/spec.js"
+    },
+    "./messages": {
+      "types": "./dist/public/messages.d.ts",
+      "import": "./dist/public/messages.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "archmax": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && npm run generate:prompt && tsc -p tsconfig.build.json && npm run copy:assets && chmod +x dist/cli.js",
+    "generate:prompt": "node scripts/generate-platform-prompt.mjs",
+    "copy:assets": "mkdir -p dist/sandbox/assets && cp -R src/sandbox/assets/parts dist/sandbox/assets/parts && mkdir -p dist/authoring-skill && cp -R skills/archmax-harness dist/authoring-skill/archmax-harness",
+    "check:no-secrets": "test -z \"$(find dist -type f -name '.env*' ! -name '.env.example')\" || { echo 'refusing to pack: dist contains an .env file' >&2; exit 1; }",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "docs:dev": "npm --prefix docs run dev",
+    "docs:build": "npm --prefix docs run build",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "prepare": "git config core.hooksPath .githooks || true",
+    "prepack": "npm run check:no-secrets",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.11",
+    "@langchain/langgraph": "^1.4.15",
+    "@langchain/langgraph-checkpoint": "^1.1.3",
+    "@langchain/openai": "^1.5.13",
+    "@langchain/quickjs": "^0.6.3",
+    "deepagents": "^1.11.1",
+    "dotenv": "^17.4.2",
+    "gray-matter": "^4.0.3",
+    "just-bash": "^3.4.2",
+    "langchain": "^1.5.4",
+    "picomatch": "^4.0.7",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.5.1",
+    "@types/picomatch": "^4.0.3",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
+  }
+}

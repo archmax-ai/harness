@@ -1,0 +1,6 @@
+# Normalize line endings to LF in the repo and on checkout (matches
+# .editorconfig end_of_line = lf).
+* text=auto eol=lf
+
+# The lockfile is text but generated; keep it out of language stats and diffs.
+package-lock.json linguist-generated=true

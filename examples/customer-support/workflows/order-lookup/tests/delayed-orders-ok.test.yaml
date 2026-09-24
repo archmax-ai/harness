@@ -1,0 +1,22 @@
+# Happy path — a known requester's delayed-order lookup. Nothing is mocked:
+# the agent reads the real skills/order-data/assets/orders.json fixture and routes itself from
+# identify-case into orders-question.
+# `reachedState` is what pins the routing: without it the case would still
+# pass if the agent answered straight from the start state. The judge
+# (threshold 0.7) checks the order is attributed to the requester's company.
+title: Delayed orders answered for a known requester
+description: >-
+  One turn from support@acmecorp.com (a known requester): the run succeeds, the
+  trail committed the route into orders-question, and the reply names the one
+  delayed order, ORD-1003.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. Which orders are delayed for Acme?"
+  - succeeded: true
+  - reachedState: orders-question
+  - reply:
+      includes: ["ORD-1003", "/delayed/i"]
+  - grade:
+      closedQA: >-
+        confirms that order ORD-1003 is the delayed order for the requester's
+        company (Acme Corp)
+      atLeast: 0.7

@@ -1,0 +1,32 @@
+# Refund sent back for changes is revised, then approved. The case decides
+# twice as the reviewer: first the `refine` edge back to refund-request
+# carrying a comment (delivered to the agent as a correction), then — once
+# the agent has revised and re-parked — the approving edge to refund-closed.
+# Nothing is mocked.
+# The `trail` count is the point: refund-review is entered exactly twice —
+# initial submit plus one resubmit — so a third entry would mean the refine
+# edge looped. The final `reply` check pins that the correction did not lose
+# its subject.
+title: Refund sent back for changes, then approved
+description: >-
+  The reviewer refines once and then approves: the run parks at both review
+  points, refund-review is entered exactly twice, the run succeeds, and the
+  final reply still names ORD-1001.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. I'd like a refund for order ORD-1001."
+  - parked: true
+  - decide:
+      to: refund-request
+      comment: >-
+        Please restate the refund amount and confirm the order was delivered
+        before it can be approved.
+  - parked: true
+  - trail:
+      to: refund-review
+      count: 2
+  - decide:
+      to: refund-closed
+      comment: "The explanation is clear now."
+  - succeeded: true
+  - reply:
+      includes: "ORD-1001"

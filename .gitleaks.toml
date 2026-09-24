@@ -1,0 +1,22 @@
+# Gitleaks configuration. Extends the built-in default ruleset (hundreds of
+# provider-specific secret patterns) and adds repo-specific allowlist entries
+# so known placeholders are not reported. Used by both the local pre-commit
+# hook (.githooks/pre-commit) and the CI runner (.github/workflows/secret-scan.yml).
+title = "@archmax-ai/harness gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Repo-specific allowlisted paths and placeholder values"
+# Regexes matched against the file path.
+paths = [
+  '''\.env\.example$''',
+  # Committed LangGraph checkpoints / run artifacts are opaque base64 blobs,
+  # not secrets; they live under any run/ dir and are gitignored anyway.
+  '''(^|/)run/''',
+]
+# Regexes matched against the candidate secret string.
+regexes = [
+  '''your-api-key-here''',
+]

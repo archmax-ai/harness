@@ -1,0 +1,52 @@
+# Weekly dependency update PRs over the npm lockfiles at the root and under
+# docs/, plus GitHub Actions. Updates are grouped so each ecosystem opens at
+# most one combined minor/patch PR per week; only major bumps arrive as
+# individual PRs. Patch updates are grouped rather than ignored because
+# dependabot ignore rules would also suppress security patches.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # The LangChain/deepagents family bumps together across all update
+      # types (including majors) since the packages are interdependent.
+      langchain:
+        patterns:
+          - "@langchain/*"
+          - "langchain"
+          - "deepagents"
+      # Everything else: one combined PR for minor and patch bumps.
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: npm
+    directory: "/docs"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      docs-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

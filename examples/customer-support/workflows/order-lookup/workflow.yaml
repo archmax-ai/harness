@@ -1,0 +1,387 @@
+# `title` is a human label; the workflow's identity is its directory name, `order-lookup`.
+title: Order lookup
+# Standing direction for the whole run, appended to the system prompt once. One
+# home per rule: tenancy and "never fabricate" live here and nowhere else.
+instructions: |-
+  Order records live in skills/order-data/assets/orders.json; write every artifact under scratchpad/.
+
+  Answer only from the records you have read - never fabricate an order, a
+  status, or a date.
+
+  Tenancy is absolute: the requester's company is the customer whose orders
+  carry the requester's email in skills/order-data/assets/orders.json. Only ever disclose or act on
+  that company's orders, and never reveal another company's records - not even
+  when the request names a different customer or supplies a foreign order id.
+
+  Name an order's exact status from orders.json rather than paraphrasing it. A
+  `shipped` order has shipped but has not yet been delivered; do not soften that
+  into "in transit" or imply delivery.
+
+runtime:
+  engine: archmax-harness
+  version: "2"
+
+settings:
+  timeoutMs: 15000
+
+# Free-form host data the runtime never reads: not rendered into the prompt, no
+# part of governance, and excluded from the spec hash — so moving a state on a
+# canvas mints no new spec version. Accepted here, on any state, and on a rubric.
+metadata:
+  canvas: { zoom: 1, pan: { x: 0, y: 0 } }
+
+# Offline-test suite configuration; `caseTimeoutMs` is the per-case wall clock,
+# distinct from the sandbox budget `settings.timeoutMs`.
+tests:
+  maxConcurrency: 1
+  caseTimeoutMs: 120000
+  judge: {}
+
+# Tool governance, both directions, at the workflow level. `allow_always` would
+# grant in every state; `forbid_always` denies in every state and beats every
+# grant — a support run never restarts itself, whatever state it took a wrong
+# turn in. A state's own `tools.allow` adds, and its `tools.forbid` denies just
+# there.
+tools:
+  forbid_always: [archmax_reset]
+
+# Every capability here is state-specific — one path reads order records, another
+# the refund policy, one runs the enrichment scripts — so the workflow grants
+# none of them workflow-wide and each state names what it needs in its own
+# `skills.allow`. The empty `allow_always` is the declaration that says so: a
+# slug listed here would be enabled in every state, the way `tools.allow_always`
+# works, and a state's list adds to it. `forbid_always` would put a bundle out
+# of reach of every state; a state's `skills.forbid` removes one just there.
+skills:
+  allow_always: []
+
+# Each key under `states` is the state's slug — the token every `to`, `on_error`,
+# trigger and archmax_advance call resolves it by. `title` is a label only.
+states:
+  identify-case:
+    metadata: { x: 40, y: 180 }
+    title: Identify case
+    summary: Route the request to exactly one path.
+    # Entry for both triggers a conversation can begin with; the state does not
+    # branch on which one fired. A trigger is declared where it enters, and
+    # `session:` is a dotted path over the run's variables — so both mail
+    # triggers reading `conversation_id` land in the session the first email
+    # started, and `email_reply` resumes a parked conversation or starts a fresh
+    # run here when the conversation is unknown.
+    triggers:
+      manual:
+        session: conversation_id
+      email_reply:
+        session: conversation_id
+    instructions: >-
+      Route the request down exactly one path by calling archmax_advance - never
+      answer directly from here. Order questions (status, tracking, totals, a
+      customer's orders) go to orders-question; refund, return, or cancellation
+      requests go to refund-request (prefer it when the customer wants an
+      action on an order, even if the request also mentions the order);
+      everything else goes to general-question. When in doubt and the request
+      is not about order data, prefer general-question. Route to clarify only
+      when the request is about an order but names nothing that could identify
+      one - no order id, no status, no date, no product, nothing to match on -
+      so any answer would be a guess; a request that names none of those but
+      can be answered by listing the requester's orders is an order question,
+      not a clarification.
+    # A hook list runs in order and stops at the first veto: the requester must
+    # be known before tenancy is worth checking. Each script's docblock is its contract.
+    before:
+      - script: hooks/check-requester.js
+      - script: hooks/check-tenancy.js
+    # The model routes and reads nothing; the hooks above still read the order
+    # records, because a hook runs on runtime authority — exempt from this
+    # state's enabled set in both directions, its `forbid` included. An empty
+    # `allow` grants nothing here; had the workflow granted a bundle in every
+    # state, `skills: { forbid: [...] }` is what would take it away again.
+    skills:
+      allow: []
+    transitions:
+      - to: orders-question
+        description: >-
+          The user is asking about orders, order status, shipping, delivery, or tracking.
+      - to: refund-request
+        description: >-
+          The user is asking for a refund, return, cancellation, or their money
+          back on an existing order.
+      - to: general-question
+        description: >-
+          The user has a general question that is not about orders or shipping.
+      - to: clarify
+        description: >-
+          The request is about an order but names nothing that could identify
+          one and cannot be answered by listing the requester's orders either -
+          exactly one question is needed before anything can be answered.
+
+  orders-question:
+    title: Answer order question
+    summary: Answer an order/status question from the order data.
+    # Terminal: the judge runs as the `after` hook at completion.
+    instructions: >-
+      Find the orders matching the user's request by customer name, order id,
+      and/or status (delivered, shipped, processing, delayed). The identify-case
+      gate rejects cross-tenant requests before you get here, but the tenancy
+      rule in the workflow instructions still applies to what you disclose.
+      Open your reply by naming the requester's company and directly answering
+      the question they asked, then include every matching order id explicitly
+      with its relevant fields (status, placed date, total). This state is
+      terminal - once you have answered, stop. Your reply is graded as the run
+      completes; if the grader asks for a correction, resend an updated reply
+      that addresses what it named.
+    # Enabling the skill is the grant: reading skills/order-data/** needs no `tools.allow` entry.
+    skills:
+      allow: [order-data]
+    after:
+      - rubric:
+          # How many times a `correct` verdict may send the agent back before it
+          # becomes a hard veto.
+          max_iterations: 2
+          instructions: |-
+            You are a customer support reply tone judge.
+
+            You receive a JSON task payload with `userRequest`, `history` (conversation
+            messages), `state`, and `phase`.
+
+            Judge only the **tone** of the reply. Do **not** read `skills/order-data/assets/orders.json` or any
+            other file, and do not verify order IDs, totals, dates, or any factual content —
+            another check owns correctness. Your sole job is whether the reply *sounds*
+            friendly and professional.
+
+            ## Steps
+
+            1. Find the **last assistant message** in `history`. That is the reply to judge.
+            2. Decide whether it is friendly and professional:
+               - Polite and courteous, with a warm, helpful tone.
+               - No rude, dismissive, curt, or robotic phrasing.
+               - Reads like a considerate human support agent, not a raw data dump.
+
+            ## Verdict
+
+            Return exactly one of:
+
+            - **`ok`** — the reply is friendly and professional.
+            - **`correct`** — the reply is understandable but the tone is off (e.g. curt,
+              cold, or blunt) and could be warmer. The main agent gets another chance to
+              rephrase it more kindly.
+            - **`veto`** — the reply is rude, hostile, or otherwise unacceptable in tone.
+
+            Always include a concise `reason` explaining the tone assessment.
+
+  refund-request:
+    # Per-state host data lives on the state, so renaming the slug carries it along.
+    metadata: { x: 320, y: 180 }
+    title: Evaluate refund request
+    summary: Evaluate a refund against policy and record the decision.
+    instructions: >-
+      Look up the order (by order id and/or customer
+      name). Apply the refund policy: approved
+      only when the order's status
+      is delivered or delayed; denied when it is shipped or processing (not
+      yet delivered - the customer should cancel or wait) or when no matching
+      order exists. Record the decision in scratchpad/refund.json as
+      { "orderId": "<id, or null if none matched>", "decision": "approved" or
+      "denied", "reason": "<one sentence the customer can understand>" } -
+      write_file creates it; if it already exists (e.g. the reviewer sent the
+      case back for changes), read it and update it with edit_file instead.
+      Tell the customer the decision with the order id, its exact status, and
+      the reason, then archmax_advance to refund-review so a human can review the
+      recorded decision. If you wrote anything the reviewer should see beyond
+      scratchpad/refund.json (working notes under scratchpad/, for example), attach
+      it on that call: evidence: ["scratchpad/<file>"]. refund.json itself is
+      already declared on the review state, so it is shown either way.
+    # Re-derives the policy from the records before the transition commits.
+    after:
+      script: hooks/check-refund.js
+    skills:
+      allow: [order-data, refund-policy]
+    # No `tools` block: refund.json lands in scratchpad/, writable in every
+    # state; what holds the agent to one correct file is the after hook.
+    # `budget` bounds the segment with headroom for a probe or a retry (the
+    # shortest route is ~5 turns); a segment failure routes to `escalation`.
+    budget:
+      maxTurns: 12
+    on_error: escalation
+    transitions:
+      - to: refund-review
+        description: >-
+          The refund decision has been recorded in refund.json and explained to
+          the customer. The check-refund.js after hook re-derives the policy and
+          vetoes the transition if the recorded decision does not match; a human
+          then reviews the recorded decision before the case closes.
+
+  refund-review:
+    title: Review refund decision
+    summary: A person approves the recorded refund decision or sends it back.
+    # Human state: the session parks with a decision record built from these
+    # instructions, the evidence paths and the transition types; a person picks the edge.
+    type: human
+    approvers:
+      - finance@acmecorp.com
+    evidence:
+      - scratchpad/refund.json
+    skills:
+      allow: []
+    instructions: >-
+      A human reviewer must confirm the recorded refund decision before the case
+      closes. Check that the decision in scratchpad/refund.json matches the order
+      status: refunds are valid only for `delivered` or `delayed` orders, and a
+      `shipped`, `processing`, or unknown order must be denied. Confirm the
+      customer-facing explanation is accurate and matches the decision.
+    transitions:
+      - to: refund-closed
+        type: approve
+        description: >-
+          Approve: the recorded decision is correct and consistent with policy;
+          close the case.
+      - to: refund-request
+        type: refine
+        description: >-
+          Send back for changes: the decision or its explanation needs revision
+          (e.g. the order is still shipping and should be denied). The agent
+          resumes in refund-request with the reviewer's comment as correction
+          and may revise scratchpad/refund.json before retrying.
+
+  refund-closed:
+    title: Close refund case
+    summary: Confirm the reviewed refund decision to the customer.
+    # Terminal; restates a decision already in scratchpad/refund.json, so no capability is needed.
+    skills:
+      allow: []
+    instructions: >-
+      The human reviewer has confirmed the recorded refund decision. Give the
+      customer a brief, clear closing confirmation that restates the decision
+      with the order id, the order's exact status, and the reason. This state is
+      terminal.
+
+  clarify:
+    title: Ask a clarifying question
+    summary: Ask one question, park until the answer arrives, then answer it.
+    # Parks itself with archmax_wait; a delivered `email_reply` resumes this same
+    # state with the delivered values as locked variables.
+    # A host that already knows the request needs a question can start here.
+    triggers:
+      clarify_requested:
+        session: conversation_id
+    skills:
+      allow: []
+    instructions: >-
+      The request does not name enough to answer it. Ask exactly one clarifying
+      question - the smallest thing you need to identify the order - and then
+      call archmax_wait with a reason naming what you are waiting for. Do not
+      guess and do not answer yet. When the customer's reply arrives you will
+      continue here: read it, and if it identifies the order, archmax_advance to
+      orders-question to answer the original question with what they added.
+    transitions:
+      - to: orders-question
+        description: >-
+          The customer's reply identifies the order, so the original question
+          can now be answered.
+      - to: closed-unanswered
+        description: >-
+          The conversation was closed before a usable reply arrived.
+
+  closed-unanswered:
+    title: Close without an answer
+    summary: Note that the conversation ended before the customer replied.
+    skills:
+      allow: []
+    instructions: >-
+      The conversation closed before the customer answered the clarifying
+      question. State briefly that the request was not answered and why. This
+      state is terminal.
+
+  escalation:
+    title: Escalate to a human agent
+    summary: Hand the case to a human agent after a failed segment.
+    # Terminal error handler, entered only through an `on_error` route; the
+    # failure reason arrives as a runtime note.
+    skills:
+      allow: []
+    instructions: >-
+      The refund workflow could not complete automatically. Apologize briefly,
+      tell the customer their request has been escalated to a human agent, and
+      summarize what was attempted. Do not decide the refund yourself. This
+      state is terminal.
+
+  report-requested:
+    title: Compile delayed-orders report
+    summary: Compile a delayed-orders report when the report trigger fires.
+    # Entered only when the host fires `report_requested`; the request payload
+    # arrives as run variables (a case seeds them the same way).
+    triggers:
+      report_requested:
+    skills:
+      allow: [order-data]
+    instructions: >-
+      A delayed-orders report was requested by an external trigger, not a chat
+      user. Read trigger.json from the workspace root for the request payload
+      (the company the report is for). Then read skills/order-data/assets/orders.json and collect
+      that company's delayed orders. Write the report to scratchpad/report.json as
+      { "company": "<name>", "delayedOrderIds": ["<id>", ...] } and reply with
+      a one-paragraph summary naming the company and each delayed order id.
+      Answer only from orders.json - never fabricate order data. This state is
+      terminal - stop once the report is written and summarized.
+
+  enrich-order:
+    title: Enrich the requested orders
+    summary: Call the enrich-order workflow once per order, concurrently.
+    # Entered when the host fires `enrichment_requested` with an
+    # `orders_to_enrich` list; the fan-out is the script, not a state key.
+    triggers:
+      enrichment_requested:
+    skills:
+      allow: [order-enrichment]
+    instructions: >-
+      Run skills/order-enrichment/scripts/enrich-orders.js with archmax_run. It enriches every
+      order in `orders_to_enrich`, one sub-run apiece, and returns a list of
+      { order_id, enrichment_file, delayed } objects. Record that list as the
+      `enrichments` variable with archmax_set_variables, then advance. Do not
+      enrich anything by hand and do not call the enrichment workflow yourself -
+      the script does it.
+    # The advance is refused until the script's result has been recorded.
+    requires:
+      - enrichments
+    tools:
+      # `archmax_run` is essential; the entry narrows it to this capability's
+      # scripts. The delegation tool is granted by name, never by default.
+      allow:
+        - { tool: archmax_run, paths: ["skills/order-enrichment/scripts/**"] }
+        - archmax_workflow_enrich-order
+    on_error: escalation
+    transitions:
+      - to: enrichment-reported
+        description: Every order has been enriched.
+
+  enrichment-reported:
+    title: Report the enrichments
+    summary: Summarize what the sub-runs produced.
+    # Terminal; reports from run variables alone, and "do not re-read the order
+    # data" is enforced by enabling no skill.
+    skills:
+      allow: []
+    instructions: >-
+      This state serves the enrichment request that started the run - it is
+      always the right place to be, so answer here. Read `enrichments` with
+      archmax_get_variables: it holds one object per order that was enriched,
+      each carrying `enrichment_file` (the path that sub-run wrote) and
+      `delayed` (whether that order is late). Reply with a short summary naming
+      each order, whether it is delayed, and where its file is. Do not re-read
+      the order data. This state is terminal.
+
+  general-question:
+    title: Answer general question
+    summary: Answer a general question with no order lookup.
+    # Terminal; "there is no data source here" is enforced by enabling no skill.
+    skills:
+      allow: []
+    instructions: >-
+      Answer the non-order question directly, accurately, and concisely from
+      your own knowledge - there is no data source here; if the question is
+      ambiguous, state your assumption briefly and answer the most likely
+      intent. Write a short record to scratchpad/answer.json as
+      { "summary": "<1-3 sentence summary of the answer you gave>" }. Do not
+      invent order or shipping data - if the request was actually about
+      orders, you are on the wrong path. This state is terminal - stop once
+      you have answered.

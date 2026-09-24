@@ -1,0 +1,85 @@
+# Agent e2e (issue #44): run the bundled customer-support example end-to-end
+# against a real model (`archmax validate`, then `archmax test`).
+#
+# Runs only when files that affect the example change: on pushes to main, on
+# ready (non-draft) same-repo PRs, and on manual dispatch. Fork and Dependabot
+# PRs are skipped (they have no secret access). ARCHMAX_API_KEY is a repo-level
+# secret (deliberately not a deployment environment - environment-bound jobs
+# show up as "deployed" on PRs); repo variables ARCHMAX_API_BASE_URL /
+# ARCHMAX_MODEL override the defaults below.
+name: Agent e2e
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "examples/customer-support/**"
+      - "package*.json"
+      - "tsconfig.json"
+      - ".github/workflows/agent-e2e.yml"
+  pull_request:
+    # Default types plus ready_for_review, so a draft marked ready runs
+    # without needing a new commit.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "examples/customer-support/**"
+      - "package*.json"
+      - "tsconfig.json"
+      - ".github/workflows/agent-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-e2e-${{ github.ref }}
+  # Cancel superseded PR runs; let main/dispatch runs finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.actor != 'dependabot[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Both workflows, not just the one the cases drive: `enrich-order` is
+      # reached only as a sub-workflow, so nothing else would catch a spec error
+      # in it until a delegating case failed for a reason that looked unrelated.
+      - name: Validate example workflows (no model calls)
+        run: |
+          npm run dev -- validate order-lookup --root examples/customer-support
+          npm run dev -- validate enrich-order --root examples/customer-support
+      - name: Run example test cases against the real model
+        env:
+          ARCHMAX_API_KEY: ${{ secrets.ARCHMAX_API_KEY }}
+          ARCHMAX_API_BASE_URL: ${{ vars.ARCHMAX_API_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          ARCHMAX_MODEL: ${{ vars.ARCHMAX_MODEL || 'anthropic/claude-sonnet-4.6' }}
+        # No --strict: the flag was removed because a judge score below its
+        # declared `atLeast` now fails the case (and the run) by default, so
+        # quality regressions turn CI red without an opt-in.
+        run: npm run dev -- test order-lookup --root examples/customer-support
+      # There is deliberately no audit-trail dump step here. The one that used to
+      # sit at the end globbed `examples/customer-support/run/*/artifacts/trail.json`
+      # and could never match: the session store moved to `sessions/<id>/`, and
+      # `trail.json` is written by `agent.emitRunArtifacts(...)`, which neither
+      # `archmax run` nor `archmax test` calls — so it printed "No trail.json
+      # recorded" on every run, green or red, while claiming to be the source of
+      # truth for traversal.
+      #
+      # Traversal is pinned where a divergence should fail rather than be read
+      # out of a log: `trail:` assertions inside the cases themselves (see
+      # refund-rejection, refund-decision-continues, refund-message-while-parked).
+      # The live state flow `test` streams to stderr is in the log above for
+      # anything a failing assertion does not already name.

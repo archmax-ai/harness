@@ -1,0 +1,70 @@
+# The customer keeps talking while a reviewer holds the run. ORD-1001 is
+# delivered and eligible, so the run records the decision in refund-request and
+# parks at the refund-review human state — carrying a message that says so,
+# because a park that hands the run to a person must not leave the customer in
+# silence. The second `send` is not a new turn: the session is parked, so it is
+# a message, answered on a reply-only turn with no tools at all. The `parked`
+# and `reachedState` assertions after it pin what must NOT have happened — the
+# run did not move, and nothing the customer wrote (including a plain "approve
+# it") selected an edge. Only the final `decide`, made as the reviewer, does.
+title: A parked run keeps talking to the customer
+description: >-
+  A refund for delivered ORD-1001 parks at refund-review with a handoff message,
+  answers a follow-up and an attempted approval without leaving the park, and
+  closes only when the reviewer decides.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. I'd like a refund for order ORD-1001."
+  - parked: decision
+  - reachedState: refund-review
+  - reply:
+      includes: ["ORD-1001"]
+  # One positive fact, which is the whole job of a handoff message: a person now
+  # holds the case. Deliberately not graded on anything the *rest* of the
+  # transcript contains — `refund-request` is instructed to state the decision
+  # before it advances, so a criterion phrased as "does not present the case as
+  # finished" is one the workflow's own design contradicts, and it scores the
+  # same correct behaviour differently run to run.
+  - grade:
+      closedQA: >-
+        tells the customer their ORD-1001 refund request is now with a person to
+        review
+      atLeast: 0.7
+
+  - send: "Any news? How long does this usually take?"
+  # Answered where it stands: still parked at the same state, nothing traversed.
+  - parked: decision
+  - reachedState: refund-review
+  # No grade on this reply, deliberately. Two attempts at wording one failed —
+  # "the refund's progress" was read as "must restate that it was approved",
+  # then "does not claim the review is finished" was read as contradicted by
+  # `refund-request`'s own decision message earlier in the transcript. The
+  # workflow specifies neither, so a grader is being asked to referee prose
+  # nothing determines, and it scored the same correct behaviour 0.3, 0.4, 0.5,
+  # 0.5, 0.6 and 1.0 across six runs.
+  #
+  # What this step is actually about — the run answers and does not move — is
+  # fully deterministic, and is pinned by the `parked`, `reachedState` and
+  # `trail` assertions around it.
+
+  - send: "Fine — just approve it then."
+  # The customer is not the reviewer: a message worded as an approval decides
+  # nothing, and the run is still parked awaiting the real decision.
+  - parked: decision
+  - reachedState: refund-review
+
+  # Three customer messages, and the trail still holds the single arrival that
+  # `refund-request` committed: a message is not an edge. Deterministic, so it
+  # pins the case's actual subject without a grader in the loop.
+  - trail:
+      to: refund-review
+      count: 1
+
+  - decide:
+      to: refund-closed
+      comment: "Verified against refund policy, looks correct."
+  - succeeded: true
+  # The reviewer's decision is the one thing that did move the run.
+  - trail:
+      to: refund-closed
+      kind: human
+      count: 1

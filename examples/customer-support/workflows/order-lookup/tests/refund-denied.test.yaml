@@ -1,0 +1,29 @@
+# Refund denied for a shipped-but-undelivered order, after human review.
+# ORD-1002 is shipped but not delivered and so ineligible. The refund-request
+# `after` script (workflows/order-lookup/hooks/check-refund.js) re-derives the policy and vetoes
+# any decision that contradicts it, so the agent can only reach the
+# refund-review human state by recording "denied"; the case then decides as
+# the reviewer, confirming the denial via the edge to refund-closed.
+# The judge (threshold 0.7) checks the reply gives the
+# shipped-not-delivered reason rather than an unexplained refusal.
+title: Refund denied for an undelivered order
+description: >-
+  A refund for shipped-but-undelivered ORD-1002 travels refund-request →
+  refund-review and parks there with a reply naming the order and its denial;
+  the run succeeds once the reviewer confirms.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. Please refund order ORD-1002."
+  - parked: true
+  - reachedState: refund-request
+  - reachedState: refund-review
+  - reply:
+      includes: ["ORD-1002", "/den|not eligible|cannot|can't|unable/i"]
+  - decide:
+      to: refund-closed
+      comment: "The denial matches the shipped-not-delivered policy."
+  - succeeded: true
+  - grade:
+      closedQA: >-
+        explains that order ORD-1002 cannot be refunded because it has
+        shipped but not yet been delivered
+      atLeast: 0.7

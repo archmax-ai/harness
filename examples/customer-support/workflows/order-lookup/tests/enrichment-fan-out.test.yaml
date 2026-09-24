@@ -1,0 +1,76 @@
+# Sub-workflow delegation, fanned out from a script and mocked.
+#
+# The `enrichment_requested` trigger starts the run at `enrich-order`, an
+# ordinary agent state that is *allowed to call* the enrich-order workflow. Its
+# script calls that tool once per seeded order and awaits them together, so the
+# fan-out is deterministic rather than a model's choice.
+#
+# Delegation is a tool call, so it mocks like any other tool: keyed by the
+# tool's own name, matched on the call's arguments with the ordinary `input:`
+# grammar. Each sub-run is mocked, so this case exercises the parent's
+# contract — the calls, their results, the variable, the routing — without
+# spending a model call on the children.
+title: Delegated enrichment fans out one sub-run per order
+description: >-
+  The enrichment_requested trigger starts the run at the state that may call
+  enrich-order; its script calls that workflow once per seeded order, records
+  what each returned, and the run reports them.
+trigger:
+  id: enrichment_requested
+variables:
+  orders_to_enrich:
+    - order_id: "ORD-1002"
+    - order_id: "ORD-1003"
+mocks:
+  # Matched on each call's own arguments, so every sub-run gets its own answer —
+  # which is what proves the calls are not sharing inputs.
+  - tool: archmax_workflow_enrich-order
+    whenInput:
+      order_id: "ORD-1002"
+    result:
+      message: "ORD-1002 is shipped."
+      # enrich-order's `manual` trigger declares these, so a mock standing
+      # in for that sub-run has to supply them: a mock replaces the run, never
+      # its contract, and one free to answer in a shape the machine could never
+      # produce would make this case pass against nothing.
+      returns:
+        enrichment_file: "scratchpad/enrichment/ORD-1002.json"
+        delayed: false
+  - tool: archmax_workflow_enrich-order
+    whenInput:
+      order_id: "ORD-1003"
+    result:
+      message: "ORD-1003 is delayed."
+      returns:
+        enrichment_file: "scratchpad/enrichment/ORD-1003.json"
+        delayed: true
+steps:
+  - send: "Enrich the requested orders."
+  - succeeded: true
+  - triggerArrival: enrichment_requested
+  # One sub-run per order, both successful.
+  - ranWorkflow:
+      workflow: enrich-order
+      count: 2
+  # `ranWorkflow` rather than `calledTool`, because the calls come from a script:
+  # `calledTool` asserts on the *model's* calls, and the point of driving the
+  # fan-out from a script is that the model makes none of them.
+  - reachedState: enrichment-reported
+  # What the script recorded, which is the contract this case exists to pin: one
+  # object per sub-run holding exactly the names enrich-order declares it
+  # returns. Nothing captures this automatically any more — the state's
+  # `requires: [enrichments]` is what makes writing it non-optional, and this
+  # asserts it was written with the right shape.
+  #
+  # Asserted on the variable rather than on the reply, because the reply is a
+  # model turn and this case is about the delegation, not about how the
+  # reporting state words itself.
+  - variables:
+      expect:
+        enrichments:
+          - order_id: "ORD-1002"
+            enrichment_file: "scratchpad/enrichment/ORD-1002.json"
+            delayed: false
+          - order_id: "ORD-1003"
+            enrichment_file: "scratchpad/enrichment/ORD-1003.json"
+            delayed: true

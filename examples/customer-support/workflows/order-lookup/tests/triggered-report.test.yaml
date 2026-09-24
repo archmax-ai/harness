@@ -1,0 +1,40 @@
+# Triggered start conditions — the delayed-orders report path. The case
+# declares its start conditions on the document itself: every driven turn
+# runs under the `report_requested` trigger (entering report-requested, not
+# the manual identify-case). A trigger carries only an id, so the run's input
+# comes from the case's `variables:` block — seeded as locked run variables,
+# exactly as a host supplies them through `variables`.
+# Nothing is seeded into the workspace: the variable carries everything the
+# agent needs, so there is no fixture file to copy in with `workspace: { from: … }`.
+# Nothing is mocked: the agent works from the seeded variable and the real
+# skills/order-data/assets/orders.json fixture.
+# The assertions pin the run's OUTCOME — where it started, what it produced,
+# what it said — rather than the route it took to get there: which files the
+# model chooses to open is not part of this case's contract.
+title: Delayed-orders report compiled from a trigger
+description: >-
+  The report_requested trigger starts the run with a seeded `company`
+  variable; the agent writes scratchpad/report.json and its reply names Acme's one
+  delayed order, ORD-1003.
+trigger:
+  id: report_requested
+variables:
+  company: "Acme Corp"
+steps:
+  - send: "A delayed-orders report was requested."
+  - succeeded: true
+  - triggerArrival: report_requested
+  # `/pattern/` input values match as regexes, so the assertion holds
+  # whether the model spells the path with or without a leading slash.
+  - calledTool:
+      name: write_file
+      input:
+        file_path: "/scratchpad\\/report\\.json/"
+  - reply:
+      includes: ["ORD-1003", "Acme"]
+  # The seeded variable is readable for the whole run and cannot be rewritten.
+  - variables:
+      expect:
+        company: "Acme Corp"
+      locked:
+        company: true

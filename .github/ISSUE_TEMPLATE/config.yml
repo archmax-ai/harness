@@ -1,0 +1,3 @@
+# Funnel new issues through the templates above. Set to true to also allow
+# free-form issues.
+blank_issues_enabled: false

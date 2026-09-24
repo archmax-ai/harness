@@ -1,0 +1,19 @@
+name: Chore
+description: Tooling, CI, dependencies, or other maintenance
+title: "[chore] "
+labels: ["chore"]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: What needs doing
+      description: The maintenance task - tooling, CI, deps, refactor, or repo meta.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why now, and anything a reviewer should know.
+    validations:
+      required: false

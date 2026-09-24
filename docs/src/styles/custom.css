@@ -1,0 +1,7 @@
+/* archmax harness docs: site-specific rules on top of @archmax-ai/starlight-theme.
+   The theme loads first, so anything here wins. Keep brand values out of this file. */
+
+/* Slightly tighten table typography for the config/option tables. */
+.sl-markdown-content table {
+	font-size: var(--sl-text-sm);
+}

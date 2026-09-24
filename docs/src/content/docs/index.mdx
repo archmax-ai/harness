@@ -1,0 +1,122 @@
+---
+title: archmax harness
+description: The archmax harness assembles one LangChain Deep Agent per workflow and governs every session with a declarative state machine you author in a single YAML file.
+template: splash
+hero:
+  tagline: Documentation
+  title: A governed runtime for Deep Agents.
+  actions:
+    - text: Quickstart
+      link: /getting-started/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/archmax-ai/harness
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Why archmax harness
+
+Reliable automation with AI agents should follow the process, and the people who
+own that process should be able to author it. Today that is out of reach for most
+domain experts. Current automation tools fall short in three ways.
+
+- **The agent is a step, not the process.** The agent sits inside a fixed graph,
+  so its flexibility ends at the edge of one node. The process stays as rigid as
+  the diagram someone drew.
+- **The process and its implementation drift apart.** Every business process is
+  restated as a technical graph. That makes two artifacts with two owners, and
+  keeping them in step never stops costing effort.
+- **Complex data still ends up in code.** Nested payloads, loops and arithmetic
+  land in a code node. The person who owns the process cannot read it, let alone
+  change it.
+
+The archmax harness turns this around. The agent runs the whole process, and one
+`workflow.yaml` both describes it and enforces it. Data work happens in a
+sandbox the same rules govern.
+
+## The agent sees one state at a time
+
+The archmax harness renders the state in force: its tool surface, its outgoing edges, its
+hooks. The runtime reads the rest from the spec file.
+
+Two things follow. An injected instruction has one state and its edges to work
+with, because that is all the prompt holds. And the cached prompt stays the same
+size whether the workflow has six states or sixty.
+
+<CardGrid>
+	<Card title="A pure kernel decides every call" icon="approve-check">
+		One synchronous decision function governs tools, skill bundles and
+		filesystem mounts alike. Deny beats allow. It applies to the calls a
+		sandboxed script makes, as well as the model's own. Hooks return `ok`,
+		`correct` or `veto`. A hook that throws counts as a veto.
+	</Card>
+	<Card title="Prove the policy before you spend a token" icon="document">
+		`archmax validate` runs that same kernel against your spec offline. A state
+		that grants a tool it also forbids is a build error. So is a path that
+		reaches outside its zone. See
+		[the workflow machine](/guides/workflow-machine/).
+	</Card>
+	<Card title="Hand a decision to a person" icon="comment-alt">
+		A `type: human` state parks the session on a durable checkpoint. It survives
+		a restart. Someone reviews the work and picks the way forward. They can also
+		ask a question while the session stays parked, or send new information in.
+		The session continues where it stopped.
+	</Card>
+	<Card title="Test the whole thing offline" icon="laptop">
+		YAML cases drive a workflow through its states. Tool mocks stand in for real
+		calls, and assertions can be graded by a model. Each case runs on your
+		configured model, against the same assembly `archmax run` uses. See
+		[testing workflows](/guides/testing/).
+	</Card>
+</CardGrid>
+
+## What the archmax harness is
+
+The archmax harness is a runtime library for Node and TypeScript (ESM). It is a thin layer over
+[LangChain Deep Agents](https://docs.langchain.com/oss/javascript/deepagents/overview).
+It wires up a model, serves the agent's workspace through a Deep Agents backend,
+loads skills, and enforces `workflow.yaml`.
+
+Everything specific to your agent lives in the workspace as files: the spec, skill
+bundles, hook scripts, and data. The runtime stays generic, so the same library can
+run a support triage agent and a nightly reporting job. The workspace can live on
+any Deep Agents backend: a local directory, an object store, a remote service.
+
+## How it works
+
+<ol class="steps-strip not-content">
+	<li>
+		<a href="/guides/workflow-machine/">
+			<strong>Author</strong>
+			<span>Describe states, tool surfaces, transitions and hooks in one workflow.yaml file.</span>
+		</a>
+	</li>
+	<li>
+		<a href="/guides/testing/">
+			<strong>Test</strong>
+			<span>Drive the workflow through its states with declarative cases, mocks and grades.</span>
+		</a>
+	</li>
+	<li>
+		<a href="/guides/cli/">
+			<strong>Run</strong>
+			<span>Start a session from a trigger. The kernel enforces every move and tool call.</span>
+		</a>
+	</li>
+	<li>
+		<a href="/reference/public-api/">
+			<strong>Embed</strong>
+			<span>Host the same agent in your own service through the public API.</span>
+		</a>
+	</li>
+</ol>
+
+## Next steps
+
+- [Install the SDK](/getting-started/installation/) and configure a model.
+- Run the bundled customer-support example with the [quickstart](/getting-started/quickstart/).
+- Learn the [machine spec](/reference/machine-spec/) and the [public API](/reference/public-api/).

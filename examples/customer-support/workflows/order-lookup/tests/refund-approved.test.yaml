@@ -1,0 +1,29 @@
+# Refund approved for a delivered order, after human review. ORD-1001 is
+# delivered and therefore eligible under the policy workflows/order-lookup/hooks/check-refund.js
+# re-derives. Nothing is mocked: the agent records the decision in
+# refund-request, the run parks at the refund-review human state, and the case
+# then decides as the reviewer, taking the approving edge to refund-closed.
+# `parked` plus both `reachedState` assertions pin the governed path: the run
+# may not answer straight through or shortcut past review. The judge
+# (threshold 0.7) checks the closing reply tells the customer it is approved.
+title: Refund approved after human review
+description: >-
+  A refund for delivered ORD-1001 travels refund-request → refund-review and
+  parks there with a reply naming the order and its approval; the run succeeds
+  once the reviewer approves.
+steps:
+  - send: "Hi, I'm support@acmecorp.com. I'd like a refund for order ORD-1001."
+  - parked: true
+  - reachedState: refund-request
+  - reachedState: refund-review
+  - reply:
+      includes: ["ORD-1001", "/approv/i"]
+  - decide:
+      to: refund-closed
+      comment: "Verified against refund policy, looks correct."
+  - succeeded: true
+  - grade:
+      closedQA: >-
+        tells the customer their refund for delivered order ORD-1001 is
+        approved
+      atLeast: 0.7
