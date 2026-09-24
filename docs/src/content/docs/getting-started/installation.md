@@ -18,22 +18,36 @@ This installs the runtime library and the `archmax` CLI.
 For hacking on the SDK itself, see
 [development setup](/contributing/development/).
 
-## The bundled authoring skill
+## The authoring skill
 
-The package ships the workflow-authoring Agent Skill inside the install, so it
-always matches the SDK version you depend on. The skill is the playbook coding
-agents use to author `workflow.yaml` workspaces and wire the runtime. Locate it
-via the exported constant:
+The authoring skill is the Agent Skill that coding agents (Claude Code, Cursor,
+Codex, …) use to author `workflow.yaml` workspaces and wire the runtime. Install
+it with the [skills CLI](https://skills.sh):
+
+```bash
+npx skills add archmax-ai/harness
+```
+
+That installs the latest version from the GitHub repository. Add `-g` to install
+it for your user rather than the current project.
+
+The package also ships the skill inside the install, so it always matches the
+SDK version you depend on. After `npm install`, install the packaged copy:
+
+```bash
+npx skills add ./node_modules/@archmax-ai/harness
+```
+
+`npx skills experimental_sync` does the same for every skill-bearing package in
+`node_modules`. The package ships the skill at `skills/archmax-harness/` for
+these installers.
+
+To load it in your own agent, point skills middleware at the exported constant:
 
 ```ts
 import { BUNDLED_AUTHORING_SKILL_DIR } from "@archmax-ai/harness";
 // <BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md (+ references/)
 ```
-
-Point skills middleware at `BUNDLED_AUTHORING_SKILL_DIR`, or install it into a coding
-agent with `npx skills add ./node_modules/@archmax-ai/harness/dist/authoring-skill/archmax-harness`.
-Working from a checkout of the SDK repo, `npx skills add ./skills/archmax-harness` works
-too. In a consuming project, prefer the packaged copy.
 
 ## Configure the model
 

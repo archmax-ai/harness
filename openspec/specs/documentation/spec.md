@@ -170,20 +170,31 @@ The project SHALL provide one Agent Skill under `skills/archmax-harness/` — a 
 `references/hook-and-test-scripts.md`, `references/backend-integration.md` and a `README.md` with
 the `npx skills add` command, license and safety notes. The build SHALL copy it to
 `dist/authoring-skill/archmax-harness/` and the package SHALL export `BUNDLED_AUTHORING_SKILL_DIR`, the
-`dist/authoring-skill` directory holding `archmax-harness/`. The skill's install documentation SHALL present the packaged
-copy as the drift-free path for consumers and a checkout as the development path.
+`dist/authoring-skill` directory holding `archmax-harness/`. The published package SHALL also ship the
+source directory as `skills/archmax-harness/`, where the skills CLI discovers it in an installed package.
+It SHALL be the repository's only skill the skills CLI lists: contributor skills under `.claude/skills/`
+SHALL carry `metadata.internal: true`. The install documentation (README, installation page, the
+skill's `README.md`) SHALL present `npx skills add archmax-ai/harness` as the primary path for external
+users, the packaged copy as the version-matched path, and a checkout as the development path.
 
 #### Scenario: Skill ships in the published package
 
 - **WHEN** the package is installed from a registry or tarball
-- **THEN** `<BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md` exists and matches the repository state
-  the package was built from
+- **THEN** `<BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md` and
+  `skills/archmax-harness/SKILL.md` exist in the package and match the repository state it was built from
 
-#### Scenario: Skill is installable via the skills CLI
+#### Scenario: Skill is installable from GitHub
 
-- **WHEN** a developer runs `npx skills add ./node_modules/@archmax-ai/harness/dist/authoring-skill/archmax-harness`
-  (or the checkout path `./skills/archmax-harness`)
-- **THEN** the skill installs into the coding agent's skill directory
+- **WHEN** a developer runs `npx skills add archmax-ai/harness`
+- **THEN** the skills CLI finds exactly one skill, `archmax-harness`, and installs it into the coding
+  agent's skill directory
+
+#### Scenario: Skill is installable from the installed package
+
+- **WHEN** a developer runs `npx skills add ./node_modules/@archmax-ai/harness` or
+  `npx skills experimental_sync` in a project that depends on the package
+  (or `npx skills add ./skills/archmax-harness` in a checkout)
+- **THEN** the skill installs into the coding agent's skill directory at the installed SDK version
 
 ### Requirement: The skill covers the whole authoring surface
 
