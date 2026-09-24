@@ -4,30 +4,6 @@
 Agents](https://docs.langchain.com/oss/javascript/deepagents/overview). Every session runs
 under a declarative workflow state machine you author in one YAML file.**
 
-The archmax harness is Node/TypeScript and ESM. It assembles one Deep Agent per workflow, serves that agent's
-workspace through a Deep Agents backend, and enforces `workflows/<slug>/workflow.yaml` with
-middleware and a pure decision kernel.
-
-The runtime holds no use-case logic. Everything specific to your agent lives as files in your
-workspace: persona, states, tool permissions, hooks, skill bundles, data.
-
-- **One file is the source of truth.** `workflow.yaml` is the enforced machine: states,
-  transitions, per-state tool governance, lifecycle hooks, budgets, error routing, triggers.
-  What the model reads is rendered from the spec, so prose cannot drift from enforcement.
-- **Closed by default, including the graph.** The agent sees the active state's tool surface and
-  its outgoing edges. Another state's slug, instructions, transitions and even the state count
-  stay out of the prompt. So the cached prefix does not grow with the graph, and a prompt
-  injection has no map to steer with.
-- **Enforced by the kernel.** The agent moves only by calling `archmax_advance`. The workflow's
-  and the state's `allow`/`forbid` lists cover tools, skills and mounts alike, with deny beating
-  allow. The kernel applies them to every call, including the calls a sandboxed script makes.
-  Hooks return `ok`, `correct` or `veto`, and they fail closed.
-- **Human-in-the-loop, natively.** A `type: human` state parks the session on a durable
-  checkpoint. A person picks the outgoing transition, and the session resumes where it stopped.
-- **Backend-driven and durable.** Specs, prompts, skills and sessions all flow through Deep
-  Agents backends: filesystem, store, or remote. Every session is a resumable, inspectable
-  folder in a session store you choose.
-
 ## Why archmax harness
 
 Reliable automation with AI agents should follow the process, and the people who own that
