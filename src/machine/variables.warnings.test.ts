@@ -121,6 +121,20 @@ describe("unguaranteedReferenceWarnings", () => {
     });
     expect(unguaranteedReferenceWarnings(machine, {})).toHaveLength(2);
   });
+
+  // A typed entry names its variable as surely as a bare one does.
+  it("says nothing when a typed trigger requires backs the guard", () => {
+    const machine = machineWith({
+      work: {
+        triggers: { manual: { requires: [{ name: "case_id", type: "string", description: "The case." }] } },
+        tools: { allow: [{ tool: "send_reply", args: { to: ["${{case_id}}"] } }] },
+        transitions: [{ to: "done", description: "Test edge to done." }],
+      },
+      done: {},
+    });
+    expect(unguaranteedReferenceWarnings(machine, {})).toEqual([]);
+    expect([...declaredVariableNames(machine.spec)]).toEqual(["case_id"]);
+  });
 });
 
 describe("machine variable accessors", () => {

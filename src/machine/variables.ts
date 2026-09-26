@@ -121,6 +121,11 @@ export interface VariableEntry {
 /** The checkpointed variable store, keyed by name. */
 export type VariableStore = Record<string, VariableEntry>;
 
+/** A store as the plain `name → value` map a signature is checked against. */
+export function storeValues(store: VariableStore): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(store).map(([name, entry]) => [name, entry.value]));
+}
+
 /**
  * Turn a caller's seeds into locked variable entries — the one way a run's
  * opening facts are established, whether by a host's `variables` option, a

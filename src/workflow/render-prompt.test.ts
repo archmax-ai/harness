@@ -259,6 +259,59 @@ describe("renderStateGraph — the volatile half", () => {
       expect(other).not.toContain("enrichment_file");
     });
 
+    describe("typed entries", () => {
+      const typed: MachineSpec = {
+        states: {
+          refund: {
+            triggers: {
+              manual: {
+                description: "Refund one order.",
+                requires: ["order_id", { name: "due", type: "date", description: "The day the refund is due." }],
+                returns: [{ name: "total", type: "number", description: "Refunded amount in EUR." }, "note"],
+              },
+            },
+            transitions: [{ to: "done", description: "Refunded." }],
+          },
+          done: {},
+        },
+      };
+
+      it("renders each entry on its own line with its type and description", () => {
+        const text = graph(typed, "refund", "manual");
+        expect(text).toContain(
+          ["This run was started with:", "- order_id", "- due (date) — The day the refund is due."].join("\n"),
+        );
+        expect(text).toContain(
+          [
+            "This run must set these with `archmax_set_variables` — it does not complete until every one is set:",
+            "- total (number) — Refunded amount in EUR.",
+            "- note",
+          ].join("\n"),
+        );
+      });
+
+      it("never renders the declaration's description, which is for a caller", () => {
+        expect(graph(typed, "refund", "manual")).not.toContain("Refund one order.");
+      });
+
+      it("renders a type without a description, and a description without a type", () => {
+        const text = graph(
+          {
+            states: {
+              a: { triggers: { manual: { requires: [{ name: "n", type: "integer" }, { name: "why", description: "Reason." }] } } },
+            },
+          },
+          "a",
+          "manual",
+        );
+        expect(text).toContain("- n (integer)\n- why — Reason.");
+      });
+
+      it("is deterministic for one signature", () => {
+        expect(graph(typed, "refund", "manual")).toBe(graph(typed, "refund", "manual"));
+      });
+    });
+
     it("renders no signature when the run's trigger is unknown or unsigned", () => {
       expect(graph(signed, "enrich")).not.toContain("This run");
       expect(graph(signed, "enrich", "ghost")).not.toContain("This run");

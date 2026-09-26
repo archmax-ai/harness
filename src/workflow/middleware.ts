@@ -17,8 +17,9 @@ import type { WorkflowMachine } from "../machine/machine.js";
 import type { Rubric } from "../rubrics/rubrics.js";
 import type { Workspace } from "../core/workspace.js";
 import { createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
-import { createControlTools, SET_VARIABLES_TOOL } from "./control-tools.js";
+import { createControlTools } from "./control-tools.js";
 import type { VariableStore } from "../machine/variables.js";
+import { returnsRejection } from "./signature-checks.js";
 import {
   currentWorkflowState,
   isReplyOnly,
@@ -383,18 +384,8 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         }
 
         // The exit half of the trigger's signature, checked where a run completes — never at a park.
-        const unsetReturns = (machine.returnsForTrigger(fields.trigger?.id ?? "") ?? []).filter(
-          (name) => readVariables(state)[name] === undefined,
-        );
-        if (unsetReturns.length > 0) {
-          const reason =
-            `Completed in state '${workflowState}' without setting ` +
-            `${unsetReturns.map((n) => `'${n}'`).join(", ")}, which trigger ` +
-            `'${fields.trigger?.id}' declares in its 'returns'. Set ` +
-            `${unsetReturns.length === 1 ? "it" : "them"} with '${SET_VARIABLES_TOOL}' before ` +
-            `finishing.`;
-          return asHookResult({ ...update, rejected: reason, status: WORKFLOW_STATUSES.rejected });
-        }
+        const unmet = returnsRejection(machine, fields.trigger?.id, workflowState, readVariables(state));
+        if (unmet) return asHookResult({ ...update, rejected: unmet, status: WORKFLOW_STATUSES.rejected });
 
         emit({ type: "state-leave", state: workflowState, next: workflowState });
         return asHookResult({ ...update, status: WORKFLOW_STATUSES.completed });

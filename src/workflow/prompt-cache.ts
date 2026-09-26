@@ -136,16 +136,6 @@ export function createProviderCacheMiddleware(
   return null;
 }
 
-/** The assembly-time diagnostic for an unsupported model. */
-export function unsupportedCacheMessage(model: unknown): string {
-  const id = modelIdOf(model) || modelName(model) || "the configured model";
-  return (
-    `prompt caching is inactive for '${id}': no cache-breakpoint mechanism is known for it ` +
-    `(supported: Anthropic natively or over an OpenAI-compatible endpoint, and Bedrock Converse ` +
-    `Claude/Nova). Providers with automatic prefix caching still benefit from the stable prefix.`
-  );
-}
-
 /** Precedence host option → workflow spec → env → default (on, 5m). A bad `ttl` falls back rather than failing a run. */
 export function resolvePromptCacheConfig(sources: {
   option?: PromptCacheOptions | undefined;

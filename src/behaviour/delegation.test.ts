@@ -171,6 +171,96 @@ describe("a delegation call", () => {
   });
 });
 
+describe("a typed call signature", () => {
+  /** A child with a caller-facing description, a private brief, and typed inputs and output. */
+  const TYPED_CHILD = {
+    runtime: RUNTIME,
+    states: {
+      work: {
+        instructions: "PRIVATE CHILD BRIEF: never shown to a caller.",
+        triggers: {
+          manual: {
+            description: "Enrich one order and say whether it is delayed.",
+            requires: [
+              { name: "order_id", type: "string", description: "The order to enrich." },
+              { name: "quantity", type: "integer" },
+            ],
+            returns: [{ name: "delayed", type: "boolean", description: "Whether the order is late." }],
+          },
+        },
+      },
+    },
+  };
+  const setDelayed = (value: unknown) => ({ tool: "archmax_set_variables", args: { variables: { delayed: value } } });
+
+  it("binds a typed schema and a description led by the entry's description, without the brief", async () => {
+    const { agent, model } = await assemble(delegatingWorkspace(TYPED_CHILD), {
+      turns: [advanceTo("done"), { reply: "parent" }],
+    });
+    await turn(agent, "s1", "go");
+    const bound = model.boundTools.get(CHILD_TOOL);
+    expect(bound?.description.startsWith("Enrich one order and say whether it is delayed.")).toBe(true);
+    expect(bound?.description).not.toContain("PRIVATE CHILD BRIEF");
+    expect(bound?.schema).toMatchObject({
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: expect.stringContaining("The order to enrich.") },
+        quantity: { type: "integer" },
+      },
+      required: ["order_id", "quantity"],
+    });
+  });
+
+  it("refuses a mistyped argument before any child runs", async () => {
+    const { agent, events } = await assemble(delegatingWorkspace(TYPED_CHILD), {
+      turns: [{ tool: CHILD_TOOL, args: { order_id: "ORD-7", quantity: "three" } }, { reply: "parent" }],
+    });
+    const { messages } = await turn(agent, "s1", "go");
+    const result = toolResults(messages).find((r) => r.name === CHILD_TOOL);
+    expect(result?.status).toBe("error");
+    expect(result?.content).toContain("'quantity' must be an integer");
+    expect(eventsOf(events, "state-enter").filter((e) => e.subWorkflowDispatchId)).toEqual([]);
+    expect((await agent.sessions.list()).some((s) => s.parentSessionId === "s1")).toBe(false);
+  });
+
+  it("seeds a whole-reference argument with the referenced value's own type", async () => {
+    const { agent } = await assemble(delegatingWorkspace(TYPED_CHILD), {
+      turns: [
+        { tool: "archmax_set_variables", args: { variables: { count: 3 } } },
+        { tool: CHILD_TOOL, args: { order_id: "order ${{count}}", quantity: "${{count}}" } },
+        // — child —
+        setDelayed(false),
+        { reply: "on time" },
+        // — parent —
+        { reply: "parent" },
+      ],
+    });
+    const { messages } = await turn(agent, "s1", "go");
+    const child = (await agent.sessions.list()).find((s) => s.parentSessionId === "s1");
+    expect(child?.variables?.quantity).toEqual({ value: 3, locked: true });
+    expect(child?.variables?.order_id).toEqual({ value: "order 3", locked: true });
+    const result = toolResults(messages).find((r) => r.name === CHILD_TOOL);
+    expect(JSON.parse(result!.content)).toMatchObject({ returns: { delayed: false } });
+  });
+
+  it("settles a child whose typed return does not conform as a failure naming the type", async () => {
+    const { agent, events } = await assemble(delegatingWorkspace(TYPED_CHILD), {
+      turns: [
+        { tool: CHILD_TOOL, args: { order_id: "ORD-7", quantity: 2 } },
+        // — child: its write check refuses "no", and it finishes without a conforming value —
+        setDelayed("no"),
+        { reply: "gave up" },
+        // — parent —
+        { reply: "parent" },
+      ],
+    });
+    await turn(agent, "s1", "go");
+    const [settled] = eventsOf(events, "sub-workflow-result");
+    expect(settled?.status).toBe("error");
+    expect(settled?.reason).toContain("'delayed'");
+  });
+});
+
 describe("delegation bounds", () => {
   it("refuses a cycle: a workflow already running in the chain", async () => {
     // `w` may delegate to itself. The first dispatch is legal (depth 1); the

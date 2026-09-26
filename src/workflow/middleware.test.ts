@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { GraphInterrupt } from "@langchain/langgraph";
 import type { BackendProtocolV2 } from "deepagents";
 import { runtimeNote } from "../core/messages.js";
 import { Workspace } from "../core/workspace.js";
@@ -8,6 +9,7 @@ import type { ScriptExecutor, ScriptOutcome } from "../sandbox/executor.js";
 import type { WorkflowLifecycleEvent } from "../core/events.js";
 import type { VariableStore } from "../machine/variables.js";
 import { createWorkflowInstrumentation } from "./middleware.js";
+import { returnsRejection } from "./signature-checks.js";
 import { mergeVariables, type TrailStep } from "./state.js";
 
 const SPEC_PATHS = { workflowYaml: "workflow.yaml", workflow: "WORKFLOW.md" };
@@ -595,7 +597,7 @@ describe("workflow middleware tool telemetry", () => {
     });
   });
 
-  it("reports an error result and rethrows when the tool throws", async () => {
+  async function throwingToolMiddleware() {
     const machine = await loadMachine();
     const events: WorkflowLifecycleEvent[] = [];
     const instrumentation = createWorkflowInstrumentation({
@@ -609,16 +611,59 @@ describe("workflow middleware tool telemetry", () => {
         wrapToolCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
       }
     ).wrapToolCall;
+    return { events, wrapToolCall };
+  }
+
+  it("answers the call with an error-status message when the tool throws", async () => {
+    const { events, wrapToolCall } = await throwingToolMiddleware();
+
+    const result = await wrapToolCall(toolRequest("write_file", { file_path: "output/a.json" }), () => {
+      throw new Error("disk full");
+    });
+
+    expect(result).toBeInstanceOf(ToolMessage);
+    expect(result).toMatchObject({
+      content: "disk full",
+      tool_call_id: "call-1",
+      name: "write_file",
+      status: "error",
+    });
+    const settled = events.filter((e) => e.type === "tool-result");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ callId: "call-1", status: "error", output: "disk full" });
+  });
+
+  it("still propagates a GraphInterrupt, settling the call once", async () => {
+    const { events, wrapToolCall } = await throwingToolMiddleware();
+    const park = new GraphInterrupt([{ value: { kind: "decision" } }]);
 
     await expect(
       wrapToolCall(toolRequest("write_file", { file_path: "output/a.json" }), () => {
-        throw new Error("disk full");
+        throw park;
       }),
-    ).rejects.toThrow("disk full");
-    expect(events.find((e) => e.type === "tool-result")).toMatchObject({
-      status: "error",
-      output: "disk full",
-    });
+    ).rejects.toBe(park);
+    const settled = events.filter((e) => e.type === "tool-result");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ callId: "call-1", status: "error" });
+  });
+
+  it("still propagates a failure raised after the run's abort signal fired, settling the call once", async () => {
+    const { events, wrapToolCall } = await throwingToolMiddleware();
+    const controller = new AbortController();
+    const request = {
+      ...toolRequest("write_file", { file_path: "output/a.json" }),
+      runtime: { configurable: { thread_id: "t1" }, signal: controller.signal },
+    };
+
+    await expect(
+      wrapToolCall(request, () => {
+        controller.abort();
+        throw new Error("aborted");
+      }),
+    ).rejects.toThrow("aborted");
+    const settled = events.filter((e) => e.type === "tool-result");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ callId: "call-1", status: "error", output: "aborted" });
   });
 
   it("truncates oversized output previews", async () => {
@@ -2645,5 +2690,37 @@ describe("one transition per model step", () => {
 
     expect(committed(results[0])).toBeUndefined();
     expect(committed(results[1])).toBe("b");
+  });
+});
+
+describe("returnsRejection — the completion check", () => {
+  const machine = WorkflowMachine.fromSpec({
+    states: {
+      done: {
+        triggers: { manual: { returns: [{ name: "total", type: "number" }, "note"] }, other: null },
+      },
+    },
+  });
+  const store = (values: Record<string, unknown>): VariableStore =>
+    Object.fromEntries(Object.entries(values).map(([k, value]) => [k, { value, locked: false }]));
+
+  it("rejects a typed return that does not conform, naming the state, the variable and the type", () => {
+    const reason = returnsRejection(machine, "manual", "done", store({ total: "12.50", note: null }));
+    expect(reason).toContain("state 'done'");
+    expect(reason).toContain("'total' must be a number");
+    expect(reason).toContain('a string ("12.50")');
+    expect(reason).not.toContain("without setting");
+  });
+
+  it("names unset returns and mistyped ones together", () => {
+    const reason = returnsRejection(machine, "manual", "done", store({ total: "12.50" }));
+    expect(reason).toContain("without setting 'note'");
+    expect(reason).toContain("'total' must be a number");
+  });
+
+  it("passes conforming returns, and a trigger declaring none", () => {
+    expect(returnsRejection(machine, "manual", "done", store({ total: 12.5, note: null }))).toBeUndefined();
+    expect(returnsRejection(machine, "other", "done", store({}))).toBeUndefined();
+    expect(returnsRejection(machine, undefined, "done", store({}))).toBeUndefined();
   });
 });

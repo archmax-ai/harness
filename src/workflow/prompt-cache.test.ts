@@ -7,7 +7,6 @@ import {
   modelIdOf,
   resolveCacheStrategy,
   resolvePromptCacheConfig,
-  unsupportedCacheMessage,
 } from "./prompt-cache.js";
 
 /** A model stand-in identified the way LangChain identifies chat clients. */
@@ -115,12 +114,8 @@ describe("resolvePromptCacheConfig", () => {
 
 });
 
-describe("cache markers and diagnostics", () => {
+describe("cache markers", () => {
   it("builds an ephemeral marker with the requested lifetime", () => {
     expect(cacheControl("1h")).toEqual({ type: "ephemeral", ttl: "1h" });
-  });
-
-  it("names the model in the unsupported-model diagnostic", () => {
-    expect(unsupportedCacheMessage(fakeModel("ChatOpenAI", "gpt-5"))).toContain("gpt-5");
   });
 });

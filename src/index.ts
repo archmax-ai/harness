@@ -268,6 +268,30 @@ export {
   /** The session id a firing of a trigger resolves to under a spec, or `undefined` when the runtime mints one. */
   sessionIdForTrigger,
 } from "./machine/triggers.js";
+
+// --- Trigger signatures ---------------------------------------------------------
+//
+// The mapping and rule every runtime check decides by, for a host building an
+// MCP tool, a start form or request validation from the same signature.
+
+export {
+  /** The types a signature entry may declare. */
+  SIGNATURE_TYPES,
+  /** A `requires`/`returns` list as `{ name, type?, description? }` entries. */
+  normalizeSignature,
+  /** A trigger's normalized signature, read from a spec. */
+  signatureForTrigger,
+  /** Signature entries as a JSON Schema object. */
+  signatureJsonSchema,
+  /** Each missing name and non-conforming value of a value map, as issues. */
+  signatureValueIssues,
+} from "./machine/signature.js";
+export type {
+  SignatureEntry,
+  SignatureType,
+  TriggerSignature,
+  SignatureValueIssue,
+} from "./machine/signature.js";
 /** Default workflow slug when none is named. */
 export { DEFAULT_WORKFLOW } from "./workflow/paths.js";
 export {

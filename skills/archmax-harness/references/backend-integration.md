@@ -13,6 +13,7 @@ package's `dist/index.d.ts`.
 - [Agent](#workflowruntime)
 - [Running a workflow](#running-a-workflow)
 - [Human-in-the-loop](#human-in-the-loop)
+- [Exposing a workflow to outside callers (MCP, forms, APIs)](#exposing-a-workflow-to-outside-callers)
 - [Lifecycle events (live visualization)](#lifecycle-events)
 - [Session artifacts (historical visualization)](#run-artifacts)
 - [Model configuration](#model-configuration)
@@ -79,6 +80,7 @@ From `@archmax-ai/harness` (`src/index.ts`):
 | `SessionStoreRequiredError`, `SessionStoreCapabilityError` | class | Assembly / capability errors for run storage |
 | `workflowStateSchema`, `workflowPaths`, `sessionPaths`, `runArtifactPaths` | schema/fn | State schema + path helpers |
 | `runTests`, `RunTestsOptions`, `CaseResult` | fn/type | Run a workflow's cases — [against your own agent](#cases-against-your-agent) |
+| `SIGNATURE_TYPES`, `normalizeSignature`, `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues` | const/fn | A trigger's typed signature as JSON Schema and its conformance rule — [exposing a workflow](#exposing-a-workflow-to-outside-callers); also on `@archmax-ai/harness/spec` |
 
 ## createAgent options
 
@@ -246,7 +248,8 @@ if (result.status === WORKFLOW_STATUSES.awaitingDecision && result.pendingDecisi
   // host-side assembly, and no need to re-read the spec.
   // When they pick:
   const outcome = await agent.workflow.decide(sessionId, { target: chosenTo, comment });
-  // DecideOutcome: { status?, workflowState?, reparked, state?, messages }
+  // DecideOutcome: { status?, workflowState?, reparked, state?, reply, rejected?, messages }
+  // `rejected` says why when status is "rejected"; Outcome from send() carries it too.
   if (outcome.reparked) { /* parked again at another human state */ }
 }
 ```
@@ -328,6 +331,59 @@ in (available in every state). To continue *mid-state* instead — inside the st
 that stopped, with the arrival in its transcript — the turn must park rather than
 finish.
 
+## Exposing a workflow to outside callers
+
+A workflow's trigger signature (`requires`/`returns`, optionally typed) is the
+contract the runtime already enforces at the session boundary. A host that
+exposes a workflow as an MCP tool, an OpenAPI operation or a typed start form
+builds its schema **from that signature**, with the helpers on the browser-safe
+`@archmax-ai/harness/spec` subpath (also on the root, as the same bindings), so
+the published contract and the enforced one cannot drift:
+
+```ts
+import {
+  parseMachineSpec,
+  signatureForTrigger,
+  signatureJsonSchema,
+  signatureValueIssues,
+} from "@archmax-ai/harness/spec";
+
+const parsed = parseMachineSpec(yaml.parse(workflowYaml));
+if (!parsed.ok) throw new Error(parsed.issues.map((i) => `${i.path}: ${i.message}`).join("\n"));
+const signature = signatureForTrigger(parsed.spec, "manual"); // { description?, requires, returns }
+
+// MCP tool (or an OpenAPI request/response body): the same mapping the delegation tool uses.
+const mcpTool = {
+  name: "refund-order",
+  description: signature?.description,                 // caller-facing; never shown to the session's agent
+  inputSchema: signatureJsonSchema(signature?.requires ?? []),
+  outputSchema: signatureJsonSchema(signature?.returns ?? []),
+};
+
+// On a request, before any session opens: the rule the turn boundary applies.
+const issues = signatureValueIssues(signature?.requires ?? [], body);
+if (issues.length) return reply(400, issues.map((i) => i.message)); // { kind, name, type?, found?, message }
+
+// A turn needs a message; an MCP call has none of its own, so say what was asked.
+const outcome = await agent.workflow!.send(sessionId, { message: "Refund the order.", variables: body });
+```
+
+- `signatureJsonSchema(entries)` → `{ type: "object", properties, required }`:
+  one property per entry in declaration order, every name required,
+  `date`/`date-time` as `{ type: "string", format }`, an untyped entry as `{}`,
+  an entry's `description` carried over. It adds no `additionalProperties`; set
+  it for your own ingress.
+- `signatureValueIssues(entries, values)` → one issue per missing name and per
+  non-conforming value; `[]` means the turn boundary will not refuse the map for
+  its signature. It **never coerces**: a form that collects text converts
+  `"4"` to `4` before it validates or seeds.
+- A trigger's `description` is written for the caller. Use it as the MCP tool
+  or operation description. The session's own model never sees it.
+- A host that reads specs itself must read `requires`/`returns` through
+  `normalizeSignature` (both spellings → `{ name, type?, description? }[]`),
+  never as `string[]`: an entry may be an object. Hosts must be on the release
+  that introduced typed entries before any workspace they read uses them.
+
 ## Lifecycle events
 
 Pass `onEvent`; every `WorkflowLifecycleEvent` carries a `level`
@@ -342,7 +398,7 @@ Pass `onEvent`; every `WorkflowLifecycleEvent` carries a `level`
 | `parked` (`awaiting: "input"`) / `delivered` | the agent parked the run (`{ state, sessionId, reason, resumeAt?, callId }` — the `archmax_wait` call) / an event resumed it (`{ state, trigger, to }`, where `to` is the same state) |
 | `agent-text` | complete assistant message in a state (`{ state, text, messageId }` — always the id the message is stored under; absent only on a `partial: true` event from a failed turn) |
 | `agent-text-delta` | streaming text chunk (`{ state, text, messageId? }`) — flows for every run, even when the graph is driven with `invoke` |
-| `tool-called` / `tool-result` / `tool-blocked` | tool passed governance (`callId`, `args`) / settled (`callId`, `status`, `durationMs`, `output` preview) / denied. **Every** governed call, `archmax_advance` included — so a UI drawing a row per call draws one per transition; filter it if you already draw transitions from `advance`/`state-leave` |
+| `tool-called` / `tool-result` / `tool-blocked` | tool passed governance (`callId`, `args`) / settled (`callId`, `status`, `durationMs`, `output` preview) / denied. **Every** governed call, `archmax_advance` included — so a UI drawing a row per call draws one per transition; filter it if you already draw transitions from `advance`/`state-leave`. A tool that **throws** settles `status: "error"` with the error's message as `output` while the turn **continues**: the model reads the same message as the call's answer, and nothing is thrown out of `send` — read tool failures here |
 | `rubric-start` / `rubric-result` | grading-rubric dispatch bracketed by `dispatchId`, with the rubric's `name` |
 | `model-usage` | per model call provider token usage: `inputTokens` (the total, of which the cache counts are a breakdown), `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model?` (the id the call was priced against), `costUsd?` |
 | `prompt-shaping` | assembly-time payload summary: resolved `profile`, prompt-cache mechanism, `withheld` built-ins |

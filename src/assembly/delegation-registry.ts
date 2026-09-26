@@ -122,10 +122,12 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
     async signature(target) {
       const { machine } = await load(target);
       const title = machine.spec.title?.trim();
+      const signature = machine.signatureForTrigger(MANUAL_TRIGGER);
       return {
-        requires: machine.requiresForTrigger(MANUAL_TRIGGER),
-        returns: machine.returnsForTrigger(MANUAL_TRIGGER),
+        ...(signature?.requires.length ? { requires: signature.requires } : {}),
+        ...(signature?.returns.length ? { returns: signature.returns } : {}),
         ...(title ? { title } : {}),
+        ...(signature?.description ? { description: signature.description } : {}),
         // Reported, not enforced here: a disabled target still binds a tool so
         // disabling a leaf does not fail every caller; the dispatcher refuses.
         ...(machine.disabled ? { disabled: true } : {}),

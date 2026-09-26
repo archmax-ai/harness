@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { AIMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { WorkflowMachine } from "../machine/machine.js";
+import { normalizeSignature, type SignatureEntry } from "../machine/signature.js";
 import type { MachineSpec } from "../machine/types.js";
 import type { WorkflowLifecycleEvent } from "../core/events.js";
 import { messageTypeOf, runtimeNoteKind } from "../core/messages.js";
 import { WORKFLOW_STATUSES } from "./state.js";
+import { returnsRejection } from "./signature-checks.js";
 import { childRunConfig, parentSessionIdOf, SEED_VARIABLES_KEY } from "../sessions/scope.js";
 import {
   closingMessage,
@@ -17,6 +19,17 @@ import {
   SubWorkflowError,
   type SubWorkflowRegistry,
 } from "./sub-workflow.js";
+
+/** A stub's signature as the registry reports it: both spellings, normalized. */
+function typedSignature(signature: {
+  requires?: (string | SignatureEntry)[];
+  returns?: (string | SignatureEntry)[];
+}): { requires?: SignatureEntry[]; returns?: SignatureEntry[] } {
+  return {
+    ...(signature.requires ? { requires: normalizeSignature(signature.requires) } : {}),
+    ...(signature.returns ? { returns: normalizeSignature(signature.returns) } : {}),
+  };
+}
 
 /** One recorded child-graph invocation: what it was called with. */
 interface Invocation {
@@ -364,12 +377,50 @@ describe("helpers", () => {
       obj: { a: 1 },
     });
   });
+
+  const caller = {
+    count: { value: 3, locked: false },
+    order_id: { value: 7, locked: true },
+    approved: { value: false, locked: false },
+    account: { value: { id: "acct-42" }, locked: false },
+  };
+
+  it("seeds a whole-argument reference with the referenced value's own type", () => {
+    expect(
+      resolveParams(
+        { quantity: "${{count}}", approved: "${{approved}}", account_id: "${{account.id}}" },
+        caller,
+        "w",
+      ),
+    ).toEqual({ quantity: 3, approved: false, account_id: "acct-42" });
+  });
+
+  it("substitutes a mixed argument as text", () => {
+    expect(resolveParams({ note: "order ${{order_id}}", twice: "${{count}}${{count}}" }, caller, "w")).toEqual({
+      note: "order 7",
+      twice: "33",
+    });
+  });
+
+  it("still fails an unresolved whole reference closed", () => {
+    expect(() => resolveParams({ quantity: "${{missing}}" }, caller, "w")).toThrow(
+      expect.objectContaining({ kind: "unresolved-param" }),
+    );
+    // Only scalars resolve, whole or not.
+    expect(() => resolveParams({ account: "${{account}}" }, caller, "w")).toThrow(
+      expect.objectContaining({ kind: "unresolved-param" }),
+    );
+  });
+
+  it("leaves an escaped reference as text", () => {
+    expect(resolveParams({ literal: "$${{count}}" }, caller, "w")).toEqual({ literal: "${{count}}" });
+  });
 });
 
 describe("the target's declared signature", () => {
   /** A stub registry whose child declares `requires`/`returns` and answers with `state`. */
   function signedRegistry(
-    signature: { requires?: string[]; returns?: string[] },
+    signature: { requires?: (string | SignatureEntry)[]; returns?: (string | SignatureEntry)[] },
     childState: Record<string, unknown> = {
       messages: [new AIMessage("Done.")],
       workflowState: "finish",
@@ -378,7 +429,7 @@ describe("the target's declared signature", () => {
   ): SubWorkflowRegistry {
     let composed = 0;
     const registry: SubWorkflowRegistry & { composed: () => number } = {
-      signature: async () => signature,
+      signature: async () => typedSignature(signature),
       resolve: async () => {
         composed += 1;
         return {
@@ -456,6 +507,94 @@ describe("the target's declared signature", () => {
     expect(result.result).toBe("Done.");
   });
 
+  it("refuses a mistyped argument as invalid-param before composing the child", async () => {
+    const registry = signedRegistry({ requires: [{ name: "quantity", type: "integer" }] }) as SubWorkflowRegistry & {
+      composed: () => number;
+    };
+    const err = await dispatch(dispatcherFor(registry), { params: { quantity: "three" } }).catch(
+      (e: SubWorkflowError) => e,
+    );
+    expect(err).toBeInstanceOf(SubWorkflowError);
+    expect((err as SubWorkflowError).kind).toBe("invalid-param");
+    expect((err as SubWorkflowError).message).toContain("'quantity' must be an integer");
+    expect((err as SubWorkflowError).message).toContain('a string ("three")');
+    expect(isSubWorkflowRefusal(err)).toBe(true);
+    expect(registry.composed()).toBe(0);
+  });
+
+  it("lets missing-param win over invalid-param for an absent name", async () => {
+    const registry = signedRegistry({ requires: [{ name: "quantity", type: "integer" }, "note"] });
+    await expect(dispatch(dispatcherFor(registry), { params: { quantity: "three" } })).rejects.toMatchObject({
+      kind: "missing-param",
+    });
+  });
+
+  it("accepts a conforming typed argument", async () => {
+    const registry = signedRegistry({ requires: [{ name: "due", type: "date" }] });
+    await expect(dispatch(dispatcherFor(registry), { params: { due: "2026-03-01" } })).resolves.toMatchObject({
+      workflow: "enrich-account",
+    });
+  });
+
+  const settledWith = (variables: Record<string, unknown>) => ({
+    messages: [new AIMessage("Done.")],
+    workflowState: "finish",
+    status: WORKFLOW_STATUSES.completed,
+    variables: Object.fromEntries(Object.entries(variables).map(([k, value]) => [k, { value, locked: false }])),
+  });
+
+  it("settles a child whose typed return does not conform as invalid-return", async () => {
+    const registry = signedRegistry({ returns: [{ name: "delayed", type: "boolean" }] }, settledWith({ delayed: "no" }));
+    const err = (await dispatch(dispatcherFor(registry)).catch((e: unknown) => e)) as SubWorkflowError;
+    expect(err.kind).toBe("invalid-return");
+    expect(err.message).toContain("state 'finish'");
+    expect(err.message).toContain("'delayed' must be a boolean");
+    expect(isSubWorkflowRefusal(err)).toBe(false);
+  });
+
+  it("lets missing-return win over invalid-return for an unset name", async () => {
+    const registry = signedRegistry(
+      { returns: [{ name: "delayed", type: "boolean" }, "enrichment_file"] },
+      settledWith({ delayed: "no" }),
+    );
+    await expect(dispatch(dispatcherFor(registry))).rejects.toMatchObject({ kind: "missing-return" });
+  });
+
+  // A real child's own completion check rejects it first; the dispatcher names
+  // that rejection for what it is rather than as an opaque `rejected`.
+  it("names a child its own completion check rejected by the returns kind", async () => {
+    const typedReturns = { returns: [{ name: "delayed", type: "boolean" as const }] };
+    const childMachine = WorkflowMachine.fromSpec({
+      states: { finish: { triggers: { manual: typedReturns } } },
+    } as MachineSpec);
+    const variables = { delayed: { value: "no", locked: false } };
+    const registry: SubWorkflowRegistry = {
+      signature: async () => typedReturns,
+      resolve: async () => ({
+        machine: childMachine,
+        graph: {
+          invoke: async () => ({
+            messages: [new AIMessage("Done.")],
+            workflowState: "finish",
+            status: WORKFLOW_STATUSES.rejected,
+            trigger: { id: "manual" },
+            rejected: returnsRejection(childMachine, "manual", "finish", variables),
+            variables,
+          }),
+        } as never,
+      }),
+    };
+    await expect(dispatch(dispatcherFor(registry))).rejects.toMatchObject({ kind: "invalid-return" });
+  });
+
+  it("keeps any other rejection a rejection", async () => {
+    const registry = signedRegistry(
+      { returns: [{ name: "delayed", type: "boolean" }] },
+      { ...settledWith({ delayed: "no" }), status: WORKFLOW_STATUSES.rejected, rejected: "a hook vetoed" },
+    );
+    await expect(dispatch(dispatcherFor(registry))).rejects.toMatchObject({ kind: "rejected" });
+  });
+
   it("reports the returned names on the settle event, never their values", async () => {
     const events: WorkflowLifecycleEvent[] = [];
     const registry = signedRegistry(
@@ -475,8 +614,8 @@ describe("the target's declared signature", () => {
 });
 
 describe("a refusal is separable from a failure", () => {
-  const signed = (signature: { requires?: string[] }): SubWorkflowRegistry => ({
-    signature: async () => signature,
+  const signed = (signature: { requires?: (string | SignatureEntry)[] }): SubWorkflowRegistry => ({
+    signature: async () => typedSignature(signature),
     resolve: async () => {
       throw new Error("must not compose");
     },
@@ -676,9 +815,9 @@ describe("concurrent calls", () => {
 });
 
 describe("a mock stands in for the sub-run, not for its contract", () => {
-  const mocked = (result: unknown, signature: { returns?: string[] } = {}) => {
+  const mocked = (result: unknown, signature: { returns?: (string | SignatureEntry)[] } = {}) => {
     const registry: SubWorkflowRegistry = {
-      signature: async () => signature,
+      signature: async () => typedSignature(signature),
       resolve: async () => {
         throw new Error("a mocked dispatch must not compose the child");
       },
@@ -710,6 +849,15 @@ describe("a mock stands in for the sub-run, not for its contract", () => {
     await expect(mocked({ message: "Enriched." }, { returns: ["enrichment_file"] })).rejects.toThrow(
       /supplies no 'enrichment_file'/,
     );
+  });
+
+  it("holds a mock's returns to the declared types, like a real child's", async () => {
+    await expect(
+      mocked({ message: "Enriched.", returns: { delayed: "no" } }, { returns: [{ name: "delayed", type: "boolean" }] }),
+    ).rejects.toMatchObject({ kind: "invalid-return", message: expect.stringContaining("'delayed' must be a boolean") });
+    await expect(
+      mocked({ message: "Enriched.", returns: { delayed: false } }, { returns: [{ name: "delayed", type: "boolean" }] }),
+    ).resolves.toMatchObject({ returns: { delayed: false } });
   });
 
   it("fails a bare-string mock for a signed target", async () => {

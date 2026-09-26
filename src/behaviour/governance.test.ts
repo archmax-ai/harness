@@ -2,7 +2,8 @@
  * Per-state tool governance: `tools.allow`, the essential file surface, the
  * always-open `scratchpad/`, read-only mounts, `policy.forbid_tools`, and
  * `skills.allow`. A refusal is observed as a `tool-blocked` event plus an error
- * tool result marked `governance_blocked`.
+ * tool result marked `governance_blocked`; a tool that throws is answered the
+ * same way, without the marker.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { tool } from "langchain";
@@ -535,5 +536,63 @@ describe("skills.allow_always at the workflow root", () => {
     const inReview = model.calls[1];
     expect(inReview?.systemPrompt).toContain("Refund policy");
     expect(inReview?.systemPrompt).toContain("Order records");
+  });
+});
+
+/**
+ * A tool that throws is answered, not thrown out of the turn: the model reads
+ * the failure as that call's answer and can retry, switch tools or say what it
+ * could not do. It is not a state failure, so `on_error` never sees it.
+ */
+describe("a failing tool", () => {
+  const spec = {
+    runtime: RUNTIME,
+    states: {
+      start: {
+        triggers: { manual: null },
+        tools: { allow: ["alpha", "flaky"] },
+        on_error: "escalate",
+        transitions: [{ to: "done", description: "Test edge to done." }],
+      },
+      done: {},
+      escalate: {},
+    },
+  };
+  const flaky = tool(
+    async () => {
+      throw new Error("MCP error -32000: Connection closed");
+    },
+    { name: "flaky", description: "A tool whose connection drops.", schema: z.object({ q: z.string() }) },
+  ) as unknown as StructuredTool;
+
+  it("answers the failing call and keeps its sibling's result, without routing on_error", async () => {
+    const { agent, events, model } = await assemble(workspaceWith(spec), {
+      turns: [
+        {
+          batch: [
+            { tool: "alpha", args: { q: "one" } },
+            { tool: "flaky", args: { q: "two" } },
+          ],
+        },
+        { reply: "one search failed" },
+      ],
+      params: { tools: [...hostTools(), flaky] },
+    });
+    const { reply } = await turn(agent, "s1", "go");
+
+    expect(reply).toBe("one search failed");
+    const answers = model.calls[1]?.toolAnswers ?? [];
+    expect(answers).toHaveLength(2);
+    const [ok, failed] = ["call-1", "call-2"].map((id) => answers.find((a) => a.callId === id));
+    expect(ok).toMatchObject({ content: "alpha:one" });
+    expect(ok?.status).not.toBe("error");
+    expect(failed).toEqual({ callId: "call-2", content: "MCP error -32000: Connection closed", status: "error" });
+    expect(eventsOf(events, "tool-result").filter((e) => e.tool === "flaky")).toMatchObject([
+      { state: "start", status: "error", output: "MCP error -32000: Connection closed" },
+    ]);
+    expect(eventsOf(events, "state-error-routed")).toEqual([]);
+    const session = await agent.sessions.get("s1");
+    expect(session?.workflowState).toBe("start");
+    expect(session?.status).not.toBe("failed");
   });
 });

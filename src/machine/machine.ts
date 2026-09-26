@@ -12,6 +12,7 @@ import {
 import { normalizeMountGrants } from "./mount-grants.js";
 import { describeGlob, type VariableStore } from "./variables.js";
 import { loadMachineSpec, type WorkflowSpecPaths } from "./load-spec.js";
+import { signatureForTrigger, type TriggerSignature } from "./signature.js";
 import {
   MANUAL_TRIGGER,
   triggerBindings,
@@ -79,6 +80,7 @@ export class WorkflowMachine {
   readonly entry: string;
 
   private bindingsCache?: Map<string, TriggerBinding>;
+  private readonly signatureCache = new Map<string, TriggerSignature | undefined>();
 
   private constructor(
     readonly spec: MachineSpec,
@@ -641,5 +643,16 @@ export class WorkflowMachine {
    */
   returnsForTrigger(id: string): string[] | undefined {
     return this.triggerBindings().get(id)?.returns;
+  }
+
+  /**
+   * A trigger's whole signature, normalized: its caller-facing `description` and
+   * both lists as `{ name, type?, description? }` entries in declaration order;
+   * `undefined` for an id no state declares. The reading `signatureForTrigger`
+   * gives over the spec, computed once per trigger.
+   */
+  signatureForTrigger(id: string): TriggerSignature | undefined {
+    if (!this.signatureCache.has(id)) this.signatureCache.set(id, signatureForTrigger(this.spec, id));
+    return this.signatureCache.get(id);
   }
 }

@@ -71,11 +71,27 @@ function printReparked(
   }
 }
 
-export function printResumed(style: Style, sessionId: string, verb: string, outcome: DecideOutcome): void {
+/**
+ * A session that ended rejected: why, on stderr, and whatever it last said on
+ * stdout. Governance said no, so the command failed — never an answer.
+ */
+function printRejected(style: Style, sessionId: string, state: string | undefined, reason?: string, reply?: string): void {
+  err(style.red(style.bold(`${icons.cross} rejected`)));
+  err(`Session ${sessionId} was rejected${state ? ` in the '${state}' state` : ""}${reason ? `: ${reason}` : "."}`);
+  if (reply) out(reply);
+}
+
+/** Report a resume's result. Returns the exit code: 1 when the session ended rejected. */
+export function printResumed(style: Style, sessionId: string, verb: string, outcome: DecideOutcome): number {
   err("");
-  if (outcome.reparked) return printReparked(style, sessionId, outcome.parkedChannel, outcome.state);
+  if (outcome.reparked) return (printReparked(style, sessionId, outcome.parkedChannel, outcome.state), 0);
+  if (outcome.status === "rejected") {
+    printRejected(style, sessionId, outcome.workflowState, outcome.rejected, outcome.reply);
+    return 1;
+  }
   err(style.green(style.bold(`${icons.check} ${verb}`)));
   out(lastAgentText(outcome.messages) || `Session ${sessionId} resumed (state=${outcome.workflowState ?? "?"}).`);
+  return 0;
 }
 
 export function printReply(style: Style, sessionId: string, outcome: ReplyOutcome): void {
@@ -107,11 +123,16 @@ export interface RunTurnInput {
   sessionPath?: string;
 }
 
-/** Report a turn's {@link Outcome}: an answer, a park (with what resumes it), or a resume's result. */
-export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: string, outcome: Outcome): void {
+/**
+ * Report a turn's {@link Outcome}: an answer, a park (with what resumes it), a
+ * rejection, or a resume's result. Returns the exit code: a park is a success,
+ * a rejection is not.
+ */
+export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: string, outcome: Outcome): number {
   if (outcome.disposition === "deliver") return printResumed(style, sessionId, "delivered", asDecide(outcome));
   if (outcome.disposition === "reply") {
-    return printReply(style, sessionId, { ...asDecide(outcome), state: outcome.state ?? "", parkedChannel: "decision" });
+    printReply(style, sessionId, { ...asDecide(outcome), state: outcome.state ?? "", parkedChannel: "decision" });
+    return 0;
   }
   if (outcome.kind === "parked" && outcome.parkedChannel === "input") {
     const waiting = outcome.pending as PendingInput | undefined;
@@ -124,7 +145,7 @@ export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: 
     if (waiting?.reason) err(`  waiting for: ${waiting.reason}`);
     if (waiting?.resumeAt) err(`  due:         ${waiting.resumeAt} (whoever schedules the wake-up)`);
     err(deliverHint(sessionId));
-    return;
+    return 0;
   }
   if (outcome.kind === "parked") {
     const pending = outcome.pending as PendingDecision | undefined;
@@ -136,11 +157,16 @@ export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: 
     );
     printDecisionContext(machine, outcome.state ?? "", pending?.transitions ?? [], pending?.evidence, err);
     err(decideHint(sessionId));
-    return;
+    return 0;
   }
   err("");
+  if (outcome.kind === "rejected") {
+    printRejected(style, sessionId, outcome.state, outcome.rejected, outcome.reply);
+    return 1;
+  }
   err(style.green(style.bold(`${icons.check} answer`)));
   out(outcome.reply || "(no textual answer)");
+  return 0;
 }
 
 /** The resume-shaped view of an {@link Outcome}, for the shared resume printers. */
@@ -152,6 +178,7 @@ function asDecide(outcome: Outcome): DecideOutcome {
     ...(outcome.parkedChannel ? { parkedChannel: outcome.parkedChannel } : {}),
     ...(outcome.kind === "parked" && outcome.state ? { state: outcome.state } : {}),
     reply: outcome.reply,
+    ...(outcome.rejected ? { rejected: outcome.rejected } : {}),
     messages: outcome.messages,
     auditTrail: outcome.auditTrail,
   };
@@ -161,7 +188,7 @@ function asDecide(outcome: Outcome): DecideOutcome {
  * Drive one turn: name the session the firing belongs to, send the turn through
  * `workflow.send` — which delivers, replies or opens a turn as the session's
  * state dictates — and report how it ended. Returns the exit code; a park is a
- * successful outcome.
+ * successful outcome, a rejected session a failed one.
  */
 export async function driveTurn(agent: Agent, style: Style, usage: UsageTracker, input: RunTurnInput): Promise<number> {
   const workflow = agent.workflow as WorkflowSurface;
@@ -190,9 +217,9 @@ export async function driveTurn(agent: Agent, style: Style, usage: UsageTracker,
       ...(input.variables ? { variables: input.variables } : {}),
       ...(input.sessionPath ? { sessionPath: input.sessionPath } : {}),
     });
-    printOutcome(style, workflow.machine, sessionId, outcome);
+    const code = printOutcome(style, workflow.machine, sessionId, outcome);
     printUsageFooter(style, usage, sessionId);
-    return 0;
+    return code;
   } catch (e) {
     // A refusal the runtime made before anything was spent is a one-line error.
     if (isKnown(e)) throw new CliError(e.message);

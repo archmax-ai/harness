@@ -11,7 +11,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
-import { Command } from "@langchain/langgraph";
+import { Command, isGraphBubbleUp } from "@langchain/langgraph";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
 import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
@@ -698,27 +698,36 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       const durationMs = Date.now() - startedAt;
       emit({ type: "tool-result", state: workflowState, tool: toolName, callId, status, durationMs, ...preview });
     };
+    let result: Command | ToolMessage;
     try {
-      const result = redactListings(await handler(request), workflowState, toolName);
-      const failed = result instanceof ToolMessage && result.status === "error";
-      settle(failed ? "error" : "ok", toolOutputPreview(result));
-      const steps = service.dispatchSteps(sessionId, workflowState);
-      // A delegation the tool body ran itself (no dispatcher wired): recorded from its result.
-      if (steps.length === 0 && isWorkflowToolName(toolName) && result instanceof ToolMessage) {
-        steps.push({
-          to: workflowState,
-          kind: "sub-workflow",
-          workflow: workflowSlugFromToolName(toolName)!,
-          status: failed ? "error" : "ok",
-          ...(failed ? { reason: String(result.content).slice(0, 500) } : {}),
-          ts: Date.now(),
-        });
-      }
-      return result instanceof ToolMessage ? service.withDispatchSteps(result, steps) : result;
+      result = redactListings(await handler(request), workflowState, toolName);
     } catch (err) {
-      settle("error", toolOutputPreview((err as Error)?.message ?? String(err)));
-      throw err;
+      const message = String((err as Error)?.message ?? err);
+      // A park, a parent command or a cancellation is not the tool's failure:
+      // exactly what the tool node itself refuses to answer keeps propagating.
+      if (isGraphBubbleUp(err) || request.runtime?.signal?.aborted) {
+        settle("error", toolOutputPreview(message));
+        throw err;
+      }
+      // Anything else is the call's answer, so the model can retry, switch tools
+      // or say what it could not do, and sibling answers survive the step.
+      result = new ToolMessage({ content: message, tool_call_id: toolCallId, name: toolName, status: "error" });
     }
+    const failed = result instanceof ToolMessage && result.status === "error";
+    settle(failed ? "error" : "ok", toolOutputPreview(result));
+    const steps = service.dispatchSteps(sessionId, workflowState);
+    // A delegation the tool body ran itself (no dispatcher wired): recorded from its result.
+    if (steps.length === 0 && isWorkflowToolName(toolName) && result instanceof ToolMessage) {
+      steps.push({
+        to: workflowState,
+        kind: "sub-workflow",
+        workflow: workflowSlugFromToolName(toolName)!,
+        status: failed ? "error" : "ok",
+        ...(failed ? { reason: String(result.content).slice(0, 500) } : {}),
+        ts: Date.now(),
+      });
+    }
+    return result instanceof ToolMessage ? service.withDispatchSteps(result, steps) : result;
   }
 
   return {

@@ -20,6 +20,7 @@ import {
   type VariableStore,
 } from "../machine/variables.js";
 import { decisionRecordFor } from "./parks.js";
+import { requiresRefusal } from "./signature-checks.js";
 import { writeSpecSnapshotIfAbsent } from "./snapshot.js";
 import {
   readVariables,
@@ -121,16 +122,8 @@ export async function openTurn(
   if (typeof seededTitle === "string") emit({ type: "title-set", title: seededTitle });
 
   // The entry half of the trigger's signature: a run that cannot satisfy its own contract reaches no model.
-  const missingInputs = (machine.requiresForTrigger(trigger.id) ?? []).filter(
-    (name) => openingVariables[name] === undefined,
-  );
-  if (missingInputs.length > 0) {
-    return refuse(
-      `Refusing to start: trigger '${trigger.id}' requires ` +
-        `${missingInputs.map((n) => `'${n}'`).join(", ")}, which this firing does not supply.`,
-      { variables: openingVariables },
-    );
-  }
+  const refusal = requiresRefusal(machine, trigger.id, openingVariables);
+  if (refusal) return refuse(refusal, { variables: openingVariables });
 
   emit({ type: "state-enter", state: position });
   // A turn opened on a session parked at a human state presents the decision
@@ -172,3 +165,4 @@ export async function openTurn(
     ...reparked,
   };
 }
+

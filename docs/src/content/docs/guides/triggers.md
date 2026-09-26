@@ -143,12 +143,60 @@ died later at an unresolvable guard.
 state with a `returns` name unset is rejected. A session that *parks* is exempt,
 since it has not finished.
 
-Both take the same grammar as a state's `requires:`, a list of run-variable
-names. The names ride in the prompt's current-state block, so the agent is told
-what it must produce in every state, before it can be failed for omitting it.
+Both are lists of run-variable names. The names ride in the prompt's
+current-state block, so the agent is told what it must produce in every state,
+before it can be failed for omitting it.
 
-What each variable *holds* is said by that state's `instructions`, which is
-where every other variable's meaning already lives.
+What the agent should *do* to produce a variable is said by that state's
+`instructions`, which is where every other variable's meaning already lives.
+
+### Typing a signature
+
+An entry may be an object instead of a bare name, saying what kind of value the
+variable holds and what it is for:
+
+```yaml
+states:
+  intake:
+    triggers:
+      manual:
+        description: Refund one order and report what was refunded.
+        requires:
+          - order_id
+          - { name: quantity, type: integer }
+          - { name: due, type: date, description: The day the refund is due. }
+        returns:
+          - { name: total, type: number, description: Refunded amount in EUR. }
+          - approved
+```
+
+`type` is one of `string`, `integer`, `number`, `boolean`, `date`, `date-time`,
+`object` or `array`, with the conformance rules in the
+[reference](/reference/machine-spec/#the-signature-requires-and-returns). A bare
+name stays untyped and takes any value, `null` included. A typed entry takes
+neither `null` nor a value of another kind, and nothing is coerced, so the string
+`"4"` is not an `integer`.
+
+The types are held in three places:
+
+- **At the boundary.** `quantity: "4"` is refused before any model call. The
+  refusal names the trigger, `quantity`, `integer` and that a string arrived.
+- **At the write.** `archmax_set_variables({ variables: { total: "12.50" } })`
+  is refused as a correctable tool refusal: nothing is written, the agent is told
+  the variable, the type and the trigger, and it can write `12.5` instead.
+- **At completion.** A session that still holds a mistyped return is rejected,
+  naming the terminal state, the variable and the type. The write check already
+  covers the agent's own writes, so this catches a script or hook that wrote one.
+
+The agent sees each typed entry with its type and description beside its name,
+as `total (number) — Refunded amount in EUR.`. The declaration's own
+`description` it never sees: that sentence is for a **caller** (a delegating
+workflow, an MCP client, the reader of a start form), and the session's brief is
+its `instructions`.
+
+Type an entry when something outside the session reads the contract, for
+example a caller that must build the value or a host that publishes a schema.
+Leave it bare when any value will do.
 
 A trigger's `requires:` also **guarantees** the variable for the purposes of
 `${{…}}` guards. A guard bound to one is backed by the boundary, so `validate`
@@ -201,8 +249,8 @@ states:
 ```
 
 That signature is read at both boundaries. A caller sees `requires:` as the
-delegation tool's parameters and `returns:` as its result, checked offline by
-`archmax validate`.
+delegation tool's parameters, typed where the entries are typed, and `returns:`
+as its result, checked offline by `archmax validate`.
 
 A host firing that leaves out `account_id` is refused, and a session that
 finishes with either return unset is rejected. So a workflow's call signature is

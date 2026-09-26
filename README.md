@@ -104,6 +104,28 @@ states:
           instructions: Judge the tone of the reply. Return ok, correct or veto with a reason.
 ```
 
+A trigger may also declare the contract a caller relies on: what a firing must supply and what the
+session guarantees when it completes. A delegating workflow, a host's MCP tool and a start form all
+read the same declaration, and the runtime holds it at the boundary:
+
+```yaml
+states:
+  intake:
+    triggers:
+      manual:
+        description: Refund one order and report what was refunded.   # for callers, not the agent
+        requires:
+          - order_id                                                   # a bare name is untyped
+          - { name: due, type: date, description: The day the refund is due. }
+        returns:
+          - { name: total, type: number, description: Refunded amount in EUR. }
+```
+
+A start whose `due` is not a real `YYYY-MM-DD` day is refused before any model call, and a session
+that finishes with `total` unset or not a number is rejected. `signatureJsonSchema` on
+`@archmax-ai/harness/spec` turns the same signature into a JSON Schema. See
+[triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature).
+
 `examples/customer-support/` in this repository is a complete reference workspace.
 
 ### The CLI

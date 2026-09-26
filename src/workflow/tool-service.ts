@@ -331,7 +331,7 @@ export function createToolService(ctx: ToolServiceContext) {
       }
       case SET_VARIABLES_TOOL: {
         const outcome = await withPairedEvents(call, args, () => {
-          const written = handleSetVariables({ toolCallId, args, state });
+          const written = handleSetVariables({ toolCallId, args, state }, machine);
           // Only a write that landed is announced; a refusal is visible as the tool's error result.
           if (written.written) {
             emit({ type: "variables-set", state: workflowState, names: written.written, locked: written.locked === true, callId });
