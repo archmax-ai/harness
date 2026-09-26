@@ -20,14 +20,22 @@ import {
   type WorkflowEventHandler,
 } from "../core/events.js";
 import { DEFAULT_RECURSION_LIMIT } from "../core/deepagents.js";
-import { resolveText, type VariableStore } from "../machine/variables.js";
+import {
+  parseReferences,
+  resolvePath,
+  resolveText,
+  type VariableReference,
+  type VariableStore,
+} from "../machine/variables.js";
+import { signatureValueIssues, type SignatureEntry, type SignatureValueIssue } from "../machine/signature.js";
 import { MANUAL_TRIGGER } from "../machine/triggers.js";
 import { workflowToolName } from "../machine/tool-names.js";
 import { DEFAULT_SUB_WORKFLOW_CONCURRENCY, DEFAULT_SUB_WORKFLOW_DEPTH } from "../machine/delegation.js";
 import { findMock, readMocks } from "../core/tool-mocks.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
-import { readReturns, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
+import { readReturns, readVariables, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
+import { returnsRejection } from "./signature-checks.js";
 import {
   childRunConfig,
   releaseScopes,
@@ -46,7 +54,9 @@ export { DEFAULT_SUB_WORKFLOW_CONCURRENCY, DEFAULT_SUB_WORKFLOW_DEPTH };
 export type SubWorkflowFailureKind =
   | "unresolved-param"
   | "missing-param"
+  | "invalid-param"
   | "missing-return"
+  | "invalid-return"
   | "depth-exceeded"
   | "cycle"
   | "unknown-workflow"
@@ -66,6 +76,7 @@ export const SUB_WORKFLOW_REFUSAL_KINDS: ReadonlySet<SubWorkflowFailureKind> = n
   "depth-exceeded",
   "cycle",
   "missing-param",
+  "invalid-param",
   "unknown-workflow",
   "not-delegatable",
   "disabled",
@@ -140,19 +151,26 @@ export interface DelegationCaller {
   inheritedPolicyRules: GovernanceRule[];
 }
 
+/**
+ * A target's call signature, as delegation reads it: its `manual` trigger's
+ * typed lists, plus the prose a tool description is built from. `title` and
+ * `description` are prose; the lists are enforced.
+ */
+export interface DelegationSignature {
+  requires?: SignatureEntry[];
+  returns?: SignatureEntry[];
+  title?: string;
+  /** The `manual` trigger's `description`: what calling the target does, for its caller. */
+  description?: string;
+  /** Whether the target declares itself out of service; the dispatch refuses on it. */
+  disabled?: boolean;
+}
+
 /** Lazily composes and memoizes a child runtime per workflow slug and delegation chain. */
 export interface SubWorkflowRegistry {
   resolve(workflow: string, caller?: DelegationCaller): Promise<SubWorkflowRuntime>;
-  /** The target's declared signature, for the price of a spec read; `title` is prose, the rest is enforced. */
-  signature(
-    workflow: string,
-  ): Promise<{
-    requires?: string[];
-    returns?: string[];
-    title?: string;
-    /** Whether the target declares itself out of service; the dispatch refuses on it. */
-    disabled?: boolean;
-  }>;
+  /** The target's declared signature, for the price of a spec read. */
+  signature(workflow: string): Promise<DelegationSignature>;
 }
 
 export interface DispatchSubWorkflowInput {
@@ -211,9 +229,7 @@ export interface SubWorkflowDispatcher {
   refusal(input: DispatchSubWorkflowInput): Promise<SubWorkflowError | undefined>;
   /** Continue a sub-run that stopped for a person, addressed by identity. */
   resume(input: ResumeSubWorkflowInput): Promise<SubWorkflowResult>;
-  signature(
-    workflow: string,
-  ): Promise<{ requires?: string[]; returns?: string[]; disabled?: boolean }>;
+  signature(workflow: string): Promise<DelegationSignature>;
   /**
    * Take the sub-runs completed in this session since the last drain. A ledger,
    * because a script's dispatch reaches the PTC gateway, which cannot write graph state.
@@ -286,7 +302,7 @@ export function createSubWorkflowDispatcher(
   /** Everything that can refuse a dispatch, before anything is composed. Shared by `dispatch` and `refusal`. */
   async function check(input: DispatchSubWorkflowInput): Promise<{
     params: Record<string, unknown>;
-    signature: { requires?: string[]; returns?: string[]; disabled?: boolean };
+    signature: DelegationSignature;
     mock?: { result?: unknown };
   }> {
     const { workflow } = input;
@@ -317,7 +333,7 @@ export function createSubWorkflowDispatcher(
     // mocked dispatch is indistinguishable from a real one except that no child runs.
     const mock = findMock(readMocks(input.config.configurable), workflowToolName(workflow), params);
     const signature = await opts.registry.signature(workflow).catch((err: unknown) => {
-      if (mock) return {} as { requires?: string[]; returns?: string[]; disabled?: boolean };
+      if (mock) return {} as DelegationSignature;
       throw err;
     });
 
@@ -331,7 +347,8 @@ export function createSubWorkflowDispatcher(
       );
     }
 
-    const missing = (signature.requires ?? []).filter((name) => !Object.hasOwn(params, name));
+    const requires = signature.requires ?? [];
+    const missing = requires.map((entry) => entry.name).filter((name) => !Object.hasOwn(params, name));
     if (missing.length > 0) {
       throw new SubWorkflowError(
         "missing-param",
@@ -339,6 +356,15 @@ export function createSubWorkflowDispatcher(
         `Refusing to run sub-workflow '${workflow}': it requires ` +
           `${missing.map((n) => `'${n}'`).join(", ")}, which this call does not supply. ` +
           `Call it again with ${missing.length === 1 ? "that argument" : "those arguments"}.`,
+      );
+    }
+    const invalid = invalidOf(signatureValueIssues(requires, params));
+    if (invalid.length > 0) {
+      throw new SubWorkflowError(
+        "invalid-param",
+        workflow,
+        `Refusing to run sub-workflow '${workflow}': ${invalid.map((issue) => issue.message).join("; ")}. ` +
+          `Call it again with ${invalid.length === 1 ? "a value" : "values"} of the declared type.`,
       );
     }
     return { params, signature, ...(mock ? { mock } : {}) };
@@ -417,7 +443,7 @@ export function createSubWorkflowDispatcher(
         return mocked;
       }
       const result = await withSlot(() =>
-        run({ ...input, dispatchId, identity, params, returns: signature.returns }),
+        run({ ...input, dispatchId, identity, params, returns: signature.returns ?? [] }),
       );
       settle("ok", undefined, result.returns);
       record(input.config, { workflow, status: "ok" });
@@ -464,7 +490,7 @@ export function createSubWorkflowDispatcher(
       dispatchId: string;
       identity: string;
       params: Record<string, unknown>;
-      returns?: string[];
+      returns: SignatureEntry[];
     },
   ): Promise<SubWorkflowResult> {
     const { workflow } = input;
@@ -500,9 +526,37 @@ export function createSubWorkflowDispatcher(
           `'${fields.status}' but no pending suspension, so nothing could resume it.`,
       );
     }
-    if (fields.rejected) throw failed(workflow, finishedIn, fields.rejected);
-    const returns = readReturns(state, input.returns);
+    const returns = settledReturns(workflow, child.machine, state, finishedIn, input.returns);
     return { result: closingMessage(state), workflow, state: finishedIn, ...(returns ? { returns } : {}) };
+  }
+
+  /**
+   * The declared returns of a child that settled, held to the target's typed
+   * signature: `missing-return` for an unset name, `invalid-return` for a value
+   * that does not conform. A child its own completion check rejected is
+   * reported by the same kinds, since that is the reason it was rejected; any
+   * other rejection stays `rejected`.
+   */
+  function settledReturns(
+    workflow: string,
+    machine: WorkflowMachine,
+    state: Record<string, unknown>,
+    finishedIn: string,
+    declared: SignatureEntry[],
+  ): Record<string, unknown> | undefined {
+    const fields = readWorkflowState(state);
+    const store = readVariables(state);
+    const trigger = fields.trigger?.id ?? MANUAL_TRIGGER;
+    if (fields.rejected && fields.rejected !== returnsRejection(machine, trigger, finishedIn, store)) {
+      throw failed(workflow, finishedIn, fields.rejected);
+    }
+    const returns = readReturns(state, declared.map((entry) => entry.name));
+    const issues = signatureValueIssues(declared, returns ?? {});
+    if (issues.length > 0) throw returnsFailure(workflow, `in state '${finishedIn}'`, issues);
+    // A rejection whose returns check passes against the target's own
+    // signature still failed closed; it is only named for what it was.
+    if (fields.rejected) throw failed(workflow, finishedIn, fields.rejected);
+    return returns;
   }
 
   /** Continue a child that stopped for a person: the same invoke, entered with a `Command({ resume })`. */
@@ -533,8 +587,8 @@ export function createSubWorkflowDispatcher(
       );
       const fields = readWorkflowState(state);
       const finishedIn = fields.workflowState ?? child.machine.entry;
-      if (fields.rejected) throw failed(workflow, finishedIn, fields.rejected);
-      const returns = readReturns(state, (await opts.registry.signature(workflow)).returns);
+      const declared = (await opts.registry.signature(workflow)).returns ?? [];
+      const returns = settledReturns(workflow, child.machine, state, finishedIn, declared);
       settle({ status: "ok", returns });
       return { result: closingMessage(state), workflow, state: finishedIn, ...(returns ? { returns } : {}) };
     } catch (err) {
@@ -578,7 +632,7 @@ export function createSubWorkflowDispatcher(
 function applyMock(
   mock: { result?: unknown },
   workflow: string,
-  returns?: string[],
+  returns?: SignatureEntry[],
 ): SubWorkflowResult {
   const declared = mock.result;
   if (declared != null && typeof declared === "object" && "error" in declared) {
@@ -601,8 +655,9 @@ function applyMock(
   const wanted = returns ?? [];
   if (wanted.length === 0) return { result, workflow, state };
 
-  const supplied = asObject?.returns as Record<string, unknown> | undefined;
-  const unset = wanted.filter((name) => supplied?.[name] === undefined);
+  const supplied = (asObject?.returns ?? {}) as Record<string, unknown>;
+  const issues = signatureValueIssues(wanted, supplied);
+  const unset = issues.filter((issue) => issue.kind === "missing").map((issue) => issue.name);
   if (unset.length > 0) {
     throw new SubWorkflowError(
       "missing-return",
@@ -613,18 +668,49 @@ function applyMock(
         `for the sub-run, not for its contract.`,
     );
   }
+  if (issues.length > 0) throw returnsFailure(workflow, "(mocked)", issues);
   return {
     result,
     workflow,
     state,
-    returns: Object.fromEntries(wanted.map((n) => [n, supplied![n]])),
+    returns: Object.fromEntries(wanted.map((entry) => [entry.name, supplied[entry.name]])),
   };
+}
+
+/** The invalid-value issues of a signature check, in declaration order. */
+function invalidOf(issues: SignatureValueIssue[]): Extract<SignatureValueIssue, { kind: "invalid" }>[] {
+  return issues.filter((issue): issue is Extract<SignatureValueIssue, { kind: "invalid" }> => issue.kind === "invalid");
+}
+
+/**
+ * A child whose declared returns are not what its signature promises: unset
+ * names fail `missing-return`, and otherwise mistyped values `invalid-return`.
+ * Either way no partial result reaches the caller.
+ */
+function returnsFailure(workflow: string, where: string, issues: SignatureValueIssue[]): SubWorkflowError {
+  const unset = issues.filter((issue) => issue.kind === "missing").map((issue) => `'${issue.name}'`);
+  if (unset.length > 0) {
+    return new SubWorkflowError(
+      "missing-return",
+      workflow,
+      `Sub-workflow '${workflow}' settled ${where} without setting ${unset.join(", ")}, which its ` +
+        `'${MANUAL_TRIGGER}' trigger declares in its 'returns'.`,
+    );
+  }
+  return new SubWorkflowError(
+    "invalid-return",
+    workflow,
+    `Sub-workflow '${workflow}' settled ${where} with returns its '${MANUAL_TRIGGER}' trigger ` +
+      `types otherwise: ${invalidOf(issues).map((issue) => issue.message).join("; ")}.`,
+  );
 }
 
 /**
  * Resolve a dispatch's params against the dispatching run's variables: strings
- * are substituted, everything else passes through. Fails closed on an unresolved
- * reference: a literal `${{…}}` must never become a sub-run's fact.
+ * are substituted, everything else passes through. A string that is exactly one
+ * reference takes the referenced value itself, so a number stays a number; a
+ * string mixing text and references is substituted as text. Fails closed on an
+ * unresolved reference: a literal `${{…}}` must never become a sub-run's fact.
  */
 export function resolveParams(
   params: Record<string, unknown> | undefined,
@@ -639,6 +725,12 @@ export function resolveParams(
       continue;
     }
     const substituted = resolveText(value, variables);
+    const whole = wholeReference(value);
+    if (substituted.ok && whole) {
+      // Resolution already proved the reference set and scalar; seed the value, not its rendering.
+      resolved[name] = resolvePath(variables[whole.name]!.value, whole.path);
+      continue;
+    }
     if (!substituted.ok) {
       throw new SubWorkflowError(
         "unresolved-param",
@@ -650,6 +742,12 @@ export function resolveParams(
     resolved[name] = substituted.pattern;
   }
   return resolved;
+}
+
+/** The one reference an argument consists of, when it is exactly one reference and nothing else. */
+function wholeReference(value: string): VariableReference | undefined {
+  const refs = parseReferences(value);
+  return refs.length === 1 && refs[0]!.index === 0 && refs[0]!.raw === value ? refs[0] : undefined;
 }
 
 /** The child's closing message: its last assistant text, or an explicit note when it said nothing. */

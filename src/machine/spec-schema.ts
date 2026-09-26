@@ -10,6 +10,7 @@ import { z } from "zod";
 import { normalizeAllowEntry } from "./allow.js";
 import { normalizeHooks } from "../lifecycle/hook-shape.js";
 import { isSlug } from "./slug.js";
+import { SIGNATURE_TYPES } from "./signature.js";
 import { MANUAL_TRIGGER, parseSessionPath, stateTriggerIds } from "./triggers.js";
 import {
   parseReferences,
@@ -399,17 +400,91 @@ export const stateTypeSchema = z.enum(["agent", "human"], {
 
 // --- Triggers ------------------------------------------------------------------
 
-/** One half of a trigger's signature: a list of distinct run-variable names. */
+/** The keys a signature entry object may carry, as a refusal lists them. */
+const SIGNATURE_ENTRY_KEYS = "'name', 'type' and 'description'";
+
+/** The accepted type words, as a refusal lists them. */
+const SIGNATURE_TYPE_LIST = `${SIGNATURE_TYPES.slice(0, -1).join(", ")} or ${SIGNATURE_TYPES.at(-1)}`;
+
+/**
+ * @see SignatureEntryDeclaration
+ *
+ * The object spelling of a signature entry. Strict, unlike the loose declaration
+ * around it: an unknown key here is most likely a misspelled `type` or
+ * `description`, and read loosely it would silently mean "untyped".
+ */
+export const signatureEntryObjectSchema = z.strictObject(
+  {
+    name: z
+      .string({
+        error:
+          "a signature entry needs a 'name' naming its variable (e.g. '{ name: order_id, type: string }')",
+      })
+      .regex(VARIABLE_NAME_PATTERN, {
+        error: (issue) =>
+          `'${String(issue.input)}' is not a valid run-variable name. Use lowercase letters, ` +
+          `digits and underscores, starting with a letter (e.g. 'order_id').`,
+      }),
+    type: z
+      .enum(SIGNATURE_TYPES, {
+        error: (issue) => `'type' must be one of ${SIGNATURE_TYPE_LIST}; got ${JSON.stringify(issue.input)}`,
+      })
+      .optional(),
+    description: z
+      .string({ error: `'description' ${NON_EMPTY}` })
+      .refine((value) => value.trim() !== "", `'description' ${NON_EMPTY}`)
+      .optional(),
+  },
+  {
+    error: (issue) =>
+      issue.code === "unrecognized_keys"
+        ? `${entryLabel(issue.input)} declares ${issue.keys.map((k) => `'${k}'`).join(", ")}, which a ` +
+          `signature entry does not take: it has ${SIGNATURE_ENTRY_KEYS} only.`
+        : undefined,
+  },
+);
+
+/** An entry as a message names it: by its `name` when it has a readable one. */
+function entryLabel(input: unknown): string {
+  const name = (input as { name?: unknown } | null)?.name;
+  return typeof name === "string" && name !== "" ? `Entry '${name}'` : "The entry";
+}
+
+/**
+ * @see SignatureEntryDeclaration
+ *
+ * One signature entry: a bare run-variable name (untyped), or the object
+ * spelling. A failure is reported in the terms of the spelling the author used,
+ * so a mistyped bare name reads exactly as it did before objects were accepted.
+ */
+export const signatureEntrySchema = z.union([variableName, signatureEntryObjectSchema], {
+  error: (issue) => {
+    if (issue.code !== "invalid_union") return undefined;
+    const input = issue.input;
+    const isObject = input !== null && typeof input === "object" && !Array.isArray(input);
+    const branch = issue.errors[isObject ? 1 : 0] ?? [];
+    const messages = branch.map((inner) => inner.message);
+    if (!isObject) return messages[0] ?? `'${String(input)}' is not a valid run-variable name`;
+    return `${entryLabel(input)}: ${messages.join("; ")}`;
+  },
+});
+
+/**
+ * One half of a trigger's signature: a list of entries with distinct names —
+ * each a bare name or `{ name, type?, description? }`, distinct by name across
+ * both spellings.
+ */
 function signatureSchema(key: "requires" | "returns") {
   return z
-    .array(variableName, {
+    .array(signatureEntrySchema, {
       error:
-        `must be a list of run-variable names (e.g. '${key}: [order_id]'). A signature names ` +
-        `the contract only — what a variable holds belongs in the state instructions that set it.`,
+        `must be a list of run-variable names, each a bare name or '{ name, type?, description? }' ` +
+        `(e.g. '${key}: [order_id, { name: due, type: date }]').`,
     })
-    .superRefine((names, ctx) => {
+    .superRefine((entries, ctx) => {
       const seen = new Set<string>();
-      names.forEach((name, index) => {
+      entries.forEach((entry, index) => {
+        const name = typeof entry === "string" ? entry : entry.name;
         if (seen.has(name)) {
           ctx.addIssue({ code: "custom", path: [index], message: `'${name}' is listed more than once.` });
         }
@@ -479,6 +554,15 @@ export const triggerDeclarationSchema = z
       .refine(
         (value) => value.trim() !== "",
         "must be a non-empty string naming an access connection in the host's environment.",
+      )
+      .optional(),
+    // For whoever calls the entry — a delegating model, a host's MCP client, a
+    // form's reader. The session's own brief is its `instructions`; this never reaches it.
+    description: z
+      .string({ error: "must be a non-empty string saying, for a caller, what calling this entry does." })
+      .refine(
+        (value) => value.trim() !== "",
+        "must be a non-empty string saying, for a caller, what calling this entry does.",
       )
       .optional(),
     requires: signatureSchema("requires").optional(),

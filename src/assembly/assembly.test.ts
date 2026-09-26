@@ -362,17 +362,15 @@ describe("createAgent model factory", () => {
       },
     });
 
-    // The unsupported model is reported by its own id, not the workflow's.
-    const unsupported = warnings.filter((message) => message.includes("prompt caching is inactive"));
-    expect(unsupported).toHaveLength(1);
-    expect(unsupported[0]).toContain("some-other-model");
-
     // Native caching is graph-level, so the state that wants it while the
-    // workflow's model does not is named rather than silently mis-cached.
-    const mismatch = warnings.filter((message) => message.includes("prompt-cache mechanism"));
-    expect(mismatch).toHaveLength(1);
-    expect(mismatch[0]).toContain("State 'draft'");
-    expect(mismatch[0]).toContain("anthropic-native");
+    // workflow's model does not is named rather than silently mis-cached. The
+    // model with no mechanism is not warned about: its provider caches a stable
+    // prefix on its own, and the `prompt-shaping` event already names it.
+    const cacheWarnings = warnings.filter((message) => /cach/i.test(message));
+    expect(cacheWarnings).toHaveLength(1);
+    expect(cacheWarnings[0]).toContain("State 'draft'");
+    expect(cacheWarnings[0]).toContain("anthropic-native");
+    expect(cacheWarnings.filter((message) => message.includes("some-other-model"))).toEqual([]);
   });
 
   it("says nothing about models when the spec declares none", async () => {
@@ -391,6 +389,68 @@ describe("createAgent model factory", () => {
     });
 
     expect(warnings.filter((message) => message.includes("declared id"))).toEqual([]);
+  });
+});
+
+describe("prompt caching over ChatOpenAI", () => {
+  /** Named as LangChain names the client, serving `model`, recording each call's system blocks. */
+  class OpenAiCaptureModel extends SimpleChatModel {
+    static lc_name(): string {
+      return "ChatOpenAI";
+    }
+    readonly systemBlocks: { cache_control?: unknown }[][] = [];
+    constructor(readonly model: string) {
+      super({});
+    }
+    _llmType(): string {
+      return "archmax-openai-capture";
+    }
+    bindTools(): BaseChatModel {
+      return this as unknown as BaseChatModel;
+    }
+    async _call(messages: BaseMessage[]): Promise<string> {
+      const content = messages.find((m) => m.getType() === "system")?.content;
+      this.systemBlocks.push(Array.isArray(content) ? (content as { cache_control?: unknown }[]) : []);
+      return "done";
+    }
+  }
+
+  /** The first call's system blocks and every event of a one-turn session on `modelId`. */
+  async function oneTurn(modelId: string) {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": ["states:", "  start: { triggers: { manual: } }"].join("\n"),
+    });
+    const model = new OpenAiCaptureModel(modelId);
+    const events: WorkflowLifecycleEvent[] = [];
+    const agent = await createAgent({
+      workflow: "p",
+      model: model as unknown as BaseChatModel,
+      promptCache: { enabled: true, ttl: "5m" },
+      workspace: { rootDir: root, sessionStore: createMemorySessionStore() },
+      onEvent: (event) => events.push(event),
+    });
+    await agent.invoke({ messages: [{ role: "user", content: "hi" }] } as never, {
+      configurable: { thread_id: "cache" },
+    });
+    return { blocks: model.systemBlocks[0] ?? [], events };
+  }
+
+  const shaping = (events: WorkflowLifecycleEvent[]) => events.find((e) => e.type === "prompt-shaping");
+
+  it("places no marker and raises no warning for a model with no marker mechanism", async () => {
+    const { blocks, events } = await oneTurn("gpt-5");
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(blocks.every((block) => block.cache_control === undefined)).toBe(true);
+    const warnings = events.flatMap((e) => (e.type === "warning" ? [e.message] : []));
+    expect(warnings.filter((message) => /cach/i.test(message))).toEqual([]);
+    expect(shaping(events)).toMatchObject({ cache: "unsupported" });
+  });
+
+  // The control: the same capture sees the breakpoint when there is one to place.
+  it("marks the static block for Claude over the same client", async () => {
+    const { blocks, events } = await oneTurn("claude-sonnet-x");
+    expect(blocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
+    expect(shaping(events)).toMatchObject({ cache: "anthropic-compat" });
   });
 });
 

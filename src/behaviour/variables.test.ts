@@ -212,6 +212,123 @@ describe("requires on a trigger", () => {
   });
 });
 
+describe("a typed trigger signature", () => {
+  const typedSpec = (manual: Record<string, unknown>) => ({
+    runtime: { engine: "archmax-harness", version: "2" },
+    states: {
+      start: { triggers: { manual }, transitions: [{ to: "done", description: "Test edge to done." }] },
+      done: {},
+    },
+  });
+
+  it("names why on the outcome of a refused start", async () => {
+    const { agent, model } = await assemble(
+      workspaceWith(typedSpec({ requires: [{ name: "quantity", type: "integer" }] })),
+      { turns: [{ reply: "never" }], params: { variables: { quantity: "4" } } },
+    );
+    const outcome = await agent.workflow!.send("s1", { message: "go" });
+    expect(model.calls).toHaveLength(0);
+    expect(outcome).toMatchObject({ kind: "rejected", status: "rejected" });
+    expect(outcome.rejected).toContain("'quantity' must be an integer");
+  });
+
+  it("refuses a start whose seed does not conform, before any model call", async () => {
+    const { agent, events, model } = await assemble(
+      workspaceWith(typedSpec({ requires: [{ name: "quantity", type: "integer" }] })),
+      { turns: [{ reply: "never" }], params: { variables: { quantity: "4" } } },
+    );
+    await turn(agent, "s1", "go");
+
+    expect(model.calls).toHaveLength(0);
+    expect(statesEntered(events)).toEqual([]);
+    const warning = eventsOf(events, "warning").find((w) => w.message.startsWith("Refusing to start"))?.message;
+    expect(warning).toContain("trigger 'manual'");
+    expect(warning).toContain("'quantity' must be an integer");
+    expect(warning).toContain('a string ("4") arrived');
+    expect((await agent.sessions.get("s1"))?.status).toBe("rejected");
+  });
+
+  it("refuses null for a typed input and takes it for an untyped one", async () => {
+    const refused = await assemble(workspaceWith(typedSpec({ requires: [{ name: "approved", type: "boolean" }] })), {
+      turns: [{ reply: "never" }],
+      params: { variables: { approved: null } },
+    });
+    await turn(refused.agent, "s1", "go");
+    expect(refused.model.calls).toHaveLength(0);
+    expect(eventsOf(refused.events, "warning").some((w) => /'approved' must be a boolean/.test(w.message))).toBe(true);
+
+    const started = await assemble(workspaceWith(typedSpec({ requires: ["note"] })), {
+      turns: [advanceTo("done"), { reply: "ok" }],
+      params: { variables: { note: null } },
+    });
+    await turn(started.agent, "s1", "go");
+    expect((await started.agent.sessions.get("s1"))?.status).toBe("completed");
+  });
+
+  it("starts on a conforming seed", async () => {
+    const { agent, events } = await assemble(
+      workspaceWith(typedSpec({ requires: [{ name: "due", type: "date" }] })),
+      { turns: [advanceTo("done"), { reply: "ok" }], params: { variables: { due: "2026-03-01" } } },
+    );
+    await turn(agent, "s1", "go");
+    expect(statesEntered(events)).toEqual(["start", "done"]);
+  });
+
+  it("refuses the agent's mistyped write of a typed return, then takes a conforming one", async () => {
+    const { agent, events } = await assemble(
+      workspaceWith(typedSpec({ returns: [{ name: "total", type: "number" }] })),
+      { turns: [setVars({ total: "12.50" }), setVars({ total: 12.5 }), advanceTo("done"), { reply: "ok" }] },
+    );
+    const { messages } = await turn(agent, "s1", "go");
+    const [refusal, accepted] = toolResults(messages).filter((r) => r.name === "archmax_set_variables");
+    expect(refusal?.status).toBe("error");
+    expect(refusal?.content).toContain("'total' must be a number");
+    expect(accepted?.status).not.toBe("error");
+    expect(eventsOf(events, "variables-set")).toMatchObject([{ names: ["total"] }]);
+    expect((await agent.sessions.get("s1"))?.status).toBe("completed");
+  });
+
+  // The write check guards the agent's own writes; a seed reaches the store
+  // without one, so the completion check is what holds it to the type.
+  it("rejects a completion whose typed return does not conform", async () => {
+    const { agent } = await assemble(
+      workspaceWith(typedSpec({ returns: [{ name: "total", type: "number" }] })),
+      { turns: [advanceTo("done"), { reply: "ok" }], params: { variables: { total: "12.50" } } },
+    );
+    const outcome = await agent.workflow!.send("s1", { message: "go" });
+    expect(outcome.kind).toBe("rejected");
+    expect(outcome.rejected).toContain("state 'done'");
+    expect(outcome.rejected).toContain("'total' must be a number");
+    expect((await agent.sessions.get("s1"))?.status).toBe("rejected");
+  });
+
+  it("discloses each typed return identically on every model call of the turn", async () => {
+    const { agent, model } = await assemble(
+      workspaceWith(
+        typedSpec({ returns: [{ name: "total", type: "number", description: "Refunded amount in EUR." }, "note"] }),
+      ),
+      {
+        turns: [{ tool: "archmax_get_variables", args: {} }, advanceTo("done"), { reply: "ok" }],
+        params: { variables: { total: 12.5, note: "ok" } },
+      },
+    );
+    await turn(agent, "s1", "go");
+    const [first, second] = model.calls.map((call) => call.systemPrompt);
+    expect(first).toContain("- total (number) — Refunded amount in EUR.\n- note");
+    expect(second).toBe(first);
+  });
+
+  it("never shows the model the trigger's description", async () => {
+    const { agent, model } = await assemble(
+      workspaceWith(typedSpec({ description: "Refund one order and report the amount." })),
+      { turns: [advanceTo("done"), { reply: "ok" }] },
+    );
+    await turn(agent, "s1", "go");
+    expect(model.calls.length).toBeGreaterThan(0);
+    expect(JSON.stringify(model.calls)).not.toContain("Refund one order");
+  });
+});
+
 describe("the reserved title", () => {
   it("emits title-set with the value when the agent sets it, and stores it unlocked", async () => {
     const { agent, events } = await assemble(workspaceWith(linearSpec()), {

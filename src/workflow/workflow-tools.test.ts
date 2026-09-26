@@ -11,8 +11,8 @@ import {
 const SIGNED = {
   workflow: "enrich-order",
   title: "Order enrichment",
-  requires: ["order_id"],
-  returns: ["enrichment_file", "delayed"],
+  requires: [{ name: "order_id" }],
+  returns: [{ name: "enrichment_file" }, { name: "delayed" }],
 };
 const UNSIGNED = { workflow: "audit" };
 
@@ -69,7 +69,49 @@ describe("delegation tool schema", () => {
   });
 });
 
+describe("a typed delegation tool schema", () => {
+  const TYPED = {
+    workflow: "refund",
+    requires: [
+      { name: "order_id" },
+      { name: "due", type: "date" as const, description: "The day the refund is due." },
+      { name: "quantity", type: "integer" as const, description: "Units to refund" },
+    ],
+  };
+
+  it("is the signature mapping, with the locked-variable wording in each description", () => {
+    expect(delegationToolSchema(TYPED)).toEqual({
+      type: "object",
+      properties: {
+        order_id: { description: "Required input 'order_id', seeded as a locked run variable." },
+        due: {
+          type: "string",
+          format: "date",
+          description: "The day the refund is due. Seeded as a locked run variable.",
+        },
+        quantity: { type: "integer", description: "Units to refund. Seeded as a locked run variable." },
+      },
+      required: ["order_id", "due", "quantity"],
+      additionalProperties: true,
+    });
+  });
+});
+
 describe("delegation tool description", () => {
+  it("leads with the entry's description, then the rest in order", () => {
+    const description = delegationToolDescription({ ...SIGNED, description: "Enrich one order" });
+    expect(description.startsWith("Enrich one order. Run the 'enrich-order' workflow (Order enrichment)")).toBe(
+      true,
+    );
+    expect(description.indexOf("'order_id'")).toBeLessThan(description.indexOf("'enrichment_file'"));
+  });
+
+  it("carries nothing it is not given — a target's instructions have no way in", () => {
+    const target = { ...SIGNED, instructions: "PRIVATE BRIEF" } as Parameters<typeof delegationToolDescription>[0];
+    expect(delegationToolDescription(target)).not.toContain("PRIVATE BRIEF");
+    expect(JSON.stringify(delegationToolSchema(target))).not.toContain("PRIVATE BRIEF");
+  });
+
   it("names the workflow, its title, its required inputs and its returns", () => {
     const description = delegationToolDescription(SIGNED);
     expect(description).toContain("'enrich-order'");

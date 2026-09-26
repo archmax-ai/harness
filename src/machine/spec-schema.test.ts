@@ -570,3 +570,103 @@ describe("document-level rules", () => {
     expect(issues[0]?.message).toContain("not a valid variable reference");
   });
 });
+
+describe("typed trigger signatures", () => {
+  const withTrigger = (decl: unknown) => ({ states: { a: { triggers: { manual: decl } } } });
+  const declarationIssues = (decl: unknown) => issuesFor(withTrigger(decl));
+
+  it("accepts a typed entry beside a bare one", () => {
+    const result = parseMachineSpec(
+      withTrigger({
+        description: "Refund one order and report the amount.",
+        requires: ["order_id", { name: "due", type: "date", description: "The day the refund is due." }],
+        returns: [{ name: "total", type: "number" }, { name: "note" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses an unknown type, naming the entry and the accepted types", () => {
+    const [issue, ...rest] = declarationIssues({ requires: [{ name: "amount", type: "float" }] });
+    expect(rest).toEqual([]);
+    expect(issue?.path).toBe("states.a.triggers.manual.requires.0");
+    expect(issue?.message).toContain("Entry 'amount'");
+    expect(issue?.message).toContain('"float"');
+    expect(issue?.message).toContain(
+      "string, integer, number, boolean, date, date-time, object or array",
+    );
+  });
+
+  it("refuses an unknown entry key, naming the entry and the key", () => {
+    const [issue, ...rest] = declarationIssues({
+      returns: [{ name: "amount", type: "number", default: 0 }],
+    });
+    expect(rest).toEqual([]);
+    expect(issue?.path).toBe("states.a.triggers.manual.returns.0");
+    expect(issue?.message).toContain("Entry 'amount' declares 'default'");
+    expect(issue?.message).toContain("'name', 'type' and 'description' only");
+  });
+
+  it("refuses an entry naming no variable", () => {
+    const [issue] = declarationIssues({ requires: [{ type: "string" }] });
+    expect(issue?.path).toBe("states.a.triggers.manual.requires.0");
+    expect(issue?.message).toContain("needs a 'name'");
+  });
+
+  it("refuses an invalid name in the object spelling, at the name", () => {
+    const [issue] = declarationIssues({ requires: [{ name: "Order Id" }] });
+    expect(issue?.path).toBe("states.a.triggers.manual.requires.0.name");
+    expect(issue?.message).toContain("'Order Id' is not a valid run-variable name");
+  });
+
+  it("refuses an empty entry description", () => {
+    const [issue] = declarationIssues({ requires: [{ name: "due", description: "  " }] });
+    expect(issue?.path).toBe("states.a.triggers.manual.requires.0.description");
+    expect(issue?.message).toContain("'description' must be a non-empty string");
+  });
+
+  it("counts one name in both spellings as a duplicate", () => {
+    const [issue, ...rest] = declarationIssues({ returns: ["total", { name: "total", type: "number" }] });
+    expect(rest).toEqual([]);
+    expect(issue?.path).toBe("states.a.triggers.manual.returns.1");
+    expect(issue?.message).toBe("'total' is listed more than once.");
+  });
+
+  it("refuses the reserved returns in the object spelling too", () => {
+    const issues = declarationIssues({ returns: [{ name: "trigger" }, { name: "title", type: "string" }] });
+    expect(issues.map((i) => i.path)).toEqual([
+      "states.a.triggers.manual.returns.0",
+      "states.a.triggers.manual.returns.1",
+    ]);
+  });
+
+  it("words a malformed list for both spellings", () => {
+    const [issue] = declarationIssues({ requires: "order_id" });
+    expect(issue?.message).toContain("must be a list of run-variable names");
+    expect(issue?.message).toContain("{ name, type?, description? }");
+    expect(issue?.message).not.toContain("names the contract only");
+  });
+
+  it("refuses an empty trigger description, naming the trigger", () => {
+    const [issue, ...rest] = declarationIssues({ description: "  " });
+    expect(rest).toEqual([]);
+    expect(issue?.path).toBe("states.a.triggers.manual.description");
+    expect(issue?.message).toContain("non-empty string");
+  });
+
+  it("reports the identical messages through validateSpec, as archmax validate does", async () => {
+    const { validateSpec } = await import("./validate-spec.js");
+    for (const decl of [
+      { requires: [{ name: "amount", type: "float" }] },
+      { returns: [{ name: "amount", default: 0 }] },
+      { returns: ["total", { name: "total" }] },
+      { requires: "order_id" },
+      { description: "" },
+    ]) {
+      const expected = declarationIssues(decl);
+      expect(validateSpec(withTrigger(decl)).schema.map((d) => ({ path: d.field, message: d.message }))).toEqual(
+        expected,
+      );
+    }
+  });
+});

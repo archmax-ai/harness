@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { WorkflowMachine } from "./machine.js";
 import { lintSpec } from "./lint-spec.js";
 import { parseMachineSpec } from "./spec-schema.js";
-import { parseSessionPath, resolveSessionId, sessionIdForTrigger, stateTriggerIds, triggerBindings } from "./triggers.js";
+import {
+  declaredVariableNames,
+  parseSessionPath,
+  resolveSessionId,
+  sessionIdForTrigger,
+  stateTriggerIds,
+  triggerBindings,
+} from "./triggers.js";
 import type { MachineSpec } from "./types.js";
 
 /** The schema issues one trigger declaration produces, as messages. */
@@ -449,5 +456,44 @@ describe("sessionIdForTrigger", () => {
     expect(sessionIdForTrigger(spec, "manual", { case_id: 1 })).toBeUndefined();
     expect(sessionIdForTrigger(spec, "unknown", { case_id: 1 })).toBeUndefined();
     expect(sessionIdForTrigger(spec, "email", { triggers: [] })).toBeUndefined();
+  });
+});
+
+describe("typed trigger signature", () => {
+  const typed: MachineSpec = {
+    states: {
+      intake: {
+        triggers: {
+          manual: {
+            description: "Refund one order and report the amount.",
+            requires: ["order_id", { name: "due", type: "date", description: "The day the refund is due." }],
+            returns: [{ name: "total", type: "number" }, "approved"],
+          },
+        },
+        tools: { allow: [{ tool: "send_reply", args: { due: ["${{due}}"] } }] },
+      },
+    },
+  };
+
+  it("exposes names beside the normalized signature", () => {
+    const machine = WorkflowMachine.fromSpec(typed);
+    expect(machine.requiresForTrigger("manual")).toEqual(["order_id", "due"]);
+    expect(machine.returnsForTrigger("manual")).toEqual(["total", "approved"]);
+    expect(machine.signatureForTrigger("manual")).toEqual({
+      description: "Refund one order and report the amount.",
+      requires: [{ name: "order_id" }, { name: "due", type: "date", description: "The day the refund is due." }],
+      returns: [{ name: "total", type: "number" }, { name: "approved" }],
+    });
+    expect(machine.signatureForTrigger("unknown")).toBeUndefined();
+  });
+
+  it("carries names on the binding and counts a typed requires as declared", () => {
+    expect(triggerBindings(typed).get("manual")).toMatchObject({ requires: ["order_id", "due"] });
+    expect(declaredVariableNames(typed).has("due")).toBe(true);
+  });
+
+  it("lints neither description nor a typed entry", () => {
+    expect(parseMachineSpec(typed).ok).toBe(true);
+    expect(lintSpec(typed).filter((d) => d.field?.includes("triggers"))).toEqual([]);
   });
 });

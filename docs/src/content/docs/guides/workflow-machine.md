@@ -219,6 +219,16 @@ are governed by the active state exactly as the model's own calls are. Lifecycle
 hooks are the exception, because they run on runtime authority, which waives the
 state's allow list and nothing else.
 
+A blocked call is answered with an error-status tool message giving the reason,
+so the agent reads the refusal and carries on. A permitted call whose tool
+**throws** is answered the same way, with the error's message: a dropped
+connection or a failing API reaches the model as that call's answer, and the
+session stays in the state. The agent can retry, switch tools or say what it
+could not do, and answers to the other calls of the same step are kept. A tool
+failure is not a turn failure, so [`on_error`](/reference/machine-spec/#on_error)
+does not route it. A script's `tools.*` call is the exception: the error is
+thrown to the script, which may catch it.
+
 ## Skill governance
 
 The same shape, one level up: which **capabilities** a state may use is declared

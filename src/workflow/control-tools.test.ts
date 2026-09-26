@@ -11,6 +11,7 @@ import {
   entryStateOf,
   handleAdvance,
   handleReset,
+  handleSetVariables,
   handleWait,
   MAX_ADVANCE_EVIDENCE,
   RESET_TOOL,
@@ -502,5 +503,56 @@ describe("handleReset", () => {
   it("resets a session checkpointed before entryState existed", () => {
     const legacy = { ...parked, entryState: undefined, trigger: { id: "report_requested" } };
     expect(commandUpdate(reset(legacy).message).workflowState).toBe("report-requested");
+  });
+});
+
+describe("handleSetVariables — typed returns", () => {
+  const typedMachine = WorkflowMachine.fromSpec({
+    states: {
+      work: {
+        triggers: {
+          manual: { returns: [{ name: "approved", type: "boolean" }, { name: "note" }] },
+          other: null,
+        },
+      },
+    },
+  } as MachineSpec);
+  const state = (trigger = "manual") => ({ trigger: { id: trigger }, variables: {} });
+  const set = (variables: Record<string, unknown>, trigger?: string) =>
+    handleSetVariables(
+      { toolCallId: "c1", args: { variables }, state: state(trigger) },
+      typedMachine,
+    );
+
+  it("refuses a mistyped return atomically, naming the variable, the type and the trigger", () => {
+    const outcome = set({ approved: "yes", scratch: 1 });
+    expect(outcome.delta).toBeUndefined();
+    const text = String(outcome.message.content);
+    expect(outcome.message.status).toBe("error");
+    expect(text).toContain("'approved' must be a boolean");
+    expect(text).toContain('a string ("yes")');
+    expect(text).toContain("trigger 'manual'");
+    expect(text).toContain("Nothing was written");
+  });
+
+  it("writes a conforming return", () => {
+    const outcome = set({ approved: true });
+    expect(outcome.delta).toEqual({ approved: { value: true, locked: false } });
+  });
+
+  it("writes an untyped return and an undeclared variable whatever they hold", () => {
+    expect(set({ note: null, scratch: { a: 1 } }).delta).toEqual({
+      note: { value: null, locked: false },
+      scratch: { value: { a: 1 }, locked: false },
+    });
+  });
+
+  it("holds only the current turn's trigger to its returns", () => {
+    expect(set({ approved: "yes" }, "other").delta).toEqual({ approved: { value: "yes", locked: false } });
+  });
+
+  it("checks nothing without the machine", () => {
+    const outcome = handleSetVariables({ toolCallId: "c1", args: { variables: { approved: "yes" } }, state: state() });
+    expect(outcome.delta).toBeDefined();
   });
 });

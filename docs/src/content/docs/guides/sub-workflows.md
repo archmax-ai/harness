@@ -61,6 +61,31 @@ Its **parameters** are the target's `requires:`, each marked required, and its
 **result** carries the target's `returns:` alongside the child's closing message.
 A target that declares no `returns:` answers with the message alone.
 
+### Typed parameters
+
+A target that [types its signature](/guides/triggers/#typing-a-signature) hands
+the caller's model a typed tool schema. `{ name: quantity, type: integer }`
+becomes `quantity: { type: integer }`, `{ name: due, type: date, description: … }`
+becomes `due: { type: string, format: date, description: … }`, and a bare name
+stays an untyped parameter. The tool's description leads with the `manual`
+trigger's `description`, so the calling model reads what the call does first. The
+target's `instructions` never reach the caller.
+
+A call whose argument does not conform is refused with `invalid-param` before any
+child is composed, naming the argument, its type and what arrived. A missing
+argument is still `missing-param`, which is reported first.
+
+An argument may reference the caller's variables. One that is **exactly one**
+reference, such as `"${{count}}"`, is seeded with the referenced value itself, so
+a number stays a number and satisfies an `integer` parameter. An argument that
+mixes text with references, such as `"order ${{order_id}}"`, is substituted as
+text. An unresolvable reference fails the call with `unresolved-param`.
+
+The returns are held to their types too. A child that settles with a typed
+return holding another kind of value fails the call with `invalid-return`, naming
+the state, the variable and the type. One that leaves a return unset fails with
+`missing-return`. No partial result reaches the caller either way.
+
 The tool surface is closed by default, so a state reaches exactly the targets it
 names. Delegation needs no rule of its own. `policy.forbid_tools` blocks it like
 any other tool.
@@ -132,8 +157,8 @@ started the session:
 
 | Half | When it bites |
 | --- | --- |
-| `requires` | a call short of any declared name is refused before this workflow is composed |
-| `returns` | a session that reaches a terminal state with any declared name unset is rejected |
+| `requires` | a call short of any declared name, or with a value that does not conform to a typed entry, is refused before this workflow is composed |
+| `returns` | a session that reaches a terminal state with any declared name unset, or a typed one mistyped, is rejected |
 
 `archmax validate` checks the caller against the same declaration, offline.
 
@@ -286,7 +311,8 @@ the calling workflow.
 ## Failure is always closed
 
 A child session fails when it is rejected, exceeds its budget, cannot be loaded,
-or completes short of a `returns` name it declared. The call answers with a **tool
+or completes short of a `returns` name it declared (`missing-return`) or with a
+typed return of the wrong kind (`invalid-return`). The call answers with a **tool
 error** naming the workflow and the reason.
 
 The calling agent can then retry with different inputs, route around it, or stop.
@@ -295,8 +321,10 @@ is genuinely done. The state's `on_error` catches the turn failure as it catches
 any other.
 
 Refusals the runtime makes **before** anything runs are blocked calls rather than
-tool errors: depth, a cycle, a missing required input, a **disabled** target. No
-child was composed, so the caller may correct and retry within the turn.
+tool errors: depth, a cycle, a missing required input (`missing-param`), an input
+of the wrong type (`invalid-param`), an unresolvable reference
+(`unresolved-param`), a **disabled** target. No child was composed, so the caller
+may correct and retry within the turn.
 
 A target that declares
 [`disabled: true`](/reference/machine-spec/#disabled-take-a-workflow-out-of-service)
@@ -330,8 +358,9 @@ what is permitted, and widening it takes a change upstream.
   not an error, reported against the state that allows it. The caller's spec is
   valid, and the call would be refused at runtime.
 
-Whether a *call* supplies the target's `requires:` is not statically knowable,
-because the arguments are the model's or a script's. That check is the
+Whether a *call* supplies the target's `requires:`, with values of the declared
+types, is not statically knowable, because the arguments are the model's or a
+script's. That check is the
 dispatch-time refusal, which happens before the child is composed.
 
 ## Observability

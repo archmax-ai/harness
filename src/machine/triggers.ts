@@ -7,6 +7,7 @@
  * Shape is the schema's business (`spec-schema.ts`); this module reads a spec
  * the schema has already accepted and answers the questions the runtime asks.
  */
+import { normalizeSignature } from "./signature.js";
 import { resolvePath, VARIABLE_NAME_PATTERN } from "./variables.js";
 import type { MachineSpec, MachineState } from "./types.js";
 import type { WorkflowMachine } from "./machine.js";
@@ -100,9 +101,13 @@ export interface TriggerBinding {
   message?: SessionPath | false;
   /** The host-resolved `connection:` slug, opaque to the SDK. */
   connection?: string;
-  /** Run variables a firing must supply for the run to start, if declared. */
+  /**
+   * The names of the run variables a firing must supply for the run to start, if
+   * declared — either spelling, read through `normalizeSignature`. Types and
+   * descriptions are on `signatureForTrigger`.
+   */
   requires?: string[];
-  /** Run variables the run guarantees are set when it completes, if declared. */
+  /** The names of the run variables the run guarantees are set when it completes, if declared. */
   returns?: string[];
 }
 
@@ -129,13 +134,18 @@ export function triggerBindings(spec: MachineSpec): Map<string, TriggerBinding> 
           if (parsed.path) binding.message = parsed.path;
         }
         if (decl.connection !== undefined) binding.connection = decl.connection.trim();
-        if (decl.requires !== undefined) binding.requires = decl.requires;
-        if (decl.returns !== undefined) binding.returns = decl.returns;
+        if (decl.requires !== undefined) binding.requires = signatureNames(decl.requires);
+        if (decl.returns !== undefined) binding.returns = signatureNames(decl.returns);
       }
       byId.set(id, binding);
     }
   }
   return byId;
+}
+
+/** The variable names of one signature list, whichever spelling each entry uses. */
+function signatureNames(list: Parameters<typeof normalizeSignature>[0]): string[] {
+  return normalizeSignature(list).map((entry) => entry.name);
 }
 
 /**

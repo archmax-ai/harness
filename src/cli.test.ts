@@ -278,6 +278,33 @@ describe("workspaces with several or no workflows", () => {
     expect(stderr).toContain("Parked sessions can still be decided");
     expect(stdout).toBe("");
   });
+
+  // A turn the runtime refused is a failure, not an answer: exit 1, the reason on
+  // stderr, and — refused at the boundary — no model call (the endpoint is unreachable).
+  it("exits 1 and names the reason when the session is rejected", async () => {
+    vi.stubEnv("ARCHMAX_API_BASE_URL", "http://127.0.0.1:9/v1");
+    vi.stubEnv("ARCHMAX_API_KEY", "unused-no-call-is-made");
+    vi.stubEnv("ARCHMAX_MODEL", "stub-model");
+    const signed = [
+      "states:",
+      "  start:",
+      "    triggers:",
+      "      manual:",
+      "        requires: [order_id, { name: quantity, type: integer }]",
+    ].join("\n");
+    const root = workspace({ p: signed });
+
+    const missing = await run(["run", "p", "hello", "--root", root]);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain("✖ rejected");
+    expect(missing.stderr).toContain("requires 'order_id', 'quantity', which this firing does not supply");
+    expect(missing.stderr).not.toContain("answer");
+    expect(missing.stdout).toBe("");
+
+    const mistyped = await run(["run", "p", "hello", "--root", root, "--variables", '{"order_id":"A-1","quantity":"4"}']);
+    expect(mistyped.code).toBe(1);
+    expect(mistyped.stderr).toContain("'quantity' must be an integer");
+  });
 });
 
 describe("test", () => {

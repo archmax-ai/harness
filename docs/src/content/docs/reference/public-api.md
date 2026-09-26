@@ -61,6 +61,14 @@ Every resume reads a parked session through these three:
 
 `MANUAL_TRIGGER` `DEFAULT_WORKFLOW` `DEFAULT_TRIGGER_ID` `sessionIdForTrigger` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName`
 
+### Trigger signatures
+
+`SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues`
+
+The mapping and the conformance rule every runtime check decides by. They are also
+on `@archmax-ai/harness/spec`, as the same bindings, where the section below shows
+a host building a schema from a signature.
+
 ### Token accounting
 
 `createUsageTracker` `formatUsage`
@@ -80,7 +88,7 @@ Every type the barrel exports. A type reachable from a public signature is itsel
 public, because an exported function is usable only when you can name what it
 returns.
 
-`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionOperations` `SessionStore` `SessionSummary` `TriggerDelivery` `TriggerInput` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
+`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
 
 ## `@archmax-ai/harness/spec`
 
@@ -92,10 +100,11 @@ the notes below.
 Several of these names are also on the root. They are the same bindings, exported
 here for the weight of the import.
 
-- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
+- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
 - **Validation:** `validateSpec` `lintSpec` `schemaIssueDiagnostic` `SpecValidation` `Diagnostic` `DiagnosticSeverity`.
 - **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
+- **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
 - **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
 - **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `subRunIdentity`.
@@ -151,6 +160,46 @@ scripts, sibling workflows, the skill registry, kernel probes.
 Some names stay on the root because they cannot be pure: `loadMachineSpec`,
 `WorkflowMachine`, `validateWorkflow`, `resolveTrigger`,
 `createWorkspaceContext`, every store and mount.
+
+### Building a host schema from a signature
+
+A trigger's signature is the contract a caller relies on, and the runtime already
+holds it at the session boundary. A host exposing a workflow to outside callers,
+such as an MCP tool, a typed start form or an HTTP endpoint, builds its schema from
+that same signature, so the external contract and the enforced one cannot drift:
+
+```ts
+import {
+  parseMachineSpec,
+  signatureForTrigger,
+  signatureJsonSchema,
+  signatureValueIssues,
+} from "@archmax-ai/harness/spec";
+
+const parsed = parseMachineSpec(rawWorkflowYaml);
+if (!parsed.ok) throw new Error(parsed.issues.map((i) => i.message).join("\n"));
+const signature = signatureForTrigger(parsed.spec, "manual");
+if (!signature) throw new Error("the workflow declares no manual trigger");
+
+const tool = {
+  name: "refund-order",
+  description: signature.description, // written for a caller; never shown to the session's model
+  inputSchema: signatureJsonSchema(signature.requires),
+  outputSchema: signatureJsonSchema(signature.returns),
+};
+
+// Before a session opens: the same rule the turn boundary applies.
+const issues = signatureValueIssues(signature.requires, requestBody);
+if (issues.length > 0) return badRequest(issues.map((issue) => issue.message));
+```
+
+`signatureJsonSchema` yields `{ type: "object", properties, required }`: one property
+per entry in declaration order, every name required, `date` and `date-time` as a
+string with that `format`, and an untyped entry as `{}`. `signatureValueIssues`
+returns one issue per missing name (`kind: "missing"`) and per value that does not
+conform (`kind: "invalid"`, with the declared `type` and the JSON kind `found`). It
+never coerces, so convert form text before you validate it: the string `"4"` is not
+an `integer`. A map it passes is not refused at the turn boundary for its signature.
 
 ## `@archmax-ai/harness/messages`
 
@@ -236,6 +285,7 @@ if (agent.workflow) {
   outcome.pending;       // the park record, when parked
   outcome.delegation;    // when the pending decision is a delegated child's: which child, which call
   outcome.reply;         // what the session said
+  outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed hook)
   // …and the three resumes, as payloads of the same call or as their own verbs:
   await agent.workflow.send(sessionId, { decision: { target: "approve" } });
   await agent.workflow.send(sessionId, { delivery: { trigger: { id: "email_reply" }, variables } });
@@ -1330,7 +1380,7 @@ subscriber and the CLI pass over them silently:
 | Event | Payload highlights |
 | --- | --- |
 | `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint. Emitted for **every** governed call, including the control tools the runtime services itself: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_get_variables`, `archmax_set_variables`. |
-| `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason` (renamed from `message`). A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
+| `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason` (renamed from `message`). A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
 | `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
 | `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. Chunks a dispatched grading rubric generates are attributed to the dispatching state. |
 | `rubric-start` / `rubric-result` | Bracket every grading-rubric dispatch (a `{ rubric: … }` hook, which the runtime dispatches itself), paired by `dispatchId`, with the rubric's `name`, `status` and `durationMs`. Operator-facing: they reach no prompt |

@@ -99,7 +99,8 @@ const COMMANDS: Record<string, Command> = {
     summary: "Run a workflow on a prompt; the reply goes to stdout",
     description:
       "Assembles the workflow, runs one turn on a fresh session (or the session the firing resolves to) and prints " +
-      "the reply to stdout. The session header and state flow go to stderr. A park exits 0 with a resume hint.",
+      "the reply to stdout. The session header and state flow go to stderr. A park exits 0 with a resume hint; a " +
+      "rejected session exits 1 with the reason.",
     positionals: [
       WORKFLOW_ARG,
       {
@@ -334,8 +335,7 @@ const COMMANDS: Record<string, Command> = {
           target: to,
           ...(comment ? { comment } : {}),
         });
-        printResumed(style, sessionId, "decided", outcome);
-        return 0;
+        return printResumed(style, sessionId, "decided", outcome);
       });
     },
   },
@@ -394,8 +394,7 @@ const COMMANDS: Record<string, Command> = {
           trigger: { id: triggerId },
           ...(variables ? { variables } : {}),
         });
-        printResumed(style, sessionId, "delivered", outcome);
-        return 0;
+        return printResumed(style, sessionId, "delivered", outcome);
       });
     },
   },

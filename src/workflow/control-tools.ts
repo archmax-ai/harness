@@ -22,6 +22,7 @@ import {
 } from "../core/zones.js";
 import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
+import { signatureValueIssues } from "../machine/signature.js";
 import {
   ADVANCE_TOOL,
   GET_VARIABLES_TOOL,
@@ -592,8 +593,16 @@ export interface SetVariablesOutcome {
   locked?: boolean;
 }
 
-/** Service an `archmax_set_variables` call. Atomic: one rejected key refuses the whole call. */
-export function handleSetVariables(request: VariableToolRequest): SetVariablesOutcome {
+/**
+ * Service an `archmax_set_variables` call. Atomic: one rejected key refuses the
+ * whole call. Given the `machine`, a write of a **typed** return of the current
+ * turn's trigger is held to its declared type here, where the agent can still
+ * correct it; every other name is written whatever it holds.
+ */
+export function handleSetVariables(
+  request: VariableToolRequest,
+  machine?: WorkflowMachine,
+): SetVariablesOutcome {
   const refuse = (text: string) => ({ message: refusal(SET_VARIABLES_TOOL, request.toolCallId, text) });
   const parsed = setVariablesSchema.safeParse(request.args);
   if (!parsed.success) {
@@ -632,6 +641,9 @@ export function handleSetVariables(request: VariableToolRequest): SetVariablesOu
     }
   }
 
+  const mistyped = machine ? mistypedReturns(machine, request.state, variables) : undefined;
+  if (mistyped) return refuse(`${SET_VARIABLES_TOOL} rejected: ${mistyped} Nothing was written.`);
+
   const locked = lock === true;
   const delta: VariableStore = {};
   for (const [name, value] of Object.entries(variables)) {
@@ -650,6 +662,29 @@ export function handleSetVariables(request: VariableToolRequest): SetVariablesOu
     written: names,
     locked,
   };
+}
+
+/**
+ * Why a write breaks the declared type of a return of the current turn's
+ * trigger, or `undefined`. Only the names being written that a typed return
+ * names are checked; an untyped return and an undeclared name are free.
+ */
+function mistypedReturns(
+  machine: WorkflowMachine,
+  state: unknown,
+  variables: Record<string, unknown>,
+): string | undefined {
+  const trigger = readWorkflowState(state).trigger?.id;
+  if (!trigger) return undefined;
+  const typed = (machine.signatureForTrigger(trigger)?.returns ?? []).filter(
+    (entry) => entry.type && Object.hasOwn(variables, entry.name),
+  );
+  const invalid = signatureValueIssues(typed, variables).filter((issue) => issue.kind === "invalid");
+  if (invalid.length === 0) return undefined;
+  return (
+    `trigger '${trigger}' declares ${invalid.length === 1 ? "this return" : "these returns"} typed: ` +
+    `${invalid.map((issue) => issue.message).join("; ")}. Write a value of the declared type.`
+  );
 }
 
 /** Wrap an `archmax_set_variables` outcome as the update that commits its delta. */

@@ -58,7 +58,6 @@ import {
   NATIVE_CACHE_STRATEGIES,
   resolveCacheStrategy,
   resolvePromptCacheConfig,
-  unsupportedCacheMessage,
   type PromptCacheStrategy,
 } from "../workflow/prompt-cache.js";
 import { renderWorkflowPrompt, stripHtmlComments } from "../workflow/render-prompt.js";
@@ -298,9 +297,8 @@ function resolveStateModels(
     let strategy = strategies.get(model);
     if (strategy === undefined) {
       strategy = resolveCacheStrategy(model, cacheEnabled);
-      // Reported per distinct model: a workflow mixing ids can have one model
-      // with no mechanism and another with one.
-      if (strategy === "unsupported") warn(unsupportedCacheMessage(model));
+      // `unsupported` is not warned about: the providers behind such a model cache
+      // a stable prefix automatically, and the `prompt-shaping` event names it.
       strategies.set(model, strategy);
     }
     return strategy;

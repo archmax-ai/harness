@@ -1,7 +1,8 @@
 /**
  * `@archmax-ai/harness/spec` — the workflow vocabulary with **no runtime behind it**:
  * the `workflow.yaml` schema, the pure validator, the slug, variable and
- * session-path grammars, the reserved names and the path conventions.
+ * session-path grammars, the trigger signature's JSON Schema mapping and
+ * conformance rule, the reserved names and the path conventions.
  *
  * Browser-safe by construction: nothing reachable from here imports `node:*`,
  * LangGraph, Deep Agents, the sandbox or a filesystem library, and a unit test
@@ -58,6 +59,8 @@ export {
   specExtensionsSchema,
   /** The loose slot for host metadata at the root, on a state and on a rubric. */
   specMetadataSchema,
+  /** One `requires`/`returns` entry: a bare name, or `{ name, type?, description? }`. */
+  signatureEntrySchema,
   /** Shape plus document-level cross-references, as one total function. */
   parseMachineSpec,
   /** The document-level rules alone, over a spec the shape has accepted. */
@@ -92,6 +95,7 @@ export type {
   SpecExtensions,
   SpecMetadata,
   RubricDeclaration,
+  SignatureEntryDeclaration,
 } from "../machine/types.js";
 /** Whether a spec declares itself out of service (`disabled: true`). */
 export { specDisabled } from "../machine/types.js";
@@ -160,6 +164,25 @@ export type {
   TriggerInput,
   ResolvedTrigger,
 } from "../machine/triggers.js";
+
+export {
+  /** The types a signature entry may declare: JSON Schema's words, plus `date` and `date-time`. */
+  SIGNATURE_TYPES,
+  /** A `requires`/`returns` list as `{ name, type?, description? }` entries, either spelling. */
+  normalizeSignature,
+  /** A trigger's normalized signature — `description`, `requires`, `returns` — read from a spec. */
+  signatureForTrigger,
+  /** The one mapping from signature entries to a JSON Schema object. */
+  signatureJsonSchema,
+  /** The one conformance rule: each missing name and each non-conforming value, as issues. */
+  signatureValueIssues,
+} from "../machine/signature.js";
+export type {
+  SignatureEntry,
+  SignatureType,
+  TriggerSignature,
+  SignatureValueIssue,
+} from "../machine/signature.js";
 
 export {
   VARIABLE_NAME_PATTERN,

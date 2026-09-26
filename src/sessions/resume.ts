@@ -202,6 +202,8 @@ export interface DecideOutcome {
   delegation?: DelegatedPark;
   /** What the session last said to the person — a finished turn's answer, or a park's message. Empty when it said nothing. */
   reply: string;
+  /** Why the session was rejected, when `status` is `rejected`: the refusal or failure, worded for a person. */
+  rejected?: string;
   /** Full message history after the resume, for building a session view. */
   messages: unknown[];
   /** The session's full committed audit trail after the resume settled. */
@@ -265,6 +267,8 @@ export interface Outcome {
   delegation?: DelegatedPark;
   /** What the session last said to the person. Empty when it said nothing. */
   reply: string;
+  /** Why the session was rejected, when `kind` is `rejected`: the refusal or failure, worded for a person. */
+  rejected?: string;
   /** Full message history after the turn. */
   messages: unknown[];
   /** The session's committed audit trail. */
@@ -345,14 +349,21 @@ export function settle(result: Record<string, unknown>, sessionId?: string): Res
   const parkedAt = park ? parkedStateOf(park.pending) : undefined;
   const delegation = delegationOf(result, park?.channel, sessionId);
   const usage = readRunUsage(result);
+  const status = typeof result.status === "string" ? (result.status as WorkflowStatus) : undefined;
+  // The reason a turn committed with its rejection; read only for a session that ended rejected.
+  const rejected =
+    status === WORKFLOW_STATUSES.rejected && typeof result.rejected === "string" && result.rejected.trim()
+      ? result.rejected
+      : undefined;
   return {
-    status: typeof result.status === "string" ? (result.status as WorkflowStatus) : undefined,
+    status,
     workflowState: typeof result.workflowState === "string" ? result.workflowState : undefined,
     reparked: park !== undefined,
     ...(park ? { parkedChannel: park.channel, pending: park.pending } : {}),
     ...(parkedAt ? { state: parkedAt } : {}),
     ...(delegation ? { delegation } : {}),
     reply: lastAgentText(messages),
+    ...(rejected ? { rejected } : {}),
     messages,
     auditTrail: readAuditTrail(result),
     variables: readVariables(result),
@@ -377,6 +388,7 @@ export function outcomeOf(settled: ResumeOutcome, disposition: SendDisposition):
     ...(settled.pending ? { pending: settled.pending } : {}),
     ...(settled.delegation ? { delegation: settled.delegation } : {}),
     reply: settled.reply,
+    ...(settled.rejected ? { rejected: settled.rejected } : {}),
     messages: settled.messages,
     auditTrail: settled.auditTrail,
     variables: settled.variables,

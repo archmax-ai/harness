@@ -553,8 +553,8 @@ A state that may run another workflow declares no state type for it. It names
 the target in `tools.allow` as `archmax_workflow_<slug>`, and calls it (see
 [sub-workflows](/guides/sub-workflows/)).
 
-The tool's required parameters are the target's `manual` trigger `requires:`.
-Its result is `{ message, returns }`, or the closing message alone for a target
+The tool's required parameters are the target's `manual` trigger `requires:`,
+typed where the target types them. Its result is `{ message, returns }`, or the closing message alone for a target
 declaring no `returns:`. Capturing that result is the caller's job, and the
 calling state's `requires:` is what makes recording it mandatory.
 
@@ -790,6 +790,15 @@ A state with no `on_error` keeps the prior fail-closed semantics: the session
 ends `rejected`. `archmax validate` checks that `on_error` names a declared
 state.
 
+A **tool failure is not a turn failure**, and `on_error` never sees it. When a
+tool the agent calls throws, for example a remote tool whose connection drops,
+the call is answered with an error-status tool message carrying the error's
+message. The session stays in the state, and the next model call reads the
+failure as that call's answer, so the agent can retry, switch tools or say what
+it could not do. Answers to the other calls of the same step are kept. A park
+raised inside a call still parks the session, and a cancelled run still ends
+the turn.
+
 ## `disabled`: take a workflow out of service
 
 ```yaml
@@ -855,8 +864,13 @@ states:
   enrich:
     triggers:
       manual:                                # the one entry: CLI, host firing, or a caller
-        requires: [order_id]                 # a firing must supply these to start
-        returns: [enrichment_file, delayed]  # the session guarantees these when it completes
+        description: Enrich one order and say whether it is late.  # for a caller, never the agent
+        requires:                            # a firing must supply these to start
+          - order_id                         # a bare name: untyped
+          - { name: due, type: date, description: The day the order is due. }
+        returns:                             # the session guarantees these when it completes
+          - enrichment_file
+          - { name: delayed, type: boolean }
 ```
 
 | Key | Read by | Meaning |
@@ -864,6 +878,7 @@ states:
 | `session` | the machine | Dotted path to a firing's session id |
 | `message` | the **host** | Dotted path to a firing's words, or `false` for none |
 | `connection` | the **host** | Slug of the access connection governing the trigger's endpoint |
+| `description` | a **caller** | What calling this entry does, for whoever calls it |
 | `requires` | the machine | Variables a firing must supply for the session to start |
 | `returns` | the machine | Variables the session guarantees are set when it completes |
 
@@ -890,11 +905,56 @@ with `archmax_set_variables` or by a script. A session that reaches a terminal
 state with any one of them unset is **rejected**. A session that *parks* goes
 unchecked, because it has not finished.
 
-Both are lists of names and nothing more. What a variable holds is said by the
-state `instructions` that tell the agent to set it, which is where every other
-variable's meaning already lives. A name-to-prose map here would make this the
-one place in the spec where declaring a variable also documents it, and the two
-statements would drift.
+Each entry is a bare variable name, or an object `{ name, type?, description? }`
+naming one. The two spellings mix freely in one list. A bare name and an object
+with only `name` are the same **untyped** entry, which takes any value, `null`
+included. Names are distinct across both spellings, so
+`[total, { name: total, type: number }]` is a duplicate. The object is strict: any
+other key (a misspelled `type`, say) is a load error naming the entry and the key,
+rather than a silent "untyped".
+
+`type` is one of eight words. Six are JSON Schema's own types; `date` and
+`date-time` are JSON Schema string formats, promoted because a host renders and
+validates them differently from free text. One conformance rule decides every
+check, and nothing is coerced:
+
+| `type` | Conforms when the value is | JSON Schema |
+| --- | --- | --- |
+| `string` | a string | `{ type: string }` |
+| `integer` | a number with no fractional part (`"4"` does not conform) | `{ type: integer }` |
+| `number` | a finite number | `{ type: number }` |
+| `boolean` | `true` or `false` | `{ type: boolean }` |
+| `date` | a string that is an RFC 3339 full-date, `YYYY-MM-DD`, naming a real calendar day (`2026-02-30` does not conform) | `{ type: string, format: date }` |
+| `date-time` | a string that is an RFC 3339 date-time with an offset, `Z` or `±hh:mm` | `{ type: string, format: date-time }` |
+| `object` | an object that is not an array | `{ type: object }` |
+| `array` | an array | `{ type: array }` |
+
+A typed entry never takes `null`, because the JSON Schema a host publishes from it
+would refuse `null` too. Typing stops at this level: there are no item schemas, no
+property schemas, no enums and no ranges.
+
+Where the types are held:
+
+- **At the start.** A firing whose value for a typed `requires` entry does not
+  conform is refused like one that misses a name, before any model call, naming
+  the trigger, the variable, the type and what arrived.
+- **At the write.** An `archmax_set_variables` call writing a typed return of the
+  current turn's trigger with a non-conforming value is refused, atomically, as a
+  correctable tool refusal. The agent writes a conforming value and the session
+  goes on. Undeclared and untyped names are written as before.
+- **At completion.** A session whose typed return holds a non-conforming value is
+  rejected like one that left it unset. In practice this catches script and hook
+  writes, which the write check does not see.
+
+An entry's `description` says what the variable holds, for whoever supplies or
+reads it. What the agent should *do* to produce a return still belongs in the
+state `instructions` that tell it to set the variable.
+
+`description` on the declaration itself is for a **caller**: a delegating model,
+a host's MCP client, the reader of a start form. It leads the delegation tool's
+description. It is never shown to the model of the session the trigger starts,
+whose brief is its `instructions`. A second, caller-facing brief there could
+contradict the first. An empty `description` is a load error naming the trigger.
 
 The two reserved variable names (`trigger` and `title`) are accepted in
 `requires:` and **refused** in `returns:`, each for its own reason. The runtime
@@ -905,11 +965,16 @@ Load fails, and `validate` reports the same in the same words. See
 [Two reserved names](/guides/workflow-machine/#two-reserved-names).
 The names are rendered into the system prompt under the trigger's entry state,
 so the agent is told what it must produce before it is failed for omitting it.
+A typed or described entry is rendered on its own line as
+`name (type) — description`, and an untyped signature reads as it always has.
 
 On the `manual` trigger, this signature is also the workflow's **call
-signature**. `requires:` becomes the parameters of the `archmax_workflow_<slug>`
-tool a calling workflow binds, and `returns:` becomes its result. One
-declaration, read at both boundaries.
+signature**. `requires:` becomes the typed parameters of the
+`archmax_workflow_<slug>` tool a calling workflow binds, and `returns:` becomes
+its result. One declaration, read at both boundaries. A host building an MCP tool
+or a form from the same signature uses `signatureJsonSchema` and
+`signatureValueIssues` from `@archmax-ai/harness/spec`: the mapping and rule the
+runtime itself applies (see [Public API](/reference/public-api/#building-a-host-schema-from-a-signature)).
 
 `session:` is a dotted path over the session's variables (the same syntax
 `${{…}}` guards use), naming where a firing's [session
@@ -937,7 +1002,8 @@ is an error that fails load:
 - a declaration that is neither a mapping nor empty;
 - a trigger declared by two states;
 - a malformed `session` or `message` path;
-- a `connection` that is not a non-empty string;
+- a `connection` or `description` that is not a non-empty string;
+- a signature entry with an unknown `type`, an unknown key, or a name listed twice;
 - an `entry:` or `name:` key.
 
 An event that should always continue an existing session is declared nowhere

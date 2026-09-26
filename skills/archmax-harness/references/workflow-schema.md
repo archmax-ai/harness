@@ -280,7 +280,8 @@ states:
                                #   id, in declaration order (one state, one
                                #   behavior, several ways in).
                                # The value is the declaration (see below):
-                               #   session/message/connection/requires/returns
+                               #   session/message/connection/description/
+                               #   requires/returns
                                #   plus any key the HOST adds — preserved,
                                #   lint-warned, never interpreted.
                                # NO `entry:` and NO `name:` inside a declaration:
@@ -517,8 +518,13 @@ states:
   enrich:
     triggers:
       manual:                                # the one entry: CLI, host firing, or a caller
-        requires: [order_id]                 # a firing must supply these to start
-        returns: [enrichment_file, delayed]  # the run guarantees these when it completes
+        description: Enrich one order and say whether it is late.  # for callers only
+        requires:                            # a firing must supply these to start
+          - order_id                         # bare name = untyped
+          - { name: due, type: date, description: The day the order is due. }
+        returns:                             # the run guarantees these when it completes
+          - enrichment_file
+          - { name: delayed, type: boolean }
 ```
 
 - There is no `entry:` key and no root block: the state a declaration sits on is
@@ -529,14 +535,37 @@ states:
 - `requires:` / `returns:` are the run's **signature**, and both are enforced. A
   firing that does not supply every `requires` name does not start; a run that
   reaches a terminal state without every `returns` name set is rejected (a run
-  that *parks* is not checked — it has not finished). Both take the same grammar
-  as a state's `requires:`: a list of run-variable names, nothing more — what a
-  variable holds belongs in the `instructions` that set it. The names are
+  that *parks* is not checked — it has not finished). Each entry is a bare
+  run-variable name (**untyped**: any value, `null` included) or a strict object
+  `{ name, type?, description? }` naming one; the spellings mix in one list and
+  names are distinct across both. What the agent must *do* to produce a
+  variable still belongs in the `instructions` that set it. The names — with
+  type and description when declared, as `name (type) — description` — are
   rendered into the prompt under the trigger's entry state, so the agent is told
   what to produce before it can be failed for omitting it. A trigger's
   `requires:` also **guarantees** the variable for `${{…}}` guards, so `validate`
   stops warning about a guard bound to it. This is what makes delegation
   checkable — see [Sub-workflows are tools](#sub-workflows-are-tools).
+- **`type`** is one of `string`, `integer` (no fractional part), `number`
+  (finite), `boolean`, `date` (RFC 3339 `YYYY-MM-DD`, a real calendar day),
+  `date-time` (RFC 3339 with a mandatory `Z`/`±hh:mm` offset), `object` (not an
+  array) or `array`. Nothing is coerced (`"4"` is not an `integer`) and a typed
+  entry never takes `null`. It is held **at the start** (a mistyped seed is
+  refused before any model call), **at the write** (`archmax_set_variables` of a
+  mistyped typed return of the current trigger is a correctable refusal,
+  nothing written) and **at completion** (a mistyped typed return rejects the
+  run — in practice a script or hook write). There are no enums, item or
+  property schemas, ranges or optional inputs. An unknown `type`, an unknown
+  entry key (`default:`) or an empty `description` fails load.
+- **When to type.** Type an entry when something outside the session reads the
+  contract: a delegating model that must build the argument, a host publishing an
+  MCP tool or a start form. Leave it bare when any value will do. Typing a
+  `returns` entry also tells the agent the shape to write.
+- **`description` on the declaration** says, for a **caller**, what calling this
+  entry does. It leads the delegation tool's description and a host's MCP tool
+  description; it never reaches the model of the session it starts (that
+  session's brief is its `instructions`). An entry's own `description` is
+  different: it *is* shown to the agent, beside the name.
 - `session:` is a **dotted path over the run's variables** — the same syntax
   `${{…}}` guards use, including array indices and negative indices
   (`-1` = last). No script, no callback: name where the host already puts the
@@ -1123,7 +1152,9 @@ Two failure classes, routed differently:
 
 - **Recoverable rejections keep the agent in place**: an invalid edge in
   `archmax_advance`, a deliberate hook `veto`, or an in-budget `correct` — the
-  agent sees the reason and retries within the same state.
+  agent sees the reason and retries within the same state. A **tool that
+  throws** is answered the same way: its error message is the call's
+  error-status answer, and it never routes to `on_error`.
 - **Terminal failures route to `on_error`**: a hook *execution error*, an
   exhausted iteration budget (`max_iterations` used up), or an exhausted
   `budget` (`maxTurns`/`timeoutMs`). With `on_error: <state>` declared, the run
@@ -1186,8 +1217,10 @@ enrich:
 ```
 
 - **The target's signature is the call signature.** Its `manual` trigger's
-  `requires:` are the tool's required parameters; its `returns:` are what the
-  result carries:
+  `requires:` are the tool's required parameters (typed in the tool schema
+  where the entries are typed, by the same mapping `signatureJsonSchema`
+  publishes); its `returns:` are what the result carries; its `description`
+  leads the tool description, and its `instructions` never reach the caller:
 
   ```
   archmax_workflow_enrich-account({ account_id: "acct-42" })
@@ -1221,9 +1254,14 @@ enrich:
   no target may call none; `tools.forbid_always` blocks a delegation tool like any
   other.
 - **A failure is a tool error** the calling agent can handle; the state's
-  `on_error` catches the turn if it cannot. Depth, cycle, missing-input and
-  **disabled-target** refusals are blocked calls — nothing ran, so correct the call
-  and retry.
+  `on_error` catches the turn if it cannot. Depth, cycle, missing-input
+  (`missing-param`), mistyped-input (`invalid-param`), unresolvable-reference
+  (`unresolved-param`) and **disabled-target** refusals are blocked calls —
+  nothing ran, so correct the call and retry. A child whose returns are unset
+  (`missing-return`) or mistyped (`invalid-return`) is a failure: it ran.
+- **A whole-argument reference keeps its type.** `{ quantity: "${{count}}" }`
+  seeds the child with the number `count` holds, so it satisfies an `integer`
+  parameter; `{ note: "order ${{order_id}}" }` is substituted as text.
 - **A `disabled: true` target is refused at dispatch, not at assembly.** The tool is
   still bound and the caller still assembles (disabling one leaf must not take every
   caller — or its parked sessions — offline); the call is a blocked call of kind
@@ -1244,8 +1282,12 @@ enrich:
     enrich:
       triggers:
         manual:
-          requires: [order_id]                 # a caller must supply these
-          returns: [enrichment_file, delayed]  # the child guarantees it sets these
+          description: Enrich one order.       # leads the caller's tool description
+          requires:                            # a caller must supply these
+            - { name: order_id, type: string, description: The order to enrich. }
+          returns:                             # the child guarantees it sets these
+            - enrichment_file
+            - { name: delayed, type: boolean }
   ```
 
   Develop it standalone on the same contract:
@@ -1255,10 +1297,13 @@ enrich:
   A dispatch missing a `requires` name is **refused before the child is
   composed**; a child that completes without every `returns` name set is
   **rejected** rather than handing back half a contract (a child that *parks* is
-  not checked — it has not finished). Both are lists of names only: what a
-  variable holds belongs in the state `instructions` that set it. The names are
-  rendered into the child's prompt under its entry state, so it is told what to
-  produce before it can be failed for omitting it.
+  not checked — it has not finished). A typed entry is held to its type at both
+  ends: a mistyped argument is refused `invalid-param` before the child runs, and
+  a mistyped return fails the call `invalid-return`. What the child must *do* to
+  produce a variable belongs in the state `instructions` that set it. The names,
+  with type and description where declared, are rendered into the child's prompt
+  under its entry state, so it is told what to produce before it can be failed
+  for omitting it.
 - **The call answers with the returns, by name.** A signed target answers
   `{ message, returns: { enrichment_file, delayed } }`; one declaring no
   `returns:` answers with the closing message alone. The message keeps its own
@@ -1267,8 +1312,9 @@ enrich:
   agent records what it needs with `archmax_set_variables`, or a script writes it,
   and the calling state's `requires:` is what makes that mandatory.
 - **Mocks are held to the same contract.** An `archmax_workflow_<slug>` mock for a
-  signed target supplies `returns:`, and one that omits a declared name fails the
-  mocked dispatch — a mock stands in for the sub-run, never for its agreement.
+  signed target supplies `returns:`, and one that omits a declared name
+  (`missing-return`) or supplies a mistyped typed one (`invalid-return`) fails
+  the mocked dispatch — a mock stands in for the sub-run, never for its agreement.
 - **No prose crosses the boundary.** A sub-run gets no instruction from its
   caller — it works from its own state `instructions` plus the arguments it was
   seeded with as locked variables, both of which reach the model through the

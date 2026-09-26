@@ -66,6 +66,11 @@ a human state. Otherwise a turn starts.
 A park exits `0`. What the session said goes to `stdout`, the park report and
 the resuming command to `stderr`.
 
+A rejected session exits `1`: a start refused at the boundary (a missing or
+mistyped `requires` input), a completion short of its `returns`, a failed hook.
+`✖ rejected` and the reason go to `stderr`, and whatever the session last said
+goes to `stdout`.
+
 A workflow declaring `disabled: true` refuses to start a turn: exit 1, nothing
 on `stdout`. Resuming a parked session is still allowed.
 
@@ -136,7 +141,8 @@ Resumes a session parked at a human state by taking the named transition. The
 routing is deterministic, so no model interprets the choice.
 
 Fails (exit 1) when the session is not parked or `--to` is not a declared
-transition of the parked state. The resumed session's reply, or a line saying
+transition of the parked state, and when the resumed session ends rejected,
+with the reason on `stderr`. The resumed session's reply, or a line saying
 where it parked again, goes to `stdout`.
 
 ## `archmax reply`
@@ -164,7 +170,8 @@ one, and `--variables` seeds what the event carried, locked.
 
 Any trigger id resumes a park: the flag is required, and its value is passed
 through without being checked against the workflow. Fails (exit 1) when the
-session is not parked for input.
+session is not parked for input, and when the resumed session ends rejected,
+with the reason on `stderr`.
 
 ## `archmax help`
 

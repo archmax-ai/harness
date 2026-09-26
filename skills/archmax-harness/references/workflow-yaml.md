@@ -44,8 +44,12 @@ states:
         session: conversation_id #   dotted path over variables: which conversation a firing joins
         message: false           #   or a dotted path to the message text; false = firings carry none
         connection: mail         #   host access connection; other keys preserved with a warning
-        requires: [order_id]     #   variables a firing must supply (a caller's required params)
+        description: Record one refund decision.  # for CALLERS (delegating model, MCP client); never the agent
+        requires:                #   variables a firing must supply (a caller's required params):
+          - order_id             #     a bare name is untyped (any value, null included)
+          - { name: due, type: date, description: The day it is due. }  # typed: held at the boundary
         returns: [result_file]   #   variables the run guarantees on completion (a caller's result)
+                                 #   entry types: string integer number boolean date date-time object array
     instructions: >-
       Record the decision in scratchpad/refund.json, then archmax_advance to
       review; never close the case yourself.
@@ -163,11 +167,17 @@ states:
   corrections, exhausted budget, exhausted parks) routes to `on_error`
   instead of failing the run; recoverable rejections (invalid edge, veto,
   in-budget correct) keep the agent in place. Declare `on_error` on states
-  with strict `after` hooks or bounded loops.
+  with strict `after` hooks or bounded loops. A **tool that throws** is
+  neither: the call is answered with an error-status tool message carrying
+  the error, the agent stays in the state and can retry or switch tools, and
+  `on_error` never sees it (a park or a cancelled run still propagates).
 - **Sub-workflows are tools.** Allow `archmax_workflow_<slug>` (slug verbatim)
   and the sibling `workflows/<slug>/` is callable: its `manual` trigger's
-  `requires` are the parameters, its `returns` the result
-  (`{ message, returns }`). Nothing captures the result — the caller records
+  `requires` are the parameters (typed where the entries are typed; a
+  mistyped argument is refused `invalid-param`, and `"${{count}}"` alone
+  passes the value with its own type), its `returns` the result
+  (`{ message, returns }`; a mistyped typed return fails `invalid-return`).
+  The trigger's `description` leads the tool description. Nothing captures the result — the caller records
   what it needs with `archmax_set_variables`, made mandatory by `requires`.
   The child is a separate session with a fresh transcript, sees only its
   arguments (as locked variables), and shares no prose. One call = one

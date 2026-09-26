@@ -22,6 +22,7 @@
 
 import { afterHookLabel, hookKind, normalizeHooks } from "../lifecycle/hook-shape.js";
 import type { WorkflowMachine } from "../machine/machine.js";
+import type { SignatureEntry } from "../machine/signature.js";
 import { ADVANCE_TOOL, SET_VARIABLES_TOOL } from "../machine/tool-names.js";
 import type { MachineState, MachineTransition } from "../machine/types.js";
 
@@ -71,23 +72,49 @@ function renderHooks(state: MachineState): string | null {
 /**
  * The signature of the trigger this run was started by — and only that one. The
  * triggers of states this run did not enter are not disclosed, and the id needs
- * no label: there is one trigger and it is this run's.
+ * no label: there is one trigger and it is this run's. An untyped signature
+ * reads as one sentence of names; once any entry declares a type or a
+ * description, each entry gets its own line so both can sit beside the name.
+ * The declaration's own `description` is never rendered: it is written for a
+ * caller, and this run's brief is its `instructions`.
  */
 function renderSignature(machine: WorkflowMachine, trigger: string | undefined): string[] {
-  if (!trigger) return [];
+  const signature = trigger ? machine.signatureForTrigger(trigger) : undefined;
+  if (!signature) return [];
   const lines: string[] = [];
-  const requires = machine.requiresForTrigger(trigger) ?? [];
-  const returns = machine.returnsForTrigger(trigger) ?? [];
+  const { requires, returns } = signature;
   if (requires.length > 0) {
-    lines.push(`This run was started with: ${requires.join(", ")}.`);
+    lines.push(
+      isBare(requires)
+        ? `This run was started with: ${names(requires)}.`
+        : [`This run was started with:`, ...requires.map(renderEntry)].join("\n"),
+    );
   }
   if (returns.length > 0) {
+    const how = `with \`${SET_VARIABLES_TOOL}\` — it does not complete until every one is set`;
     lines.push(
-      `This run must set ${returns.join(", ")} with \`${SET_VARIABLES_TOOL}\` — it does not ` +
-        `complete until every one is set.`,
+      isBare(returns)
+        ? `This run must set ${names(returns)} ${how}.`
+        : [`This run must set these ${how}:`, ...returns.map(renderEntry)].join("\n"),
     );
   }
   return lines;
+}
+
+/** Whether no entry declares more than its name. */
+function isBare(entries: SignatureEntry[]): boolean {
+  return entries.every((entry) => !entry.type && !entry.description);
+}
+
+function names(entries: SignatureEntry[]): string {
+  return entries.map((entry) => entry.name).join(", ");
+}
+
+/** One entry on its own line: `name (type) — description`, each part only when declared. */
+function renderEntry(entry: SignatureEntry): string {
+  const type = entry.type ? ` (${entry.type})` : "";
+  const description = entry.description ? ` — ${entry.description}` : "";
+  return `- ${entry.name}${type}${description}`;
 }
 
 /** What {@link renderStateGraph} needs about the run, beyond the state it is in. */

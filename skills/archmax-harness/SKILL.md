@@ -56,7 +56,13 @@ then verify. Do not write a file, validate, and discover the next file.
    terminal states (no `transitions`), the edges between them — and for each
    edge, the *condition* under which it is taken. That condition is the edge's
    required `description`, and it is the only thing the agent will know about
-   where the edge leads.
+   where the edge leads. If something outside the session calls the workflow
+   (another workflow, a host's MCP tool or form), give its trigger a
+   `description` for the caller and a `requires`/`returns` signature, typing an
+   entry (`{ name, type, description }`; `string` `integer` `number` `boolean`
+   `date` `date-time` `object` `array`) where the caller must build or read the
+   value. The runtime holds typed entries at start, at `archmax_set_variables`
+   and at completion ([`references/workflow-schema.md`](references/workflow-schema.md)).
 2. **Decide the file set** from the sketch: `workflow.yaml` always; one
    `hooks/<check>.js` per *deterministic* gate; one inline `rubric:` per
    *judgment* gate (tone, completeness); cases — one happy path per branch,

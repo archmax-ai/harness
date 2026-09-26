@@ -181,8 +181,12 @@ provider mechanics wherever it has them**:
 | Claude over an OpenAI-compatible endpoint | Explicit `cache_control` on the static block (no LangChain built-in exists for this path) |
 | Anything else | No markers. OpenAI and Gemini do automatic prefix caching, which the stable prefix already serves. |
 
-An unrecognized model never fails a session. A `warning` event reports that
-caching is inactive.
+An unrecognized model never fails a session. It gets no markers and no
+`warning`; the `prompt-shaping` event names its strategy (`unsupported`). To
+confirm the provider's automatic caching works, watch `cacheReadTokens` on the
+`model-usage` events: it rises from the second call of a turn on. If it stays at
+zero, the provider caches nothing. See
+[reading tokens and cost](#reading-tokens-and-cost).
 
 | Variable | Description |
 | --- | --- |

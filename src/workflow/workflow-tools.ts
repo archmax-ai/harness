@@ -1,8 +1,8 @@
 /**
  * Delegation tools: one per sibling workflow a machine is permitted to call. A
- * workflow's declared signature is its call signature: the `sub-workflow`
- * trigger's `requires:` becomes the tool's parameters and `returns:` the shape
- * of the result, so delegating is an ordinary governed tool call.
+ * workflow's declared signature is its call signature: the `manual` trigger's
+ * `requires:` becomes the tool's typed parameters and `returns:` the shape of
+ * the result, so delegating is an ordinary governed tool call.
  *
  * Unlike the other `archmax_*` tools, the body is real: a delegation tool is the
  * only runtime tool a script may call through the PTC gateway (which runs the
@@ -13,6 +13,7 @@
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import { tool } from "langchain";
+import { signatureJsonSchema, type SignatureEntry } from "../machine/signature.js";
 import { workflowToolName } from "../machine/tool-names.js";
 import { callingStateFrom } from "../sessions/scope.js";
 import type { SubWorkflowDispatcher, SubWorkflowResult } from "./sub-workflow.js";
@@ -23,31 +24,38 @@ export interface DelegationTarget {
   workflow: string;
   /** The target's human label; prose for the description only. */
   title?: string;
-  /** Run variables a dispatch must supply. */
-  requires?: string[];
+  /** What calling the target does, for its caller — its `manual` trigger's `description`. */
+  description?: string;
+  /** Run variables a dispatch must supply, typed where the target types them. */
+  requires?: SignatureEntry[];
   /** Run variables the target guarantees on completion. */
-  returns?: string[];
+  returns?: SignatureEntry[];
 }
 
 /**
  * The model-facing description, built from the target's own spec: what the
- * runtime enforces and no more. The target's `instructions` are absent — that is
- * the child's brief, and the caller's agent must not act on it.
+ * runtime enforces and no more, led by what the target says calling it does.
+ * The target's `instructions` are absent — that is the child's brief, and the
+ * caller's agent must not act on it.
  */
 export function delegationToolDescription(target: DelegationTarget): string {
   const parts: string[] = [];
+  const description = target.description?.trim();
+  if (description) parts.push(/[.!?]$/.test(description) ? description : `${description}.`);
   const label = target.title?.trim();
+  const requires = (target.requires ?? []).map((entry) => entry.name);
+  const returns = (target.returns ?? []).map((entry) => entry.name);
   parts.push(
     `Run the '${target.workflow}' workflow${label ? ` (${label})` : ""} to completion and ` +
       `return its result. It runs as its own governed machine with its own states and tools; ` +
       `your run stays where it is and continues when the call answers.`,
   );
-  if (target.requires?.length) {
-    parts.push(`It requires ${quoteList(target.requires)}, which the call must supply.`);
+  if (requires.length) {
+    parts.push(`It requires ${quoteList(requires)}, which the call must supply.`);
   }
   parts.push(
-    target.returns?.length
-      ? `The result carries ${quoteList(target.returns)} under 'returns', alongside the ` +
+    returns.length
+      ? `The result carries ${quoteList(returns)} under 'returns', alongside the ` +
           `workflow's closing message under 'message'.`
       : `The result is the workflow's closing message.`,
   );
@@ -55,18 +63,22 @@ export function delegationToolDescription(target: DelegationTarget): string {
   return parts.join(" ");
 }
 
-/** The JSON Schema for a call: the target's `requires`, and nothing else named. */
+/**
+ * The JSON Schema for a call: the target's `requires`, and nothing else named —
+ * built by the one signature mapping, so each parameter carries the type the
+ * dispatch enforces, and described as the locked variable it is seeded as.
+ */
 export function delegationToolSchema(target: DelegationTarget): Record<string, unknown> {
-  const required = target.requires ?? [];
+  const requires = target.requires ?? [];
+  const schema = signatureJsonSchema(requires);
+  for (const entry of requires) {
+    const declared = entry.description?.trim();
+    schema.properties[entry.name]!.description = declared
+      ? `${/[.!?]$/.test(declared) ? declared : `${declared}.`} Seeded as a locked run variable.`
+      : `Required input '${entry.name}', seeded as a locked run variable.`;
+  }
   return {
-    type: "object",
-    properties: Object.fromEntries(
-      required.map((name) => [
-        name,
-        { description: `Required input '${name}', seeded as a locked run variable.` },
-      ]),
-    ),
-    required: [...required],
+    ...schema,
     // Open: `requires` states only what is mandatory, and nothing declares the full accepted set.
     additionalProperties: true,
   };

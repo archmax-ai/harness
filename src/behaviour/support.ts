@@ -80,6 +80,8 @@ export interface ModelCall {
   systemPrompt: string;
   /** Kinds of the messages the model was shown (`system`, `human`, `ai`, `tool`). */
   messageTypes: string[];
+  /** The tool answers the model was shown, correlated by the call id they answer. */
+  toolAnswers: Array<{ callId: string; content: string; status?: string }>;
 }
 
 /**
@@ -92,6 +94,8 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
   private cursor = 0;
   private lastBound: string[] = [];
   private seq = 0;
+  /** Every tool the model was bound with, by name: what the model is told about each. */
+  readonly boundTools = new Map<string, { description: string; schema: unknown }>();
   /** Tool calls the script actually issued, in order. */
   readonly issued: IssuedCall[] = [];
   /** Every model invocation, in order. */
@@ -130,6 +134,9 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
 
   bindTools(tools: unknown[]): BaseChatModel {
     this.lastBound = (tools as Array<{ name?: string }>).map((t) => String(t?.name ?? ""));
+    for (const bound of tools as Array<{ name?: string; description?: string; schema?: unknown }>) {
+      if (bound?.name) this.boundTools.set(bound.name, { description: String(bound.description ?? ""), schema: bound.schema });
+    }
     return this as unknown as BaseChatModel;
   }
 
@@ -139,6 +146,16 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
       tools: [...this.lastBound],
       systemPrompt: system ? contentToString(system.content) : "",
       messageTypes: messages.map((m) => m.getType()),
+      toolAnswers: messages
+        .filter((m) => m.getType() === "tool")
+        .map((m) => {
+          const answer = m as BaseMessage & { tool_call_id?: string; status?: string };
+          return {
+            callId: String(answer.tool_call_id ?? ""),
+            content: contentToString(answer.content),
+            ...(answer.status ? { status: answer.status } : {}),
+          };
+        }),
     });
 
     // The cursor only moves past a scripted turn: a fallback reply consumes

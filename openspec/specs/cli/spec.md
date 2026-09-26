@@ -85,6 +85,13 @@ usage error. `--verbose` SHALL add one raw line per lifecycle event on stderr.
 - **THEN** what the session said goes to stdout, the park report and `archmax decide` hint to
   stderr, and the exit code is 0
 
+#### Scenario: A rejected session is a failure
+
+- **WHEN** a `run`, `decide` or `deliver` ends with the session rejected — a start refused for a
+  missing or mistyped `requires` input, a completion short of its `returns`, a failed hook
+- **THEN** `✖ rejected` and the reason go to stderr, whatever the session last said goes to
+  stdout, nothing reports it as an answer, and the exit code is 1
+
 ### Requirement: Session header and banner
 
 Every command SHALL print a session header to stderr after loading `.env` from the root: the

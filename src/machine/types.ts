@@ -24,6 +24,7 @@ import type {
   mountGrantEntrySchema,
   specExtensionsSchema,
   rubricDeclarationSchema,
+  signatureEntryObjectSchema,
   specMetadataSchema,
   stateBudgetSchema,
   toolsBlockSchema,
@@ -187,6 +188,13 @@ export type RuntimeMetadata = z.infer<typeof runtimeMetadataSchema>;
  * of the declaration.
  */
 export type TriggerDeclaration = z.infer<typeof triggerDeclarationSchema>;
+
+/**
+ * The object spelling of a `requires`/`returns` entry: `{ name, type?,
+ * description? }`, beside the bare name that means the same untyped entry. Read
+ * both spellings through `normalizeSignature`, never by hand.
+ */
+export type SignatureEntryDeclaration = z.infer<typeof signatureEntryObjectSchema>;
 
 /** Workspace-declared expectations the runtime cannot verify from the spec alone. */
 export type SpecExtensions = z.infer<typeof specExtensionsSchema>;
