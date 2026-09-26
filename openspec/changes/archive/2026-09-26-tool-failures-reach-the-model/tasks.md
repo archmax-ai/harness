@@ -16,5 +16,5 @@
 ## 3. Verify and release
 
 - [x] 3.1 Run `npm run typecheck`, `npm test` and `npx openspec validate tool-failures-reach-the-model --strict`. All pass.
-- [ ] 3.2 Open a PR with the `release` label (patch). Merging it tags and publishes to npm.
+- [x] 3.2 Open a PR with the `release` label (patch). Merging it tags and publishes to npm. (Shipped in #23 with the typed trigger signatures, so labelled `release:minor`.)
 - [ ] 3.3 Consumer follow-up in the archmax platform (`../pangea`): upgrade the exact `@archmax-ai/harness` pin in `packages/contracts`, `packages/core` and `apps/worker` together. Verify that `workflows/sdk-compat.test.ts` and `harness/assembly.mounts.test.ts` pass.
