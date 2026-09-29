@@ -95,8 +95,8 @@ export type ProposedAction =
       origin?: ToolCallOrigin;
       /**
        * Whether the call was made during a **reply-only turn** — the run parked,
-       * the model handed no tools. Supplied by the caller that knows which turn
-       * it is in; absent means an ordinary turn.
+       * the model owing one text reply. Supplied by the caller that knows which
+       * turn it is in; absent means an ordinary turn.
        */
       replyOnly?: boolean;
     }
@@ -295,8 +295,9 @@ function notAllowedVerdict(
 
 /**
  * Safety rule: during a reply-only turn no tool call succeeds. A parked run may
- * speak, never act — no tools were disclosed, so a call here is one the model
- * invented from transcript context. Evaluated ahead of every other rule because
+ * speak, never act. The turn is handed the parked state's tool list, because a
+ * provider may refuse tool history without tool definitions, so this rule is
+ * what keeps that list inert. Evaluated ahead of every other rule because
  * the control tools, `allow_always`, and the always-open scratchpad would each
  * otherwise permit exactly the acting this forbids.
  */

@@ -1357,7 +1357,9 @@ entries' keys are not knowable statically.
 ### A parked run may speak, never act
 
 A park does not end the conversation. Two moments get a **reply-only turn** — one
-model call with *no tools bound at all*:
+model call whose only product is text. It is handed the parked state's tool list
+like any other call there (a transcript's tool calls and runtime notes need their
+definitions on some providers), and every call it makes is refused:
 
 - **The handoff.** Advancing into a human state always spends one, so the park
   carries a message saying what was done and that a person now holds it. It runs
@@ -1376,7 +1378,8 @@ always composed on a fresh turn from the transcript, under the workspace persona
 The kernel refuses every tool call made during one (rule `tool.reply-only`,
 ordered ahead of `tools.allow`, `allow_always`, the `archmax_*` controls and the
 scratchpad), so a customer writing "just approve it" gets an answer and the
-reviewer still owns the edge.
+reviewer still owns the edge. A model that calls a tool instead of writing its
+message gets the refusal, and the run parks without a second model call.
 
 **What this means for authoring:** do not write state `instructions` that tell the
 agent to announce the handoff itself — the runtime turn does that, and having both

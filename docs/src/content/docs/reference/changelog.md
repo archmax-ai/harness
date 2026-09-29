@@ -9,7 +9,22 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
-## 0.2.0 (unreleased)
+## 0.2.1 (unreleased)
+
+- **A parked session's handoff works on providers that refuse tool history without tools.** The
+  reply-only model call a park spends (the handoff into a human state or an `archmax_wait`, a
+  decision routed into another human state, a delegated child's decision, a reply to a parked
+  session) used to send an empty tool list beside a transcript full of tool calls, and every
+  runtime note is one. Amazon Bedrock refuses that request (through LiteLLM:
+  `Bedrock doesn't support tool calling without tools= param specified`), so every park failed
+  there. The call is now handed the parked state's tool list, like any other call in that state.
+  It still cannot act: the kernel's `tool.reply-only` rule refuses every tool call it makes, and a
+  model that calls one instead of writing its message leaves the park without that message and
+  without a second model call. **For hosts:** the reply-only request now carries tool
+  definitions; the public API and the events are unchanged. See
+  [a parked session can still talk](/guides/workflow-machine/#a-parked-session-can-still-talk).
+
+## 0.2.0
 
 - **A failing tool is answered to the model, not thrown out of the turn.** When a tool the agent
   calls throws (a dropped remote connection, a flaky API, a filesystem error), the call is

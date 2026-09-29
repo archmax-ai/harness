@@ -1825,12 +1825,15 @@ describe("workflow middleware — reply-only turns", () => {
     return { seen, text: blocks.map((b) => b.text).join("\n") };
   }
 
-  it("discloses no tools at all", async () => {
-    const { seen } = await replyOnlyCall({
-      workflowState: "review",
-      replyOnly: true,
-    });
-    expect(seen).toEqual([]);
+  // Tool history without tool definitions is a request some providers refuse
+  // (Bedrock behind LiteLLM), so the parked turn gets the state's own list; the
+  // kernel's reply-only rule is what keeps it from acting.
+  it("hands the parked state's own tools, never an empty list", async () => {
+    const parked = await replyOnlyCall({ workflowState: "review", replyOnly: true });
+    const ordinary = await replyOnlyCall({ workflowState: "review" });
+    expect(parked.seen.length).toBeGreaterThan(0);
+    expect(parked.seen).toEqual(ordinary.seen);
+    expect(parked.seen).not.toContain("task");
   });
 
   it("tells the model it is parked and cannot act", async () => {
@@ -1844,7 +1847,7 @@ describe("workflow middleware — reply-only turns", () => {
     // A park is exactly where the clock matters most: the handoff message is
     // written now, and "now" may be days after the run started.
     expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
-    expect(text).toContain("no tools");
+    expect(text).toContain("Do not call any tool: every call on this turn is refused");
   });
 
   it("withholds the human node's reviewer instructions from the agent", async () => {
@@ -1856,8 +1859,8 @@ describe("workflow middleware — reply-only turns", () => {
   });
 
   // The graph is disclosed to a turn that can move; a parked turn cannot, so it
-  // is told no more about the edges than it is handed tools to take them with.
-  it("discloses no transitions, matching the tools it is handed", async () => {
+  // is told nothing about the edges, whatever its tool list holds.
+  it("discloses no transitions, because it cannot move the session", async () => {
     const { text } = await replyOnlyCall({
       workflowState: "review",
       replyOnly: true,

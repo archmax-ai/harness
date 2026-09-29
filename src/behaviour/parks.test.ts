@@ -3,7 +3,14 @@
  * and how it is resumed: `decide`, `reply`, `deliver`, and `resolveSession`.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { isRuntimeNote, runtimeNoteKind, type PendingDecision, type PendingInput } from "../index.js";
+import {
+  isRuntimeNote,
+  runtimeNoteKind,
+  WorkflowMachine,
+  type MachineSpec,
+  type PendingDecision,
+  type PendingInput,
+} from "../index.js";
 import {
   advanceTo,
   assemble,
@@ -12,6 +19,7 @@ import {
   lastAgentText,
   messageType,
   statesEntered,
+  toolResults,
   turn,
   workspaceWith,
   type Assembled,
@@ -51,6 +59,20 @@ async function parkAtReview(): Promise<Assembled> {
   });
   await turn(assembled.agent, "s1", "please review");
   return assembled;
+}
+
+/**
+ * The tool names any model call in `state` is handed — the state's disclosed
+ * surface, sorted. A reply-only turn gets exactly these: its transcript holds
+ * tool calls, and a provider may refuse that history without the definitions.
+ */
+function stateTools(spec: unknown, state: string): string[] {
+  return [...WorkflowMachine.fromSpec(spec as MachineSpec).disclosedTools(state)].sort();
+}
+
+/** The tool names the model's last call was handed, sorted. */
+function lastCallTools(assembled: Pick<Assembled, "model">): string[] {
+  return [...(assembled.model.calls.at(-1)?.tools ?? [])].sort();
 }
 
 /** The checkpointed pending records, read through the public checkpoint surface. */
@@ -174,7 +196,7 @@ describe("a human node", () => {
     await expect(agent.workflow.decide("s1", { target: "approved" })).rejects.toThrow(/not parked/);
   });
 
-  it("withholds every tool from the model on a reply while parked, and answers without moving", async () => {
+  it("answers a reply while parked with the state's tools bound, and moves nothing", async () => {
     const { agent, events, model } = await parkAtReview();
     model.enqueue({ reply: "It is with a reviewer right now." });
 
@@ -184,8 +206,8 @@ describe("a human node", () => {
     expect(outcome.state).toBe("review");
     expect(outcome.parkedChannel).toBe("decision");
     expect(outcome.reparked).toBe(true);
-    // The model was called once for the answer and given no tools at all.
-    expect(model.calls.at(-1)?.tools).toEqual([]);
+    // The model was called once for the answer, handed the parked state's tools.
+    expect(lastCallTools({ model })).toEqual(stateTools(REVIEW, "review"));
     expect(eventsOf(events, "park-message")).toMatchObject([
       { direction: "inbound", state: "review", text: "any news?" },
       { direction: "outbound", state: "review", text: "It is with a reviewer right now." },
@@ -402,6 +424,35 @@ describe("resolveSession", () => {
   });
 });
 
+describe("a tool call on the handoff turn", () => {
+  // The parked turn is handed tools so the request is well formed; calling one
+  // is still refused ahead of every grant, and the park is not held open for a
+  // second try at the message.
+  it("is refused, never runs, and the session suspends without another model call", async () => {
+    const { agent, events, model } = await assemble(workspaceWith(REVIEW), {
+      turns: [
+        { tool: "write_file", args: { file_path: "scratchpad/draft.md", content: "# Draft" } },
+        advanceTo("review", "ready for a reviewer"),
+        // The reply-only call, answered with a tool call instead of a message.
+        { tool: "read_file", args: { file_path: "scratchpad/draft.md" } },
+      ],
+    });
+    const { messages } = await turn(agent, "s1", "please review");
+
+    // Three calls: the write, the advance, the handoff. None after the refusal.
+    expect(model.calls).toHaveLength(3);
+    expect(model.remaining).toBe(0);
+    const read = toolResults(messages).find((r) => r.name === "read_file");
+    expect(read?.status).toBe("error");
+    expect(read?.content).toContain("this run is parked");
+    expect(read?.content).not.toContain("# Draft");
+    expect(eventsOf(events, "tool-blocked")).toMatchObject([{ state: "review", tool: "read_file" }]);
+    expect(eventsOf(events, "tool-called").some((e) => e.tool === "read_file")).toBe(false);
+    expect(eventsOf(events, "parked")).toMatchObject([{ state: "review", awaiting: "decision" }]);
+    expect(await agent.sessions.get("s1")).toMatchObject({ status: "awaiting_decision", state: "review" });
+  });
+});
+
 describe("a decision that routes straight into another human state", () => {
   /** work → first [human] → second [human] → done. */
   const TWO_GATES = {
@@ -434,9 +485,9 @@ describe("a decision that routes straight into another human state", () => {
     expect(outcome).toMatchObject({ reparked: true, parkedChannel: "decision", state: "second" });
     expect(statesEntered(events)).toEqual(["second"]);
     expect(eventsOf(events, "parked")).toMatchObject([{ state: "second", awaiting: "decision" }]);
-    // The closing message names the handoff; the model was given no tools for it.
+    // The closing message names the handoff, on a call handed the second gate's tools.
     expect(outcome.reply).toBe("now with the second reviewer");
-    expect(model.calls.at(-1)?.tools).toEqual([]);
+    expect(lastCallTools({ model })).toEqual(stateTools(TWO_GATES, "second"));
     const snapshot = (await agent.getState({ configurable: { thread_id: "s1" } })) as {
       values?: { pendingDecision?: PendingDecision | null };
     };
@@ -460,8 +511,8 @@ describe("a new turn on a session parked at a human node", () => {
     const { reply } = await turn(agent, "s1", "any progress?");
 
     expect(reply).toBe("still with the reviewer");
-    // Answered on a reply-only turn: no state's work ran.
-    expect(model.calls.at(-1)?.tools).toEqual([]);
+    // Answered on a reply-only turn, handed the parked state's tools: no state's work ran.
+    expect(lastCallTools({ model })).toEqual(stateTools(REVIEW, "review"));
     expect(eventsOf(events, "parked")).toMatchObject([{ state: "review", awaiting: "decision" }]);
     const { pendingDecision } = await pending(assembled);
     expect(pendingDecision).toMatchObject({ state: "review", seq: 2 });
@@ -721,8 +772,8 @@ describe("a resumed turn honours the caller's config", () => {
 
   it("applies a declared tool mock on a turn resumed by deliver", async () => {
     const assembled = await assemble(workspaceWith(WAIT), {
-      // A delivery's first model call is the reply-only handoff, which is handed
-      // no tools; the agent resumes working on the call after it.
+      // A delivery's first model call is the reply-only handoff, whose tool calls
+      // are refused; the agent resumes working on the call after it.
       turns: [
         { tool: "archmax_wait", args: { reason: "waiting" } },
         { reply: "handoff acknowledged" },
