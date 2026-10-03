@@ -19,9 +19,11 @@ import {
   GET_VARIABLES_TOOL,
   handleAdvance,
   handleGetVariables,
+  handleRaise,
   handleReset,
   handleSetVariables,
   handleWait,
+  RAISE_TOOL,
   refusal,
   RESET_TOOL,
   SET_VARIABLES_TOOL,
@@ -320,6 +322,16 @@ export function createToolService(ctx: ToolServiceContext) {
             ...(outcome.park.resumeAt ? { resumeAt: outcome.park.resumeAt } : {}),
             callId,
           });
+        }
+        return outcome.message;
+      }
+      case RAISE_TOOL: {
+        const outcome = await withPairedEvents(call, args, () => handleRaise(machine, { toolCallId, args, state }));
+        if (outcome.raised) {
+          const { code, reason } = outcome.raised;
+          emit({ type: "raised", state: workflowState, sessionId, code, reason, callId });
+          // The session leaves the state it failed in as a completing one does; nothing is entered.
+          emit({ type: "state-leave", state: workflowState, next: workflowState });
         }
         return outcome.message;
       }

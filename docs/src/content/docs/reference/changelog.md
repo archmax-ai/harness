@@ -9,6 +9,33 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.3.0
+
+- **The agent can end a session as a failure: `archmax_raise({ code, reason })`.** A new control
+  tool, offered in every state (terminal ones included) and never declared, for work that cannot
+  be completed: a system the work depends on keeps failing, the thing asked about does not exist.
+  `code` is the agent's own short token (`orders-unavailable`), `reason` says what failed. The
+  call must stand alone in its message, and it ends the session at once with the new status
+  `failed`: no further model call, no `on_error` route, no hook, no `returns` check, and a
+  rejection still pending from earlier in the turn is replaced. A session that ends without it is
+  a success, so the tool is for failure only; the tool description and the platform prompt tell
+  the model to recover first and never to use it in place of `archmax_wait`, `archmax_reset` or a
+  human state. Forbid it with `tools.forbid_always: [archmax_raise]` (or a state's
+  `tools.forbid`). A child session that raises fails its caller's delegation call with the kind
+  `raised`, naming the code and reason. The CLI reports `✖ failed` with the code and exits 1;
+  cases gain the structural `raised` assertion, and `succeeded: true` fails on a raise.
+  **For hosts:** `Outcome.kind` and `WorkflowStatus` gain `failed`, which is **finished**; a switch
+  over either that must be exhaustive needs the new member, and code that read "not `rejected`"
+  as success must now check for `failed` too. Every finished outcome the agent ended carries
+  `exit` (`SessionExit`): `{ success: true }` when completed, `{ success: false, code, reason }`
+  when failed; `SessionSummary` carries the same record for a failed session, and the `raised`
+  event (`state`, `code`, `reason`, `callId`) precedes the closing `state-leave`. A workspace that
+  overrides the platform prompt (`.platform/system/GRAPH_STATE.md`) should add the new "When the
+  work fails" section. See
+  [ending a session as a failure](/guides/workflow-machine/#ending-a-session-as-a-failure),
+  [how a session ended](/guides/sessions/#how-a-session-ended) and
+  [`on_error`](/reference/machine-spec/#on_error).
+
 ## 0.2.1 (unreleased)
 
 - **A parked session's handoff works on providers that refuse tool history without tools.** The

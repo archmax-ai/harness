@@ -30,6 +30,7 @@ export type GradeFn = (criteria: string, evidence: JudgeEvidence) => Promise<Jud
 const STRUCTURAL_ASSERTS: ReadonlySet<CaseExpectation["assert"]> = new Set([
   "succeeded",
   "parked",
+  "raised",
   "reachedState",
   "trail",
   "noTraversal",
@@ -125,8 +126,31 @@ export async function evaluateExpectations(
   for (const entry of entries) {
     switch (entry.assert) {
       case "succeeded":
-        records.push(gate("succeeded", !view.failed && !view.parked));
+        // A raise is the agent declaring failure: never a success, whatever its tool calls did.
+        records.push(
+          gate(
+            "succeeded",
+            !view.failed && !view.parked && !view.raised,
+            view.raised ? `the session raised '${view.raised.code}': ${view.raised.reason}` : undefined,
+          ),
+        );
         break;
+      case "raised": {
+        // The code is pinned exactly; the reason is a matcher, so a case can pin
+        // why the session failed without restating the agent's own wording.
+        const raised = view.raised;
+        const pass =
+          raised !== undefined &&
+          (entry.code === undefined || raised.code === entry.code) &&
+          (entry.reason === undefined || partialMatch(entry.reason, raised.reason));
+        const wanted = [
+          ...(entry.code !== undefined ? [`code=${entry.code}`] : []),
+          ...(entry.reason !== undefined ? [`reason=${entry.reason}`] : []),
+        ].join(" ");
+        const observed = raised ? `raised '${raised.code}': ${raised.reason}` : "the session did not raise";
+        records.push(gate("raised", pass, pass ? wanted || undefined : [wanted, observed].filter(Boolean).join("; ")));
+        break;
+      }
       case "parked":
         // A bare `parked` accepts either channel; a pinned one must match the
         // channel — and, when named, the state — the session actually suspended in.

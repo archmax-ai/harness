@@ -40,7 +40,9 @@ Every command follows the same discipline:
   the [state flow](#the-state-flow), warnings, the token-usage footer.
 - **Exit codes**: `0` when the command did its job, *including* when the
   session parked. `1` when something failed: a failed case, an invalid
-  workflow, a refused turn. `2` for a usage error.
+  workflow, a refused turn, a session the agent ended with `archmax_raise`.
+  `2` for a usage error. The agent's own raise code is printed, never used as
+  the process's exit code.
 
 So `archmax run … > answer.txt` captures only the reply, and
 `archmax test … --json > results.json` captures only the results.

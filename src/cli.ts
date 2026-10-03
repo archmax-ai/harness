@@ -270,6 +270,7 @@ const COMMANDS: Record<string, Command> = {
             out(
               `  waiting  ${summary.waitReason}${summary.resumeAt ? `  due=${summary.resumeAt}` : ""}`,
             );
+          if (summary.exit) out(`  raised   ${summary.exit.code}: ${summary.exit.reason}`);
           if (summary.specHash) out(`  spec     ${summary.specHash}`);
           const variables = Object.entries(summary.variables ?? {});
           out(variables.length ? "  variables" : "  variables  none set");
@@ -288,7 +289,8 @@ const COMMANDS: Record<string, Command> = {
           const names = Object.keys(t.variables ?? {});
           out(
             `  ${t.sessionId}  ${t.status ?? "?"}${t.classification ? `  ${t.classification}` : ""}  state=${t.workflowState ?? "?"}` +
-              `${t.state ? `  ${style.yellow(`awaiting=${t.state}`)}` : ""}${names.length ? `  vars=${names.join(",")}` : ""}`,
+              `${t.state ? `  ${style.yellow(`awaiting=${t.state}`)}` : ""}` +
+              `${t.exit ? `  ${style.red(`exit=${t.exit.code}`)}` : ""}${names.length ? `  vars=${names.join(",")}` : ""}`,
           );
           if (t.waitReason)
             out(`    waiting for: ${t.waitReason}${t.resumeAt ? `  due=${t.resumeAt}` : ""}`);

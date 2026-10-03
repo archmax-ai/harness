@@ -72,6 +72,41 @@ describe("evaluateExpectations status assertions", () => {
   });
 });
 
+describe("evaluateExpectations raised assertions", () => {
+  const raised = view({ raised: { code: "orders-unavailable", reason: "The orders API is down." } });
+
+  it("passes on a raise, a matching code, and a reason matched by pattern or exactly", async () => {
+    for (const step of [
+      "  - raised: true",
+      "  - raised: orders-unavailable",
+      "  - raised: { reason: /api is down/i }",
+      "  - raised: { code: orders-unavailable, reason: The orders API is down. }",
+    ]) {
+      expect((await evaluate(step, raised))[0]?.status, step).toBe("passed");
+    }
+  });
+
+  it("fails on another code or reason, naming what the session raised", async () => {
+    const wrongCode = (await evaluate("  - raised: order-not-found", raised))[0];
+    expect(wrongCode?.status).toBe("failed");
+    expect(wrongCode?.detail).toBe("code=order-not-found; raised 'orders-unavailable': The orders API is down.");
+    // A plain reason is matched exactly, not as a substring.
+    expect((await evaluate("  - raised: { reason: The orders API }", raised))[0]?.status).toBe("failed");
+  });
+
+  it("fails when the session did not raise, saying so", async () => {
+    const record = (await evaluate("  - raised: true", view()))[0];
+    expect(record?.status).toBe("failed");
+    expect(record?.detail).toBe("the session did not raise");
+  });
+
+  it("fails succeeded on a raise, naming the code", async () => {
+    const record = (await evaluate("  - succeeded: true", raised))[0];
+    expect(record?.status).toBe("failed");
+    expect(record?.detail).toMatch(/raised 'orders-unavailable'/);
+  });
+});
+
 describe("evaluateExpectations reply assertions", () => {
   const transcriptView = view({
     reply: "moving on",
@@ -385,7 +420,7 @@ describe("evaluateExpectations judge assertions", () => {
 
 describe("haltsCaseOnFailure", () => {
   it("covers exactly the structural assertions", () => {
-    const structural = ["succeeded", "parked", "reachedState", "trail", "noTraversal"] as const;
+    const structural = ["succeeded", "parked", "raised", "reachedState", "trail", "noTraversal"] as const;
     for (const a of [...structural, "triggerArrival"] as const) {
       expect(haltsCaseOnFailure(a)).toBe(true);
     }

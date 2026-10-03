@@ -294,8 +294,9 @@ state. It returns one `Outcome`:
 
 ```ts
 const outcome = await agent.workflow.send(sessionId, { message: text, trigger, variables });
-// outcome.kind: "completed" | "parked" | "rejected"
+// outcome.kind: "completed" | "parked" | "failed" | "rejected"
 // outcome.disposition: "turn" | "reply" | "deliver" — what the session's state made of it
+// outcome.exit: { success: true } | { success: false, code, reason } — on a finished turn the agent ended
 ```
 
 `resolveSession` is the same rule without the invoke, for a host that wants to
@@ -356,12 +357,40 @@ Two consequences worth knowing:
 - **A session that has not run yet simply has no checkpoint**, and opens at its
   trigger's entry state.
 
+## How a session ended
+
+A finished turn ends one of three ways, and the outcome says which:
+
+| `kind` | Who ended it | What the outcome carries |
+| --- | --- | --- |
+| `completed` | the agent finished its work | `exit: { success: true }` |
+| `failed` | the agent called `archmax_raise({ code, reason })` | `exit: { success: false, code, reason }` |
+| `rejected` | governance or the runtime (a failed hook, a missing return, an exhausted budget with no `on_error`) | `rejected`, the reason; no `exit` |
+
+A session is a success unless the agent says otherwise: `archmax_raise` is the
+agent's one way to declare that the work **could not be done**, and it is only
+for failure. The `code` is the agent's own short token (`orders-unavailable`,
+`customer-unknown`), so a host can branch on it without parsing text:
+
+```ts
+const outcome = await agent.workflow.send(sessionId, { message: text });
+if (outcome.kind === "failed" && !outcome.exit?.success) {
+  alertOps(outcome.exit?.code, outcome.exit?.reason);
+}
+```
+
+A raise ends the session at once, in the state it was made in, with no further
+model call. It does not route through `on_error`, runs no hook and is not held
+to the trigger's `returns`. The session's summary (`agent.sessions.get`) carries
+the same record as `exit` while the session is `failed`. A parked outcome has no
+`exit`: the session has not ended.
+
 ## Waiting is not finishing
 
 Session statuses partition explicitly:
 
-- **finished**: `completed`, `rejected`. The turn is over. The next event for
-  that session is its next turn.
+- **finished**: `completed`, `failed`, `rejected`. The turn is over. The next
+  event for that session is its next turn.
 - **open**: `running`, `awaiting_decision`, `awaiting_input`. A parked session is
   suspended mid-graph with its state retained.
 
@@ -394,7 +423,7 @@ where it applies.
 
 A turn boundary resets the turn's own mechanics:
 
-- the pending rejection;
+- the pending rejection, and the failure a previous turn raised;
 - hook-correction counters;
 - `before`-hook marks;
 - per-state park counts.

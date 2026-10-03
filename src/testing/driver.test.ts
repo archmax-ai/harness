@@ -188,6 +188,33 @@ function deliveringAgent(outcome: Record<string, unknown> | Error) {
   return { agent, calls };
 }
 
+describe("a session the agent ended with a raise", () => {
+  it("carries the raise onto the view, and nothing onto a completed one", async () => {
+    const raised = { code: "orders-unavailable", reason: "The orders API is down.", state: "start" };
+    let fail = true;
+    const agent = withSend({
+      async invoke() {
+        const messages = [{ type: "ai", content: "I could not reach the orders system." }];
+        return fail ? { status: "failed", workflowState: "start", raised, messages } : { status: "completed", messages };
+      },
+      toolMocks: true,
+      sessions: { async seed() {} },
+      dispose() {},
+      workflow: { resolveTrigger: () => ({ id: "manual", startState: "start" }) },
+    } as unknown as Agent & { workflow: WorkflowSurface });
+    const engine = createSessionEngine({ agent, defaultSessionId: "case-1" });
+    await engine.open(DEFAULT_SESSION_ID);
+
+    const failed = await engine.send(DEFAULT_SESSION_ID, "go");
+    expect(failed.raised).toEqual({ code: "orders-unavailable", reason: "The orders API is down." });
+    expect(failed.parked).toBe(false);
+
+    fail = false;
+    const completed = await engine.send(DEFAULT_SESSION_ID, "again");
+    expect(completed.raised).toBeUndefined();
+  });
+});
+
 describe("delivering a firing into a driven session", () => {
   it("carries the trigger id and variables to the runtime's delivery surface", async () => {
     const { agent, calls } = deliveringAgent({

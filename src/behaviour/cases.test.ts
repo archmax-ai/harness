@@ -149,6 +149,40 @@ describe("runTests", () => {
     expect(result!.records.find((r) => r.kind === "reachedState")?.status).toBe("passed");
   });
 
+  it("asserts a raise by its code and reason, and halts the case when the session did not raise", async () => {
+    const RAISE_CASE = `
+title: The CRM is down
+description: The lookup keeps failing, so the agent ends the session as a failure with its own code.
+mocks:
+  - tool: crm_lookup
+    result: { status: unavailable }
+steps:
+  - send: "Who is a@acme.test?"
+  - raised: { code: crm-unavailable, reason: /CRM/ }
+  - notCalledTool: { name: archmax_advance }
+`;
+    const root = makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      "workflows/w/workflow.yaml": WORKFLOW,
+      "workflows/w/tests/raise.test.yaml": RAISE_CASE,
+    });
+    const raising = await run(root, [
+      { tool: "crm_lookup", args: { email: "a@acme.test" } },
+      { tool: "archmax_raise", args: { code: "crm-unavailable", reason: "The CRM is unavailable." } },
+    ]);
+    expect(failures(raising.results[0]!.records)).toEqual([]);
+    expect(raising.results[0]!.verdict.status).toBe("passed");
+
+    const answering = await run(root, [
+      { tool: "crm_lookup", args: { email: "a@acme.test" } },
+      { reply: "I could not look that up." },
+    ]);
+    const records = answering.results[0]!.records;
+    expect(failures(records)).toEqual(["raised: code=crm-unavailable reason=/CRM/; the session did not raise"]);
+    // A structural miss: the case stops there.
+    expect(records.find((r) => r.kind === "notCalledTool")?.status).toBe("not-executed");
+  });
+
   it("fails reachedState and calledTool when the agent never moved", async () => {
     const root = makeWorkspace({
       "AGENTS.md": AGENTS_MD,

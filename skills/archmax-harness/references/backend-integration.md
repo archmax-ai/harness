@@ -71,7 +71,8 @@ From `@archmax-ai/harness` (`src/index.ts`):
 | `WorkflowLoadError` | class | Thrown when the workflow spec (`workflow.yaml`) is missing/invalid (fails closed) |
 | `DEFAULT_WORKFLOW` | const | `"order-lookup"` |
 | `BUNDLED_AUTHORING_SKILL_DIR` | const | The packaged `dist/authoring-skill` directory holding `archmax-harness/` (`<dir>/archmax-harness/SKILL.md`). The example workspace is not shipped in `dist/`; clone the repo to use it. |
-| `WORKFLOW_STATUSES` | const | `running` \| `completed` \| `rejected` \| `awaiting_decision` (`awaitingDecision`) \| `awaiting_input` (`awaitingInput`) |
+| `WORKFLOW_STATUSES` | const | `running` \| `completed` \| `failed` (the agent called `archmax_raise`) \| `rejected` \| `awaiting_decision` (`awaitingDecision`) \| `awaiting_input` (`awaitingInput`) |
+| `SessionExit` | type | `Outcome.exit` / `DecideOutcome.exit` / `SessionSummary.exit`: `{ success: true }` on a completed turn, `{ success: false, code, reason }` on a failed one |
 | `isFinished`, `classifyStatus` | fn | The open/finished partition — a parked session is **open** |
 | `WorkflowLifecycleEvent`, `WorkflowEventHandler` | type | Event stream types |
 | `createWorkflowEventEmitter`, `renderEventLine` | fn | Event emitter + console formatter |
@@ -248,8 +249,10 @@ if (result.status === WORKFLOW_STATUSES.awaitingDecision && result.pendingDecisi
   // host-side assembly, and no need to re-read the spec.
   // When they pick:
   const outcome = await agent.workflow.decide(sessionId, { target: chosenTo, comment });
-  // DecideOutcome: { status?, workflowState?, reparked, state?, reply, rejected?, messages }
+  // DecideOutcome: { status?, workflowState?, reparked, state?, reply, rejected?, exit?, messages }
   // `rejected` says why when status is "rejected"; Outcome from send() carries it too.
+  // `exit` is { success: false, code, reason } when the agent ended the run with
+  // archmax_raise (status "failed"), { success: true } when it completed.
   if (outcome.reparked) { /* parked again at another human state */ }
 }
 ```
@@ -396,6 +399,7 @@ Pass `onEvent`; every `WorkflowLifecycleEvent` carries a `level`
 | `hook-start` / `hook-output` / `hook-passed` / `hook-verdict` / `hook-rejected` | lifecycle hook activity + verdict (`ok`/`correct`/`veto`) |
 | `parked` / `decided` | human state parked / resolved (`{ state, sessionId, awaiting, to? }` — a human park carries no `callId`, since no call asked for it) |
 | `parked` (`awaiting: "input"`) / `delivered` | the agent parked the run (`{ state, sessionId, reason, resumeAt?, callId }` — the `archmax_wait` call) / an event resumed it (`{ state, trigger, to }`, where `to` is the same state) |
+| `raised` | the agent ended the session as a failure (`{ state, sessionId, code, reason, callId }` — the `archmax_raise` call); a `state-leave` follows, and the outcome is `failed` |
 | `agent-text` | complete assistant message in a state (`{ state, text, messageId }` — always the id the message is stored under; absent only on a `partial: true` event from a failed turn) |
 | `agent-text-delta` | streaming text chunk (`{ state, text, messageId? }`) — flows for every run, even when the graph is driven with `invoke` |
 | `tool-called` / `tool-result` / `tool-blocked` | tool passed governance (`callId`, `args`) / settled (`callId`, `status`, `durationMs`, `output` preview) / denied. **Every** governed call, `archmax_advance` included — so a UI drawing a row per call draws one per transition; filter it if you already draw transitions from `advance`/`state-leave`. A tool that **throws** settles `status: "error"` with the error's message as `output` while the turn **continues**: the model reads the same message as the call's answer, and nothing is thrown out of `send` — read tool failures here |

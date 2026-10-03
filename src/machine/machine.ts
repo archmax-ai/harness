@@ -28,6 +28,7 @@ import {
   RESET_TOOL,
   SET_VARIABLES_TOOL,
   WAIT_TOOL,
+  RAISE_TOOL,
   workflowSlugFromToolName,
 } from "./tool-names.js";
 import {
@@ -514,11 +515,12 @@ export class WorkflowMachine {
     const disclosed = new Set<string>();
     for (const { tool } of this.effectiveEntries(state)) if (tool) disclosed.add(tool);
     if (!this.isTerminal(state)) disclosed.add(ADVANCE_TOOL);
-    // Reset, wait and the variable tools are disclosed everywhere, terminal
-    // states included: restarting, parking for a reply, and the run's working
-    // memory all still apply once a run has answered.
+    // Reset, wait, raise and the variable tools are disclosed everywhere,
+    // terminal states included: restarting, parking for a reply, failing, and
+    // the run's working memory all still apply once a run has answered.
     disclosed.add(RESET_TOOL);
     disclosed.add(WAIT_TOOL);
+    disclosed.add(RAISE_TOOL);
     disclosed.add(GET_VARIABLES_TOOL);
     disclosed.add(SET_VARIABLES_TOOL);
     // A bare denial removes the tool from the model's picture entirely; a

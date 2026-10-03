@@ -67,6 +67,22 @@ collect.
 So: something has to **come to this state** → `archmax_wait`. Someone has to
 **decide** → `archmax_advance` into the human node.
 
+### When the work fails
+
+If the task **cannot be completed** — a system it depends on keeps failing, what
+it needs does not exist, the request is one this workflow cannot serve — and you
+have already tried to recover (a retry, another tool, another approach), call
+**`archmax_raise({ "code": "<short-token>", "reason": "<what failed>" })`**. It
+ends the session as a failure, from any state: nothing runs after it, and whoever
+started the run reads your `code` (a short token such as `orders-unavailable`)
+and your `reason`. Call it alone, with no other tool call in the same message;
+anything the person should read goes in that message's text.
+
+A run that ends without `archmax_raise` is a success, so it is never how you
+finish work that worked — and never a stand-in for the others: something has to
+**arrive** → `archmax_wait`; a **wrong branch** → `archmax_reset`; someone has
+to **decide** → `archmax_advance` into the human node.
+
 ### The state you are in
 
 The active state's **`instructions`** arrive under a "Current state" heading —
@@ -87,8 +103,9 @@ than arguing with it.
 Tool access is **closed by default**: you see exactly the active state's surface,
 and a state's entry may also narrow a tool's permitted *arguments* (e.g.
 `write_file` to one path). Tools whose names start with `archmax_` are the
-runtime's own controls — movement, reset, waiting, the sandbox, and the run's
-variables (`archmax_get_variables` / `archmax_set_variables`); everything else acts
+runtime's own controls — movement, reset, waiting, ending a failed session, the
+sandbox, and the run's variables (`archmax_get_variables` /
+`archmax_set_variables`); everything else acts
 on the workspace or on the systems this workspace integrates. A blocked call names
 the tool, the state, and the policy — fix the call, or advance if you are done.
 

@@ -1,0 +1,40 @@
+# Agent-declared failure — the report path when the order store cannot be read.
+# The `report_requested` trigger enters report-requested directly, so no entry
+# hook reads the order records; only the agent does, and every read of them is
+# mocked to fail the way a store outage would (scripts' `tools.*` reads too:
+# a mock intercepts agent and script calls alike). The report cannot be built
+# without inventing data, which the workflow forbids, so the run has to end as
+# a failure with `archmax_raise` rather than complete — and must not write a
+# report it could not have compiled.
+# The code is the agent's own free-form token, so the case pins only that the
+# run raised; what it said is graded rather than matched word for word.
+title: Order store down - the report run raises
+description: >-
+  Every read of the order records fails, so the agent ends the report run with
+  archmax_raise instead of fabricating a report or completing it.
+trigger:
+  id: report_requested
+variables:
+  company: "Acme Corp"
+mocks:
+  - tool: read_file
+    whenInput:
+      file_path: "/orders\\.json/"
+    result: >-
+      Error: skills/order-data/assets/orders.json could not be read: the order
+      store is unavailable (ECONNREFUSED).
+  - tool: grep
+    result: "Error: the order store is unavailable (ECONNREFUSED)."
+steps:
+  - send: "A delayed-orders report was requested."
+  - raised: true
+  - triggerArrival: report_requested
+  - notCalledTool:
+      name: write_file
+      input:
+        file_path: "/report\\.json/"
+  - grade:
+      closedQA: >-
+        ends the run as a failure because the order records could not be read,
+        without inventing any order data
+      atLeast: 0.7

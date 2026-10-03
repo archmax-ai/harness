@@ -10,10 +10,13 @@ import {
   createControlTools,
   entryStateOf,
   handleAdvance,
+  handleRaise,
   handleReset,
   handleSetVariables,
   handleWait,
   MAX_ADVANCE_EVIDENCE,
+  MAX_RAISE_CODE,
+  RAISE_TOOL,
   RESET_TOOL,
   resolveWaitUntil,
   validateAdvanceEvidence,
@@ -416,6 +419,140 @@ describe("wait tool governance", () => {
     const verdict = decide(m, { kind: "tool-call", state: "work", tool: WAIT_TOOL, args: {} });
     expect(verdict.decision).toBe("block");
     expect(verdict.ruleId).toBe("tool.forbidden");
+  });
+});
+
+// --- archmax_raise ---------------------------------------------------------------
+
+const RAISING: MachineSpec = {
+  states: {
+    lookup: { triggers: { manual: null }, transitions: [{ to: "answer", description: "Test edge to answer." }] },
+    answer: {},
+  },
+};
+const raising = WorkflowMachine.fromSpec(RAISING);
+
+/** A state whose last assistant message makes `calls` (the raise among them, as `call-1`). */
+function raisingState(calls: { id: string; name: string }[] = [{ id: "call-1", name: RAISE_TOOL }]) {
+  return {
+    workflowState: "lookup",
+    rejected: "an earlier sub-run failed",
+    messages: [{ type: "ai", content: "", tool_calls: calls.map((c) => ({ ...c, args: {} })) }],
+  };
+}
+
+function raise(
+  args: Record<string, unknown> = { code: "orders-unavailable", reason: "The orders API failed three times." },
+  state: Record<string, unknown> = raisingState(),
+) {
+  return handleRaise(raising, { toolCallId: "call-1", args, state });
+}
+
+function refusalText(message: unknown): string {
+  expect(message).toBeInstanceOf(ToolMessage);
+  const reply = message as ToolMessage;
+  expect(reply.status).toBe("error");
+  return String(reply.content);
+}
+
+describe("handleRaise", () => {
+  it("commits the record, the failed status and a cleared rejection", () => {
+    const outcome = raise();
+    const update = commandUpdate(outcome.message);
+    const record = { code: "orders-unavailable", reason: "The orders API failed three times.", state: "lookup" };
+    expect(update.raised).toEqual(record);
+    expect(outcome.raised).toEqual(record);
+    expect(update.status).toBe("failed");
+    expect(update.rejected).toBeNull();
+    // The position stays, and nothing joins the trail: a raise moves nothing.
+    expect(update.workflowState).toBeUndefined();
+    expect(update.auditTrail).toBeUndefined();
+    const reply = (update.messages as ToolMessage[])[0]!;
+    expect(reply.status).not.toBe("error");
+    expect(String(reply.content)).toMatch(/ended as failed/);
+  });
+
+  it("trims what it records", () => {
+    const outcome = raise({ code: "  orders-unavailable ", reason: " down \n" });
+    expect(outcome.raised).toMatchObject({ code: "orders-unavailable", reason: "down" });
+  });
+
+  it("refuses an empty, overlong or multi-line code, naming the field", () => {
+    for (const code of ["", "   ", "x".repeat(MAX_RAISE_CODE + 1), "orders\nunavailable"]) {
+      const outcome = raise({ code, reason: "down" });
+      expect(outcome.raised, JSON.stringify(code)).toBeUndefined();
+      expect(refusalText(outcome.message)).toMatch(/archmax_raise rejected: invalid arguments — code:/);
+    }
+    expect(raise({ code: "x".repeat(MAX_RAISE_CODE), reason: "down" }).raised).toBeDefined();
+  });
+
+  it("refuses a missing or empty reason, naming the field", () => {
+    for (const args of [{ code: "x" }, { code: "x", reason: "  " }]) {
+      const outcome = raise(args);
+      expect(outcome.raised).toBeUndefined();
+      expect(refusalText(outcome.message)).toMatch(/reason:/);
+    }
+  });
+
+  it("refuses a raise made beside other calls, and commits nothing", () => {
+    const state = raisingState([
+      { id: "call-0", name: "read_file" },
+      { id: "call-1", name: RAISE_TOOL },
+    ]);
+    const outcome = raise(undefined, state);
+    expect(outcome.raised).toBeUndefined();
+    expect(refusalText(outcome.message)).toMatch(/1 other tool call\b.*stand alone/s);
+  });
+
+  it("reads the message that carries the call, not a later one", () => {
+    const state = {
+      workflowState: "lookup",
+      messages: [
+        { type: "ai", content: "", tool_calls: [{ id: "call-1", name: RAISE_TOOL, args: {} }] },
+        { type: "ai", content: "", tool_calls: [{ id: "x", name: "ls", args: {} }, { id: "y", name: "ls", args: {} }] },
+      ],
+    };
+    expect(raise(undefined, state).raised).toBeDefined();
+  });
+});
+
+describe("raise tool declaration and governance", () => {
+  it("declares a code and a reason, and no success flag", () => {
+    const tool = createControlTools().find((t) => t.name === RAISE_TOOL)!;
+    expect(Object.keys((tool.schema as { shape: Record<string, unknown> }).shape)).toEqual(["code", "reason"]);
+    expect(tool.description).toMatch(/only when the task cannot be completed/);
+    expect(tool.description).toMatch(/Call it alone/);
+  });
+
+  it("is permitted without a grant and disclosed in every state, terminal ones included", () => {
+    for (const state of ["lookup", "answer"]) {
+      expect(raising.checkAllowed(state, RAISE_TOOL, {})).toBe(true);
+      expect(raising.disclosedTools(state).has(RAISE_TOOL)).toBe(true);
+    }
+  });
+
+  it("is removable workflow-wide, and per state, by a denial", () => {
+    const everywhere = WorkflowMachine.fromSpec({ ...RAISING, tools: { forbid_always: [{ tool: RAISE_TOOL }] } } as never);
+    expect(everywhere.disclosedTools("lookup").has(RAISE_TOOL)).toBe(false);
+    expect(decide(everywhere, { kind: "tool-call", state: "answer", tool: RAISE_TOOL, args: {} }).decision).toBe("block");
+
+    const here = WorkflowMachine.fromSpec({
+      states: {
+        ...RAISING.states,
+        lookup: { ...RAISING.states.lookup, tools: { forbid: [{ tool: RAISE_TOOL }] } },
+      },
+    } as never);
+    expect(here.disclosedTools("lookup").has(RAISE_TOOL)).toBe(false);
+    expect(here.disclosedTools("answer").has(RAISE_TOOL)).toBe(true);
+    const verdict = decide(here, { kind: "tool-call", state: "lookup", tool: RAISE_TOOL, args: {} });
+    expect(verdict.decision).toBe("block");
+    expect(decide(here, { kind: "tool-call", state: "answer", tool: RAISE_TOOL, args: {} }).decision).toBe("allow");
+  });
+
+  it("is refused on a reply-only turn", () => {
+    const verdict = decide(raising, { kind: "tool-call", state: "lookup", tool: RAISE_TOOL, args: {}, replyOnly: true });
+    expect(verdict.decision).toBe("block");
+    expect(verdict.ruleId).toBe("tool.reply-only");
   });
 });
 

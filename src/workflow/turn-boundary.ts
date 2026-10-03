@@ -1,7 +1,7 @@
 /**
  * The turn boundary: what happens once per invoke, before any model call.
  *
- * A turn boundary resets the turn's mechanics (rejected, iterations,
+ * A turn boundary resets the turn's mechanics (rejected, raised, iterations,
  * beforeDone, parkCounts, park records and phase, replyOnly, the turn budget)
  * and retains the conversation (position, entryState, variables, transcript,
  * trail, files). Every ingress that begins a turn arrives here; a park
@@ -81,6 +81,8 @@ export async function openTurn(
       specHash: machine.specHash,
       status: WORKFLOW_STATUSES.rejected,
       rejected: reason,
+      // A failure an earlier turn raised does not describe this refusal.
+      raised: null,
       trigger,
       ...extra,
       jumpTo: "end",
@@ -143,6 +145,7 @@ export async function openTurn(
   return {
     workflowState: position,
     rejected: null,
+    raised: null,
     iterations: {},
     beforeDone: {},
     parkCounts: {},

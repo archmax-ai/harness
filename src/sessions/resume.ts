@@ -21,6 +21,7 @@ import {
 import {
   parkedStateOf,
   readAuditTrail,
+  readRaised,
   readRunUsage,
   readVariables,
   WORKFLOW_STATUSES,
@@ -183,6 +184,23 @@ export interface DelegatedPark {
   state: string;
 }
 
+/**
+ * How a finished session's last turn ended, by the agent's own account: a
+ * success unless the agent ended it with `archmax_raise`, which says why in a
+ * code a host branches on and a reason a person reads. Carried by a completed
+ * or failed outcome only — a parked session has not ended, and a rejected one
+ * was ended by governance, which `rejected` explains.
+ */
+export type SessionExit =
+  | { success: true }
+  | {
+      success: false;
+      /** The agent's own short code for what failed, e.g. `orders-unavailable`. */
+      code: string;
+      /** What failed, in the agent's words. */
+      reason: string;
+    };
+
 /** Outcome of resuming a session parked at a human state with a decision. */
 export interface DecideOutcome {
   /** Session status after the resume settled (`running`, `completed`, …). */
@@ -204,6 +222,8 @@ export interface DecideOutcome {
   reply: string;
   /** Why the session was rejected, when `status` is `rejected`: the refusal or failure, worded for a person. */
   rejected?: string;
+  /** How the session ended, when it is `completed` or `failed`; see {@link SessionExit}. */
+  exit?: SessionExit;
   /** Full message history after the resume, for building a session view. */
   messages: unknown[];
   /** The session's full committed audit trail after the resume settled. */
@@ -246,8 +266,11 @@ export type SendDisposition = "turn" | "decide" | "reply" | "deliver";
  * decision, a reply or a delivery. One shape for a host and the CLI.
  */
 export interface Outcome {
-  /** Completed, parked (on either channel), or rejected by governance. */
-  kind: "completed" | "parked" | "rejected";
+  /**
+   * Completed, parked (on either channel), failed — the agent ended it with
+   * `archmax_raise` — or rejected by governance.
+   */
+  kind: "completed" | "parked" | "failed" | "rejected";
   /** How the session was entered. */
   disposition: SendDisposition;
   /** Session status after the turn settled. */
@@ -269,6 +292,12 @@ export interface Outcome {
   reply: string;
   /** Why the session was rejected, when `kind` is `rejected`: the refusal or failure, worded for a person. */
   rejected?: string;
+  /**
+   * How the session ended, when `kind` is `completed` (`{ success: true }`) or
+   * `failed` (`{ success: false, code, reason }`). Absent while parked, and on
+   * a rejection, which governance — not the agent — ended.
+   */
+  exit?: SessionExit;
   /** Full message history after the turn. */
   messages: unknown[];
   /** The session's committed audit trail. */
@@ -355,6 +384,7 @@ export function settle(result: Record<string, unknown>, sessionId?: string): Res
     status === WORKFLOW_STATUSES.rejected && typeof result.rejected === "string" && result.rejected.trim()
       ? result.rejected
       : undefined;
+  const exit = park ? undefined : exitOf(status, result);
   return {
     status,
     workflowState: typeof result.workflowState === "string" ? result.workflowState : undefined,
@@ -364,11 +394,20 @@ export function settle(result: Record<string, unknown>, sessionId?: string): Res
     ...(delegation ? { delegation } : {}),
     reply: lastAgentText(messages),
     ...(rejected ? { rejected } : {}),
+    ...(exit ? { exit } : {}),
     messages,
     auditTrail: readAuditTrail(result),
     variables: readVariables(result),
     ...(hasUsage(usage) ? { usage } : {}),
   };
+}
+
+/** How a settled, unparked session ended; `undefined` for a rejection or a status that is not an ending. */
+function exitOf(status: WorkflowStatus | undefined, values: Record<string, unknown>): SessionExit | undefined {
+  if (status === WORKFLOW_STATUSES.completed) return { success: true };
+  if (status !== WORKFLOW_STATUSES.failed) return undefined;
+  const raised = readRaised(values);
+  return raised ? { success: false, code: raised.code, reason: raised.reason } : undefined;
 }
 
 /** The {@link Outcome} a settled {@link ResumeOutcome} amounts to. */
@@ -377,7 +416,9 @@ export function outcomeOf(settled: ResumeOutcome, disposition: SendDisposition):
     ? "parked"
     : settled.status === WORKFLOW_STATUSES.rejected
       ? "rejected"
-      : "completed";
+      : settled.status === WORKFLOW_STATUSES.failed
+        ? "failed"
+        : "completed";
   const state = settled.state ?? settled.workflowState;
   return {
     kind,
@@ -389,6 +430,7 @@ export function outcomeOf(settled: ResumeOutcome, disposition: SendDisposition):
     ...(settled.delegation ? { delegation: settled.delegation } : {}),
     reply: settled.reply,
     ...(settled.rejected ? { rejected: settled.rejected } : {}),
+    ...(settled.exit ? { exit: settled.exit } : {}),
     messages: settled.messages,
     auditTrail: settled.auditTrail,
     variables: settled.variables,

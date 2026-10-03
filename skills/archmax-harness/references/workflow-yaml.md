@@ -147,6 +147,14 @@ states:
   Bound a polling loop with `budget.maxParks` + `on_error`. `archmax_wait` is
   in every state, terminal ones included. Use a **human state** when a person
   picks the edge, `archmax_wait` when an event or time resumes the work.
+- **Failing.** When the work cannot be completed, the agent calls
+  `archmax_raise({ code, reason })` (alone in its message; any state): the
+  session ends at once `failed`, with the agent's free-form `code` and
+  `reason` as the outcome's `exit` — no `on_error` route, no hook, no
+  `returns` check. A session that never raises is a success, so it is for
+  failure only. Forbid it (`forbid_always`, or a state's `forbid`) where the
+  agent must not end the run itself; a child that raises fails its caller's
+  call with kind `raised`.
 - **Human states** park with a record built from `instructions`, `evidence`
   and transition `type`s. The handoff spends one reply-only model call so the
   park carries a message — do **not** instruct the agent to announce the
@@ -233,7 +241,8 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
 - **Always on, never declared**: `ls`, `read_file`, `write_file`,
   `edit_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`,
   and the controls `archmax_advance`, `archmax_reset`, `archmax_wait`,
-  `archmax_get_variables`, `archmax_set_variables`. Any other tool needs an
+  `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. Any other
+  tool needs an
   `allow`/`allow_always` entry. An entry naming an always-on tool **narrows**
   it. `task` is ungrantable (error).
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches

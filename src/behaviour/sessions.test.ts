@@ -39,6 +39,26 @@ describe("sessions", () => {
     expect(summary?.parentSessionId).toBeUndefined();
   });
 
+  it("lists a session the agent ended with a raise as failed and finished, with its exit", async () => {
+    const { agent } = await assemble(workspaceWith(linearSpec()), {
+      turns: [{ tool: "archmax_raise", args: { code: "orders-unavailable", reason: "The orders API is down." } }],
+    });
+    await turn(agent, "s1", "go");
+    const summary = await agent.sessions.get("s1");
+    expect(summary).toMatchObject({
+      status: "failed",
+      classification: "finished",
+      workflowState: "start",
+      exit: { success: false, code: "orders-unavailable", reason: "The orders API is down." },
+    });
+    expect((await agent.sessions.list()).find((s) => s.sessionId === "s1")?.exit?.code).toBe("orders-unavailable");
+    // Finished, so the next firing for it is a fresh turn where it stopped.
+    await expect(agent.workflow.resolveSession({ sessionId: "s1" })).resolves.toMatchObject({
+      disposition: "turn",
+      startState: "start",
+    });
+  });
+
   it("lists every durable session, each under its own id", async () => {
     const { agent, model } = await assemble(workspaceWith(linearSpec()), {
       turns: [advanceTo("done"), { reply: "a" }],

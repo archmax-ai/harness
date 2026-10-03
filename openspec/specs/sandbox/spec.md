@@ -148,12 +148,12 @@ tool error message rather than thrown out of the graph.
 Scripts SHALL reach the agent's tools through the `tools.*` bridge, keyed by camelCase name
 (`tools.readFile`, `tools.archmaxWorkflowEnrichOrder`), with every result marshalled to text.
 The control tools and both sandbox tools (`archmax_advance`, `archmax_reset`, `archmax_wait`,
-`archmax_eval`, `archmax_run`, `archmax_get_variables`, `archmax_set_variables`) and bare `eval`
-SHALL be absent from the bridge. Every PTC call SHALL pass through the kernel at call time
-against the workflow state active at that moment — an `archmax_run` or `archmax_eval` script on
-the model's authority (the state's `tools.allow` and `tools.forbid` bind it), a hook on runtime
-authority (the state's own governance does not bind it in either direction; the safety rules, the
-workflow's `tools.forbid_always` and `skills.forbid_always`, consumer rules and the
+`archmax_raise`, `archmax_eval`, `archmax_run`, `archmax_get_variables`, `archmax_set_variables`)
+and bare `eval` SHALL be absent from the bridge. Every PTC call SHALL pass through the kernel at
+call time against the workflow state active at that moment — an `archmax_run` or `archmax_eval`
+script on the model's authority (the state's `tools.allow` and `tools.forbid` bind it), a hook on
+runtime authority (the state's own governance does not bind it in either direction; the safety
+rules, the workflow's `tools.forbid_always` and `skills.forbid_always`, consumer rules and the
 reply-only rule do) — and SHALL emit the same tool events as an agent-initiated call. A script
 call's `${{name}}` guards SHALL resolve against the run's variables; no `${{…}}` substitution is
 applied to a script's arguments, which reach the kernel and the tool verbatim. A blocked call SHALL not execute the
@@ -181,6 +181,11 @@ delegation tool called from a script SHALL fail closed with kind `parked` if the
 
 - **WHEN** a script issues a PTC call during a reply-only turn
 - **THEN** the kernel blocks it with rule `tool.reply-only`
+
+#### Scenario: A script cannot end the session
+
+- **WHEN** code run via `archmax_eval` or a hook script looks up `tools.archmaxRaise`
+- **THEN** no such function exists on the bridge, and the session's status is unchanged
 
 ### Requirement: `archmax_run` executes skill-bundle sources only
 

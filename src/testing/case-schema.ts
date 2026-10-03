@@ -171,6 +171,16 @@ const ACTION_SCHEMAS: Record<string, z.ZodType<CaseStep>> = {
     ),
 };
 
+type RaisePin = { code?: string; reason?: string };
+const raisedPinSchema = z
+  .strictObject({ code: z.string().min(1).optional(), reason: z.string().min(1).optional() })
+  .refine((v) => v.code !== undefined || v.reason !== undefined, {
+    message: "declare at least one of 'code'/'reason'",
+  })
+  .superRefine((v, ctx) => {
+    if (v.reason !== undefined) checkRegexString(v.reason, ctx, ["reason"]);
+  });
+
 type ParkPin = { channel?: "decision" | "input"; state?: string };
 const parkedPinSchema = z.strictObject({
   channel: z.enum(["decision", "input"]).optional(),
@@ -222,6 +232,31 @@ const ASSERTION_SCHEMAS: Record<string, z.ZodType<CaseStep>> = {
       assert: "parked",
       ...(pin.channel && { channel: pin.channel }),
       ...(pin.state && { state: pin.state }),
+    });
+  }),
+  /**
+   * `true` asserts the turn ended with `archmax_raise`; a string pins the code;
+   * the mapping pins the code and/or matches the reason, so a case can pin why
+   * the session failed without restating the agent's wording.
+   */
+  raised: z.unknown().transform((raw, ctx) => {
+    let pin: RaisePin | null = null;
+    if (raw === true) pin = {};
+    else if (typeof raw === "string" && raw.trim() !== "") pin = { code: raw };
+    else if (isPlainObject(raw)) pin = forward(raisedPinSchema.safeParse(raw), ctx);
+    else {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "'raised' takes the literal true, the expected code, or a mapping { code?, reason? } " +
+          "to pin the code and match the reason",
+      });
+    }
+    if (!pin) return z.NEVER;
+    return assertion({
+      assert: "raised",
+      ...(pin.code !== undefined && { code: pin.code }),
+      ...(pin.reason !== undefined && { reason: pin.reason }),
     });
   }),
   reachedState: slug("state slug").transform((state) =>
@@ -522,6 +557,11 @@ function serializeStep(step: CaseStep): Record<string, unknown> {
     case "parked":
       if (e.state) return { parked: { ...(e.channel && { channel: e.channel }), state: e.state } };
       return { parked: e.channel ?? true };
+    case "raised":
+      if (e.reason !== undefined) {
+        return { raised: { ...(e.code !== undefined && { code: e.code }), reason: e.reason } };
+      }
+      return { raised: e.code ?? true };
     case "reachedState":
       return { reachedState: e.state };
     case "triggerArrival":

@@ -71,6 +71,13 @@ mistyped `requires` input), a completion short of its `returns`, a failed hook.
 `✖ rejected` and the reason go to `stderr`, and whatever the session last said
 goes to `stdout`.
 
+A session the agent ended with `archmax_raise` exits `1` as well. `✖ failed`,
+the state it raised in, its code and its reason go to `stderr`
+(`Session s1 failed in the 'lookup' state with code 'orders-unavailable': …`),
+and whatever the session last said goes to `stdout`. The code is the agent's,
+reported rather than used as the process's exit code. The state flow shows the
+raise as `✖ raised <code>` beneath the state, then `✖ <state> → failed`.
+
 A workflow declaring `disabled: true` refuses to start a turn: exit 1, nothing
 on `stdout`. Resuming a parked session is still allowed.
 
@@ -121,12 +128,14 @@ archmax sessions [session] [--workflow <slug>] [--json]
 
 Without an argument, it lists the durable sessions. Each line carries the id,
 the status, open or finished, the current state, `awaiting=<state>` for a parked
-session, and the names of its variables.
+session, `exit=<code>` for a session the agent ended with `archmax_raise`
+(status `failed`), and the names of its variables.
 
 A parked session also shows the wait reason and `due=<instant>` for a
 `archmax_wait` park, or the decision context for a human state.
 
-With a session id, prints that session in full. Each variable comes with its
+With a session id, prints that session in full, including a failed session's
+code and reason (`raised   <code>: <reason>`). Each variable comes with its
 value and whether it is **locked**. Locked means the host established it: a
 seed, a delivery, or the built-in `trigger`. `--json` writes the
 `SessionSummary`, or the array of them, to `stdout`.
@@ -141,8 +150,8 @@ Resumes a session parked at a human state by taking the named transition. The
 routing is deterministic, so no model interprets the choice.
 
 Fails (exit 1) when the session is not parked or `--to` is not a declared
-transition of the parked state, and when the resumed session ends rejected,
-with the reason on `stderr`. The resumed session's reply, or a line saying
+transition of the parked state, and when the resumed session ends rejected or
+failed, with the reason (and a failure's code) on `stderr`. The resumed session's reply, or a line saying
 where it parked again, goes to `stdout`.
 
 ## `archmax reply`
@@ -171,8 +180,8 @@ one, and `--variables` seeds what the event carried, locked.
 
 Any trigger id resumes a park: the flag is required, and its value is passed
 through without being checked against the workflow. Fails (exit 1) when the
-session is not parked for input, and when the resumed session ends rejected,
-with the reason on `stderr`.
+session is not parked for input, and when the resumed session ends rejected or
+failed, with the reason (and a failure's code) on `stderr`.
 
 ## `archmax help`
 

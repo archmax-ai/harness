@@ -54,12 +54,13 @@ the concepts below is a defect. Please report it.
 | **zone** | The kernel's classification of a path: a mount, the working area, an offload area, a runtime-internal area, or the authoring backend. | area |
 | **authoring backend** | The backend the runtime reads specs (rubrics included), hooks and cases from. The runtime alone reads it; assembly fails if a workspace exposes it. | authoring plane, governance plane |
 | **scratchpad** | `scratchpad/`, the one working area a session can always write to. | output, work |
-| **control tools** | `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_get_variables`, `archmax_set_variables`. | workflow tools |
+| **control tools** | `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. | workflow tools |
 | **sandbox tools** | `archmax_eval` (inline code) and `archmax_run` (an authored script), both executing in the QuickJS sandbox. | interpreter tools |
 | **delegation tools** | `archmax_workflow_<slug>`, one per sub-workflow a state allows. | task tools |
 | **file tools** | Deep Agents' `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`. | filesystem middleware |
 | **variables** | The session's flat key-value store, readable by the model, hooks and guards as `${{name}}`. A **locked** variable was seeded by the host, and `archmax_set_variables` refuses to change it. | session variables, context |
 | **park** | A session suspended and waiting: for a **decision** at a human state, or for **input** after `archmax_wait`. | interrupt, suspension, wait state |
+| **raise** | The agent ending its session as a failure with `archmax_raise({ code, reason })`, because the work cannot be completed. The session is **failed** and its outcome carries the code and reason as `exit`. A **rejected** session was ended by governance or the runtime instead; a **completed** one is a success. | exit, abort, error |
 | **decide · reply · deliver** | The three ways a parked session resumes: a person picks a transition; a person sends a message the model answers on a reply-only turn; the host delivers a trigger with variables. | respond, resume, send |
 | **runtime note** | A transcript message the runtime itself wrote: an arrival, a decision, an error route, a completion check. | narration, system message |
 | **trail** | The checkpointed audit trail of a session: every transition, decision, reset and delegation. | history, trajectory |

@@ -3,7 +3,7 @@
  * inside a session, as its own child session (see `sessions/scope.ts`).
  *
  * Two invariants carry the feature's safety. **Every failure is closed**: a
- * rejected child, an exhausted budget, a refused depth or cycle, an unloadable
+ * rejected child, a child that raised, an exhausted budget, a refused depth or cycle, an unloadable
  * target, an unresolvable param, and a child that parks with nothing to resume
  * it all raise {@link SubWorkflowError}; nothing returns a half-finished sub-run.
  * **Nothing crosses implicitly**: down, only the arguments the call passed; up,
@@ -34,7 +34,7 @@ import { DEFAULT_SUB_WORKFLOW_CONCURRENCY, DEFAULT_SUB_WORKFLOW_DEPTH } from "..
 import { findMock, readMocks } from "../core/tool-mocks.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
-import { readReturns, readVariables, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
+import { readRaised, readReturns, readVariables, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
 import { returnsRejection } from "./signature-checks.js";
 import {
   childRunConfig,
@@ -64,6 +64,8 @@ export type SubWorkflowFailureKind =
   | "disabled"
   | "parked"
   | "rejected"
+  /** The child's agent ended it with `archmax_raise`; the error carries its code and reason. */
+  | "raised"
   | "budget"
   | "error";
 
@@ -535,7 +537,8 @@ export function createSubWorkflowDispatcher(
    * signature: `missing-return` for an unset name, `invalid-return` for a value
    * that does not conform. A child its own completion check rejected is
    * reported by the same kinds, since that is the reason it was rejected; any
-   * other rejection stays `rejected`.
+   * other rejection stays `rejected`. A child that raised owes no returns: it
+   * fails as `raised`, carrying its agent's code and reason to the caller.
    */
   function settledReturns(
     workflow: string,
@@ -545,6 +548,15 @@ export function createSubWorkflowDispatcher(
     declared: SignatureEntry[],
   ): Record<string, unknown> | undefined {
     const fields = readWorkflowState(state);
+    if (fields.status === WORKFLOW_STATUSES.failed) {
+      const raised = readRaised(state);
+      throw new SubWorkflowError(
+        "raised",
+        workflow,
+        `Sub-workflow '${workflow}' failed: its agent raised '${raised?.code ?? "unknown"}' in state ` +
+          `'${raised?.state ?? finishedIn}': ${raised?.reason ?? "no reason recorded"}`,
+      );
+    }
     const store = readVariables(state);
     const trigger = fields.trigger?.id ?? MANUAL_TRIGGER;
     if (fields.rejected && fields.rejected !== returnsRejection(machine, trigger, finishedIn, store)) {

@@ -16,6 +16,8 @@ export const ADVANCE_TOOL = "archmax_advance";
 export const RESET_TOOL = "archmax_reset";
 /** Park the run in the state the call is made in, awaiting an external event. */
 export const WAIT_TOOL = "archmax_wait";
+/** End the session as a failure, with a code and a reason the host reads. */
+export const RAISE_TOOL = "archmax_raise";
 /** Evaluate inline JavaScript in the QuickJS sandbox (the model's code interpreter). */
 export const EVAL_TOOL = "archmax_eval";
 /** Execute a workspace script *file* in the QuickJS sandbox. */
@@ -74,6 +76,7 @@ export const HARNESS_CONTROL_TOOLS: ReadonlySet<string> = new Set([
   ADVANCE_TOOL,
   RESET_TOOL,
   WAIT_TOOL,
+  RAISE_TOOL,
   EVAL_TOOL,
   RUN_TOOL,
   GET_VARIABLES_TOOL,
@@ -89,12 +92,14 @@ export function isReservedToolName(name: string): boolean {
  * Tools permitted in every state regardless of its `tools` governance: the
  * runtime's own controls. `archmax_advance`'s target is still checked against the
  * state's `transitions`, and a variable write is decided by whether the target
- * is locked. `policy.forbid_tools` can still block any of them workflow-wide.
+ * is locked. `tools.forbid_always` (or a state's `tools.forbid`) can still block
+ * any of them.
  */
 export const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   ADVANCE_TOOL,
   RESET_TOOL,
   WAIT_TOOL,
+  RAISE_TOOL,
   GET_VARIABLES_TOOL,
   SET_VARIABLES_TOOL,
 ]);

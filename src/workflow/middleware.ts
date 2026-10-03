@@ -25,6 +25,7 @@ import {
   isReplyOnly,
   pendingParkOf,
   readRunUsage,
+  readRaised,
   readVariables,
   readWorkflowState,
   WORKFLOW_STATUSES,
@@ -242,6 +243,13 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
       hook: (state: WorkflowRequestState, runtime: FrameworkRuntime) => {
         const fields = readWorkflowState(state);
         const workflowState = currentWorkflowState(state, machine.entry);
+
+        // The agent raised in the step just serviced: the session is over. Ended
+        // here, before any model call, so nothing after the model runs either —
+        // no `on_error` route, no terminal `after` hook, no `returns` check.
+        if (fields.status === WORKFLOW_STATUSES.failed && readRaised(state)) {
+          return asHookResult({ jumpTo: "end" });
+        }
 
         // A park in progress: the closing turn it owes, or a delegated child's decision to present.
         const served = servePark(parkCtx, state, runtime, "before-model");

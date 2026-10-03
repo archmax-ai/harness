@@ -169,6 +169,32 @@ describe("a delegation call", () => {
     expect(eventsOf(events, "sub-workflow-result")).toMatchObject([{ status: "error" }]);
     expect(eventsOf(events, "sub-workflow-result")[0]?.reason).toMatch(/disabled/);
   });
+
+  it("fails the call with the child's own code when the child raises, owing no returns", async () => {
+    const { agent, events } = await assemble(delegatingWorkspace(), {
+      turns: [
+        { tool: CHILD_TOOL, args: { order_id: "ORD-7" } },
+        // — child —
+        { tool: "archmax_raise", args: { code: "customer-unknown", reason: "No customer matches the id." } },
+        // — parent —
+        { reply: "could not enrich" },
+      ],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "enrich ORD-7" });
+
+    const answer = toolResults(outcome.messages).find((r) => r.name === CHILD_TOOL);
+    expect(answer?.status).toBe("error");
+    expect(answer?.content).toMatch(/raised 'customer-unknown' in state 'work': No customer matches the id\./);
+    // Not reported as the unset return it also is: a child that raised owes none.
+    expect(answer?.content).not.toMatch(/enrichment_file/);
+    expect(eventsOf(events, "sub-workflow-result")).toMatchObject([{ workflow: "enrich", status: "error" }]);
+    expect(outcome.auditTrail.find((step) => step.kind === "sub-workflow")).toMatchObject({
+      workflow: "enrich",
+      status: "error",
+    });
+    // Like any child that ran and did not finish, it fails the calling state.
+    expect(outcome.kind).toBe("rejected");
+  });
 });
 
 describe("a typed call signature", () => {
