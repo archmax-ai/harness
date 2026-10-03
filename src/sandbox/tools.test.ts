@@ -4,6 +4,7 @@ import { PTC_EXCLUDED_TOOLS } from "../kernel/kernel.js";
 import type { ScriptExecutor, ScriptOutcome } from "./executor.js";
 import { AGENT_SESSION } from "./executor.js";
 import { createInterpreter, resolvePtcTools } from "./tools.js";
+import type { PtcToolGateway } from "./ptc-gateway.js";
 import { EVAL_TOOL, RUN_TOOL } from "../machine/tool-names.js";
 
 /** Pick one of the interpreter's tools by name (order is not a contract). */
@@ -225,5 +226,58 @@ describe("archmax_run argument contract", () => {
     );
 
     expect(seenArgs).toEqual({ limit: 2, variables: { orders_to_enrich: [{ order_id: "ORD-1" }] } });
+  });
+});
+
+describe("the surface a script is scoped to", () => {
+  function surfaceExecutor() {
+    const surfaces: Array<readonly string[] | undefined> = [];
+    const outcome: ScriptOutcome = { ok: true, value: null, logs: [], formatted: "" };
+    const executor: ScriptExecutor = {
+      async runFile(_path, opts) {
+        surfaces.push(opts.surface);
+        return outcome;
+      },
+      async runCode(_code, opts) {
+        surfaces.push(opts.surface);
+        return outcome;
+      },
+      dispose() {},
+    };
+    return { executor, surfaces };
+  }
+
+  it("is the gateway's surface for the scope, read at each evaluation", async () => {
+    const { executor, surfaces } = surfaceExecutor();
+    let state = "work";
+    const gateway = {
+      wrap: (tools: unknown[]) => tools,
+      refresh() {},
+      release() {},
+      surface: (scope: string) => (scope === "s1" ? [`${state}-tool`] : []),
+    } as unknown as PtcToolGateway;
+    const interpreter = createInterpreter({ executor, ptcNames: [], ptcGateway: gateway });
+    const config = { configurable: { thread_id: "s1" } };
+
+    await toolNamed(interpreter, EVAL_TOOL).invoke({ code: "Object.keys(tools)" }, config);
+    state = "done";
+    await toolNamed(interpreter, RUN_TOOL).invoke({ file_path: "skills/x/scripts/y.js" }, config);
+
+    expect(surfaces).toEqual([["work-tool"], ["done-tool"]]);
+  });
+
+  it("is absent without a gateway, so nothing scopes an ungoverned listing", async () => {
+    const { executor, surfaces } = surfaceExecutor();
+    const interpreter = createInterpreter({ executor, ptcNames: [] });
+    await toolNamed(interpreter, EVAL_TOOL).invoke({ code: "1" }, { configurable: { thread_id: "s1" } });
+    expect(surfaces).toEqual([undefined]);
+  });
+
+  it("is named in both tools' descriptions", () => {
+    const interpreter = createInterpreter({ executor: surfaceExecutor().executor, ptcNames: [] });
+    for (const name of [EVAL_TOOL, RUN_TOOL]) {
+      const described = interpreter.tools.find((t) => t.name === name)?.description ?? "";
+      expect(described, name).toContain("this state's tools");
+    }
   });
 });

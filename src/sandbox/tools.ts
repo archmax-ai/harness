@@ -76,6 +76,12 @@ export function createInterpreter(opts: {
 
   /** The PTC surface a call in this scope may use, wrapped by the gateway. */
   const scopeTools = (scope: string): StructuredTool[] => ptcToolsByScope.get(scope) ?? [];
+  /**
+   * The names a script in this scope lists under `tools`: its state's tools, read
+   * per evaluation because the REPL keeps the set it was first handed for good.
+   * Without a gateway nothing governs the calls, and nothing scopes the listing.
+   */
+  const scopeSurface = (scope: string) => (ptcGateway ? { surface: ptcGateway.surface(scope) } : {});
 
   const evalCode = tool(
     async (input: { code: string }, runtimeConfig) => {
@@ -84,6 +90,7 @@ export function createInterpreter(opts: {
         sessionId: scope,
         sessionNamespace: AGENT_SESSION,
         tools: scopeTools(scope),
+        ...scopeSurface(scope),
         prelude: true,
       });
       return outcome.formatted;
@@ -92,7 +99,7 @@ export function createInterpreter(opts: {
       name: EVAL_TOOL,
       description:
         "Evaluate JavaScript in a sandboxed REPL with persistent state across calls, " +
-        "console capture, and `tools.*` for tool calls. " +
+        "console capture, and `tools.*` for calls to this state's tools. " +
         "Prefer it over many small tool calls when work is loops, filtering, or arithmetic. " +
         "Every `tools.*` call is governed by the workflow graph exactly as a direct call is.",
       schema: z.object({
@@ -114,6 +121,7 @@ export function createInterpreter(opts: {
         // having to retype it.
         args: { ...(input.args ?? {}), variables: variablesByScope.get(scope) ?? {} },
         tools: scopeTools(scope),
+        ...scopeSurface(scope),
       });
       return outcome.formatted;
     },
@@ -121,7 +129,7 @@ export function createInterpreter(opts: {
       name: RUN_TOOL,
       description:
         "Run an authored workspace JavaScript file in the same sandboxed REPL as " +
-        `\`${EVAL_TOOL}\`, with \`tools.*\` for tool calls. The script reads its input as the ` +
+        `\`${EVAL_TOOL}\`, with \`tools.*\` for calls to this state's tools. The script reads its input as the ` +
         "global `args`: the arguments you pass plus `args.variables`, the session's variables " +
         "by name. Which files may run is enforced by the workflow graph.",
       schema: z.object({

@@ -25,8 +25,16 @@ is therefore in scope for a later `archmax_eval` call. Both get:
 
 - **Programmatic tool calling (PTC)**, under the `tools` namespace with
   camelCased names: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })`.
-  It exposes every agent tool except the runtime's own controls, both sandbox
-  tools among them.
+  It lists **the active state's tools**: the ones the model's own tool list
+  carries in that state, without the runtime's controls and the two sandbox
+  tools. The listing is re-scoped at the start of every evaluation, so after an
+  `archmax_advance` the next `Object.keys(tools)` shows the new state's tools.
+  `tools` stays one object for the whole REPL session, so a helper or a
+  `const t = tools` from an earlier call reads the current state too, and a
+  script that overwrites `tools` gets it back at its next evaluation. A tool the
+  state does not offer is left out of the listing, but its name still resolves:
+  calling it is refused by governance with the same reason the model's own call
+  would get, which the script can catch.
 - **`console.*` capture** and REPL state that persists across calls.
 - The last expression is returned to the model.
 
@@ -160,8 +168,9 @@ belong to the **runtime**, which runs them deterministically at fixed points in
 the graph. They use the same sandbox and the same PTC bridge.
 
 A hook runs on the runtime's authority, so the active state's `allow` list does
-**not** narrow its `tools.*` calls. A hook usually needs evidence the state
-itself withholds. Everything else still binds:
+**not** narrow its `tools.*` calls, and its `tools` lists every tool on the
+bridge rather than the state's. A hook usually needs evidence the state itself
+withholds. Everything else still binds:
 
 - the non-overridable safety rules, a write into the read-only authored zone
   among them
@@ -193,7 +202,7 @@ The input (`HookInput` in `@archmax-ai/harness/sandbox`; also available as the g
 | `variables` | The session's variables as a plain `name → value` map, including the built-in `trigger`. Read-only. |
 | `messages` | The recent transcript, newest last, as `{ role, text, toolCalls? }` objects. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or `runtime`. A `runtime` entry is a note the runtime wrote (an arrival, a decision, an error route), and `note` says which kind. |
 | `from`, `to`, `reason` | `after` hooks on an advance: the transition being attempted and the agent's reason. |
-| `tools` | The PTC bridge, camelCased: `tools.readFile({ file_path })`. |
+| `tools` | The PTC bridge, camelCased: `tools.readFile({ file_path })`. A hook's lists every tool on the bridge, not only the state's. |
 
 The verdict helpers are globals:
 

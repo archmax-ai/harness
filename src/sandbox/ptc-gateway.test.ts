@@ -339,3 +339,38 @@ describe("PTC calls are not interpolated", () => {
     expect(events.at(-1)).toMatchObject({ type: "tool-blocked", tool: "write_file", origin: "script" });
   });
 });
+
+describe("the surface a script lists", () => {
+  const SURFACE_SPEC: MachineSpec = {
+    tools: { allow_always: ["lookup"] },
+    states: {
+      work: { triggers: { manual: null }, tools: { allow: ["alpha"] }, transitions: [{ to: "done", description: "Finish." }] },
+      done: { tools: { allow: ["beta"], forbid: ["lookup"] } },
+    },
+  };
+
+  it("is the state's disclosed tools, following the live context from state to state", () => {
+    const { gateway } = setup({ spec: SURFACE_SPEC });
+    const work = gateway.surface("t1");
+    expect(work).toEqual(expect.arrayContaining(["alpha", "lookup", "read_file", "write_file"]));
+    expect(work).not.toContain("beta");
+
+    gateway.refresh("t1", { state: "done", config: {} });
+    const done = gateway.surface("t1");
+    expect(done).toContain("beta");
+    expect(done).not.toContain("alpha");
+    // A bare denial takes a tool off the model's list, so off the script's too.
+    expect(done).not.toContain("lookup");
+  });
+
+  it("never lists a control tool or a sandbox tool", () => {
+    const { gateway } = setup({ spec: SURFACE_SPEC });
+    for (const state of ["work", "done"]) {
+      gateway.refresh("t1", { state, config: {} });
+      const names = gateway.surface("t1");
+      for (const control of ["archmax_advance", "archmax_reset", "archmax_wait", "archmax_raise", "archmax_eval", "archmax_run"]) {
+        expect(names, `${control} in ${state}`).not.toContain(control);
+      }
+    }
+  });
+});

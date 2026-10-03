@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import { readPrelude } from "./prelude.js";
 
 describe("readPrelude", () => {
-  it("gives the PTC context the contract marker and nothing else", () => {
+  it("gives the PTC context the contract marker and the scoped tools view, nothing else", () => {
     const prelude = readPrelude("ptc", 2);
     expect(prelude).toContain('globalThis.__SANDBOX_VERSION = 2;');
     expect(prelude).toContain('context: "ptc"');
+    expect(prelude).toContain('Object.defineProperty(globalThis, "__archmaxScope"');
     expect(prelude).not.toMatch(/\bveto\b|\bdefineHook\b|globalThis\.t\b/);
+  });
+
+  it("keeps the hook context's tools unscoped", () => {
+    expect(readPrelude("lifecycle-hook", 2)).not.toContain("__archmaxScope");
   });
 
   it("gives the hook context the verdict helpers, defineHook and the reducer", () => {

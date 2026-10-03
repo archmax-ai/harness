@@ -35,6 +35,18 @@ as it is today; the guides themselves describe only the present. Every release a
   [ending a session as a failure](/guides/workflow-machine/#ending-a-session-as-a-failure),
   [how a session ended](/guides/sessions/#how-a-session-ended) and
   [`on_error`](/reference/machine-spec/#on_error).
+- **A script lists only its state's tools.** In `archmax_eval` and `archmax_run`, `tools` used to
+  list every tool the assembly registered, whatever the state allowed: `Object.keys(tools)` in a
+  state with two tools printed all 120 of a connected MCP server's. The calls were governed, the
+  names were not. `tools` now lists exactly the tools the model's own tool list carries in the
+  state the script's calls are governed against, re-scoped at the start of every evaluation, so
+  after an advance the same REPL lists the next state's tools. It stays one object, so a helper
+  or a reference kept from an earlier call follows along. A tool the state does not offer is
+  unlisted but still resolves by name, and calling it is refused with governance's reason, as
+  before. Lifecycle hooks are unchanged: they run on runtime authority and list every tool.
+  **For hosts and authors:** nothing to change; a script that enumerated `tools` now sees fewer
+  names, and every call is decided as before. See
+  [the code interpreter](/guides/code-interpreter/).
 
 ## 0.2.1 (unreleased)
 

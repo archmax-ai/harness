@@ -19,13 +19,42 @@ function readPart(name: string): string {
 }
 
 /**
- * The PTC context's whole prelude: the versioned contract marker and nothing
- * else. The model's own code (`archmax_eval`, `archmax_run`) gets no hook
- * vocabulary — `tools` and `args` are injected separately by the executor and
- * the QuickJS session.
+ * The PTC context's whole prelude: the versioned contract marker and the view
+ * that scopes `tools` to the active state. The model's own code (`archmax_eval`,
+ * `archmax_run`) gets no hook vocabulary — `tools` and `args` are injected
+ * separately by the executor and the QuickJS session.
  */
-const PTC_PRELUDE =
-  `globalThis.SANDBOX_CONTRACT = { context: "ptc", version: globalThis.__SANDBOX_VERSION };`;
+const PTC_PRELUDE = [
+  `globalThis.SANDBOX_CONTRACT = { context: "ptc", version: globalThis.__SANDBOX_VERSION };`,
+  // The session injects every PTC tool once, at its first evaluation, and keeps
+  // that object for its lifetime — across every state the run moves through. So
+  // the scoping happens in here: one Proxy, installed once, whose listing is the
+  // surface the executor names per evaluation (`__archmaxScope`). Its identity
+  // never changes, so a reference an earlier evaluation kept reads the current
+  // state. `get` still resolves a registered name outside the view, so calling
+  // one reaches governance and its refusal, not a TypeError. An IIFE: the
+  // evaluation hoists top-level declarations onto `globalThis`.
+  `(() => {
+  if (globalThis.__archmaxScope) return;
+  const all = globalThis.tools != null && typeof globalThis.tools === "object" ? globalThis.tools : {};
+  const injected = (name) => typeof name === "string" && Object.prototype.hasOwnProperty.call(all, name);
+  let surface = null;
+  const visible = (name) => injected(name) && (surface === null || surface.has(name));
+  const view = new Proxy({}, {
+    get: (_target, name) => (injected(name) ? all[name] : undefined),
+    has: (_target, name) => visible(name),
+    ownKeys: () => Object.keys(all).filter(visible),
+    getOwnPropertyDescriptor: (_target, name) =>
+      visible(name) ? { value: all[name], writable: false, enumerable: true, configurable: true } : undefined,
+  });
+  Object.defineProperty(globalThis, "__archmaxScope", {
+    value: (names) => {
+      surface = new Set(names);
+      globalThis.tools = view;
+    },
+  });
+})();`,
+].join("\n");
 
 /**
  * Assemble the QuickJS prelude for a sandbox context. The lifecycle-hook context

@@ -70,6 +70,74 @@ describe("createScriptExecutor.runCode", () => {
   });
 });
 
+/** A tool as the session injects it: only the name and `invoke` matter to the bridge. */
+const stubTool = (name: string) =>
+  ({ name, description: name, schema: { type: "object" }, invoke: async () => `${name}:done` }) as never;
+const STUB_TOOLS = [stubTool("read_file"), stubTool("write_file"), stubTool("archmax_workflow_enrich-order")];
+
+describe("a script's tools, scoped to a surface", () => {
+  it("lists only the surface an archmax_eval is run with, camel-cased like the bridge", async () => {
+    const executor = createScriptExecutor({ workspace: workspaceWith({}) });
+    const outcome = await executor.runCode("Object.keys(tools)", {
+      sessionId: "s1",
+      sessionNamespace: "agent",
+      prelude: true,
+      tools: STUB_TOOLS,
+      surface: ["read_file", "archmax_workflow_enrich-order"],
+    });
+    executor.dispose("s1");
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(outcome.value).toEqual(["readFile", "archmaxWorkflowEnrichOrder"]);
+  });
+
+  it("scopes an archmax_run file the same way", async () => {
+    const executor = createScriptExecutor({ workspace: workspaceWith({ "/skills/x/scripts/keys.js": "Object.keys(tools)" }) });
+    const outcome = await executor.runFile("skills/x/scripts/keys.js", {
+      sessionId: "s2",
+      sessionNamespace: "agent",
+      tools: STUB_TOOLS,
+      surface: ["write_file"],
+    });
+    executor.dispose("s2");
+    expect(outcome.value).toEqual(["writeFile"]);
+  });
+
+  it("lists every injected tool without a surface, or without the prelude", async () => {
+    const executor = createScriptExecutor({ workspace: workspaceWith({}) });
+    const unscoped = await executor.runCode("Object.keys(tools)", {
+      sessionId: "s3",
+      sessionNamespace: "agent",
+      prelude: true,
+      tools: STUB_TOOLS,
+    });
+    const raw = await executor.runCode("Object.keys(tools)", {
+      sessionId: "s4",
+      sessionNamespace: "agent",
+      tools: STUB_TOOLS,
+      surface: ["read_file"],
+    });
+    executor.dispose("s3");
+    executor.dispose("s4");
+    expect(unscoped.value).toEqual(["readFile", "writeFile", "archmaxWorkflowEnrichOrder"]);
+    expect(raw.value).toEqual(["readFile", "writeFile", "archmaxWorkflowEnrichOrder"]);
+  });
+
+  it("keeps a hook's tools whole, whatever surface the run names", async () => {
+    const executor = createScriptExecutor({
+      workspace: workspaceWith({ "/hooks/keys.js": "export default ({ tools }) => ok(Object.keys(tools).join(','));" }),
+    });
+    const outcome = await executor.runFile("hooks/keys.js", {
+      sessionId: "s5",
+      sessionNamespace: "process",
+      lifecycle: true,
+      tools: STUB_TOOLS,
+      surface: ["read_file"],
+    });
+    executor.dispose("s5");
+    expect(outcome.value).toMatchObject({ verdict: "ok", reason: "readFile,writeFile,archmaxWorkflowEnrichOrder" });
+  });
+});
+
 describe("createScriptExecutor.runFile", () => {
   it("reports a clear error when the script is not served by the backend", async () => {
     const executor = createScriptExecutor({ workspace: workspaceWith({}) });

@@ -1,5 +1,5 @@
 import type { StructuredTool } from "@langchain/core/tools";
-import { transformForEval } from "@langchain/quickjs";
+import { toCamelCase, transformForEval } from "@langchain/quickjs";
 import type { Workspace } from "../core/workspace.js";
 import { normalizeRelPath } from "../core/workspace.js";
 import { readPrelude } from "./prelude.js";
@@ -35,6 +35,13 @@ export interface ScriptRunParams {
    * bespoke callers that assemble their own preamble leave it off.
    */
   prelude?: boolean;
+  /**
+   * The tool names a `ptc` script lists under `tools`: the active state's
+   * surface, re-applied at the start of this evaluation. Set by the agent's two
+   * sandbox tools only; absent, `tools` lists every tool the session injected,
+   * which is what a lifecycle hook keeps.
+   */
+  surface?: readonly string[];
 }
 
 export interface ScriptOutcome {
@@ -74,6 +81,13 @@ function sandboxContext(params: ScriptRunParams): SandboxContext {
 
 const argsAssignment = (args: Record<string, unknown> | undefined) =>
   `globalThis.args = ${JSON.stringify(args ?? {})};`;
+
+/**
+ * The line that scopes `tools` to a surface, after the `ptc` prelude installed
+ * the view: named the way the session keys its injected tools, so the two match.
+ */
+const scopeCall = (surface: readonly string[] | undefined): string[] =>
+  surface ? [`globalThis.__archmaxScope(${JSON.stringify(surface.map((name) => toCamelCase(name)))});`] : [];
 
 /**
  * The code a lifecycle hook runs as. The hook body is evaluated as its own
@@ -143,6 +157,7 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
       const prelude = readPrelude(sandboxContext(params), sandboxVersion);
       const code = [
         prelude,
+        ...scopeCall(params.surface),
         argsAssignment(params.args),
         `globalThis.__scriptPath = ${JSON.stringify(normalizeRelPath(filePath))};`,
         source,
@@ -153,9 +168,10 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
     runCode(code, params) {
       if (!params.prelude) return evalCode(code, params);
       // Same contract as an authored file: the PTC prelude runs first so inline
-      // code sees the same `SANDBOX_CONTRACT` marker and the same absence of
-      // the hook-only vocabulary.
-      return evalCode(`${readPrelude(sandboxContext(params), sandboxVersion)}\n${code}`, params);
+      // code sees the same `SANDBOX_CONTRACT` marker, the same scoped `tools` and
+      // the same absence of the hook-only vocabulary.
+      const preamble = [readPrelude(sandboxContext(params), sandboxVersion), ...scopeCall(params.surface)];
+      return evalCode(`${preamble.join("\n")}\n${code}`, params);
     },
 
     dispose(sessionId, sessionNamespace) {
