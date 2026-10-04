@@ -527,12 +527,12 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     });
 
     // Progressive disclosure: the active state's surface in registration order (a
-    // byte-identical cacheable prefix); a reply-only turn is handed nothing.
-    if (replyOnly) request.tools = [];
-    else {
-      const disclosed = machine.disclosedTools(workflowState);
-      request.tools = tools.filter((t) => disclosed.has(t.name));
-    }
+    // byte-identical cacheable prefix). A reply-only turn is handed the same list:
+    // its transcript carries tool calls and runtime notes, and a provider may refuse
+    // that history without the definitions it belongs to. The kernel's reply-only
+    // rule refuses every call the turn makes, so the list lets it act on nothing.
+    const disclosed = machine.disclosedTools(workflowState);
+    request.tools = tools.filter((t) => disclosed.has(t.name));
 
     // The model this state declared, if it declared one. Set here because this
     // is where the machine's position is known: a session moves inside a turn,
@@ -662,7 +662,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
         state: workflowState,
         tool: toolName,
         args,
-        // A reply-only turn is handed no tools, so a call here was invented from transcript context.
+        // A reply-only turn may only speak: the kernel refuses any call it makes, ahead of every grant.
         ...(isReplyOnly(request.state) ? { replyOnly: true } : {}),
       },
       policyRules,

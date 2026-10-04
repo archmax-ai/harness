@@ -7,9 +7,10 @@
  *  1. **Commit.** The record is written — by the tool seam (`archmax_advance`
  *     into a human state, `archmax_wait`, a delegated child's suspension) or by a
  *     hook — with `parkPhase: "closing"`.
- *  2. **Close.** The run owes the person one tool-free message: `servePark` sets
- *     `replyOnly` and moves the phase to `suspend`; the model speaks; the hook
- *     after it marks the reply spent.
+ *  2. **Close.** The run owes the person one message and may take no action:
+ *     `servePark` sets `replyOnly` and moves the phase to `suspend`; the model
+ *     speaks (any tool call it makes is refused); the hook after it marks the
+ *     reply spent.
  *  3. **Suspend.** The next hook site holding a record in phase `suspend` with
  *     nothing owed calls `interrupt(record)`. Nothing else happens in that node
  *     before the interrupt, so its re-execution on resume repeats no side effect.
@@ -167,9 +168,10 @@ export function replyOnlyDirective(machine: WorkflowMachine, state: unknown): st
   }
   return (
     `${opening}\n\n` +
-    `Write one short message to them, in your own voice, and nothing else. This turn has no ` +
-    `tools: you cannot read, write, move the run, or do any further work, and the run does not ` +
-    `continue when you finish — it stays parked until someone else acts.`
+    `Write one short message to them, in your own voice, and nothing else. Do not call any ` +
+    `tool: every call on this turn is refused, so you cannot read, write, move the run, or do ` +
+    `any further work, and the run does not continue when you finish — it stays parked until ` +
+    `someone else acts.`
   );
 }
 

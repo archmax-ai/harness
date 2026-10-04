@@ -151,7 +151,8 @@ states:
   and transition `type`s. The handoff spends one reply-only model call so the
   park carries a message — do **not** instruct the agent to announce the
   handoff (two messages). While parked, `archmax reply` is answered on a
-  tool-free turn and re-parks unchanged; only `decide` moves the run. A
+  reply-only turn (every tool call refused) and re-parks unchanged; only
+  `decide` moves the run. A
   `refine` edge delivers the reviewer's comment as correction.
 - **Hooks.** `before`: ok/veto (veto rejects entry; on a start state, the
   run; routed through `on_error` if declared). `after`: ok/correct/veto on

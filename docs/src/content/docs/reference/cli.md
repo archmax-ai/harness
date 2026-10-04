@@ -152,7 +152,8 @@ archmax reply <session> <message...> [--workflow <slug>] [--verbose]
 ```
 
 Sends a message to a session parked at a human state. The session answers on a
-turn with no tools and stays parked, with the same decision pending. The answer
+reply-only turn, where every tool call is refused, and stays parked, with the
+same decision pending. The answer
 goes to `stdout`, the still-parked reminder to `stderr`.
 
 Routing stays with `decide`, whatever the message says. Fails (exit 1) when the

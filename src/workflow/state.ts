@@ -98,7 +98,7 @@ export type ParkChannel = "decision" | "input";
 
 /**
  * Where a park stands: `closing` — the record is committed and the run owes one
- * tool-free message before it suspends; `suspend` — the next hook site suspends
+ * message, and may take no action, before it suspends; `suspend` — the next hook site suspends
  * the session; `null` — no park in progress.
  */
 export const parkPhaseSchema = z.enum(["closing", "suspend"]);
@@ -179,7 +179,7 @@ const workflowStateFields = {
   pendingDelegations: z.array(pendingDelegationSchema).nullable().optional(),
   parkPhase: parkPhaseSchema.nullable().optional(),
   /**
-   * This model call is a reply-only turn: no tools, one text reply. Set by both
+   * This model call is a reply-only turn: one text reply, every tool call refused. Set by both
    * park moments (the closing turn and a reply to a parked session) so
    * disclosure and governance read one condition. Cleared when spent.
    */

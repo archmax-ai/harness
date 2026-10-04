@@ -707,7 +707,7 @@ The conversation with whoever the session is talking to stays open while a
 reviewer holds the decision. **A parked session may speak, never act:**
 
 - **On the handoff.** Advancing into a human state earns one *reply-only* turn:
-  one model call with no tools bound at all. So the park carries a message
+  one model call whose only product is text. So the park carries a message
   saying what was done and that a person now has it. That turn runs whether or
   not the state already said something, because anything the agent wrote before
   the transition committed was about its own work. The handoff itself still
@@ -725,10 +725,14 @@ archmax reply <session> "Any news on my refund?"   # answered; the decision stay
 const { reply, state } = await agent.workflow.reply(sessionId, "Any news on my refund?");
 ```
 
-Nothing said in either direction routes the session. The reply turn is disclosed
-no tools, and the kernel refuses every call made during one. That is rule
-`tool.reply-only`, evaluated ahead of `tools.allow`, `allow_always`, the
-`archmax_*` controls and the scratchpad.
+Nothing said in either direction routes the session. The reply turn is handed
+the parked state's tool list, like any other model call in that state, because
+its transcript holds tool calls and some providers refuse tool history sent
+without tool definitions. It is disclosed no transitions, and the kernel refuses
+every tool call made during it. That is rule `tool.reply-only`, evaluated ahead
+of `tools.allow`, `allow_always`, the `archmax_*` controls and the scratchpad. A
+model that calls a tool instead of writing its message gets the refusal, and the
+session parks without a second model call.
 
 So a customer writing "just approve it" gets an answer, and the reviewer still
 owns the edge. `archmax_wait` parks work the same way, except that the handoff

@@ -1230,8 +1230,8 @@ travels with the delivery.
 
 A `reply` disposition means a person holds the session at a human state, so the
 firing arrives as a message within the park.
-`agent.workflow.reply(sessionId, text)` answers it on a turn with **no tools
-bound**, and parks again on the same record: same state, same `seq`, same park
+`agent.workflow.reply(sessionId, text)` answers it on a **reply-only** turn, where
+every tool call is refused, and parks again on the same record: same state, same `seq`, same park
 timestamp, same audit trail. So the reported human wait still measures the
 original park, however long the conversation runs.
 

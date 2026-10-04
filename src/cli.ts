@@ -343,7 +343,8 @@ const COMMANDS: Record<string, Command> = {
     name: "reply",
     summary: "Send a message to a session parked at a human state; it stays parked",
     description:
-      "The session answers on a turn with no tools and stays parked at the same state with the same decision pending — " +
+      "The session answers on a reply-only turn, where every tool call is refused, and stays parked at the same state " +
+      "with the same decision pending — " +
       "this is how you talk to a parked session, not how you move it. Use 'archmax decide' for that; no wording here selects a transition.",
     positionals: [
       SESSION_ARG,

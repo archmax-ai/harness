@@ -578,7 +578,7 @@ error. The two actions:
 
 | Action   | Shape                      | Meaning                                                                                                                                                                                                        |
 | -------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`   | `send: "<message>"`        | One user message — a plain string, nothing else (no transport fields; start conditions live at case scope). Runs the agent until it stops (final answer, park, or failure), under the case's declared trigger. Against a run **parked at a human state** it is a message instead: answered on a tool-free turn, leaving the run parked at the same state. |
+| `send`   | `send: "<message>"`        | One user message — a plain string, nothing else (no transport fields; start conditions live at case scope). Runs the agent until it stops (final answer, park, or failure), under the case's declared trigger. Against a run **parked at a human state** it is a message instead: answered on a reply-only turn (every tool call refused), leaving the run parked at the same state. |
 | `decide` | `decide: { to, comment? }` | Resume a **parked** run: the simulated human picks the outgoing transition `to` (a state slug), optionally with a review comment (delivered to the agent as correction on `refine` edges).                      |
 
 ```yaml
