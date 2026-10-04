@@ -145,6 +145,19 @@ export type WorkflowEventPayload =
       to: string;
       sessionId: string;
     }
+  // The agent ended the session as a failure with `archmax_raise`: the session is
+  // `failed`, and a `state-leave` follows. Nothing routes, and no hook runs.
+  | {
+      type: "raised";
+      /** The state the agent raised in; the session's position stays there. */
+      state: string;
+      sessionId: string;
+      /** The agent's own short code for what failed. */
+      code: string;
+      reason: string;
+      /** The `archmax_raise` call, matching its `tool-called`/`tool-result` pair. */
+      callId?: string;
+    }
   // Assistant output. `agent-text-delta` streams each text chunk as the model
   // produces it; `agent-text` carries each new AI message's complete text after
   // the turn. `messageId` is shared between a message's deltas and its final
@@ -353,6 +366,7 @@ function defaultLevel(event: WorkflowEventPayload): WorkflowEventLevel {
     case "warning":
     case "tool-blocked":
     case "hook-rejected":
+    case "raised":
       return "warn";
     case "tool-result":
     case "rubric-result":
@@ -492,6 +506,8 @@ export function renderEventLine(event: WorkflowLifecycleEvent): string | null {
       );
     case "delivered":
       return `[workflow] '${event.trigger}' delivered to '${event.state}', resuming it (session ${event.sessionId})`;
+    case "raised":
+      return `[workflow] '${event.state}' raised '${event.code}', the session failed: ${event.reason} (session ${event.sessionId})`;
     case "variables-set":
       return `[workflow] variables set${event.state ? ` in ${event.state}` : ""}: ${
         event.names.join(", ")

@@ -63,10 +63,17 @@ then verify. Do not write a file, validate, and discover the next file.
    `date` `date-time` `object` `array`) where the caller must build or read the
    value. The runtime holds typed entries at start, at `archmax_set_variables`
    and at completion ([`references/workflow-schema.md`](references/workflow-schema.md)).
+   Decide how the work can **fail**, too: the agent ends a session it cannot
+   complete with `archmax_raise({ code, reason })`, always on and only for
+   failure (a session that never raises is a success). Where a host branches
+   on why, name the codes in the `instructions` of the states that can hit
+   them; where a person must always be reached instead, forbid the tool in
+   that state.
 2. **Decide the file set** from the sketch: `workflow.yaml` always; one
    `hooks/<check>.js` per *deterministic* gate; one inline `rubric:` per
    *judgment* gate (tone, completeness); cases — one happy path per branch,
-   one per hook veto path, one `decide:` per human state; a
+   one per hook veto path, one `decide:` per human state, one `raised:` per
+   failure a host branches on; a
    `skills/<capability>/` bundle only for data, an `archmax_run` script, or
    guidance two or more states share identically; `AGENTS.md` only for a
    workspace-wide persona.
@@ -98,8 +105,8 @@ then verify. Do not write a file, validate, and discover the next file.
    [`references/diagnostics.md`](references/diagnostics.md).
 2. Read **only** the files the diagnostics name. Edit once. Re-validate.
 3. When clean, `archmax test <slug> [filter]`. Read the failing case's verdict
-   line: a **structural** miss (`reachedState`, `parked`, `succeeded`,
-   `trail`) is a routing or governance defect — fix the routing state's
+   line: a **structural** miss (`reachedState`, `parked`, `raised`,
+   `succeeded`, `trail`) is a routing or governance defect — fix the routing state's
    `instructions`, the transition `description`s, or the `tools`/`skills`
    grants; a **content** miss (`reply`, `calledTool`, `grade`) is an
    `instructions` defect in the state that answered; a veto reason quoted in
@@ -232,7 +239,8 @@ archmax deliver <session> --trigger <id> [--variables '<json>']   # resume an ar
 
 `<workflow>` may be omitted when the workspace has one. Global `--root <dir>`
 (cwd default; `.env` loads from it), `--verbose` for raw events. Results on
-stdout, narration on stderr. Exit 0 done/parked, 1 failure, 2 usage. Dev from
+stdout, narration on stderr. Exit 0 done/parked, 1 failure (a raise included:
+`✖ failed` with the agent's code), 2 usage. Dev from
 the SDK checkout: `npm run dev -- <command…>`.
 
 ---

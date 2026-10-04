@@ -17,7 +17,7 @@
  */
 import { isChildSessionOf } from "../sessions/scope.js";
 import { originLabel, type WorkflowEventInput } from "../core/events.js";
-import { ADVANCE_TOOL } from "../machine/tool-names.js";
+import { ADVANCE_TOOL, RAISE_TOOL } from "../machine/tool-names.js";
 import { exitCodeForVerdict, type CaseResult, type SuiteSkip } from "../testing/runner.js";
 import { createStyle, icons, type Style } from "./style.js";
 
@@ -56,6 +56,8 @@ export function createStateFlowRenderer(
   const writeAgentText = (text: string) => {
     for (const line of text.split("\n")) write(`${ACTION_INDENT}${s.gray(icons.quote)} ${line}`);
   };
+  // The state a raise just ended the session in: its leave reads as a failure, not a completion.
+  let raisedIn: string | undefined;
 
   return {
     onEvent(event: WorkflowEventInput) {
@@ -72,9 +74,18 @@ export function createStateFlowRenderer(
           write(`${s.cyan(icons.inProgress)} ${s.bold(event.state)}`);
           break;
         case "state-leave":
+          if (raisedIn === event.state) {
+            raisedIn = undefined;
+            write(`${s.red(icons.cross)} ${event.state} ${s.dim(icons.arrow)} ${s.red("failed")}`);
+            break;
+          }
           write(
             `${s.green(icons.check)} ${event.state} ${s.dim(icons.arrow)} ${s.cyan(event.next)}`,
           );
+          break;
+        case "raised":
+          raisedIn = event.state;
+          write(`${ACTION_INDENT}${s.red(`${icons.cross} raised ${event.code}`)} ${s.dim(event.reason)}`);
           break;
         case "state-error-routed":
           write(
@@ -114,8 +125,9 @@ export function createStateFlowRenderer(
           break;
         case "tool-called":
           // The transition tool is reported by the state lines and the advance
-          // reason, so its call would be the same event twice.
-          if (event.tool === ADVANCE_TOOL) break;
+          // reason, and an accepted raise by its own `raised` line, so either
+          // call would be the same event twice.
+          if (event.tool === ADVANCE_TOOL || event.tool === RAISE_TOOL) break;
           write(
             `${ACTION_INDENT}${s.gray(icons.bullet)} ${s.dim(event.tool)}` +
               `${event.detail ? ` ${s.gray(event.detail)}` : ""}` +

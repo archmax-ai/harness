@@ -96,6 +96,28 @@ the agent finishes there. A session starts at the state whose `triggers` matched
 (`manual` for the CLI). A state may name several triggers as a list, and all of
 them begin there. See [triggers](/guides/triggers/).
 
+### Ending a session as a failure
+
+When the work **cannot be completed** (a system it depends on keeps failing,
+the thing asked about does not exist), the agent calls
+**`archmax_raise({ code, reason })`** to end the session as a failure. The call
+has to be the only tool call in its message, and it works from any state. The
+session ends at once with the status `failed`, and the host reads the agent's
+`code` (a short free-form token such as `orders-unavailable`) and its `reason`
+off the outcome as `exit: { success: false, code, reason }`. Nothing runs on the
+way out: no `on_error` route, no hook (a terminal state's `after` hook
+included), and no check of the trigger's `returns`. The position stays where the
+agent raised, and the trail records no step.
+
+A session that ends without `archmax_raise` is a success
+(`exit: { success: true }`), so the tool is only for failure. The agent is told
+to recover first (a retry, another tool) and never to use it in place of
+`archmax_wait`, `archmax_reset` or a human state. A session that raised takes
+its next message as a fresh turn in the state it raised in. Where an
+agent-declared failure is unwanted, ban the tool with
+`tools: { forbid_always: [archmax_raise] }`, or in one state with its
+`tools.forbid`. See [sessions](/guides/sessions/#how-a-session-ended).
+
 ### What the agent sees of the graph
 
 The graph is disclosed the way the tool surface is: from where the agent stands.
@@ -163,7 +185,8 @@ for:
 - **The always-on tools**: `ls`, `read_file`, `write_file`, `edit_file`, `glob`,
   `grep`, `write_todos`, `archmax_eval` and `archmax_run`.
 - **The runtime's own `archmax_*` controls**: `archmax_advance` in non-terminal
-  states; `archmax_reset`, `archmax_wait` and the variable tools everywhere.
+  states; `archmax_reset`, `archmax_wait`, `archmax_raise` and the variable tools
+  everywhere.
 - **The workflow's `tools.allow_always` grants**, declared once at the root.
 
 Every other tool has to be declared. A state with no `tools` block gets exactly

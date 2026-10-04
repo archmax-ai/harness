@@ -151,6 +151,18 @@ type _UsageParity = _AssertMutual<z.infer<typeof usageSummarySchema>, UsageSumma
 const _usageParity: _UsageParity = true;
 void _usageParity;
 
+/**
+ * What `archmax_raise` committed: the agent's own code and reason for ending the
+ * session as a failure, and the state it raised in. Cleared at the next turn.
+ */
+export const raiseRecordSchema = z.object({
+  code: z.string(),
+  reason: z.string(),
+  state: z.string(),
+});
+
+export type RaiseRecord = z.infer<typeof raiseRecordSchema>;
+
 // --- Fields -------------------------------------------------------------------
 
 /** The workflow fields persisted in the checkpointer alongside `messages`. */
@@ -159,6 +171,8 @@ const workflowStateFields = {
   workflowState: z.string().optional(),
   /** Why the current turn was rejected; cleared on every transition and turn. */
   rejected: z.string().nullable().optional(),
+  /** The failure the agent raised this turn (`status: failed`); cleared on every turn. */
+  raised: raiseRecordSchema.nullable().optional(),
   iterations: z.record(z.string(), z.number()).optional(),
   beforeDone: z.record(z.string(), z.boolean()).optional(),
   /** The trigger that started (or last resumed) this run. Its input lives in `variables`. */
@@ -359,6 +373,8 @@ export function readReturns(
 export const WORKFLOW_STATUSES = {
   running: "running",
   completed: "completed",
+  /** The agent ended the session with `archmax_raise`. */
+  failed: "failed",
   rejected: "rejected",
   awaitingDecision: "awaiting_decision",
   awaitingInput: "awaiting_input",
@@ -369,6 +385,7 @@ export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[keyof typeof WORKFLOW_ST
 /** The statuses of a run that is over; a parked session is open. */
 export const FINISHED_STATUSES: ReadonlySet<string> = new Set<WorkflowStatus>([
   WORKFLOW_STATUSES.completed,
+  WORKFLOW_STATUSES.failed,
   WORKFLOW_STATUSES.rejected,
 ]);
 
@@ -386,6 +403,12 @@ export function classifyStatus(status: string | undefined): SessionClassificatio
 export function readRunUsage(state: unknown): UsageSummary {
   const usage = readWorkflowState(state).usage;
   return usage ? { ...emptyUsage(), ...usage } : emptyUsage();
+}
+
+/** The failure a session raised, when its last turn ended `failed`; a malformed record reads as absent. */
+export function readRaised(state: unknown): RaiseRecord | undefined {
+  const parsed = raiseRecordSchema.safeParse(readWorkflowState(state).raised);
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function readAuditTrail(state: unknown): TrailStep[] {

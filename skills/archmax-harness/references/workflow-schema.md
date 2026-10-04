@@ -9,6 +9,7 @@ optional `WORKFLOW.md` prose addendum) plus the surrounding workspace. Targets
 - [File shape](#file-shape)
 - [Root fields](#root-fields)
 - [States (`MachineState`)](#states-machinestate)
+- [Ending a run as a failure: `archmax_raise`](#ending-a-run-as-a-failure-archmax_raise)
 - [Transitions](#transitions)
 - [Tool governance](#tool-governance)
 - [Skill governance](#skill-governance)
@@ -620,8 +621,8 @@ in the resolution channel and in where the run continues — a decision advances
 along the chosen edge, a delivery resumes the parked state.
 
 **Runtime control tools** carry the `archmax_` prefix — `archmax_advance`,
-`archmax_reset`, `archmax_wait`, `archmax_run`, `archmax_get_variables`,
-`archmax_set_variables` — and are the names to write in `tools.allow`,
+`archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_run`,
+`archmax_get_variables`, `archmax_set_variables` — and are the names to write in `tools.allow`,
 `tools.allow_always`, and the `forbid`/`forbid_always` lists. These are the only spellings:
 an entry naming an unprefixed variant governs a tool that does not exist,
 silently granting nothing. A host tool may never claim the prefix. Deep Agents' built-ins
@@ -637,6 +638,36 @@ silently granting nothing. A host tool may never claim the prefix. Deep Agents' 
   grant that would otherwise reach it (see [Tool governance](#tool-governance)).
 - A state with **no transitions** is **terminal**: the run ends when the agent
   finishes its turn there; it cannot call `archmax_advance`.
+
+## Ending a run as a failure: `archmax_raise`
+
+When the work **cannot be completed** — a system it depends on keeps failing, the
+thing asked about does not exist — the agent calls
+`archmax_raise({ code, reason })`. It is in every state (terminal ones included),
+never declared, and only for failure: a session that ends without it is a
+success.
+
+- The call must be the **only** tool call in its message; one sent beside other
+  calls is refused, and the model may raise again on its own.
+- The session ends **at once** with status `failed` (classified **finished**): no
+  further model call, no `on_error` route, no `before`/`after` hook (a terminal
+  state's included), no check of the trigger's `returns`. A rejection still
+  pending from earlier in the turn is replaced. The position stays where the
+  agent raised; the trail records no step.
+- The host reads `Outcome.kind === "failed"` and `Outcome.exit`
+  (`{ success: false, code, reason }`); a completed turn carries
+  `exit: { success: true }`. `code` is the agent's own free-form token (≤ 64
+  characters, one line), so if hosts branch on particular codes, name them in
+  the state's `instructions` ("if the order does not exist, raise
+  `order-not-found`").
+- A **child** session that raises fails its caller's delegation call with kind
+  `raised`, naming the code and reason; the caller may recover, route through
+  its own `on_error`, or raise in turn.
+- Ban it with `tools: { forbid_always: [archmax_raise] }` (or one state's
+  `tools.forbid`) where the agent must not end the run itself — say, a state that
+  must always reach a person instead. Scripts and hooks cannot call it.
+- Test it with the structural `raised` assertion; `succeeded: true` fails on a
+  raise.
 
 ## Transitions
 

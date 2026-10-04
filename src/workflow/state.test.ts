@@ -14,6 +14,7 @@ import {
   type TrailStep,
   type WorkflowStateFields,
   workflowStateSchema,
+  readRaised,
   readReturns,
 } from "./state.js";
 
@@ -101,6 +102,14 @@ describe("state channels", () => {
       { variables: { case_id: { value: "K-10", locked: false } } },
     );
     expect(settled.variables?.case_id).toEqual({ value: "K-9", locked: true });
+  });
+
+  it("keeps a raise as the last value written, and clears it on null", async () => {
+    const raise = { code: "orders-unavailable", reason: "The orders API is down.", state: "lookup" };
+    const echoed = await foldTwoUpdates({ raised: raise, status: "failed" }, { raised: raise });
+    expect(echoed.raised).toEqual(raise);
+    const cleared = await foldTwoUpdates({ raised: raise }, { raised: null });
+    expect(cleared.raised).toBeNull();
   });
 
   it("appends a trail delta", async () => {
@@ -203,6 +212,11 @@ describe("open/finished partition", () => {
     expect(classifyStatus(WORKFLOW_STATUSES.completed)).toBe("finished");
   });
 
+  it("classifies a session the agent ended with a raise as finished", () => {
+    expect(isFinished(WORKFLOW_STATUSES.failed)).toBe(true);
+    expect(classifyStatus("failed")).toBe("finished");
+  });
+
   it("classifies a suspended run as open — a park is not done", () => {
     expect(isFinished(WORKFLOW_STATUSES.awaitingDecision)).toBe(false);
     expect(isFinished(WORKFLOW_STATUSES.awaitingInput)).toBe(false);
@@ -220,7 +234,21 @@ describe("open/finished partition", () => {
     const finished = statuses.filter((s) => isFinished(s));
     const open = statuses.filter((s) => !isFinished(s));
     expect(finished.length + open.length).toBe(statuses.length);
-    expect(finished.sort()).toEqual(["completed", "rejected"]);
+    expect(finished.sort()).toEqual(["completed", "failed", "rejected"]);
+  });
+});
+
+describe("readRaised", () => {
+  it("reads the record a raise committed", () => {
+    const raised = { code: "orders-unavailable", reason: "The orders API is down.", state: "lookup" };
+    expect(readRaised({ raised })).toEqual(raised);
+  });
+
+  it("reads an absent, cleared or malformed record as undefined", () => {
+    expect(readRaised({})).toBeUndefined();
+    expect(readRaised({ raised: null })).toBeUndefined();
+    expect(readRaised({ raised: { code: 7, reason: "x", state: "lookup" } })).toBeUndefined();
+    expect(readRaised({ raised: "orders-unavailable" })).toBeUndefined();
   });
 });
 

@@ -612,8 +612,9 @@ failure in one of them **halts the case** — see
 
 | Assertion                                | Meaning                                                                                                                                                                                                                                                                                                                      |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `succeeded: true`                        | **Structural.** The run finished: not failed **and not parked**.                                                                                                                                                                                                                                                                              |
+| `succeeded: true`                        | **Structural.** The run finished: not failed **and not parked**, and the agent did not end it with `archmax_raise` (a raise fails here, naming its code).                                                                                                                                                                                     |
 | `parked: true`                           | **Structural.** The run is parked at a human state awaiting a decision.                                                                                                                                                                                                                                                                        |
+| `raised: true` / `raised: <code>` / `raised: { code?, reason? }` | **Structural.** The agent ended the turn with `archmax_raise({ code, reason })`. A string pins the code exactly; the mapping pins the code and matches the reason — exactly, or as a regex when written `"/pattern/flags"`. A miss names the code that was raised, or says the run did not raise.                                  |
 | `variables: { expect, path?, locked? }`  | Every named variable is set to the expected value — deep equality, so a structured expectation compares by value. `path` addresses into a value per name (`items.-1.sku` is the last element); `locked` asserts the lock state. |
 | `reachedState: <slug>`                   | **Structural.** A **committed** (non-trigger) audit-trail step entered the state — agent `archmax_advance`, human decision, `archmax_reset`, or `on_error` route. The trigger-arrival step never counts (it is recorded before the entry state's `before` gate runs, so a vetoed-entry run never "reaches" its start state).                        |
 | `reply: { includes?, excludes? }`        | `includes`: substrings or `/pattern/flags` regex strings that must **all** match; `excludes`: none may match (leak checks — a refusal that quotes the data it refuses still leaks it). Each accepts a **single token or a list** (`includes: "ORD-1003"` works). Matched against the turn's **whole assistant transcript**, not just the final message (a parked run often closes with a short "moving on" message while the substantive answer came earlier). |
@@ -638,8 +639,8 @@ engine or in a lifecycle hook.
 
 ### Structural assertions halt the case
 
-A failed **structural** assertion (`succeeded`, `parked`, `reachedState`,
-`trail`, `noTraversal`, `triggerArrival`) stops the case where it stands: no
+A failed **structural** assertion (`succeeded`, `parked`, `raised`,
+`reachedState`, `trail`, `noTraversal`, `triggerArrival`) stops the case where it stands: no
 further `send`/`decide` is driven and no further assertion is evaluated. Once
 the run took a path the case did not describe, every later step would drive or
 grade the wrong run — a `decide` after a failed `parked` cannot succeed, and a

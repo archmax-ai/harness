@@ -12,11 +12,14 @@ import type { VariableStore } from "../machine/variables.js";
 import {
   classifyStatus,
   parkedStateOf,
+  readRaised,
   usageSummarySchema,
   variableEntrySchema,
+  WORKFLOW_STATUSES,
   type SessionClassification,
   type WorkflowStatus,
 } from "../workflow/state.js";
+import type { SessionExit } from "./resume.js";
 import { parentSessionIdOf } from "./scope.js";
 
 /** Coarse projection of a durable session, derived from its latest checkpoint. */
@@ -43,6 +46,11 @@ export interface SessionSummary {
    * A host's scheduler is a query over this listing; the runtime schedules nothing.
    */
   resumeAt?: string;
+  /**
+   * For a `failed` session, the failure the agent raised with `archmax_raise`:
+   * its code and its reason.
+   */
+  exit?: Extract<SessionExit, { success: false }>;
   /**
    * The session's variables as the checkpoint holds them — `name → { value, locked }`,
    * omitted when the session has none. `locked` marks a host-established entry;
@@ -84,6 +92,7 @@ export async function summarizeCheckpointedSession(
   const variables = parsedVariables.success ? parsedVariables.data : undefined;
   const parsedUsage = usageSummarySchema.safeParse(values.usage);
   const usage = parsedUsage.success ? parsedUsage.data : undefined;
+  const raised = status === WORKFLOW_STATUSES.failed ? readRaised(values) : undefined;
   const parent = parentSessionIdOf(sessionId);
   return {
     sessionId,
@@ -94,6 +103,7 @@ export async function summarizeCheckpointedSession(
     ...(parkedAt ? { state: parkedAt } : {}),
     ...(typeof pendingInput?.reason === "string" ? { waitReason: pendingInput.reason } : {}),
     ...(typeof pendingInput?.resumeAt === "string" ? { resumeAt: pendingInput.resumeAt } : {}),
+    ...(raised ? { exit: { success: false, code: raised.code, reason: raised.reason } } : {}),
     ...(variables && Object.keys(variables).length > 0 ? { variables } : {}),
     ...(usage && hasUsage(usage) ? { usage } : {}),
     ...(parent ? { parentSessionId: parent } : {}),

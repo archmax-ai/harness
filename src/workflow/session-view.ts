@@ -21,6 +21,8 @@ export interface SessionView {
   parkedChannel?: ParkChannel;
   /** For a parked session view, the state awaiting a decision or an external trigger. */
   state?: string;
+  /** For a session the agent ended with `archmax_raise`: its code and its reason. */
+  raised?: { code: string; reason: string };
   events: Array<{ type: string; data?: Record<string, unknown> }>;
   toolCalls: ToolCallFact[];
   /** The committed audit trail, from checkpointed state — never derived from messages; empty when the producer has none. */

@@ -148,6 +148,36 @@ describe("createStateFlowRenderer", () => {
     expect(output).toContain("order lookup is complete");
   });
 
+  it("renders a raise as the state failing, folding away the raise tool's own call", () => {
+    const stream = new FakeStream();
+    const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: false }));
+
+    renderer.onEvent({ type: "state-enter", state: "lookup" });
+    renderer.onEvent({
+      type: "tool-called",
+      state: "lookup",
+      tool: "archmax_raise",
+      callId: "r1",
+      args: { code: "orders-unavailable", reason: "The orders API is down." },
+    });
+    renderer.onEvent({
+      type: "raised",
+      state: "lookup",
+      sessionId: "s1",
+      code: "orders-unavailable",
+      reason: "The orders API is down.",
+      callId: "r1",
+    });
+    renderer.onEvent({ type: "state-leave", state: "lookup", next: "lookup" });
+
+    const lines = stream.chunks.join("").trimEnd().split("\n");
+    expect(lines.slice(-2)).toEqual([
+      `    ${icons.cross} raised orders-unavailable The orders API is down.`,
+      `${icons.cross} lookup ${icons.arrow} failed`,
+    ]);
+    expect(stream.chunks.join("")).not.toContain("archmax_raise");
+  });
+
   it("still renders the other intercepted workflow tools", () => {
     const stream = new FakeStream();
     const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: false }));

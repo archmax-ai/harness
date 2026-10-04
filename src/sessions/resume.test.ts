@@ -4,7 +4,9 @@ import { InvalidDecisionTargetError, SessionNotParkedError } from "./resume.js";
 import {
   decide,
   EmptyMessageError,
+  outcomeOf,
   reply,
+  settle,
   type IntrospectableStateGraph,
 } from "./resume.js";
 
@@ -231,5 +233,49 @@ describe("decide — which channel the run re-parked on", () => {
       parkedChannel: "decision",
       state: "review",
     });
+  });
+});
+
+describe("how a settled session ended", () => {
+  const raised = { code: "orders-unavailable", reason: "The orders API is down.", state: "lookup" };
+
+  it("settles a completed session as a success", () => {
+    const outcome = outcomeOf(settle({ status: WORKFLOW_STATUSES.completed, workflowState: "done" }), "turn");
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.exit).toEqual({ success: true });
+  });
+
+  it("settles a raise as failed, with the agent's code and reason", () => {
+    const settled = settle({ status: WORKFLOW_STATUSES.failed, workflowState: "lookup", raised });
+    expect(settled.exit).toEqual({ success: false, code: "orders-unavailable", reason: "The orders API is down." });
+    const outcome = outcomeOf(settled, "turn");
+    expect(outcome).toMatchObject({ kind: "failed", status: "failed", state: "lookup" });
+    expect(outcome.exit).toEqual(settled.exit);
+    expect(outcome).not.toHaveProperty("rejected");
+  });
+
+  it("gives a rejected or parked session no exit", () => {
+    const rejected = outcomeOf(
+      settle({ status: WORKFLOW_STATUSES.rejected, rejected: "a hook failed", workflowState: "lookup", raised }),
+      "turn",
+    );
+    expect(rejected.kind).toBe("rejected");
+    expect(rejected).not.toHaveProperty("exit");
+    const parked = outcomeOf(
+      settle({ status: WORKFLOW_STATUSES.awaitingInput, pendingInput: { state: "clarify", reason: "a reply" } }),
+      "turn",
+    );
+    expect(parked.kind).toBe("parked");
+    expect(parked).not.toHaveProperty("exit");
+  });
+
+  it("carries the exit on a decision that leads to a raise", async () => {
+    const graph = stubGraph({
+      state: PARKED_STATE,
+      onInvoke: () => ({ status: WORKFLOW_STATUSES.failed, workflowState: "lookup", raised }),
+    });
+    const outcome = await decide(graph, "t1", { target: "approve" });
+    expect(outcome).toMatchObject({ reparked: false, status: "failed" });
+    expect(outcome.exit).toEqual({ success: false, code: "orders-unavailable", reason: "The orders API is down." });
   });
 });

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { tool } from "langchain";
+import { z } from "zod";
+import type { StructuredTool } from "@langchain/core/tools";
 import {
   assemble,
   blockedTools,
@@ -143,5 +146,58 @@ describe("a script's tool call under a variable guard", () => {
     expect(blockedTools(events)).toEqual([]);
     expect(toolResults(messages).find((r) => r.name === "archmax_eval")?.status).not.toBe("error");
     expect(await storeFile(store, `/${sid}/scratchpad/note.txt`)).toBe(literal);
+  });
+});
+
+/**
+ * A script's `tools` lists the tools its state offers, as the model's own tool
+ * list does, re-scoped at every evaluation — so a run that moves sees the next
+ * state's tools in the same REPL. A hook runs on runtime authority and keeps them all.
+ */
+describe("the tools a script lists", () => {
+  const hostTools = (): StructuredTool[] =>
+    ["alpha", "beta"].map(
+      (name) =>
+        tool(async ({ q }: { q: string }) => `${name}:${q}`, {
+          name,
+          description: `The ${name} tool.`,
+          schema: z.object({ q: z.string() }),
+        }) as unknown as StructuredTool,
+    );
+  const spec = {
+    runtime: RUNTIME,
+    states: {
+      start: {
+        triggers: { manual: null },
+        tools: { allow: ["alpha"] },
+        before: { script: "hooks/list.js" },
+        transitions: [{ to: "done", description: "Finish." }],
+      },
+      done: { tools: { allow: ["beta"] } },
+    },
+  };
+  const LIST = "JSON.stringify(Object.keys(tools).filter((name) => name === 'alpha' || name === 'beta'))";
+
+  it("follows the state from one evaluation to the next, while a hook sees every tool", async () => {
+    const root = workspaceWith(spec, {
+      "workflows/w/hooks/list.js":
+        "/** Reports the tools a hook sees. */\nexport default ({ tools }) => { console.log('hook:' + Object.keys(tools).filter((n) => n === 'alpha' || n === 'beta').join(',')); return ok(); };\n",
+    });
+    const { agent, events } = await assemble(root, {
+      turns: [
+        { tool: "archmax_eval", args: { code: LIST } },
+        { tool: "archmax_advance", args: { to: "done", reason: "listed" } },
+        { tool: "archmax_eval", args: { code: LIST } },
+        { reply: "done" },
+      ],
+      params: { tools: hostTools() },
+    });
+    const { messages } = await turn(agent, freshSessionId(), "go");
+
+    const evals = toolResults(messages).filter((r) => r.name === "archmax_eval").map((r) => r.content);
+    expect(evals).toHaveLength(2);
+    expect(evals[0]).toContain('["alpha"]');
+    expect(evals[1]).toContain('["beta"]');
+    expect(eventsOf(events, "hook-output").map((e) => e.line)).toContain("hook:alpha,beta");
   });
 });

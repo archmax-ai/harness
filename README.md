@@ -140,8 +140,9 @@ npx archmax reply <session> "Any update?"                 # answer a parked sess
 npx archmax deliver <session> --trigger email_reply       # resume a session parked with archmax_wait
 ```
 
-Results go to stdout and the state flow to stderr. Exit 0 means done or parked, 1 a failure, 2 a
-usage error. See the [CLI reference](https://harness.archmax.ai/reference/cli/).
+Results go to stdout and the state flow to stderr. Exit 0 means done or parked, 1 a failure
+(including a session the agent ended with `archmax_raise`), 2 a usage error. See the
+[CLI reference](https://harness.archmax.ai/reference/cli/).
 
 ### The library
 
@@ -163,6 +164,14 @@ if (outcome.kind === "parked" && outcome.parkedChannel === "decision") {
   await agent.workflow!.decide("session-42", { target: "approved", comment: "Within policy." });
 }
 ```
+
+A session is a success unless the agent says otherwise. When the work cannot be completed, the
+agent calls `archmax_raise({ code, reason })`, which is offered in every state and only for
+failure. The session then ends `failed`, with no further model call and no `on_error` route, and
+`outcome.kind === "failed"` carries `outcome.exit: { success: false, code, reason }`, so a host
+branches on the agent's own code. A completed turn carries `exit: { success: true }`; a rejection
+by governance carries `outcome.rejected` instead. See
+[how a session ended](https://harness.archmax.ai/guides/sessions/#how-a-session-ended).
 
 Omit `workflow` for a plain Deep Agent with the same parameters, or pass `workflow: false` to
 declare an agent ungoverned. `onEvent` receives the typed event stream and

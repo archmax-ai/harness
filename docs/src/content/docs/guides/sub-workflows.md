@@ -315,6 +315,14 @@ or completes short of a `returns` name it declared (`missing-return`) or with a
 typed return of the wrong kind (`invalid-return`). The call answers with a **tool
 error** naming the workflow and the reason.
 
+A child whose agent ended it with `archmax_raise` fails the call the same way,
+with the kind `raised`. The tool error names the child workflow, the state it
+raised in, its `code` and its `reason`
+(`Sub-workflow 'enrich' failed: its agent raised 'customer-unknown' in state 'work': …`),
+so the calling agent can act on the code. A child that raised owes no `returns`,
+so the error is never reported as a missing return. To pass the failure up, the
+calling agent can raise in turn, with its own code.
+
 The calling agent can then retry with different inputs, route around it, or stop.
 Where it cannot recover, the state's `requires:` holds it in place until the work
 is genuinely done. The state's `on_error` catches the turn failure as it catches

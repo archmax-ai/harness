@@ -246,8 +246,8 @@ Tool governance is **closed by default**. Every state always has the
 `archmax_eval`, `archmax_run`.
 
 It also has the runtime controls `archmax_reset`, `archmax_wait`,
-`archmax_get_variables` and `archmax_set_variables`, plus `archmax_advance` in
-non-terminal states. Workflow-level
+`archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, plus
+`archmax_advance` in non-terminal states. Workflow-level
 [`tools.allow_always`](#toolsallowalways) grants extend every state as well.
 Everything else is declared: consumer-supplied custom tools, sub-workflow
 delegation tools, and the rest.
@@ -799,6 +799,15 @@ it could not do. Answers to the other calls of the same step are kept. A park
 raised inside a call still parks the session, and a cancelled run still ends
 the turn.
 
+An **agent-declared failure** never sees `on_error` either. When the agent calls
+`archmax_raise({ code, reason })` because the work cannot be completed, the
+session ends at once with the status `failed` and the agent's code and reason as
+its `exit`. No route is taken, no `before` or `after` hook runs (a terminal
+state's included), and the trigger's `returns` are not checked. A raise also
+replaces a rejection still pending from earlier in the turn. Forbid the tool
+(`tools.forbid_always: [archmax_raise]`, or a state's `tools.forbid`) where the
+agent must not end the session itself.
+
 ## `disabled`: take a workflow out of service
 
 ```yaml
@@ -903,7 +912,8 @@ parent that does not is refused **before** the child is composed.
 `returns:` is the exit half. The named variables are ordinary variables, set
 with `archmax_set_variables` or by a script. A session that reaches a terminal
 state with any one of them unset is **rejected**. A session that *parks* goes
-unchecked, because it has not finished.
+unchecked, because it has not finished, and so does one the agent ended with
+`archmax_raise`: a failed session owes no returns.
 
 Each entry is a bare variable name, or an object `{ name, type?, description? }`
 naming one. The two spellings mix freely in one list. A bare name and an object

@@ -76,6 +76,8 @@ export type {
   DeliverOutcome,
   /** The child a parked session's pending decision belongs to (`Outcome.delegation`). */
   DelegatedPark,
+  /** How a finished session ended (`Outcome.exit`): a success, or the failure `archmax_raise` declared. */
+  SessionExit,
 } from "./sessions/resume.js";
 /**
  * Read a session that must be parked in `status` — the checkpointed status **and**

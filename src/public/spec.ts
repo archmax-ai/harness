@@ -211,6 +211,7 @@ export {
   ADVANCE_TOOL,
   RESET_TOOL,
   WAIT_TOOL,
+  RAISE_TOOL,
   EVAL_TOOL,
   RUN_TOOL,
   GET_VARIABLES_TOOL,
@@ -223,7 +224,7 @@ export {
   isWorkflowToolName,
   /** Whether a name is one the runtime owns (`archmax_*`). */
   isReservedToolName,
-  /** The control tools: advance, reset, wait, get/set variables. */
+  /** The control tools: advance, reset, wait, raise, get/set variables, and the two sandbox tools. */
   HARNESS_CONTROL_TOOLS,
   /** Tools permitted in every state regardless of `allow`. */
   ALWAYS_ALLOWED_TOOLS,

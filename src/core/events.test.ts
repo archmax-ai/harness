@@ -209,6 +209,26 @@ describe("renderEventLine", () => {
   });
 });
 
+describe("raised event", () => {
+  it("is a warning, and renders the state, the code and the reason", () => {
+    const events: WorkflowLifecycleEvent[] = [];
+    const emit = createWorkflowEventEmitter((event) => events.push(event));
+    emit({
+      type: "raised",
+      state: "lookup",
+      sessionId: "s1",
+      code: "orders-unavailable",
+      reason: "The orders API failed three times.",
+      callId: "call-1",
+    });
+    expect(events[0]?.level).toBe("warn");
+    expect(renderEventLine(events[0]!)).toBe(
+      "[workflow] 'lookup' raised 'orders-unavailable', the session failed: " +
+        "The orders API failed three times. (session s1)",
+    );
+  });
+});
+
 describe("title-set event", () => {
   it("renders the title and the state it was set from", () => {
     expect(

@@ -26,7 +26,8 @@ message that leaves it parked), `decide: { to, comment? }`,
 `deliver: { trigger, variables? }`.
 
 Assertions (**structural** ones halt the case when they miss; later steps are
-reported `not-executed`): `succeeded: true`ˢ · `parked: true | decision | input | { channel?, state? }`ˢ ·
+reported `not-executed`): `succeeded: true`ˢ (fails on a raise too) · `parked: true | decision | input | { channel?, state? }`ˢ ·
+`raised: true | <code> | { code?, reason? }`ˢ (the agent ended the turn with `archmax_raise`; code exact, reason exact or `"/regex/flags"`) ·
 `reachedState: <slug>`ˢ (a committed non-trigger trail step) ·
 `trail: { to?, kind?, reason?, count }`ˢ (`kind`: trigger/agent/human/on_error) ·
 `noTraversal: true`ˢ · `triggerArrival: <id>`ˢ ·

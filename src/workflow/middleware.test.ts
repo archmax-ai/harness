@@ -1162,6 +1162,35 @@ states:
     });
   });
 
+  it("commits a raise and reports it after the call settles, then the state's leave", async () => {
+    const { results, events } = await interceptedCalls([
+      { name: "archmax_raise", args: { code: "orders-unavailable", reason: "The orders API is down." }, id: "r1" },
+    ]);
+
+    const update = (results[0] as { update: Record<string, unknown> }).update;
+    expect(update.raised).toEqual({ code: "orders-unavailable", reason: "The orders API is down.", state: "g" });
+    expect(update.status).toBe("failed");
+    expect(events.map((e) => e.type)).toEqual(["tool-called", "tool-result", "raised", "state-leave"]);
+    expect(events.find((e) => e.type === "tool-result")).toMatchObject({ tool: "archmax_raise", status: "ok" });
+    expect(events.find((e) => e.type === "raised")).toMatchObject({
+      state: "g",
+      code: "orders-unavailable",
+      reason: "The orders API is down.",
+      callId: "r1",
+    });
+    expect(events.find((e) => e.type === "state-leave")).toMatchObject({ state: "g", next: "g" });
+  });
+
+  it("reports a refused raise as an error result and nothing else", async () => {
+    const { results, events } = await interceptedCalls([
+      { name: "archmax_raise", args: { code: "", reason: "down" }, id: "r1" },
+    ]);
+
+    expect(results[0]).toBeInstanceOf(ToolMessage);
+    expect(events.map((e) => e.type)).toEqual(["tool-called", "tool-result"]);
+    expect(events.find((e) => e.type === "tool-result")).toMatchObject({ status: "error" });
+  });
+
   it("names the call that wrote when it reports a variable write", async () => {
     const { events } = await interceptedCalls([setCall("s1", { product: "strawberries" })]);
 
@@ -1791,6 +1820,20 @@ describe("workflow middleware — the gate before the model", () => {
       messages: [userMessage("go")],
     });
     expect(gate).toEqual({ stateTurns: { state: "done", count: 1 } });
+  });
+
+  it("ends the turn after a raise, before any model call and without counting one", async () => {
+    const raised = { code: "orders-unavailable", reason: "The orders API is down.", state: "work" };
+    const gate = await beforeModel({
+      workflowState: "work",
+      status: "failed",
+      raised,
+      // Even with a rejection or a turn budget in play: the raise settles the turn first.
+      rejected: "an earlier sub-run failed",
+      stateTurns: { state: "work", count: 7 },
+      messages: [userMessage("go"), agentToolCall(), toolResult()],
+    });
+    expect(gate).toEqual({ jumpTo: "end" });
   });
 });
 

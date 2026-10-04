@@ -230,8 +230,9 @@ carries. A failure in one of them [halts the case](#which-assertions-halt-a-case
 
 | Assertion | Meaning |
 | --- | --- |
-| `succeeded: true` | **Structural.** The turn completed, without failing or parking. |
+| `succeeded: true` | **Structural.** The turn completed, without failing or parking. A turn the agent ended with `archmax_raise` is a failure, so it fails here, naming the code it raised. |
 | `parked: true` | **Structural.** The turn parked, in either channel. `parked: decision` / `parked: input` pins the channel; `parked: { channel?, state? }` also pins the state it parked in. |
+| `raised: true` | **Structural.** The agent ended the turn with `archmax_raise`. `raised: <code>` pins the code exactly. `raised: { code?, reason? }` pins the code and matches the reason: exactly, or as a regex when written `/pattern/flags`. A miss names the code that was raised, or says the session did not raise. |
 | `reachedState: <state>` | **Structural.** A **committed** (non-trigger) audit-trail step entered the state. The trigger-arrival step does not count. It is recorded before the entry state's `before` hook runs, so a vetoed entry never "reaches" the state. |
 | `reply: { includes?, excludes? }` | `includes`: every token must match. `excludes`: none may match (leak checks). Each of `includes`/`excludes` is a single token or a list. A token is a substring or a `/pattern/flags` regex string. Tokens match against the **whole assistant transcript** the session has produced so far. A session that parks often closes with a short "advancing to review" note, while the substantive answer came a message earlier. |
 | `calledTool: { name, input? }` | The session recorded a matching tool call. `input` matches partially: declared keys must match, others are ignored. String values of the form `/pattern/flags` match as regexes, which is useful for path fragments; arrays match element-wise. The same matcher decides a mock's `whenInput`. |
@@ -338,9 +339,9 @@ turn scores 0.
 A failed **structural** assertion stops the case where it stands. No further
 `send` or `decide` is driven, and no further assertion is evaluated.
 
-Structural assertions are `succeeded`, `parked`, `reachedState`, `trail`,
-`noTraversal`, `triggerArrival`, and `variables`, the ones that say where the
-session went and what it carries. Once one of them misses, the session is no
+Structural assertions are `succeeded`, `parked`, `raised`, `reachedState`,
+`trail`, `noTraversal`, `triggerArrival`, and `variables`, the ones that say where
+the session went and what it carries. Once one of them misses, the session is no
 longer the one the case describes, so every later step would be driving or
 grading the wrong session.
 

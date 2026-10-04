@@ -5,7 +5,7 @@ import { findMock, mockPayload, readMocks } from "../core/tool-mocks.js";
 import { isWorkflowToolName } from "../machine/tool-names.js";
 import { SubWorkflowError, subWorkflowParkOf } from "../workflow/sub-workflow.js";
 import { toolCallDetail, toolOutputPreview } from "../core/tool-telemetry.js";
-import { decide, type GovernanceRule, type ToolCallOrigin } from "../kernel/kernel.js";
+import { decide, PTC_EXCLUDED_TOOLS, type GovernanceRule, type ToolCallOrigin } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { VariableStore } from "../machine/variables.js";
 import { NO_MOUNTS, type MountPrefixes } from "../core/mounts.js";
@@ -82,6 +82,13 @@ export interface PtcToolGateway {
    * the state committed for this one.
    */
   refresh(sessionId: string, next: PtcCallContext): void;
+  /**
+   * The tool names an agent script lists under `tools` right now: the state its
+   * calls are governed against, disclosed as the model's own tool list is, minus
+   * the names never on the bridge. Read from the same live context every wrapped
+   * tool decides by, so what a script sees and what it may do cannot disagree.
+   */
+  surface(sessionId: string): readonly string[];
   /** Drop a session's context (its wrapped tools go with the session). */
   release(sessionId: string): void;
 }
@@ -147,6 +154,8 @@ function toArgs(input: unknown): Record<string, unknown> {
 export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGateway {
   const { machine, policyRules = [], mountPrefixes = NO_MOUNTS, skills = NO_SKILLS, emit } = opts;
   const contexts = new Map<string, PtcCallContext>();
+  // The machine is fixed for the gateway's life, so a state's surface is too.
+  const surfaces = new Map<string, readonly string[]>();
   let callSeq = 0;
   const skillSlugs = skills.map((skill) => skill.slug);
   const redactSkills = (result: unknown, state: string, tool: string, origin: ToolCallOrigin) =>
@@ -283,6 +292,16 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
       context.config = next.config;
       context.replyOnly = next.replyOnly;
       context.variables = next.variables;
+    },
+
+    surface(sessionId) {
+      const { state } = contextFor(sessionId);
+      let names = surfaces.get(state);
+      if (!names) {
+        names = [...machine.disclosedTools(state)].filter((name) => !PTC_EXCLUDED_TOOLS.has(name));
+        surfaces.set(state, names);
+      }
+      return names;
     },
 
     release(sessionId) {

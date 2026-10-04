@@ -524,6 +524,40 @@ describe("deliver steps and pinned parks", () => {
   });
 });
 
+describe("raised assertions", () => {
+  const doc = (steps: string) =>
+    parseCaseDocument(
+      "workflows/w/tests/a.test.yaml",
+      `title: T\ndescription: D\nsteps:\n${steps}`,
+      "workflows/w/tests",
+    );
+  const step = (value: string) => doc(`  - send: "hi"\n  - raised: ${value}\n`).steps[1];
+
+  it("asserts any raise, pins a code, or pins a code and matches the reason", () => {
+    expect(step("true")).toEqual({ kind: "assert", expect: { assert: "raised" } });
+    expect(step("orders-unavailable")).toEqual({
+      kind: "assert",
+      expect: { assert: "raised", code: "orders-unavailable" },
+    });
+    expect(step("{ code: orders-unavailable, reason: /api is down/i }")).toEqual({
+      kind: "assert",
+      expect: { assert: "raised", code: "orders-unavailable", reason: "/api is down/i" },
+    });
+    expect(step("{ reason: The orders API is down. }")).toEqual({
+      kind: "assert",
+      expect: { assert: "raised", reason: "The orders API is down." },
+    });
+  });
+
+  it("rejects an empty mapping, an unknown key, a malformed pattern and any other value", () => {
+    expect(() => step("{}")).toThrow(/code.*reason/);
+    expect(() => step("{ status: failed }")).toThrow(/status/);
+    expect(() => step("{ reason: /(unclosed/ }")).toThrow(/malformed regex/);
+    expect(() => step("7")).toThrow(/literal true, the expected code/);
+    expect(() => step("false")).toThrow(/literal true, the expected code/);
+  });
+});
+
 describe("ranWorkflow assertions", () => {
   const doc = (steps: string) =>
     parseCaseDocument(
@@ -588,6 +622,10 @@ steps:
   - parked: decision
   - parked: { channel: input, state: clarify }
   - parked: { state: review }
+  - raised: true
+  - raised: orders-unavailable
+  - raised: { code: orders-unavailable, reason: /down/i }
+  - raised: { reason: The API is down. }
   - reachedState: answer
   - triggerArrival: email_received
   - reply: { includes: ["shipped", /ORD-\\d+/i], excludes: "refund" }

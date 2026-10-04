@@ -122,6 +122,9 @@ function viewOf(session: DriveSession, outcome: Outcome): SessionView {
     if (outcome.parkedChannel) view.parkedChannel = outcome.parkedChannel;
     if (outcome.state) view.state = outcome.state;
   }
+  if (outcome.exit && !outcome.exit.success) {
+    view.raised = { code: outcome.exit.code, reason: outcome.exit.reason };
+  }
   return view;
 }
 

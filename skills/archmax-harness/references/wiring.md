@@ -74,8 +74,17 @@ agent.dispose(sessionId);
   `awaiting_input` → `deliver(sessionId, { trigger, variables, message? })` — the
   person's message travels with the firing; a park with `resumeAt` is the host
   scheduler's cue. A delegated child's park is named on `Outcome.delegation`.
+- **How a session ended**: `Outcome.kind` is `completed`, `parked`, `failed` or
+  `rejected`. `failed` means the agent called `archmax_raise({ code, reason })`
+  because the work could not be done: `Outcome.exit` is
+  `{ success: false, code, reason }` (a completed turn: `{ success: true }`),
+  `SessionSummary.exit` carries the same while the session is `failed`, and a
+  later message is an ordinary new turn. `rejected` is governance ending it
+  (`Outcome.rejected`, no `exit`). A host that read "not rejected" as success
+  must check `failed` too.
 - **Events**: `onEvent` receives the one typed stream — `state-enter/leave`,
-  `advance`, `hook-verdict`, `parked/decided`, `tool-called/result/blocked`
+  `advance`, `hook-verdict`, `parked/decided`, `raised` (the agent ended the
+  session failed: `state`, `code`, `reason`, `callId`), `tool-called/result/blocked`
   (every governed call, `archmax_advance` included, grouped by `callId`),
   `agent-text-delta`/`agent-text` (streaming by default, `messageId` groups
   chunks), `model-usage` (provider counts per turn), `title-set`, warnings.

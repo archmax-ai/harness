@@ -488,3 +488,111 @@ describe("skill governance through the sandbox", () => {
     expect(read.calls).toHaveLength(2);
   });
 });
+
+describe("a script's tools follow its state", () => {
+  /** `work` offers `alpha`, `done` offers `beta`; both are registered. */
+  const SCOPED: MachineSpec = {
+    states: {
+      work: { triggers: { manual: null }, tools: { allow: ["alpha"] }, transitions: [{ to: "done", description: "Finish." }] },
+      done: { tools: { allow: ["beta"] } },
+    },
+  };
+
+  function scopedHarness() {
+    const machine = WorkflowMachine.fromSpec(SCOPED);
+    const events: WorkflowLifecycleEvent[] = [];
+    const gateway = createPtcToolGateway({ machine, emit: (event) => events.push(event as WorkflowLifecycleEvent) });
+    const executor = createScriptExecutor({ workspace: workspaceWith({}) });
+    const alpha = recordingTool("alpha");
+    const beta = recordingTool("beta");
+    const tools = gateway.wrap([alpha.tool, beta.tool], { origin: "script", sessionId: "v1" });
+    /** One `archmax_eval`, as the interpreter runs it: the scope's tools and its current surface. */
+    const evaluate = (code: string) =>
+      executor.runCode(code, {
+        sessionId: "v1",
+        sessionNamespace: AGENT_SESSION,
+        prelude: true,
+        tools,
+        surface: gateway.surface("v1"),
+      });
+    const enter = (state: string) => gateway.refresh("v1", { state, config: { configurable: { thread_id: "v1" } } });
+    return { executor, events, alpha, beta, evaluate, enter };
+  }
+
+  it("lists the active state's tools, and the next state's after the run moves", async () => {
+    const { executor, evaluate, enter } = scopedHarness();
+    enter("work");
+    const inWork = await evaluate("[Object.keys(tools), 'alpha' in tools, 'beta' in tools]");
+    enter("done");
+    const inDone = await evaluate("Object.keys(tools)");
+    executor.dispose("v1");
+
+    expect(inWork.value).toEqual([["alpha"], true, false]);
+    expect(inDone.value).toEqual(["beta"]);
+  });
+
+  it("keeps one object, so a reference an earlier evaluation kept reads the current state", async () => {
+    const { executor, evaluate, enter } = scopedHarness();
+    enter("work");
+    await evaluate("const kept = tools; const listing = () => Object.keys(tools);");
+    enter("done");
+    const later = await evaluate("[Object.keys(kept), kept === tools, listing()]");
+    executor.dispose("v1");
+
+    expect(later.value).toEqual([["beta"], true, ["beta"]]);
+  });
+
+  it("puts the view back on the next evaluation after a script overwrites it", async () => {
+    const { executor, evaluate, enter } = scopedHarness();
+    enter("work");
+    await evaluate("tools = null;");
+    const restored = await evaluate("Object.keys(tools)");
+    executor.dispose("v1");
+
+    expect(restored.value).toEqual(["alpha"]);
+  });
+
+  it("refuses a hidden tool through governance, with its reason, and the script can catch it", async () => {
+    const { executor, events, beta, evaluate, enter } = scopedHarness();
+    enter("work");
+    const outcome = await evaluate(`
+      let caught = null;
+      try { await tools.beta({}); } catch (err) { caught = String(err.message); }
+      caught;
+    `);
+    executor.dispose("v1");
+
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(String(outcome.value)).toMatch(/not allowed in state 'work'/);
+    expect(beta.calls).toHaveLength(0);
+    expect(events.map((e) => e.type)).toEqual(["tool-blocked"]);
+  });
+
+  it("calls a visible tool as before", async () => {
+    const { executor, alpha, evaluate, enter } = scopedHarness();
+    enter("work");
+    const outcome = await evaluate("await tools.alpha({ n: 1 })");
+    executor.dispose("v1");
+
+    expect(outcome.value).toBe("alpha:done");
+    expect(alpha.calls).toEqual([{ n: 1 }]);
+  });
+
+  it("leaves a run without a surface — a hook's — listing every tool", async () => {
+    const machine = WorkflowMachine.fromSpec(SCOPED);
+    const gateway = createPtcToolGateway({ machine, emit: () => {} });
+    gateway.refresh("h1", { state: "work", config: {} });
+    const executor = createScriptExecutor({
+      workspace: workspaceWith({ "/hooks/keys.js": "export default ({ tools }) => ok(Object.keys(tools).join(','));" }),
+    });
+    const outcome = await executor.runFile("hooks/keys.js", {
+      sessionId: "h1",
+      sessionNamespace: "process",
+      lifecycle: true,
+      tools: gateway.wrap([recordingTool("alpha").tool, recordingTool("beta").tool], { origin: "lifecycle", sessionId: "h1" }),
+    });
+    executor.dispose("h1");
+
+    expect(outcome.value).toMatchObject({ verdict: "ok", reason: "alpha,beta" });
+  });
+});

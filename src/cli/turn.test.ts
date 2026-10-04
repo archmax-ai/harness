@@ -63,6 +63,29 @@ describe("printResumed", () => {
     expect(stdout).toBe("All set.");
   });
 
+  it("reports a resume that ended in a raise as a failure with its code, exit 1", () => {
+    const { code, stdout, stderr } = capture(() =>
+      printResumed(
+        style,
+        "s1",
+        "delivered",
+        settled({
+          status: "failed",
+          workflowState: "lookup",
+          exit: { success: false, code: "orders-unavailable", reason: "The orders API is down." },
+          reply: "I could not reach the orders system.",
+        }),
+      ),
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain("✖ failed");
+    expect(stderr).toContain(
+      "Session s1 failed in the 'lookup' state with code 'orders-unavailable': The orders API is down.",
+    );
+    expect(stderr).not.toContain("delivered");
+    expect(stdout).toBe("I could not reach the orders system.");
+  });
+
   it("treats a re-park as a success", () => {
     const { code } = capture(() =>
       printResumed(style, "s1", "decided", settled({ reparked: true, parkedChannel: "decision", state: "review" })),
@@ -104,6 +127,48 @@ describe("printOutcome", () => {
     expect(code).toBe(0);
     expect(stderr).toContain("✔ answer");
     expect(stdout).toBe("Hello.");
+  });
+
+  it("reports a turn the agent ended with a raise as a failure, never an answer, exit 1", () => {
+    const { code, stdout, stderr } = capture(() =>
+      printOutcome(
+        style,
+        machine,
+        "s1",
+        outcome({
+          kind: "failed",
+          status: "failed",
+          state: "start",
+          exit: { success: false, code: "orders-unavailable", reason: "The orders API is down." },
+          reply: "I could not reach the orders system.",
+        }),
+      ),
+    );
+    // The agent's code is reported, never used as the process's exit code.
+    expect(code).toBe(1);
+    expect(stderr).toContain("✖ failed");
+    expect(stderr).toContain("Session s1 failed in the 'start' state with code 'orders-unavailable': The orders API is down.");
+    expect(stderr).not.toContain("answer");
+    expect(stdout).toBe("I could not reach the orders system.");
+  });
+
+  it("routes a delivered failure through the same report", () => {
+    const { code, stderr } = capture(() =>
+      printOutcome(
+        style,
+        machine,
+        "s1",
+        outcome({
+          kind: "failed",
+          disposition: "deliver",
+          status: "failed",
+          state: "start",
+          exit: { success: false, code: "x", reason: "y" },
+        }),
+      ),
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain("with code 'x': y");
   });
 
   it("routes a delivered rejection through the same failure", () => {

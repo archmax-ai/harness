@@ -88,7 +88,7 @@ Every type the barrel exports. A type reachable from a public signature is itsel
 public, because an exported function is usable only when you can name what it
 returns.
 
-`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
+`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
 
 ## `@archmax-ai/harness/spec`
 
@@ -105,7 +105,7 @@ here for the weight of the import.
 - **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
 - **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
-- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
+- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
 - **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `subRunIdentity`.
 - **Paths and scripts:** `DEFAULT_WORKFLOW` `HOOKS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveHookScript` `parseCodeDescription` `CodeDescription`.
@@ -279,13 +279,15 @@ if (agent.workflow) {
   // state dictates — a new turn, a reply to a session a person holds, or a
   // delivery into a session parked with archmax_wait.
   const outcome = await agent.workflow.send(sessionId, { message: "Look up order 1234" });
-  outcome.kind;          // "completed" | "parked" | "rejected"
+  outcome.kind;          // "completed" | "parked" | "failed" | "rejected"
   outcome.disposition;   // "turn" | "decide" | "reply" | "deliver"
   outcome.state;         // where the session is — for a park, the state it is parked at
   outcome.pending;       // the park record, when parked
   outcome.delegation;    // when the pending decision is a delegated child's: which child, which call
   outcome.reply;         // what the session said
   outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed hook)
+  outcome.exit;          // SessionExit on a turn the agent ended: { success: true } when "completed",
+                         // { success: false, code, reason } when "failed" (the agent called archmax_raise)
   // …and the three resumes, as payloads of the same call or as their own verbs:
   await agent.workflow.send(sessionId, { decision: { target: "approve" } });
   await agent.workflow.send(sessionId, { delivery: { trigger: { id: "email_reply" }, variables } });
@@ -1286,7 +1288,14 @@ list.
 
 `SessionSummary` carries `sessionId` and the open/finished `classification`,
 which is where consumers read that partition. An agent park adds `waitReason`,
-the reason the agent gave.
+the reason the agent gave. A `failed` session (`status: "failed"`, finished)
+adds `exit`: `{ success: false, code, reason }`, what the agent raised.
+
+The status a session settles to tells a host who ended it. `completed` and
+`failed` are the agent's own account (`Outcome.exit` is `{ success: true }` or
+the raised `{ success: false, code, reason }`), while `rejected` is governance's
+(`Outcome.rejected` carries why, and there is no `exit`). A host that treated
+"not rejected" as success must now also check for `failed`.
 
 A wait that declared an `until` also carries `resumeAt`, as an absolute instant.
 Scheduling is the host's, so that instant is what its cron queries. See [sessions
@@ -1294,9 +1303,9 @@ and parked sessions](/guides/sessions/).
 
 ## Reserved tool names
 
-The runtime's own tools carry the `archmax_` prefix. Seven are fixed:
-`archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_eval`, `archmax_run`,
-`archmax_get_variables` and `archmax_set_variables`. One more,
+The runtime's own tools carry the `archmax_` prefix. Eight are fixed:
+`archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_eval`,
+`archmax_run`, `archmax_get_variables` and `archmax_set_variables`. One more,
 `archmax_workflow_<slug>`, appears per sub-workflow a state allows.
 
 The namespace is a guarantee rather than a convention, so a tool passed through
@@ -1366,7 +1375,7 @@ One handler observing concurrent sessions can demultiplex them by `sessionId`.
 
 | Family | Events |
 | --- | --- |
-| State movement | `workflow-reset`, `state-enter`, `state-leave`, `state-error-routed`, `advance` |
+| State movement | `workflow-reset`, `state-enter`, `state-leave`, `state-error-routed`, `advance`, `raised` |
 | Hooks | `hook-start`, `hook-output`, `hook-passed`, `hook-verdict`, `hook-rejected` |
 | Parks | `parked`, `decided`, `delivered` |
 | Assembly and warnings | `interpreter-enabled`, `skills-loaded`, `hooks-summary`, `graph-topology`, `warning` |
@@ -1379,7 +1388,7 @@ subscriber and the CLI pass over them silently:
 
 | Event | Payload highlights |
 | --- | --- |
-| `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint. Emitted for **every** governed call, including the control tools the runtime services itself: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_get_variables`, `archmax_set_variables`. |
+| `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint. Emitted for **every** governed call, including the control tools the runtime services itself: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. |
 | `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason` (renamed from `message`). A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
 | `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
 | `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. Chunks a dispatched grading rubric generates are attributed to the dispatching state. |
@@ -1524,6 +1533,7 @@ call produced can be grouped from ids alone:
 | --- | --- | --- |
 | `advance` | the `archmax_advance` call that drove the transition | the turn's opening arrival at its state (`from` is the session origin), which no call causes |
 | `parked` | the `archmax_wait` call that asked to wait | a human-state park (the session routed there) |
+| `raised` | the `archmax_raise` call that ended the session as failed | never: only a call raises |
 | `variables-set` | the `archmax_set_variables` call that wrote | session-start seeding and trigger delivery |
 | `title-set` | the `archmax_set_variables` call that wrote the title | session-start seeding and trigger delivery |
 | `sub-workflow-start` / `sub-workflow-result` | the delegation call, as `toolCallId`: an agent's call id or the `ptc:<n>` id of a script's | no tool call started the dispatch |

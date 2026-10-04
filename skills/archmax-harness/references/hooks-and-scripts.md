@@ -40,7 +40,7 @@ export default async function hook({ state, phase, trigger, variables, messages,
 | `variables` | read-only `name → value` map incl. `trigger`; structured values whole |
 | `messages` | last 24 messages, newest last, `{ role, text, toolCalls? }`; roles `user`/`assistant`/`tool`/`system`/`runtime` (a runtime note; match `role === "runtime"`, never a `[bracket]`) |
 | `from`, `to`, `reason` | `after` only: the attempted transition and the agent's reason |
-| `tools` | async camelCased bridge: `tools.readFile`, `tools.writeFile`, `tools.archmaxWorkflowEnrichOrder(...)`; no variable tools, no `task` |
+| `tools` | async camelCased bridge: `tools.readFile`, `tools.writeFile`, `tools.archmaxWorkflowEnrichOrder(...)`; no control tools; a hook's lists every tool on the bridge, not only the state's |
 
 | Return | Effect |
 | --- | --- |
@@ -71,7 +71,10 @@ await Promise.all(orders.map(async (o) => {
 ```
 
 The calling state must allow every tool the script calls (here
-`archmax_workflow_enrich-order`).
+`archmax_workflow_enrich-order`). A script's `tools` lists exactly the calling
+state's tools, re-scoped at every evaluation (so after an advance the same REPL
+lists the next state's); a tool the state does not offer is unlisted, and
+calling it by name is refused with governance's reason.
 
 **Return into a variable.** A script's result reaches the model as one tool
 message and no further — it is not written to the variable store, and a script

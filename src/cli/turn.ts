@@ -6,7 +6,7 @@
  */
 import type { Agent, WorkflowSurface } from "../agent.js";
 import type { TriggerInput } from "../machine/triggers.js";
-import type { DecideOutcome, Outcome, ReplyOutcome } from "../sessions/resume.js";
+import type { DecideOutcome, Outcome, ReplyOutcome, SessionExit } from "../sessions/resume.js";
 import type { ParkChannel, PendingDecision, PendingInput } from "../workflow/state.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { lastAgentText } from "../core/messages.js";
@@ -81,12 +81,38 @@ function printRejected(style: Style, sessionId: string, state: string | undefine
   if (reply) out(reply);
 }
 
-/** Report a resume's result. Returns the exit code: 1 when the session ended rejected. */
+/**
+ * A session the agent ended with `archmax_raise`: its code and reason on stderr,
+ * whatever it last said on stdout. The agent declared the work failed, so the
+ * command failed — never an answer. The code is the agent's, not the process's:
+ * the exit code stays 1.
+ */
+function printFailed(
+  style: Style,
+  sessionId: string,
+  state: string | undefined,
+  exit: SessionExit | undefined,
+  reply?: string,
+): void {
+  err(style.red(style.bold(`${icons.cross} failed`)));
+  const raised = exit && !exit.success ? exit : undefined;
+  err(
+    `Session ${sessionId} failed${state ? ` in the '${state}' state` : ""}` +
+      (raised ? ` with code '${raised.code}': ${raised.reason}` : "."),
+  );
+  if (reply) out(reply);
+}
+
+/** Report a resume's result. Returns the exit code: 1 when the session ended rejected or failed. */
 export function printResumed(style: Style, sessionId: string, verb: string, outcome: DecideOutcome): number {
   err("");
   if (outcome.reparked) return (printReparked(style, sessionId, outcome.parkedChannel, outcome.state), 0);
   if (outcome.status === "rejected") {
     printRejected(style, sessionId, outcome.workflowState, outcome.rejected, outcome.reply);
+    return 1;
+  }
+  if (outcome.status === "failed") {
+    printFailed(style, sessionId, outcome.workflowState, outcome.exit, outcome.reply);
     return 1;
   }
   err(style.green(style.bold(`${icons.check} ${verb}`)));
@@ -125,8 +151,8 @@ export interface RunTurnInput {
 
 /**
  * Report a turn's {@link Outcome}: an answer, a park (with what resumes it), a
- * rejection, or a resume's result. Returns the exit code: a park is a success,
- * a rejection is not.
+ * rejection, a failure the agent raised, or a resume's result. Returns the exit
+ * code: a park is a success, a rejection or a failure is not.
  */
 export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: string, outcome: Outcome): number {
   if (outcome.disposition === "deliver") return printResumed(style, sessionId, "delivered", asDecide(outcome));
@@ -164,6 +190,10 @@ export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: 
     printRejected(style, sessionId, outcome.state, outcome.rejected, outcome.reply);
     return 1;
   }
+  if (outcome.kind === "failed") {
+    printFailed(style, sessionId, outcome.state, outcome.exit, outcome.reply);
+    return 1;
+  }
   err(style.green(style.bold(`${icons.check} answer`)));
   out(outcome.reply || "(no textual answer)");
   return 0;
@@ -179,6 +209,7 @@ function asDecide(outcome: Outcome): DecideOutcome {
     ...(outcome.kind === "parked" && outcome.state ? { state: outcome.state } : {}),
     reply: outcome.reply,
     ...(outcome.rejected ? { rejected: outcome.rejected } : {}),
+    ...(outcome.exit ? { exit: outcome.exit } : {}),
     messages: outcome.messages,
     auditTrail: outcome.auditTrail,
   };
@@ -188,7 +219,7 @@ function asDecide(outcome: Outcome): DecideOutcome {
  * Drive one turn: name the session the firing belongs to, send the turn through
  * `workflow.send` — which delivers, replies or opens a turn as the session's
  * state dictates — and report how it ended. Returns the exit code; a park is a
- * successful outcome, a rejected session a failed one.
+ * successful outcome, a rejected or failed session a failed one.
  */
 export async function driveTurn(agent: Agent, style: Style, usage: UsageTracker, input: RunTurnInput): Promise<number> {
   const workflow = agent.workflow as WorkflowSurface;

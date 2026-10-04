@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchCli, parseVariablesJson } from "./cli.js";
+import { createAgent } from "./index.js";
+import { ScriptedModel } from "./behaviour/support.js";
 
 /** Capture both streams; returns the exit code and what each stream received. */
 async function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -277,6 +279,28 @@ describe("workspaces with several or no workflows", () => {
     expect(stderr).toContain("no session started");
     expect(stderr).toContain("Parked sessions can still be decided");
     expect(stdout).toBe("");
+  });
+
+  it("lists a session the agent ended with a raise by its exit code, and prints the reason in full", async () => {
+    vi.stubEnv("ARCHMAX_API_BASE_URL", "http://127.0.0.1:9/v1");
+    vi.stubEnv("ARCHMAX_API_KEY", "unused-no-call-is-made");
+    vi.stubEnv("ARCHMAX_MODEL", "stub-model");
+    const root = workspace({ p: MINIMAL });
+    // The session is written by an agent assembled over the same root, through the default filesystem store.
+    const model = new ScriptedModel([
+      { tool: "archmax_raise", args: { code: "orders-unavailable", reason: "The orders API is down." } },
+    ]);
+    const agent = await createAgent({ workflow: "p", model: model as never, onEvent: () => {}, workspace: { rootDir: root } });
+    await agent.workflow!.send("s1", { message: "go" });
+
+    const listing = await run(["sessions", "--root", root]);
+    expect(listing.code).toBe(0);
+    expect(listing.stdout).toContain("s1  failed  finished  state=start");
+    expect(listing.stdout).toContain("exit=orders-unavailable");
+
+    const detail = await run(["sessions", "s1", "--root", root]);
+    expect(detail.code).toBe(0);
+    expect(detail.stdout).toContain("raised   orders-unavailable: The orders API is down.");
   });
 
   // A turn the runtime refused is a failure, not an answer: exit 1, the reason on

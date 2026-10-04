@@ -33,6 +33,8 @@ export interface ReplyToken {
 export type CaseExpectation =
   | { assert: "succeeded" }
   | { assert: "parked"; channel?: "decision" | "input"; state?: string }
+  /** The turn ended with `archmax_raise`; `code` pins it exactly, `reason` is a matcher (`/pattern/flags` or exact). */
+  | { assert: "raised"; code?: string; reason?: string }
   | { assert: "reachedState"; state: string }
   | { assert: "reply"; includes: ReplyToken[]; excludes: ReplyToken[] }
   | { assert: "calledTool"; name: string; input?: Record<string, unknown> }

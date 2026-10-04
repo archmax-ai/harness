@@ -1,6 +1,6 @@
 /**
  * The control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`,
- * `archmax_get_variables`, `archmax_set_variables`.
+ * `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`.
  *
  * Each is a declaration whose body never runs in a wired assembly: governance
  * intercepts the call in `wrapToolCall`, where checkpointed state is in hand, and
@@ -26,6 +26,7 @@ import { signatureValueIssues } from "../machine/signature.js";
 import {
   ADVANCE_TOOL,
   GET_VARIABLES_TOOL,
+  RAISE_TOOL,
   RESET_TOOL,
   SET_VARIABLES_TOOL,
   WAIT_TOOL,
@@ -47,12 +48,13 @@ import {
   WORKFLOW_STATUSES,
   type PendingDecision,
   type PendingInput,
+  type RaiseRecord,
   type TrailStep,
   type WorkflowStateFields,
   type WorkflowUpdate,
 } from "./state.js";
 
-export { ADVANCE_TOOL, GET_VARIABLES_TOOL, RESET_TOOL, SET_VARIABLES_TOOL, WAIT_TOOL };
+export { ADVANCE_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, RESET_TOOL, SET_VARIABLES_TOOL, WAIT_TOOL };
 
 // --- Replies ------------------------------------------------------------------
 
@@ -167,6 +169,26 @@ export const resetSchema = z.object({
   reason: z.string().min(1).describe("One sentence: why the run has to start over."),
 });
 
+/** Longest `archmax_raise` code: a token a host branches on, not a second reason. */
+export const MAX_RAISE_CODE = 64;
+
+export const raiseSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(1, "a non-empty code is required")
+    .max(MAX_RAISE_CODE, `at most ${MAX_RAISE_CODE} characters`)
+    // A refinement, not a `pattern`: enforced here without asking every
+    // OpenAI-compatible endpoint to accept the keyword in a tool schema.
+    .refine((code) => !/[\r\n]/.test(code), "one line, no line break")
+    .describe("Short token naming what failed, e.g. 'orders-unavailable'."),
+  reason: z
+    .string()
+    .trim()
+    .min(1, "a non-empty reason is required")
+    .describe("One or two sentences: what failed, and why the work cannot be completed."),
+});
+
 export const getVariablesSchema = z.object({
   name: z.string().optional().describe("Variable to read; omit or leave empty for all."),
   path: z
@@ -215,6 +237,16 @@ export function createControlTools(): StructuredTool[] {
         `belong to a human node, which you reach with ${ADVANCE_TOOL} and which the runtime ` +
         "parks and presents on its own. This tool moves the run nowhere.",
       waitSchema,
+    ),
+    declaration(
+      RAISE_TOOL,
+      "End this session as a failure, from any state. Call it only when the task cannot " +
+        "be completed and recovering has been tried (a retry, another tool or approach): " +
+        "a session that ends without it is a success, so never call it to finish work " +
+        "that worked. Call it alone, with no other tool call in the same message; " +
+        "anything the person should read goes in that message's text. It is not how you " +
+        `wait (${WAIT_TOOL}), go back (${RESET_TOOL}) or have a person decide (a human state).`,
+      raiseSchema,
     ),
     declaration(
       GET_VARIABLES_TOOL,
@@ -535,6 +567,84 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
       ],
     }),
     moved: { from, to: entry },
+  };
+}
+
+// --- archmax_raise ---------------------------------------------------------------
+
+export interface RaiseRequest {
+  toolCallId: string;
+  args: Record<string, unknown>;
+  /** Checkpointed agent state at the time of the call, its messages included. */
+  state: unknown;
+}
+
+export interface RaiseOutcome {
+  message: Command | ToolMessage;
+  /** The record committed when the raise was accepted. */
+  raised?: RaiseRecord;
+}
+
+/**
+ * How many tool calls the assistant message carrying `toolCallId` makes: that
+ * message, else (a call without an id) the latest one making any.
+ */
+function callsInMessageOf(state: unknown, toolCallId: string): number {
+  const messages = (state as { messages?: unknown[] } | undefined)?.messages;
+  if (!Array.isArray(messages)) return 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const calls = (messages[i] as { tool_calls?: unknown } | undefined)?.tool_calls;
+    if (!Array.isArray(calls) || calls.length === 0) continue;
+    if (!toolCallId || calls.some((c) => (c as { id?: unknown } | undefined)?.id === toolCallId)) {
+      return calls.length;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Service a raise: end the session as a failure in the state it was called in.
+ * Commits the record and `status: failed`, and drops a pending rejection — the
+ * agent's own account of the failure is what the session ends with. The turn
+ * ends at the next model hook; nothing routes and no hook runs. Refused, with the
+ * session left in place, for invalid arguments or a message making other calls:
+ * those run concurrently, so a raise beside them could not mean one thing.
+ */
+export function handleRaise(machine: WorkflowMachine, request: RaiseRequest): RaiseOutcome {
+  const refuse = (text: string) => ({ message: refusal(RAISE_TOOL, request.toolCallId, text) });
+  const parsed = raiseSchema.safeParse(request.args);
+  if (!parsed.success) {
+    return refuse(`${RAISE_TOOL} rejected: invalid arguments — ${schemaIssues(parsed.error)}`);
+  }
+  const siblings = callsInMessageOf(request.state, request.toolCallId) - 1;
+  if (siblings > 0) {
+    return refuse(
+      `${RAISE_TOOL} rejected: this message makes ${siblings} other tool ` +
+        `call${siblings === 1 ? "" : "s"}, and a raise ends the session, so it has to stand ` +
+        `alone. Nothing was raised. If the task still cannot be completed once their ` +
+        `results are in, call ${RAISE_TOOL} again on its own.`,
+    );
+  }
+  const raised: RaiseRecord = {
+    code: parsed.data.code,
+    reason: parsed.data.reason,
+    state: currentWorkflowState(request.state, machine.entry),
+  };
+  return {
+    message: commit({
+      raised,
+      status: WORKFLOW_STATUSES.failed,
+      rejected: null,
+      messages: [
+        toolReply(
+          RAISE_TOOL,
+          request.toolCallId,
+          `Raised '${raised.code}': the session has ended as failed in state ` +
+            `'${raised.state}'. Nothing further runs this turn.`,
+        ),
+      ],
+    }),
+    raised,
   };
 }
 
