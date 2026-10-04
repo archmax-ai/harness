@@ -19,8 +19,9 @@ Current automation tools fall short in three ways.
 - **Complex data still ends up in code.** Nested payloads, loops and arithmetic land in a code
   node. The person who owns the process cannot read it, let alone change it.
 
-The archmax harness turns this around. The agent runs the whole process, and one `workflow.yaml` both
-describes it and enforces it. Data work happens in a sandbox the same rules govern.
+The archmax harness turns this around. The agent runs the whole process, and one
+`workflow.yaml` both describes it and enforces it. Data work happens in a sandbox the same rules
+govern.
 
 **Full documentation: <https://harness.archmax.ai/>**
 
