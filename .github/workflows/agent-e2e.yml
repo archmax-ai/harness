@@ -65,7 +65,7 @@ jobs:
         env:
           ARCHMAX_API_KEY: ${{ secrets.ARCHMAX_API_KEY }}
           ARCHMAX_API_BASE_URL: ${{ vars.ARCHMAX_API_BASE_URL || 'https://openrouter.ai/api/v1' }}
-          ARCHMAX_MODEL: ${{ vars.ARCHMAX_MODEL || 'anthropic/claude-sonnet-4.6' }}
+          ARCHMAX_MODEL: ${{ vars.ARCHMAX_MODEL || 'openai/gpt-6-luna' }}
         # No --strict: the flag was removed because a judge score below its
         # declared `atLeast` now fails the case (and the run) by default, so
         # quality regressions turn CI red without an opt-in.

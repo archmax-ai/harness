@@ -27,6 +27,12 @@ may read or write.
 **One transition per message.** A second `archmax_advance` alongside the first is
 refused. Chain states over successive turns, never in a single message.
 
+**Text alone ends your turn.** A message with no tool call is the last thing you
+do until someone writes again: the run stays where it is, and whatever you meant
+to do next never happens. So when the work is to tell the person something *and
+then* advance, wait or raise, write that text and make the call in the **same
+message**.
+
 **A conversation keeps its position.** A message arriving after your last turn
 leaves you in the state that turn ended in, not at the beginning. When that state
 cannot serve what was asked — no transition from here reaches it, or an earlier

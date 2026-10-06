@@ -23,6 +23,12 @@ as it is today; the guides themselves describe only the present. Every release a
   hosts:** the untagged duplicate of a child's text is gone and the event shapes are unchanged;
   a filter that dropped untagged deltas while a dispatch was open can be deleted. See
   [sub-workflow observability](/guides/sub-workflows/#observability).
+- **The platform prompt says that text alone ends the turn.** GPT-6 Luna wrote the message a
+  state asked for and stopped, without the `archmax_advance` or `archmax_wait` its
+  instructions put after that message: a refund never reached its review, a clarifying question
+  never parked. The prompt now says that a message without a tool call ends the turn and that the
+  text and the call belong in the same message. A workspace that overrides the platform prompt
+  (`.platform/system/GRAPH_STATE.md`) should add the rule.
 
 ## 0.3.0
 
