@@ -240,12 +240,14 @@ export function createControlTools(): StructuredTool[] {
     ),
     declaration(
       RAISE_TOOL,
-      "End this session as a failure, from any state. Call it only when the task cannot " +
-        "be completed and recovering has been tried (a retry, another tool or approach): " +
-        "a session that ends without it is a success, so never call it to finish work " +
-        "that worked. Call it alone, with no other tool call in the same message; " +
-        "anything the person should read goes in that message's text. It is not how you " +
-        `wait (${WAIT_TOOL}), go back (${RESET_TOOL}) or have a person decide (a human state).`,
+      "End this session as a failure, from any state. Call it when the task cannot be " +
+        "completed and recovering has been tried (a retry, another tool or approach), in " +
+        "the same message as your explanation to the person: a session that ends with a " +
+        "reply alone is a success, so a reply that only explains the failure reports it as " +
+        "one. Never call it to finish work that worked. Call it alone, with no other tool " +
+        "call in the same message; anything the person should read goes in that message's " +
+        `text. It is not how you wait (${WAIT_TOOL}), go back (${RESET_TOOL}) or have a ` +
+        "person decide (a human state).",
       raiseSchema,
     ),
     declaration(

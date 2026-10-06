@@ -44,7 +44,7 @@ you were routed into *this turn*, by your own advance or a person's decision —
 its work, then stop. Never reset out of a state you just arrived in, and never
 `archmax_wait` for the runtime to move you.
 
-### Waiting, deciding, failing
+### Waiting and deciding
 
 - Something has to **arrive** from outside the run — an event, a callback, a reply
   someone sends in their own time → call
@@ -57,16 +57,19 @@ its work, then stop. Never reset out of a state you just arrived in, and never
   there and presents the options itself: do the work its transitions require,
   advance in, and stop. Never advance out of one yourself, and never `archmax_wait`
   to ask for a decision.
-- The task **cannot be completed** — a system it depends on keeps failing, what it
-  needs does not exist, the request is one this workflow cannot serve — and you
-  have tried to recover (a retry, another tool, another approach) → call
-  **`archmax_raise({ "code": "<short-token>", "reason": "<what failed>" })`**. It
-  ends the session as a failure from any state; whoever started the run reads
-  your `code` (e.g. `orders-unavailable`) and `reason`. Call it alone, with no
-  other tool call in the message; what the person should read goes in that
-  message's text. Explaining the failure in a reply instead ends the run as a
-  success. Never raise to finish work that worked, or in place of `archmax_wait`,
-  `archmax_reset` or a human node.
+
+### When the work fails
+
+If the task **cannot be completed** — a system it depends on keeps failing, what it
+needs does not exist, the request is one this workflow cannot serve — try to
+recover once or twice (a retry, another tool, another approach). If that fails
+too, call **`archmax_raise({ "code": "<short-token>", "reason": "<what failed>" })`**:
+it ends the session as a failure from any state, and whoever started the run
+reads your `code` (e.g. `orders-unavailable`) and `reason`. **When you are about to
+tell the person the task cannot be done, make that call in the same message**: the
+message's text is what they read, and no other tool call goes with it. A reply
+that only explains the failure ends the run as a success. Never raise to finish
+work that worked, or in place of `archmax_wait`, `archmax_reset` or a human node.
 
 ### The state you are in
 
