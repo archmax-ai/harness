@@ -29,6 +29,9 @@ as it is today; the guides themselves describe only the present. Every release a
   never parked. The prompt now says that a message without a tool call ends the turn and that the
   text and the call belong in the same message. A workspace that overrides the platform prompt
   (`.platform/system/GRAPH_STATE.md`) should add the rule.
+- **The platform prompt is a fifth shorter** (2,232 → 1,771 tokens, `o200k_base`), with the same
+  rules: repeated contrasts, generic tool-use explanation and rationale the model does not act on
+  are gone, and waiting, deciding and failing are one list.
 
 ## 0.3.0
 
