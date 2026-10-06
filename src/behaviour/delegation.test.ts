@@ -8,6 +8,7 @@
  * the child's turns run synchronously inside the parent's tool call.
  */
 import { afterEach, describe, expect, it } from "vitest";
+import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import { isRuntimeNote, runtimeNoteKind, workflowToolName } from "../index.js";
 import {
   advanceTo,
@@ -18,10 +19,14 @@ import {
   makeWorkspace,
   AGENTS_MD,
   messageType,
+  ScriptedModel,
   skillMarkdown,
   statesEntered,
+  STREAM_FAILURE,
+  StreamingScriptedModel,
   toolResults,
   turn,
+  type ScriptedTurn,
 } from "./support.js";
 
 afterEach(cleanupWorkspaces);
@@ -531,6 +536,82 @@ describe("two children that park in one tool batch", () => {
       (m) => runtimeNoteKind(m) === "sub-workflow" && messageType(m) === "tool",
     );
     expect(answers).toHaveLength(2);
+  });
+});
+
+/**
+ * A child runs inside its caller's tool call, so it inherits the caller's
+ * callbacks, the handler of the caller's own stream among them. Unchecked, that
+ * handler reported every token a child's model produced as the caller's text:
+ * two concurrent children interleaved word by word into the caller's reply.
+ */
+describe("a child's streamed text", () => {
+  const ONE_STATE_CHILD = { runtime: RUNTIME, states: { work: { triggers: { manual: { requires: ["order_id"] } } } } };
+  const BOTH = { batch: [{ tool: CHILD_TOOL, args: { order_id: "A" } }, { tool: CHILD_TOOL, args: { order_id: "B" } }] };
+
+  it.each([
+    ["a model that streams", (turns: ScriptedTurn[]) => new StreamingScriptedModel(turns)],
+    ["a model that does not stream", (turns: ScriptedTurn[]) => new ScriptedModel(turns)],
+  ])("streams as the child's own, never as its caller's, with %s", async (_model, makeModel) => {
+    const model = makeModel([BOTH, { reply: "alpha one two" }, { reply: "beta three four" }, { reply: "parent five six" }]);
+    const { agent, events } = await assemble(delegatingWorkspace(ONE_STATE_CHILD), { model });
+    await turn(agent, "s1", "enrich both");
+
+    // The caller's deltas are its own text alone, in its own state, under the id of its own message.
+    const deltas = eventsOf(events, "agent-text-delta");
+    const callerDeltas = deltas.filter((e) => e.subWorkflowDispatchId === undefined);
+    expect(callerDeltas.map((e) => e.text).join("")).toBe("parent five six");
+    expect(new Set(callerDeltas.map((e) => `${e.sessionId} ${e.state}`))).toEqual(new Set(["s1 start"]));
+    const callerTexts = eventsOf(events, "agent-text").filter((e) => e.subWorkflowDispatchId === undefined);
+    expect(callerTexts.map((e) => e.text)).toEqual(["parent five six"]);
+    expect(new Set(callerDeltas.map((e) => e.messageId))).toEqual(new Set([callerTexts[0]?.messageId]));
+
+    // Each child's text streams once, tagged with its own dispatch, in its own session.
+    const dispatches = eventsOf(events, "sub-workflow-start").map((e) => e.dispatchId);
+    const streamed = dispatches.map((id) =>
+      deltas
+        .filter((e) => e.subWorkflowDispatchId === id)
+        .map((e) => e.text)
+        .join(""),
+    );
+    expect(streamed.sort()).toEqual(["alpha one two", "beta three four"]);
+    const childTexts = eventsOf(events, "agent-text").filter((e) => e.subWorkflowDispatchId !== undefined);
+    expect(childTexts.map((e) => e.text).sort()).toEqual(["alpha one two", "beta three four"]);
+    expect(new Set(childTexts.map((e) => e.subWorkflowDispatchId))).toEqual(new Set(dispatches));
+    expect(childTexts.every((e) => e.sessionId?.startsWith("s1~"))).toBe(true);
+  });
+
+  it("still hands a host's own callbacks every model call a child makes", async () => {
+    const { agent } = await assemble(delegatingWorkspace(ONE_STATE_CHILD), {
+      model: new StreamingScriptedModel([BOTH, { reply: "alpha" }, { reply: "beta" }, { reply: "parent" }]),
+    });
+    let modelCalls = 0;
+    const tracer = BaseCallbackHandler.fromMethods({
+      handleChatModelStart() {
+        modelCalls += 1;
+      },
+    });
+    await agent.invoke({ messages: [{ role: "user", content: "enrich both" }] } as never, {
+      configurable: { thread_id: "s1" },
+      callbacks: [tracer],
+    } as never);
+    // Two for the caller, one for each child.
+    expect(modelCalls).toBe(4);
+  });
+
+  it("finalizes only the caller's own text as partial when its turn fails after a child streamed", async () => {
+    const { agent, events } = await assemble(delegatingWorkspace(ONE_STATE_CHILD), {
+      model: new StreamingScriptedModel([
+        { tool: CHILD_TOOL, args: { order_id: "A" } },
+        { reply: "alpha one two" },
+        { reply: `checking the totals ${STREAM_FAILURE}` },
+      ]),
+    });
+    await expect(turn(agent, "s1", "enrich")).rejects.toThrow(/failed mid-stream/);
+    const partial = eventsOf(events, "agent-text").filter((e) => e.partial);
+    expect(partial.map((e) => ({ session: e.sessionId, dispatch: e.subWorkflowDispatchId, text: e.text }))).toEqual([
+      { session: "s1", dispatch: undefined, text: "checking the totals " },
+    ]);
   });
 });
 

@@ -9,6 +9,30 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.3.1 (unreleased)
+
+- **A sub-workflow child's streamed text is no longer reported as its caller's.** A child runs
+  inside its caller's tool call and inherited the caller's callbacks, the handler of the caller's
+  own stream among them, so every token a child's model produced was also emitted as an
+  `agent-text-delta` of the calling state, with no `subWorkflowDispatchId`. Two children
+  answering at once interleaved word by word into the caller's reply, and a caller's turn that
+  failed while a child streamed finalized the child's text as the caller's `partial`
+  `agent-text`. A child is now invoked without its caller's stream handlers: its text streams
+  once, from its own session, tagged with the dispatch; the caller's deltas are its own. Every
+  other callback a host hands down, a tracer included, still sees the child's runs. **For
+  hosts:** the untagged duplicate of a child's text is gone and the event shapes are unchanged;
+  a filter that dropped untagged deltas while a dispatch was open can be deleted. See
+  [sub-workflow observability](/guides/sub-workflows/#observability).
+- **The platform prompt says that text alone ends the turn.** GPT-6 Luna wrote the message a
+  state asked for and stopped, without the `archmax_advance` or `archmax_wait` its
+  instructions put after that message: a refund never reached its review, a clarifying question
+  never parked. The prompt now says that a message without a tool call ends the turn and that the
+  text and the call belong in the same message. A workspace that overrides the platform prompt
+  (`.platform/system/GRAPH_STATE.md`) should add the rule.
+- **The platform prompt is a fifth shorter** (2,232 → 1,771 tokens, `o200k_base`), with the same
+  rules: repeated contrasts, generic tool-use explanation and rationale the model does not act on
+  are gone, and waiting, deciding and failing are one list.
+
 ## 0.3.0
 
 - **The agent can end a session as a failure: `archmax_raise({ code, reason })`.** A new control

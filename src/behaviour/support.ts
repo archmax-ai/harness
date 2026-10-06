@@ -21,11 +21,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { stringify as toYaml } from "yaml";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseChatModelCallOptions } from "@langchain/core/language_models/chat_models";
-import type { ChatResult } from "@langchain/core/outputs";
+import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
 import {
   contentToString,
   createAgent,
@@ -185,6 +186,45 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
     });
     const message = new AIMessage({ content: "", tool_calls: toolCalls, ...usage });
     return { generations: [{ text: "", message }] };
+  }
+}
+
+/** A reply word a {@link StreamingScriptedModel} fails on, after streaming the words before it. */
+export const STREAM_FAILURE = "<endpoint-fails-here>";
+
+/**
+ * A {@link ScriptedModel} that streams, as a production endpoint does: a reply
+ * arrives word by word, a tool-call turn as one chunk. A reply containing
+ * {@link STREAM_FAILURE} streams the words before it, then throws.
+ */
+export class StreamingScriptedModel extends ScriptedModel {
+  async *_streamResponseChunks(
+    messages: BaseMessage[],
+    _options: this["ParsedCallOptions"],
+    runManager?: CallbackManagerForLLMRun,
+  ): AsyncGenerator<ChatGenerationChunk> {
+    const message = (await this._generate(messages)).generations[0]!.message as AIMessage;
+    const toolCalls = message.tool_calls ?? [];
+    for (const word of contentToString(message.content).match(/\S+\s*/g) ?? []) {
+      if (word.trim() === STREAM_FAILURE) throw new Error("the model endpoint failed mid-stream");
+      const chunk = new ChatGenerationChunk({ text: word, message: new AIMessageChunk({ content: word }) });
+      yield chunk;
+      await runManager?.handleLLMNewToken(word, undefined, undefined, undefined, undefined, { chunk });
+    }
+    yield new ChatGenerationChunk({
+      text: "",
+      message: new AIMessageChunk({
+        content: "",
+        tool_call_chunks: toolCalls.map((call, index) => ({
+          type: "tool_call_chunk" as const,
+          id: call.id,
+          name: call.name,
+          args: JSON.stringify(call.args),
+          index,
+        })),
+        ...(message.usage_metadata ? { usage_metadata: message.usage_metadata } : {}),
+      }),
+    });
   }
 }
 
