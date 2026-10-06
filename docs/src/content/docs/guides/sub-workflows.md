@@ -373,6 +373,12 @@ dispatch-time refusal, which happens before the child is composed.
 
 ## Observability
 
+Everything a child session emits carries its own `sessionId` and the dispatch's
+`subWorkflowDispatchId`, its streamed text included. A child's `agent-text-delta`
+and `agent-text` events are the child's, never its caller's, so two children
+answering at once stream as two attributable messages rather than as the calling
+state's text.
+
 Each dispatch emits `sub-workflow-start` / `sub-workflow-result`. The result
 carries the returned variables' **names**, never their values: the event stream is
 a diagnostic channel. It also carries the id of the tool call that started it, so

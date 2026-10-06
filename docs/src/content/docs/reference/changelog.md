@@ -9,6 +9,21 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.3.1 (unreleased)
+
+- **A sub-workflow child's streamed text is no longer reported as its caller's.** A child runs
+  inside its caller's tool call and inherited the caller's callbacks, the handler of the caller's
+  own stream among them, so every token a child's model produced was also emitted as an
+  `agent-text-delta` of the calling state, with no `subWorkflowDispatchId`. Two children
+  answering at once interleaved word by word into the caller's reply, and a caller's turn that
+  failed while a child streamed finalized the child's text as the caller's `partial`
+  `agent-text`. A child is now invoked without its caller's stream handlers: its text streams
+  once, from its own session, tagged with the dispatch; the caller's deltas are its own. Every
+  other callback a host hands down, a tracer included, still sees the child's runs. **For
+  hosts:** the untagged duplicate of a child's text is gone and the event shapes are unchanged;
+  a filter that dropped untagged deltas while a dispatch was open can be deleted. See
+  [sub-workflow observability](/guides/sub-workflows/#observability).
+
 ## 0.3.0
 
 - **The agent can end a session as a failure: `archmax_raise({ code, reason })`.** A new control

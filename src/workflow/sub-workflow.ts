@@ -12,7 +12,10 @@
  */
 
 import { Command, GraphInterrupt, isGraphInterrupt } from "@langchain/langgraph";
+import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
+import type { Callbacks } from "@langchain/core/callbacks/manager";
 import type { RunnableConfig } from "@langchain/core/runnables";
+import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { humanNote, lastAgentText } from "../core/messages.js";
 import {
   createWorkflowEventEmitter,
@@ -276,6 +279,43 @@ function createSemaphore(limit: number) {
 
 let dispatchSeq = 0;
 
+/**
+ * The handlers LangGraph attaches to a run for its `messages` and `tools`
+ * stream modes. Each writes into the stream of the run that attached it.
+ */
+const STREAM_HANDLER_NAMES: ReadonlySet<string> = new Set([
+  "StreamMessagesHandler",
+  "StreamProtocolMessagesHandler",
+  "StreamToolsHandler",
+]);
+
+const isStreamHandler = (handler: unknown): boolean =>
+  STREAM_HANDLER_NAMES.has(String((handler as { name?: unknown } | null)?.name ?? ""));
+
+/**
+ * The callbacks a child is invoked with: everything its caller's run hands down,
+ * minus the caller's stream handlers, or `undefined` when the caller hands
+ * nothing down.
+ *
+ * A child runs inside its caller's tool call, so it inherits the caller's
+ * callbacks through LangChain's ambient config, the handler of the caller's
+ * own stream among them. That handler would report every token the child's
+ * model produces as the caller's text, with the caller's state and no dispatch.
+ * The child's own turn runner streams the child's text, tagged with the
+ * dispatch. A host's tracer and the run tree are kept.
+ */
+function callbacksForChild(): Callbacks | undefined {
+  const inherited = (AsyncLocalStorageProviderSingleton.getRunnableConfig() as RunnableConfig | undefined)
+    ?.callbacks;
+  if (inherited === undefined) return undefined;
+  if (Array.isArray(inherited)) return inherited.filter((handler) => !isStreamHandler(handler));
+  const manager = inherited.copy();
+  for (const handler of [...manager.handlers, ...manager.inheritableHandlers]) {
+    if (isStreamHandler(handler)) manager.removeHandler(handler as BaseCallbackHandler);
+  }
+  return manager;
+}
+
 export function createSubWorkflowDispatcher(
   opts: SubWorkflowDispatcherOptions,
 ): SubWorkflowDispatcher {
@@ -473,18 +513,27 @@ export function createSubWorkflowDispatcher(
     }
   }
 
-  /** The config a child is invoked with: its own session, the dispatch chain, and a whole-turn bound. */
   /** This composition as the caller of a dispatch made under `config`. */
   function caller(config: RunnableConfig): DelegationCaller | undefined {
     if (!opts.childPolicyRules) return undefined;
     return { chain: sessionScopeFrom(config).chain, inheritedPolicyRules: opts.childPolicyRules };
   }
 
+  /**
+   * The config a child is invoked with: its own session, the dispatch chain, a
+   * whole-turn bound, and its caller's callbacks without the caller's streams
+   * (see {@link callbacksForChild}).
+   */
   function childConfig(
     parent: RunnableConfig,
     child: { identity: string; workflow: string; dispatchId: string },
   ): RunnableConfig {
-    return { recursionLimit: DEFAULT_RECURSION_LIMIT, ...childRunConfig(parent, child) };
+    const callbacks = callbacksForChild();
+    return {
+      recursionLimit: DEFAULT_RECURSION_LIMIT,
+      ...childRunConfig(parent, child),
+      ...(callbacks !== undefined ? { callbacks } : {}),
+    };
   }
 
   async function run(
