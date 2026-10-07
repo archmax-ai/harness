@@ -36,4 +36,4 @@
 - [x] 6.2 Run the reference workspace against a live model and have the agent use the three tools.
   - Run on 7 October 2026: `npm run dev -- run order-lookup "<write scratchpad/a.txt, copy it to b.txt twice, move b.txt to c.txt, remove a.txt>" --root examples/customer-support --session live-fileops-3`, model `anthropic/claude-sonnet-5`.
   - Results, verbatim: `Copied 'scratchpad/a.txt' to 'scratchpad/b.txt' (5 B).`; the second copy `Error: Cannot copy to 'scratchpad/b.txt': a file is already there. Pass overwrite: true to replace it, or choose another destination.`; `Moved 'scratchpad/b.txt' to 'scratchpad/c.txt' (5 B).`; `Removed 'scratchpad/a.txt'.` On disk only `c.txt` ("hello") and `answer.json` remained.
-- [ ] 6.3 Open a PR with the `release:minor` label (`0.4.0`).
+- [x] 6.3 Open a PR with the `release:minor` label (`0.4.0`). Opened as [#32](https://github.com/archmax-ai/harness/pull/32).
