@@ -13,12 +13,17 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { StructuredTool } from "@langchain/core/tools";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { mergeConfigs } from "@langchain/core/runnables";
-import { todoListMiddleware, type AgentMiddleware } from "langchain";
+import { createMiddleware, todoListMiddleware, type AgentMiddleware } from "langchain";
 import { createDeepAgent, type BackendProtocolV2, type CreateDeepAgentParams } from "deepagents";
 import { AGENT_DEFAULT_CONFIG } from "../agent.js";
+import { textOnlyReadFileDescription } from "../core/binary-read.js";
 import {
   asCompiledAgentGraph,
   asDecisionGraph,
+  asModelCallResult,
+  asStructuredTools,
+  type AnyModelCallHandler,
+  type AnyModelCallRequest,
   type CompiledAgentGraph,
   type IntrospectableStateGraph,
 } from "../core/deepagents.js";
@@ -185,6 +190,49 @@ export function frameworkPassthrough(
  */
 export function todoMiddleware(): AgentMiddleware {
   return todoListMiddleware() as unknown as AgentMiddleware;
+}
+
+/**
+ * Hand the model a `read_file` whose description matches the workspace's
+ * text-only reads (`core/binary-read.ts`): Deep Agents' own promises multimodal
+ * content blocks for images, audio, video and PDFs, which the workspace router
+ * refuses. `createDeepAgent` does not expose the filesystem middleware's
+ * description overrides, and LangChain rejects a `wrapModelCall` that swaps a
+ * registered tool for another instance (the tool node runs tools by identity),
+ * so the description is rewritten on the registered instance itself, once, on
+ * the first model call that offers it. The instance is this agent's own: Deep
+ * Agents builds the filesystem tools per agent. When the upstream lines are
+ * gone the description is left as it is and one `warning` says so.
+ *
+ * Both compositions install it, ahead of the provider cache and the host's
+ * middleware, so the first call they see already carries the final definition.
+ */
+export function readFileContractMiddleware(emit: WorkflowEventEmitter): AgentMiddleware {
+  const settled = new WeakSet<StructuredTool>();
+  const settle = (tool: StructuredTool) => {
+    if (settled.has(tool)) return;
+    settled.add(tool);
+    const description = textOnlyReadFileDescription(tool.description);
+    if (description !== null) {
+      tool.description = description;
+      return;
+    }
+    emit({
+      type: "warning",
+      scope: "workflow",
+      message:
+        "could not replace the binary-file lines of Deep Agents' read_file description; it still " +
+        "promises multimodal content blocks although reads are text only — the upstream text may " +
+        "have been reworded",
+    });
+  };
+  return createMiddleware({
+    name: "ReadFileContract",
+    wrapModelCall: async (request: AnyModelCallRequest, handler: AnyModelCallHandler) => {
+      for (const tool of asStructuredTools(request.tools)) if (tool.name === "read_file") settle(tool);
+      return asModelCallResult(await handler(request), "the read_file contract");
+    },
+  }) as unknown as AgentMiddleware;
 }
 
 /**
@@ -487,6 +535,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     todoMiddleware(),
     interpreter.middleware,
     instrumentation.middleware,
+    readFileContractMiddleware(emit),
     ...(providerCacheMiddleware ? [providerCacheMiddleware] : []),
     ...(params.middleware ?? []),
   ];

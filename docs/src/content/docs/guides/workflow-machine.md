@@ -364,6 +364,22 @@ Authored content is mounted read-only as backend routes the wiring code composes
 `skills/` and `AGENTS.md` from the conventional default, plus any mount you add.
 The workspace serves exactly what that table lists.
 
+Reads are **text only**, wherever the file lives. `read_file`, and a script's
+`tools.readFile`, never return a binary file's content. That covers an image,
+audio, video, PDF or PowerPoint file, by its extension or by the type the backend
+reports, and any file whose content holds a NUL byte: an archive, an Office
+document, a database. The read is answered with a notice instead:
+
+```text
+Error: 'scratchpad/chart.png' is a binary file (image/png, 24.1 KB) and was not read; read_file returns text files only.
+```
+
+The notice is the workspace's answer, not a governance refusal: no rule fires, no
+`on_error` route is taken, and the agent carries on. The `read_file` description
+the model is handed says so. A route's own error, such as a missing file, comes
+back as before, and the runtime's own reads of specs, hook sources and skills are
+unaffected.
+
 The system prompt's account of all this is **rendered from the resolved mount
 table**, so it names exactly the directories the workspace serves. A mount the
 host governs is named only where the state actually has it (see

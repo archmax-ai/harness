@@ -9,6 +9,21 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.3.2 (unreleased)
+
+- **Reads are text only.** `read_file` on an image, audio, video, PDF or PowerPoint file used to
+  hand the model the file as base64 in a multimodal block. An OpenAI-compatible tool message
+  cannot carry that block, so the request failed or the model read base64. The bytes also landed
+  in the session's checkpoints, in a script's `tools.readFile` result, and in `tool-result`
+  previews. A binary file with an unknown extension (`.zip`, `.docx`, `.bin`) came back as
+  decoded garbage. Both now return a notice instead:
+  `Error: '<path>' is a binary file (<type>, <size>) and was not read; read_file returns text files only.`
+  A file is binary by its type (as Deep Agents' `read_file` decides it) or by a NUL byte in its
+  content. The `read_file` description the model is handed says so, in governed and plain agents
+  alike. See [the workspace](/guides/workflow-machine/#mount-governance).
+  **For hosts:** a multimodal model behind a custom `model` no longer receives images or PDFs
+  through `read_file`.
+
 ## 0.3.1 (unreleased)
 
 - **A sub-workflow child's streamed text is no longer reported as its caller's.** A child runs

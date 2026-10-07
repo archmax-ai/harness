@@ -5,7 +5,13 @@
 import { createDeepAgent } from "deepagents";
 import { asCompiledAgentGraph, type CompiledAgentGraph } from "../core/deepagents.js";
 import { TOOL_MOCK_MIDDLEWARE_NAME } from "../core/tool-mocks.js";
-import { frameworkPassthrough, rubricParams, todoMiddleware, type AssemblyContext } from "./compose.js";
+import {
+  frameworkPassthrough,
+  readFileContractMiddleware,
+  rubricParams,
+  todoMiddleware,
+  type AssemblyContext,
+} from "./compose.js";
 
 /**
  * A skill source as upstream's middleware wants it: a leading-slash,
@@ -23,7 +29,7 @@ export function composePlain(
   systemPrompt: string,
 ): { graph: CompiledAgentGraph; toolMocks: boolean } {
   // The host's middleware rides after the runtime's own, as on the governed path.
-  const middleware = [todoMiddleware(), ...(ctx.params.middleware ?? [])];
+  const middleware = [todoMiddleware(), readFileContractMiddleware(ctx.emit), ...(ctx.params.middleware ?? [])];
   const deepAgent = createDeepAgent({
     model: ctx.model,
     backend: ctx.backend,

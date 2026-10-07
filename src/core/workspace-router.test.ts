@@ -289,3 +289,95 @@ describe("workspace router search posture", () => {
       expect((ctx.backend as { routePrefixes?: string[] }).routePrefixes).toContain("/contracts/");
     }));
 });
+
+describe("workspace router text-only reads", () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+  const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0xc3, 0x28]);
+
+  /** A consumer backend that answers every read with the given result. */
+  function answering(result: unknown): BackendProtocolV2 {
+    return {
+      ls: async () => ({ files: [] }),
+      read: async () => result,
+      readRaw: async () => ({ error: "unused" }),
+      grep: async () => ({ matches: [] }),
+      glob: async () => ({ files: [] }),
+      write: async () => ({ error: "read-only" }),
+      edit: async () => ({ error: "read-only" }),
+    } as unknown as BackendProtocolV2;
+  }
+
+  const withAssets = <T>(
+    fn: (ctx: ReturnType<typeof createWorkspaceContext>) => Promise<T>,
+    extra: Record<string, import("./mounts.js").MountSpec> = {},
+  ) =>
+    withWorkspace(async (root) => {
+      writeFileSync(join(root, "skills", "logo.png"), PNG);
+      writeFileSync(join(root, "skills", "export.zip"), ZIP);
+      writeFileSync(join(root, "skills", "icon.svg"), "<svg/>");
+      const ctx = createWorkspaceContext({ rootDir: root, mounts: { ...defaultMounts(root), ...extra } });
+      return ctx.sessionZone.sessionScoped("s1", () => fn(ctx));
+    });
+
+  it("refuses an image by its type, naming the path, the type and the size", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.read("/skills/logo.png");
+      expect(res).toEqual({
+        error:
+          "'skills/logo.png' is a binary file (image/png, 10 B) and was not read; read_file returns text files only.",
+      });
+    }));
+
+  it("refuses an unknown-extension binary by its NUL bytes", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.read("skills/export.zip");
+      expect(res.content).toBeUndefined();
+      expect(res.error).toContain("'skills/export.zip' is a binary file (application/octet-stream)");
+    }));
+
+  it("refuses bytes a custom mount serves, and bytes a file mount serves", () =>
+    withAssets(
+      async (ctx) => {
+        const viaDir = await ctx.backend.read("uploads/scan");
+        expect(viaDir.error).toContain("'uploads/scan' is a binary file (image/png, 3 B)");
+        const viaFile = await ctx.backend.read("COVER.png");
+        expect(viaFile.error).toContain("'COVER.png' is a binary file (image/png, 2 B)");
+      },
+      {
+        "/uploads/": answering({ content: new Uint8Array(3), mimeType: "image/png" }),
+        "/COVER.png": answering({ content: new Uint8Array(2), mimeType: "image/png" }),
+      },
+    ));
+
+  it("passes a route's own error through", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.read("skills/missing.png");
+      expect(res.error).toBeDefined();
+      expect(res.error).not.toContain("binary file");
+    }));
+
+  it("reads text unchanged: JSON, SVG and a v1 file mount's bare string", () =>
+    withAssets(
+      async (ctx) => {
+        expect(String((await ctx.backend.read("skills/orders.json")).content)).toContain("A-1");
+        expect(String((await ctx.backend.read("skills/icon.svg")).content)).toContain("<svg/>");
+        expect(await ctx.backend.read("NOTES.md")).toBe("plain notes");
+      },
+      { "/NOTES.md": answering("plain notes") },
+    ));
+
+  it("refuses a v1 file mount's bare string carrying NUL", () =>
+    withAssets(
+      async (ctx) => {
+        expect((await ctx.backend.read("DATA.bin")).error).toContain("'DATA.bin' is a binary file");
+      },
+      { "/DATA.bin": answering("ab\u0000cd") },
+    ));
+
+  it("leaves readRaw alone: the runtime still gets the bytes", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.readRaw("skills/logo.png");
+      expect(res.error).toBeUndefined();
+      expect(res.data?.content).toBeInstanceOf(Uint8Array);
+    }));
+});

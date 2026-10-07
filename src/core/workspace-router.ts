@@ -1,11 +1,12 @@
 import type { BackendProtocolV2, CompositeBackend, FileInfo } from "deepagents";
+import { binaryReadError } from "./binary-read.js";
 import { canonicalizeRelPath } from "./workspace.js";
 import { SESSION_INTERNAL_DIRS, classifyWorkspacePath, mountNameOf } from "./zones.js";
 import type { MountPrefixes } from "./mounts.js";
 
 /**
  * The workspace's single entry point, wrapping the mount-routing
- * {@link CompositeBackend}. It owns the three things prefix routing cannot do
+ * {@link CompositeBackend}. It owns the things prefix routing cannot do
  * on its own:
  *
  *  1. **Canonicalization.** `CompositeBackend` routes by literal prefix, but
@@ -30,6 +31,11 @@ import type { MountPrefixes } from "./mounts.js";
  *     serves searches, and a search addressed at it (the mount or a path inside
  *     it) is delegated to its route directly, so the backend's own answer —
  *     matches or refusal — reaches the caller verbatim.
+ *  5. **Text-only reads.** A `read` whose result is binary — a non-text MIME
+ *     type, bytes, or NUL in decoded text — is answered with the binary notice
+ *     (`core/binary-read.ts`) instead of content, so no caller of `read_file`
+ *     or `tools.readFile` ever gets base64 or decoded bytes. A route's own
+ *     `{ error }` and `readRaw` are untouched.
  */
 export interface WorkspaceRouterOptions {
   /** Mount-routing backend: session zone as default route, authored zone mounted. */
@@ -109,6 +115,15 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     return { backend, name, routePath: target.slice(name.length + 1) || "/" };
   };
 
+  /** A routed read's result, or the binary notice in its place. */
+  const textOnly = async (target: string, pending: ReturnType<BackendProtocolV2["read"]>) => {
+    const res = await pending;
+    // A v1 file mount answers a bare string; read it as Deep Agents' adapter wraps it.
+    const raw: unknown = res;
+    const binary = binaryReadError(target, typeof raw === "string" ? { content: raw } : res);
+    return binary === null ? res : { error: binary };
+  };
+
   /** Hide runtime-internal areas and surface file mounts at `/`. */
   const shapeRoot = async (path: string, files: FileInfo[]): Promise<FileInfo[]> => {
     if (path !== "/" || !boundSessionId()) return files;
@@ -142,9 +157,10 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     read(filePath: string, offset?: number, limit?: number) {
       const target = canonical(filePath);
       const file = fileMount(target);
-      return file
-        ? file.backend.read(file.key, offset, limit)
-        : composite.read(target, offset, limit);
+      return textOnly(
+        target,
+        file ? file.backend.read(file.key, offset, limit) : composite.read(target, offset, limit),
+      );
     },
 
     readRaw(filePath: string) {

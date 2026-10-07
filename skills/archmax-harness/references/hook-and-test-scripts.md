@@ -163,7 +163,7 @@ export default async function hook({ state, phase, trigger, variables, messages,
 | `variables` | The run's variables as a plain `name → value` map, including the built-in `trigger`. Structured values are present whole (`variables.order.items[0].sku`). **Read-only**: assigning changes nothing, and the variable tools are absent from `tools.*` — a hook that could write variables would be editing the governance inputs of the state it judges. |
 | `messages` | The recent transcript (last 24 messages), newest last, as `{ role, text, toolCalls? }`. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, a completion check; `note` names the kind). A hook that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. |
 | `from`, `to`, `reason` | Present on `after` hooks: the transition the agent is attempting (`reason` is the agent's `archmax_advance` reason). |
-| `tools` | The privileged tool-call bridge (async), camelCased: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })` → file text. See [Governance](#governance-of-tools-calls). |
+| `tools` | The privileged tool-call bridge (async), camelCased: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })` → file text, or the binary notice for a binary file (see below). See [Governance](#governance-of-tools-calls). |
 
 **The verdict** — the three helpers are globals:
 
@@ -229,6 +229,19 @@ try {
 } catch (err) {
   console.log(`could not write the report: ${err.message}`);
 }
+```
+
+A **binary file** is not a refusal and does not throw: reads are text only, so
+`tools.readFile` on an image, audio, video, PDF or PowerPoint file, or on any
+file whose content holds a NUL byte (an archive, an Office document), resolves to
+the notice `Error: '<path>' is a binary file (<type>, <size>) and was not read;
+read_file returns text files only.` instead of content. A missing file reads as
+an `Error: …` string the same way. A script that parses what it read checks
+first:
+
+```js
+const text = await tools.readFile({ file_path: "scratchpad/upload.json" });
+const upload = text.startsWith("Error:") ? null : JSON.parse(text);
 ```
 
 **Authoring rule for `archmax_run` scripts:** if sandboxed code calls `tools.X`,
