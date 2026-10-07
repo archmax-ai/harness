@@ -452,9 +452,10 @@ reads what arrived and then picks its own outgoing transition:
 clarify:
   title: Ask a clarifying question
   instructions: >-
-    Ask exactly one clarifying question, then call archmax_wait with a reason
-    naming what you are waiting for. When the reply arrives you continue here:
-    read it, and if it identifies the order, advance to answer.
+    Ask exactly one clarifying question and, in that same message, call
+    archmax_wait with a reason naming what you are waiting for. When the reply
+    arrives you continue here: read it, and if it identifies the order, advance
+    to answer.
   transitions:
     - { to: answer, description: The reply identifies the order. }
     - { to: closed, description: The conversation closed before a usable reply. }

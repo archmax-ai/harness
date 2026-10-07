@@ -521,7 +521,10 @@ describe("raise tool declaration and governance", () => {
   it("declares a code and a reason, and no success flag", () => {
     const tool = createControlTools().find((t) => t.name === RAISE_TOOL)!;
     expect(Object.keys((tool.schema as { shape: Record<string, unknown> }).shape)).toEqual(["code", "reason"]);
-    expect(tool.description).toMatch(/only when the task cannot be completed/);
+    expect(tool.description).toMatch(/when the task cannot be completed/);
+    expect(tool.description).toMatch(/Never call it to finish work that worked/);
+    // A reply that only explains the failure is the miss it has to prevent.
+    expect(tool.description).toMatch(/a reply that only explains the failure reports it as one/);
     expect(tool.description).toMatch(/Call it alone/);
   });
 

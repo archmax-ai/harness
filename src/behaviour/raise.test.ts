@@ -73,7 +73,9 @@ describe("a raise", () => {
     const outcome = await agent.workflow.send("s1", { message: "go" });
 
     expect(model.calls.map((call) => call.tools.includes("archmax_raise"))).toEqual([true, true]);
-    expect(model.boundTools.get("archmax_raise")?.description).toMatch(/only when the task cannot be completed/);
+    const description = model.boundTools.get("archmax_raise")?.description;
+    expect(description).toMatch(/when the task cannot be completed/);
+    expect(description).toMatch(/Never call it to finish work that worked/);
     expect(outcome).toMatchObject({ kind: "failed", state: "done" });
   });
 
