@@ -741,7 +741,11 @@ entry guards every declared path argument: a grant needs all of them to match
 (`{ tool: copy_file, paths: [skills/**, reports/**] }`), a denial needs one
 (`{ tool: "*", paths: [secrets/**] }` blocks a copy in or out). A host tool that
 declares its paths (`toolPaths`, or a descriptor's `paths`) is governed the same
-way. Any other tool
+way; an argument may hold a list of paths, each one governed (and each one
+tested by a `paths:` guard), and any other shape is refused
+(`tool.path-argument`). `scratchpad/` is open in every state to the always-on
+tools only — a host tool a state must grant stays refused where it is not
+granted, whatever its paths. Any other tool
 must be declared in the state's `tools.allow` or workflow-level
 `tools.allow_always`. A `tools.allow` entry naming an always-on tool **narrows**
 it for that state.

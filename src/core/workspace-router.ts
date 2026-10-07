@@ -7,6 +7,7 @@ import type {
   FileUploadResponse,
 } from "deepagents";
 import { binaryReadError } from "./binary-read.js";
+import { downloadViaReadRaw } from "./raw-download.js";
 import { canonicalizeRelPath } from "./workspace.js";
 import { SESSION_INTERNAL_DIRS, classifyWorkspacePath, mountNameOf } from "./zones.js";
 import type { MountPrefixes } from "./mounts.js";
@@ -46,12 +47,23 @@ import type { MountPrefixes } from "./mounts.js";
  *  6. **Raw-byte transfer and deletion.** `downloadFiles`/`uploadFiles` and
  *     `delete` route each path as a read or a write does (exact file mount, else
  *     the composite), so the file operations can move bytes no text channel
- *     carries and remove a file. A route without transfer throws, as the
- *     composite does; a route without deletion answers an error.
+ *     carries and remove a file. The protocol makes all three optional and Deep
+ *     Agents feature-detects them, so none throws for want of support:
+ *     `downloadFiles` is always present and reads a route without the raw
+ *     channel through `readRaw` (exact bytes or an error); `uploadFiles` is
+ *     present exactly when the session zone has it, and a route without it
+ *     answers that file with an error; `delete` answers a route without it with
+ *     an error. Deep Agents itself is handed the router without `delete`
+ *     ({@link withoutDeletion}).
  */
 export interface WorkspaceRouterOptions {
   /** Mount-routing backend: session zone as default route, authored zone mounted. */
   composite: CompositeBackend;
+  /**
+   * The composite's default route, the session zone. The router has
+   * `uploadFiles` exactly when it does: that is where Deep Agents writes.
+   */
+  defaultRoute: BackendProtocolV2;
   /**
    * The composite `grep`/`glob` fan out through: the same default route and the
    * searchable directory routes only. Defaults to `composite`, which is exact
@@ -134,6 +146,19 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     const raw: unknown = res;
     const binary = binaryReadError(target, typeof raw === "string" ? { content: raw } : res);
     return binary === null ? res : { error: binary };
+  };
+
+  /** One file's bytes from a store: its raw channel, else `readRaw`. */
+  const downloadFrom = async (backend: BackendProtocolV2, key: string) =>
+    backend.downloadFiles ? (await backend.downloadFiles([key]))[0] : downloadViaReadRaw(backend, key);
+
+  /** One composite-routed file's bytes; a route without the raw channel is read through `readRaw`. */
+  const downloadRouted = async (target: string) => {
+    try {
+      return (await composite.downloadFiles([target]))[0];
+    } catch {
+      return downloadViaReadRaw(composite, target);
+    }
   };
 
   /** Hide runtime-internal areas and surface file mounts at `/`. */
@@ -237,31 +262,53 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
       for (const path of paths) {
         const target = canonical(path);
         const file = fileMount(target);
-        if (file && !file.backend.downloadFiles) throw new Error("Backend does not support downloadFiles");
-        const [res] = file
-          ? await file.backend.downloadFiles!([file.key])
-          : await composite.downloadFiles([target]);
+        const res = file ? await downloadFrom(file.backend, file.key) : await downloadRouted(target);
         out.push({ path: target, content: res?.content ?? null, error: res?.error ?? null });
-      }
-      return out;
-    },
-
-    async uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
-      const out: FileUploadResponse[] = [];
-      for (const [path, content] of files) {
-        const target = canonical(path);
-        const file = fileMount(target);
-        if (file && !file.backend.uploadFiles) throw new Error("Backend does not support uploadFiles");
-        const [res] = file
-          ? await file.backend.uploadFiles!([[file.key, content]])
-          : await composite.uploadFiles([[target, content]]);
-        out.push({ path: target, error: res?.error ?? null });
       }
       return out;
     },
   };
 
+  if (options.defaultRoute.uploadFiles) {
+    router.uploadFiles = async (files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> => {
+      const out: FileUploadResponse[] = [];
+      for (const [path, content] of files) {
+        const target = canonical(path);
+        const file = fileMount(target);
+        let error: FileUploadResponse["error"];
+        if (file) {
+          error = file.backend.uploadFiles
+            ? ((await file.backend.uploadFiles([[file.key, content]]))[0]?.error ?? null)
+            : "permission_denied";
+        } else {
+          try {
+            error = (await composite.uploadFiles([[target, content]]))[0]?.error ?? null;
+          } catch {
+            // The composite throws for a route without uploads: this file is refused, not the batch.
+            error = "permission_denied";
+          }
+        }
+        out.push({ path: target, error });
+      }
+      return out;
+    };
+  }
+
   return router;
+}
+
+/**
+ * The workspace as Deep Agents is handed it: everything but `delete`. Deep
+ * Agents registers its own `delete` tool (recursive: a folder and all beneath
+ * it) whenever its backend can delete; deleting files is `remove_file`'s, so
+ * that tool must not exist. The file operations and host tools keep the router
+ * itself, `delete` included.
+ */
+export function withoutDeletion<T extends BackendProtocolV2>(backend: T): T {
+  return new Proxy(backend, {
+    get: (target, key, receiver) => (key === "delete" ? undefined : Reflect.get(target, key, receiver)),
+    has: (target, key) => key !== "delete" && Reflect.has(target, key),
+  });
 }
 
 /** Re-exported so callers can classify a path with the router's own rules. */

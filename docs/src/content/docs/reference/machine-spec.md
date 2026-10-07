@@ -269,10 +269,15 @@ host tools (see [`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-
   `access: read` refuse a `write` and a `remove` alike;
 - the runtime-internal areas, a skill the state does not enable and a mount it
   was not given refuse every access;
-- `scratchpad/` is open to `read`, `list`, `write` and `remove` in every state.
+- `scratchpad/` is open to `read`, `list`, `write` and `remove` in every state,
+  for the always-on tools (the file tools, the file operations and a host's
+  `essentialTools`). Any other tool needs its state's grant there as anywhere.
 
 A call naming several paths is refused when any one of them is, and the refusal
-names the argument (`'copy_file' on 'skills/x.md' (destination)`).
+names the argument (`'copy_file' on 'skills/x.md' (destination)`). An argument
+may hold a list of paths, each governed with the argument's access; a declared
+argument holding anything but a path or a list of paths is refused
+(`tool.path-argument`).
 
 `archmax_eval`, the code interpreter, is always on because evaluated code reaches
 what the state already permits and no further. Its `tools.*` calls are decided
@@ -1155,7 +1160,8 @@ leaves the rest alone, so the tool stays disclosed and the kernel refuses the
 matching call. A bare denial removes the tool from the model's picture entirely.
 A `paths:` denial matches a call when **any** of its declared paths matches, so
 `{ tool: "*", paths: ["secrets/**"] }` refuses a copy out of `secrets/` and a copy
-into it. (A `paths:` grant needs **every** path to match.)
+into it. (A `paths:` grant needs **every** path to match.) An argument holding a
+list of paths contributes each element.
 
 `archmax validate` flags three shapes here: a state whose `allow` list would
 permit a call a denial blocks, a state that both allows and forbids one tool,

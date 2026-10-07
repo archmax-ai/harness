@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { BackendProtocolV2 } from "deepagents";
+import type { BackendProtocolV2, FileUploadResponse } from "deepagents";
 import { mountSubtree, type MappedBackend } from "./path-mapping.js";
 import { isSessionAgnosticPath } from "./zones.js";
 
@@ -37,6 +37,12 @@ import { isSessionAgnosticPath } from "./zones.js";
 export class SessionZoneRouter implements BackendProtocolV2 {
   private readonly binding = new AsyncLocalStorage<string>();
   private readonly routed: MappedBackend;
+  /**
+   * Present exactly when the session store has it: Deep Agents' history offload
+   * appends through `uploadFiles` when the workspace has one and through `edit`
+   * otherwise, so a stand-in that refused would break the append.
+   */
+  readonly uploadFiles?: (files: Array<[string, Uint8Array]>) => Promise<FileUploadResponse[]>;
 
   constructor(backend: BackendProtocolV2) {
     this.routed = mountSubtree(backend, () => this.binding.getStore(), {
@@ -46,6 +52,8 @@ export class SessionZoneRouter implements BackendProtocolV2 {
       passthrough: (rel, prefix) =>
         rel === prefix || rel.startsWith(`${prefix}/`) || isSessionAgnosticPath(rel),
     });
+    const upload = this.routed.uploadFiles;
+    if (upload) this.uploadFiles = async (files) => upload(files);
   }
 
   /**
@@ -94,10 +102,6 @@ export class SessionZoneRouter implements BackendProtocolV2 {
 
   downloadFiles(paths: string[]) {
     return this.routed.downloadFiles(paths);
-  }
-
-  uploadFiles(files: Array<[string, Uint8Array]>) {
-    return this.routed.uploadFiles(files);
   }
 
   delete(filePath: string) {

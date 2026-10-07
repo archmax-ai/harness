@@ -428,10 +428,13 @@ decided by the kernel whether or not the mount was listed.
 ### Requirement: Session areas
 
 The runtime-internal areas SHALL admit no path of any access (`zone.runtime-internal`). The offload
-areas SHALL admit a `read` or `list` path without an `allow` entry (`tool.offload-read`) and never a
+areas SHALL admit an essential tool's `read` or `list` path without an `allow` entry (`tool.offload-read`) and never a
 `write` or `remove` path (`zone.runtime-managed`). `scratchpad/` SHALL admit a `read`, `list`,
 `write` or `remove` path in every state without an `allow` entry (`tool.scratchpad`), evaluated ahead
-of the per-state default, when every path the call names is so admitted; so an `allow` entry naming a
+of the per-state default, when every path the call names is so admitted and the tool is essential —
+one every state permits: the built-in file tools, the file operations and the host's
+`essentialTools`. The open areas SHALL NOT admit a call to any other tool, which the state's grant
+decides as anywhere, so declaring a host tool's path arguments only ever narrows what it may do; so an `allow` entry naming a
 path inside `scratchpad/` SHALL NOT narrow where inside it a write lands, and a call naming a path
 outside the open areas SHALL be decided by the state's entries. Any other session-root path SHALL be
 matched against the state's entries unchanged. Every block message SHALL point at `scratchpad/` and
@@ -446,6 +449,17 @@ name no second working area.
 
 - **WHEN** the model copies, moves and removes files inside `scratchpad/` in any state
 - **THEN** each call is permitted with `tool.scratchpad`
+
+#### Scenario: The scratchpad does not open a tool the state does not grant
+
+- **WHEN** a host tool declaring `{ attachment: "read" }` is granted only in `intake`, and in `reply`
+  the model calls it with `attachment: "scratchpad/x.pdf"`
+- **THEN** the call is blocked with `tool.not-allowed`, and in `intake` it is allowed
+
+#### Scenario: The scratchpad stays open to an essential host tool
+
+- **WHEN** a host tool named in `essentialTools` and declaring `{ path: "read" }` reads `scratchpad/x.md` in any state
+- **THEN** the call is permitted with `tool.scratchpad`
 
 ### Requirement: Per-state tool disclosure
 
@@ -882,6 +896,11 @@ for a built-in tool, an unknown access, or an empty declaration SHALL fail assem
 `ToolPathsError`. A tool with no declaration SHALL be subject to no path rule. Every machine of an
 assembly, root and delegated, SHALL govern by the same table.
 
+A declared argument SHALL hold one path or a list of paths; each path of a list SHALL be governed
+with the argument's access, and an omitted argument or an empty list SHALL name no path. A declared
+argument holding anything else — a number, an object, a list containing a non-string — SHALL be
+refused before every other rule (`tool.path-argument`), so no path inside it passes ungoverned.
+
 Every path rule SHALL evaluate every declared path a call names, with its access: the read-only zone
 and the runtime-managed areas refuse `write` and `remove`; the runtime-internal areas, a skill bundle
 the state does not enable, and a governed mount the state was not given refuse every access; a mount
@@ -889,7 +908,9 @@ narrowed to `access: read` refuses `write` and `remove` (`mount.read-only`); an 
 skill denial refuses every access; `script.skill-only` confines `execute`; and the authoring-plane
 rule reads them for scripts and hooks. A call SHALL be refused when any one of its paths is, and for a
 tool declaring several, the refusal SHALL name the argument (`'copy_file' on 'x' (destination)`). A
-`paths:` guard in a forbid entry SHALL match a call when **any** declared path it names matches, so
+`paths:` guard SHALL test every path of every declared argument, each element of a list on its own:
+a grant SHALL need every one to match, and an omitted argument or an empty list SHALL match no glob.
+A `paths:` guard in a forbid entry SHALL match a call when **any** declared path it names matches, so
 `{ tool: "*", paths: [secrets/**] }` refuses a copy out of `secrets/` and a copy into it. The kernel,
 `validate`'s probes and the sandbox's governed tool bridge SHALL read the same table, so a script's
 call is governed by its declared paths exactly as the model's is.
@@ -926,3 +947,20 @@ call is governed by its declared paths exactly as the model's is.
 
 - **WHEN** a host passes `toolPaths: { read_file: { file_path: "read" } }`
 - **THEN** assembly throws `ToolPathsError`
+
+#### Scenario: Each path of a list is governed
+
+- **WHEN** a host tool declares `{ files: "read" }` and, in a state not given the governed mount
+  `contracts`, the model calls it with `files: ["attachments/a.txt", "contracts/b.docx"]`
+- **THEN** the call is blocked with `mount.not-allowed`
+
+#### Scenario: A paths grant tests each element
+
+- **WHEN** a state grants `{ tool: attach, paths: ["attachments/**"] }` and the model calls `attach`
+  with `files: ["attachments/a.txt", "contracts/b.docx"]`
+- **THEN** the call is not granted, though the two joined into one string would match the glob
+
+#### Scenario: A path argument of another shape is refused
+
+- **WHEN** a tool declaring `{ files: "read" }` is called with `files: ["a.txt", 3]` or `files: { path: "b.txt" }`
+- **THEN** the call is blocked with `tool.path-argument`

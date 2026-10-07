@@ -242,6 +242,12 @@ export {
 /** Each built-in tool's path arguments and how a call uses each. */
 export { BUILT_IN_TOOL_PATHS, PATH_ACCESSES } from "../machine/tool-paths.js";
 export type { ToolPaths, PathAccess } from "../machine/tool-paths.js";
+export {
+  /** Deep Agents' binary types by extension: the paths a `write` addresses with base64 the store decodes. */
+  BINARY_MIME_TYPES,
+  /** A path's binary MIME type, or `undefined` when Deep Agents reads it as text. */
+  binaryMimeTypeOf,
+} from "../core/binary-types.js";
 export { DEFAULT_SUB_WORKFLOW_DEPTH, DEFAULT_SUB_WORKFLOW_CONCURRENCY } from "../machine/delegation.js";
 
 // --- The root namespace ---------------------------------------------------------------

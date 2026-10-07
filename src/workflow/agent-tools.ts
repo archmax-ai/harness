@@ -43,17 +43,21 @@ export function toolsFromMap(entries: Record<string, AgentToolDescriptor>): Stru
 /**
  * The context of a call made outside any turn (a host invoking the tool
  * directly): the handler still runs, and only reaching for the workspace — which
- * exists per session, per turn — fails, saying why.
+ * exists per session, per turn — fails, saying why. The property is
+ * non-enumerable, so a deep-equality check or a logger that walks the context
+ * skips it instead of throwing; `"workspace" in context` still tells a caller
+ * whether one may be read.
  */
 function outsideTurn(id: string): ToolContext {
-  return {
-    get workspace(): never {
+  return Object.defineProperty({}, "workspace", {
+    enumerable: false,
+    get(): never {
       throw new Error(
         `Tool '${id}' ran outside a session turn; its workspace exists only while an agent turn ` +
           `is running.`,
       );
     },
-  };
+  }) as ToolContext;
 }
 
 /**

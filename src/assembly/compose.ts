@@ -40,6 +40,7 @@ import { SessionStoreIdError, sessionIdRejection, type SessionStore } from "../c
 import type { SessionZoneRouter } from "../core/session-zone.js";
 import type { SkillPrefixes, SkillRegistry } from "../core/skills.js";
 import { TOOL_MOCK_MIDDLEWARE_NAME } from "../core/tool-mocks.js";
+import { withoutDeletion } from "../core/workspace-router.js";
 import type { PricingTable, UsageTracker } from "../core/usage.js";
 import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
@@ -609,7 +610,9 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     // The workflow's own model is the graph default; a state that declares its
     // own is switched onto it per call by the governance middleware.
     model: workflowModel,
-    backend: ctx.backend,
+    // Without `delete`: Deep Agents' own recursive `delete` tool stays out, and
+    // `remove_file` is the agent's one way to delete a file.
+    backend: withoutDeletion(ctx.backend),
     // Deliberately no `skills`: upstream's section cannot vary per state; the
     // workflow middleware renders the active state's set instead.
     tools: [

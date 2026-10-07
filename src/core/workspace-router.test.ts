@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
-import type { BackendProtocolV2 } from "deepagents";
+import { FilesystemBackend, type BackendProtocolV2 } from "deepagents";
 import { defaultMounts } from "./mounts.js";
+import { createBackendSessionStore, createMemorySessionStore } from "./session-store.js";
 import { createWorkspaceContext } from "./workspace-context.js";
-import { WorkspacePathEscapeError } from "./workspace-router.js";
+import { WorkspacePathEscapeError, withoutDeletion } from "./workspace-router.js";
 
 /**
  * The workspace router's contract is spelling-independence: `CompositeBackend`
@@ -462,6 +463,96 @@ describe("workspace router deletion", () => {
         expect((await ctx.backend.delete!("AGENTS.md")).error).toMatch(/read-only mount/);
         const orders = await ctx.backend.readRaw("skills/orders.json");
         expect(orders.data?.content).toContain("A-1");
+      });
+    }));
+});
+
+/** A store serving only the protocol's required methods: no raw transfer, no deletion. */
+function bare(backend: BackendProtocolV2): BackendProtocolV2 {
+  return {
+    ls: backend.ls.bind(backend),
+    read: backend.read.bind(backend),
+    readRaw: backend.readRaw.bind(backend),
+    write: backend.write.bind(backend),
+    edit: backend.edit.bind(backend),
+    grep: backend.grep.bind(backend),
+    glob: backend.glob.bind(backend),
+  };
+}
+
+describe("workspace router over stores without the optional methods", () => {
+  function bareWorkspace(root: string, options: { sessionUploads?: boolean } = {}) {
+    const memory = createMemorySessionStore().backend;
+    const sessionBackend = options.sessionUploads ? { ...bare(memory), uploadFiles: memory.uploadFiles!.bind(memory) } : bare(memory);
+    const fs = (dir: string) => bare(new FilesystemBackend({ rootDir: dir, virtualMode: true }));
+    return createWorkspaceContext({
+      backend: fs(root),
+      sessionStore: createBackendSessionStore({ backend: sessionBackend }),
+      mounts: {
+        "/skills/": fs(join(root, "skills")),
+        "/AGENTS.md": fs(root),
+        "/tmp/": { backend: bare(createMemorySessionStore().backend), readOnly: false },
+      },
+    });
+  }
+
+  it("downloads every readable file through readRaw rather than throwing", () =>
+    withWorkspace(async (root) => {
+      const ctx = bareWorkspace(root);
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        await ctx.backend.write("scratchpad/notes.md", "hello");
+        await ctx.backend.write("tmp/draft.md", "draft");
+        const res = await ctx.backend.downloadFiles!(["skills/orders.json", "AGENTS.md", "scratchpad/notes.md", "tmp/draft.md"]);
+        expect(res.map((r) => r.error)).toEqual([null, null, null, null]);
+        expect(res.map((r) => new TextDecoder().decode(r.content!))).toEqual(['[{"id":"A-1"}]', "persona", "hello", "draft"]);
+        const [missing] = await ctx.backend.downloadFiles!(["scratchpad/none.md"]);
+        expect(missing).toEqual({ path: "/scratchpad/none.md", content: null, error: "file_not_found" });
+      });
+    }));
+
+  it("has no uploadFiles when the session store has none, so a feature check falls back", () =>
+    withWorkspace(async (root) => {
+      expect(bareWorkspace(root).backend.uploadFiles).toBeUndefined();
+      expect(typeof bareWorkspace(root, { sessionUploads: true }).backend.uploadFiles).toBe("function");
+    }));
+
+  it("refuses an upload to a store without one per file, never the batch", () =>
+    withWorkspace(async (root) => {
+      const ctx = bareWorkspace(root, { sessionUploads: true });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        const res = await ctx.backend.uploadFiles!([
+          ["scratchpad/a.bin", new Uint8Array([1])],
+          ["tmp/b.bin", new Uint8Array([2])],
+        ]);
+        expect(res).toEqual([
+          { path: "/scratchpad/a.bin", error: null },
+          { path: "/tmp/b.bin", error: "permission_denied" },
+        ]);
+      });
+    }));
+
+  it("answers a delete on a store without one with an error", () =>
+    withWorkspace(async (root) => {
+      const ctx = bareWorkspace(root);
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        await ctx.backend.write("scratchpad/notes.md", "hello");
+        expect((await ctx.backend.delete!("scratchpad/notes.md")).error).toMatch(/cannot delete/);
+        expect((await ctx.backend.delete!("tmp/x.md")).error).toMatch(/deletion is not available/);
+      });
+    }));
+});
+
+describe("withoutDeletion", () => {
+  it("hides delete from a feature check and keeps everything else", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      const view = withoutDeletion(ctx.backend) as BackendProtocolV2 & { routePrefixes: string[] };
+      expect(view.delete).toBeUndefined();
+      expect("delete" in view).toBe(false);
+      expect(typeof ctx.backend.delete).toBe("function");
+      expect(view.routePrefixes).toEqual(["/skills/", "/.platform/"]);
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        expect(String((await view.read("skills/orders.json")).content)).toContain("A-1");
       });
     }));
 });

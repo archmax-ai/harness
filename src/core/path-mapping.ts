@@ -1,4 +1,5 @@
-import type { BackendProtocolV2, DeleteResult, FileDownloadResponse, FileUploadResponse } from "deepagents";
+import type { BackendProtocolV2, DeleteResult, FileDownloadResponse } from "deepagents";
+import { downloadViaReadRaw } from "./raw-download.js";
 import { normalizeRelPath } from "./workspace.js";
 
 /**
@@ -27,12 +28,18 @@ import { normalizeRelPath } from "./workspace.js";
 export type PrefixResolver = () => string | undefined;
 
 /**
- * A mapped backend: raw-byte transfer and deletion are always present. Transfer
- * throws when the wrapped backend lacks it, as `CompositeBackend` does; deletion
- * answers an error, as `CompositeBackend` does.
+ * A mapped backend. The protocol's optional methods stay optional — Deep Agents
+ * feature-detects them — so each is present only where it can answer every path
+ * it is asked about, and none throws for want of support:
+ *
+ *  - `downloadFiles` is always present: the wrapped store's own when it has one,
+ *    else read through `readRaw` (`core/raw-download.ts`), exact bytes or an error.
+ *  - `uploadFiles` is present when the wrapped store has it, or on a read-only
+ *    mount, which refuses every file.
+ *  - `delete` is always present; a store without it answers an error, as
+ *    `CompositeBackend` does.
  */
-export type MappedBackend = BackendProtocolV2 &
-  Required<Pick<BackendProtocolV2, "downloadFiles" | "uploadFiles" | "delete">>;
+export type MappedBackend = BackendProtocolV2 & Required<Pick<BackendProtocolV2, "downloadFiles" | "delete">>;
 
 function relPrefix(prefix: string): string {
   return normalizeRelPath(prefix).replace(/\/+$/, "");
@@ -118,7 +125,7 @@ export function mountSubtree(
   const mapFiles = <T extends { path: string }>(files: T[] | undefined, active: string | undefined) =>
     files?.map((file) => ({ ...file, path: mapOut(file.path, active) }));
 
-  return {
+  const mapped: MappedBackend = {
     async ls(path: string) {
       const active = prefixFor(path);
       const res = await backend.ls(mapIn(path, active));
@@ -166,12 +173,13 @@ export function mountSubtree(
       return res.path === undefined ? res : { ...res, path: mapOut(res.path, active) };
     },
 
-    // Raw-byte transfer. A backend without it throws, as `CompositeBackend` does
-    // for a route without it, so a caller has one "unsupported" signal to handle.
+    // Raw-byte transfer: the store's own channel, else `readRaw` path by path.
     async downloadFiles(paths: string[]): Promise<FileDownloadResponse[]> {
-      if (!backend.downloadFiles) throw new Error("Backend does not support downloadFiles");
       const actives = paths.map(prefixFor);
-      const res = await backend.downloadFiles(paths.map((path, i) => mapIn(path, actives[i])));
+      const inner = paths.map((path, i) => mapIn(path, actives[i]));
+      const res = backend.downloadFiles
+        ? await backend.downloadFiles(inner)
+        : await Promise.all(inner.map((path) => downloadViaReadRaw(backend, path)));
       return res.map((entry, i) => ({ ...entry, path: mapOut(entry.path, actives[i]) }));
     },
 
@@ -182,17 +190,21 @@ export function mountSubtree(
       const res = await backend.delete(mapIn(filePath, active));
       return res.path === undefined ? res : { ...res, path: mapOut(res.path, active) };
     },
+  };
 
-    async uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
-      if (options.readOnly) return files.map(([path]) => ({ path, error: "permission_denied" }));
-      if (!backend.uploadFiles) throw new Error("Backend does not support uploadFiles");
+  if (options.readOnly) {
+    mapped.uploadFiles = async (files) => files.map(([path]) => ({ path, error: "permission_denied" }));
+  } else if (backend.uploadFiles) {
+    const uploadFiles = backend.uploadFiles.bind(backend);
+    mapped.uploadFiles = async (files) => {
       const actives = files.map(([path]) => prefixFor(path));
-      const res = await backend.uploadFiles(
+      const res = await uploadFiles(
         files.map(([path, content], i): [string, Uint8Array] => [mapIn(path, actives[i]), content]),
       );
       return res.map((entry, i) => ({ ...entry, path: mapOut(entry.path, actives[i]) }));
-    },
-  };
+    };
+  }
+  return mapped;
 }
 
 function optionalRel(prefix: string | undefined): string | undefined {

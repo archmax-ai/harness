@@ -1,5 +1,6 @@
 import {
   ADVANCE_TOOL,
+  ESSENTIAL_TOOLS,
   HARNESS_CONTROL_TOOLS,
   EVAL_TOOL,
   SET_VARIABLES_TOOL,
@@ -18,6 +19,7 @@ import {
 import {
   BUILT_IN_TOOL_PATH_TABLE,
   declaredPathsOf,
+  malformedPathArgs,
   MUTATING_ACCESSES,
   OFFLOAD_ACCESSES,
   pathValuesOf,
@@ -665,9 +667,17 @@ export function compileForbiddenSkillRules(slugs: readonly string[], source: str
  * Evaluated after the safety, policy, and consumer rules (any of which may
  * still block it), just ahead of the per-state defaults — so it loosens only
  * the state `allow` list, never the governed run paths outside it.
+ *
+ * It opens these areas only to an **essential** tool — one every state already
+ * permits (the file tools, the file operations, the host's `essentialTools`) —
+ * sparing it a grant it does not need where a state narrows it. Any other tool
+ * is left to the state's grant: declaring a host tool's path arguments only ever
+ * narrows what it may do, and never makes it callable in a state that does not
+ * grant it.
  */
 const runOpenAccessRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
+  if (!(api.machine ? api.machine.isEssential(action.tool) : ESSENTIAL_TOOLS.has(action.tool))) return null;
   const paths = pathsOf(action, api);
   if (paths.length === 0) return null;
   // Open only when every path the call names is: a copy from a mount into the
@@ -759,6 +769,26 @@ const scriptSkillOnlyRule: GovernanceRule = (action, api) => {
 };
 
 /**
+ * Safety rule: a declared path argument holds a path or a list of paths. Any
+ * other value — a number, an object, a list holding one — is a shape no path
+ * rule can read, and a path inside it would pass every rule unseen, so the call
+ * is refused before them (`machine/tool-paths.ts`, `malformedPathArgs`).
+ */
+const pathArgumentRule: GovernanceRule = (action, api) => {
+  if (action.kind !== "tool-call") return null;
+  const [arg] = malformedPathArgs(action.tool, toolPathsOf(action.tool, api), action.args);
+  if (arg === undefined) return null;
+  return {
+    decision: "block",
+    ruleId: "tool.path-argument",
+    reason:
+      `[workflow] BLOCKED: '${action.tool}' argument '${arg}' must be a path or a list of paths ` +
+      `(strings); it holds something else, so the path rules cannot read it.`,
+    warn: true,
+  };
+};
+
+/**
  * Safety rule: the authoring plane is not addressable. Every
  * {@link AUTHORING_PREFIXES} prefix (`workflows/**`) has no route
  * in the agent's workspace composite, so an agent read finds nothing; a
@@ -797,6 +827,8 @@ const governancePlaneRule: GovernanceRule = (action, api) => {
  * none of those can loosen them.
  */
 const SAFETY_RULES: readonly GovernanceRule[] = [
+  // First: every path rule below reads the declared paths, which this vouches for.
+  pathArgumentRule,
   governancePlaneRule,
   scriptSkillOnlyRule,
   replyOnlyRule,

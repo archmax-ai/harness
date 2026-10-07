@@ -9,7 +9,42 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
-## 0.4.0 (unreleased)
+## 0.4.1
+
+- **A store without the protocol's optional methods works again.** Deep Agents makes
+  `downloadFiles`, `uploadFiles` and `delete` optional and checks for them, and 0.4.0's workspace
+  defined all three and threw where a store had none. Deep Agents' skills loader reads each
+  `SKILL.md` through `downloadFiles` when the backend has one, so a plain agent over such a store
+  found no skill. Now `downloadFiles` is always present and reads a store without it through
+  `readRaw` (exact bytes, or `permission_denied` for text whose decoding replaced bytes).
+  `uploadFiles` is present when the session store has it, and a mount without it refuses that file.
+  `delete` answers an error. Nothing throws for want of a method. See
+  [raw bytes and deletion](/reference/public-api/#session-storage-sessionstore-and-the-sessions-handles).
+- **`remove_file` is the only way to delete a file.** Because 0.4.0's workspace could delete, Deep
+  Agents registered its own `delete` tool, which removes a folder and everything under it. A plain
+  agent was shown it beside `remove_file`. Deep Agents is now handed the workspace without `delete`,
+  so that tool is neither shown nor able to delete.
+- **The scratchpad opens only the always-on tools.** `scratchpad/` and the offload areas were open
+  in every state to any tool that declared paths, ahead of the state's grant, so declaring a granted
+  host tool's paths made it callable everywhere on scratchpad paths. They are now open only to the
+  essential tools: the file tools, the file operations and your `essentialTools`. Any other tool
+  needs its state's grant there as anywhere, so declaring paths only narrows. **For hosts:** a
+  non-essential host tool that ran on scratchpad paths without a grant now needs one. See
+  [file operations and path arguments](/guides/workflow-machine/#file-operations-and-path-arguments).
+- **A path argument may hold a list of paths.** Each path of a list is governed with the argument's
+  access, and a `paths:` guard tests each one: a grant needs every path to match, a denial any.
+  Before, a list was not governed by the path rules, and a guard read it as one comma-joined
+  string, so `paths: [attachments/**]` admitted `["attachments/a.txt", "contracts/b.docx"]`. A
+  declared argument holding anything else (a number, an object, a list containing one) is refused
+  (`tool.path-argument`). See
+  [host tools](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
+- **The binary type table is exported.** `BINARY_MIME_TYPES` and `binaryMimeTypeOf` on
+  `@archmax-ai/harness/spec` are Deep Agents' extensions whose `write` carries base64, so a host
+  store honouring the convention uses the same table.
+- **An out-of-turn tool context can be compared and logged.** Its throwing `workspace` property is
+  non-enumerable, so a deep-equality check or a serializer skips it; reading it still says why.
+
+## 0.4.0
 
 - **File operations: `copy_file`, `move_file`, `remove_file`.** Three new always-on tools, in
   governed and plain agents alike, that work on one file without its content entering the

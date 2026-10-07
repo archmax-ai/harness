@@ -135,6 +135,104 @@ describe("declared paths: a host tool", () => {
   });
 });
 
+describe("declared paths: a host tool a state must grant", () => {
+  const GRANTED: MachineSpec = {
+    ...SPEC,
+    states: { ...SPEC.states, intake: { ...SPEC.states.intake!, tools: { allow: ["send_mail"] } } },
+  };
+  const paths = resolveToolPaths({ get_markdown: { path: "read" }, send_mail: { attachment: "read" } });
+  const decideFor = (state: string, tool: string, args: Record<string, unknown>) =>
+    decide(
+      WorkflowMachine.fromSpec(GRANTED, ["get_markdown"], paths),
+      { kind: "tool-call", state, tool, args },
+      [],
+      MOUNTS,
+      {},
+      SKILLS,
+    );
+
+  it("is not opened by the scratchpad where the state does not grant it", () => {
+    expect(decideFor("intake", "send_mail", { attachment: "scratchpad/x.pdf" })).toMatchObject({
+      decision: "allow",
+      ruleId: "tool.allowed",
+    });
+    expect(decideFor("reply", "send_mail", { attachment: "scratchpad/x.pdf" })).toMatchObject({
+      decision: "block",
+      ruleId: "tool.not-allowed",
+    });
+    expect(decideFor("reply", "send_mail", { attachment: "large_tool_results/x" })).toMatchObject({
+      decision: "block",
+      ruleId: "tool.not-allowed",
+    });
+  });
+
+  it("leaves the scratchpad open to an essential host tool in every state", () => {
+    for (const state of ["intake", "reply", "done"]) {
+      expect(decideFor(state, "get_markdown", { path: "scratchpad/x.md" }).ruleId).toBe("tool.scratchpad");
+    }
+  });
+});
+
+describe("declared paths: an argument holding a list of paths", () => {
+  const paths = resolveToolPaths({ pack_files: { files: "read" }, attach: { files: "read" } });
+  const LISTS: MachineSpec = {
+    ...SPEC,
+    states: {
+      ...SPEC.states,
+      reply: {
+        ...SPEC.states.reply!,
+        tools: {
+          allow: [{ tool: "attach", paths: ["attachments/**", "scratchpad/**"] }],
+          forbid: [{ tool: "pack_files", paths: ["scratchpad/secret/**"] }],
+        },
+      },
+    },
+  };
+  const decideFor = (state: string, tool: string, args: Record<string, unknown>) =>
+    decide(
+      WorkflowMachine.fromSpec(LISTS, ["pack_files"], paths),
+      { kind: "tool-call", state, tool, args },
+      [],
+      MOUNTS,
+      {},
+      SKILLS,
+    );
+
+  it("governs each path of the list with the argument's access", () => {
+    expect(decideFor("reply", "pack_files", { files: ["attachments/a.txt", "contracts/b.docx"] })).toMatchObject({
+      decision: "block",
+      ruleId: "mount.not-allowed",
+    });
+    expect(decideFor("intake", "pack_files", { files: ["attachments/a.txt", "contracts/b.docx"] }).decision).toBe("allow");
+    expect(decideFor("reply", "pack_files", { files: ["scratchpad/a.txt", "scratchpad/b.txt"] }).ruleId).toBe(
+      "tool.scratchpad",
+    );
+  });
+
+  it("matches a paths grant only when every element does, and a paths denial when any does", () => {
+    expect(decideFor("reply", "attach", { files: ["attachments/a.txt", "scratchpad/b.txt"] }).ruleId).toBe("tool.allowed");
+    // Read as one joined string, `attachments/a.txt,contracts/b.docx` would match `attachments/**`.
+    expect(decideFor("reply", "attach", { files: ["attachments/a.txt", "contracts/b.docx"] })).toMatchObject({
+      decision: "block",
+    });
+    expect(decideFor("reply", "attach", { files: [] }).decision).toBe("block");
+    expect(decideFor("reply", "pack_files", { files: ["scratchpad/a.txt", "scratchpad/secret/k.pem"] })).toMatchObject({
+      decision: "block",
+      ruleId: "tool.forbidden-here",
+    });
+  });
+
+  it("refuses a declared argument that holds neither a path nor a list of paths", () => {
+    for (const files of [["scratchpad/a.txt", 3], { path: "contracts/b.docx" }, 7]) {
+      expect(decideFor("intake", "pack_files", { files })).toMatchObject({
+        decision: "block",
+        ruleId: "tool.path-argument",
+      });
+    }
+    expect(decideFor("intake", "pack_files", {}).decision).toBe("allow");
+  });
+});
+
 describe("declared paths: the runtime's file operations", () => {
   it("open the scratchpad to a copy, a move and a removal in every state", () => {
     for (const state of ["intake", "reply", "done"]) {

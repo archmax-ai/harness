@@ -249,6 +249,12 @@ names the argument. A `paths:` grant must match every declared path, and a
 refuses a copy out of `secrets/` and a copy into it. Host tools declare their
 paths too, and are governed by the same rules (see
 [`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace)).
+A host tool's argument may hold a list of paths, each governed like one, and a
+`paths:` guard tests every element.
+
+The scratchpad is open in every state to the always-on tools only. A host tool
+a state must grant gets nothing from it: declaring its paths narrows what it
+may do where it is granted, and it stays refused where it is not.
 
 `allow_always` entries are **grants** for tools that are not always on. A
 per-state entry for the same tool takes precedence, as in the example above.
@@ -381,7 +387,7 @@ What the agent may do in each session area:
 
 | Area | Agent access |
 | --- | --- |
-| `scratchpad/` | Read and write, in every state |
+| `scratchpad/` | Read and write with the always-on file tools, in every state |
 | `large_tool_results/`, `conversation_history/` | Read |
 | `checkpoints/`, `artifacts/` | None |
 

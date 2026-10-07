@@ -468,6 +468,14 @@ export class WorkflowMachine {
   }
 
   /**
+   * Whether `tool` is essential — always disclosed and permitted, in every state:
+   * the built-ins of {@link ESSENTIAL_TOOLS} and the host's `essentialTools`.
+   */
+  isEssential(tool: string): boolean {
+    return ESSENTIAL_TOOLS.has(tool) || this.extraEssential.has(tool);
+  }
+
+  /**
    * The effective essential set: the built-ins plus the host's `essentialTools`.
    * Unconditional — no property of a workspace or a spec adds to it, and `task`
    * is in it under no circumstances (see {@link UNGRANTABLE_TOOLS}).

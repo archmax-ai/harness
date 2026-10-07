@@ -1,5 +1,5 @@
-import { posix } from "node:path";
 import type { ReadResult } from "deepagents";
+import { binaryMimeTypeOf } from "./binary-types.js";
 
 /**
  * Reads are text only. Deep Agents' `read_file` hands a non-text file to the
@@ -16,44 +16,7 @@ import type { ReadResult } from "deepagents";
  * decoding of an unknown extension.
  */
 
-/**
- * The non-text entries of Deep Agents' extension table (`backends/utils.ts`,
- * identical in 1.13.4 and 1.14.2), which it does not export. Every other
- * extension maps to a text type, or to `text/plain` by default, so only these
- * decide anything. Pinned against `FilesystemBackend` by `binary-read.test.ts`.
- */
-export const BINARY_MIME_TYPES: Readonly<Record<string, string>> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".heic": "image/heic",
-  ".heif": "image/heif",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".aiff": "audio/aiff",
-  ".aac": "audio/aac",
-  ".ogg": "audio/ogg",
-  ".flac": "audio/flac",
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-  ".mpeg": "video/mpeg",
-  ".mov": "video/quicktime",
-  ".avi": "video/x-msvideo",
-  ".flv": "video/x-flv",
-  ".mpg": "video/mpeg",
-  ".wmv": "video/x-ms-wmv",
-  ".3gpp": "video/3gpp",
-  ".pdf": "application/pdf",
-  ".ppt": "application/vnd.ms-powerpoint",
-  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-};
-
-/** The MIME type for a path's binary extension, or `undefined` when Deep Agents would read it as text. */
-export function binaryMimeTypeOf(path: string): string | undefined {
-  return BINARY_MIME_TYPES[posix.extname(path).toLocaleLowerCase()];
-}
+export { BINARY_MIME_TYPES, binaryMimeTypeOf } from "./binary-types.js";
 
 /**
  * The image types the model may be shown (`images` assembly option): the ones

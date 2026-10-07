@@ -601,15 +601,22 @@ A custom `backend` **requires** an explicit `sessionStore` — assembly throws
 Persisting the session zone off-box (an S3-backed session store) is how you share run
 state across a worker fleet and an API.
 
-The file operations (`copy_file`, `move_file`, `remove_file`) want more than
-text. A write to a binary-typed path (an image, a PDF) carries **base64**, which
-the backend's `write` must decode — Deep Agents' convention. Bytes the text
-channel cannot carry (a `.docx`, a `.zip`, Latin-1 text) travel through
-`uploadFiles`, and a move or removal needs `delete`. Every copy is read back
-(`downloadFiles`, else `readRaw`); a store that kept something else is refused,
-never reported as copied. Implement all three methods and the base64 decode on a
-custom backend — mounts and session store alike. A read-only mount refuses an
-upload and a delete itself.
+`downloadFiles`, `uploadFiles` and `delete` are optional in the protocol and stay
+optional in the workspace: a store with only the required methods serves skills,
+reads and text copies. `downloadFiles` is always present and reads a store without
+it through `readRaw` (exact bytes or `permission_denied`, never altered text);
+`uploadFiles` is present when the session store has it, and a mount without it
+refuses that file; `delete` answers a store without it with an error. What each
+buys the file operations (`copy_file`, `move_file`, `remove_file`): a write to a
+binary-typed path (an image, a PDF) carries **base64**, which the backend's
+`write` must decode — Deep Agents' convention, with the extensions in
+`BINARY_MIME_TYPES` on `@archmax-ai/harness/spec`. Other bytes the text channel
+cannot carry (a `.docx`, a `.zip`, Latin-1 text) need `uploadFiles`, and a move
+or removal needs `delete`. Every copy is read back; a store that kept something
+else is refused, never reported as copied. A read-only mount refuses an upload
+and a delete itself. Deep Agents is handed the workspace without `delete`, so its
+own recursive `delete` tool never exists: `remove_file` is the one way to delete
+a file.
 
 ### Host tools
 
@@ -636,11 +643,15 @@ const agent = await createAgent({ tools, essentialTools: ["get_markdown"] });
   areas, the skills and mounts the state was given (`mount.not-allowed`,
   `skill.not-allowed`), a mount's `access: read` (`mount.read-only` for a
   `write` or `remove`), inherited denials and `paths:` guards. A refused call
-  never runs the handler. No declaration, no path rules.
+  never runs the handler. No declaration, no path rules. An argument may hold a
+  list of paths (`files: string[]`), each governed; any other shape is refused.
+  Declaring paths only narrows: `scratchpad/` is open in every state to the
+  always-on tools, so a tool a state must grant stays refused where it is not.
 - `context.workspace` is the turn's workspace, bound to the session — the
-  instance `read_file` uses — with `downloadFiles`/`uploadFiles` and `delete`
-  besides the text methods. The plain agent hands the same context. Outside a
-  turn, reading it throws.
+  instance `read_file` uses — with `downloadFiles`, `uploadFiles` (when the
+  session store has it) and `delete` besides the text methods. The plain agent
+  hands the same context. Outside a turn, reading it throws; the property is
+  non-enumerable there, so comparing or logging the context does not.
 
 ## Cases against your agent
 
