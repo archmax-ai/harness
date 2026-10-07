@@ -107,6 +107,10 @@ here for the weight of the import.
 - **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
 - **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
 - **Tool paths:** `BUILT_IN_TOOL_PATHS` `PATH_ACCESSES` `ToolPaths` `PathAccess`.
+- **Binary types:** `BINARY_MIME_TYPES` `binaryMimeTypeOf`, Deep Agents' table of the
+  extensions it treats as binary. A write to such a path carries base64, which a
+  store honouring the convention decodes to the bytes; a host store implements it
+  from this table rather than a copy.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
 - **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `subRunIdentity`.
 - **Paths and scripts:** `DEFAULT_WORKFLOW` `HOOKS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveHookScript` `parseCodeDescription` `CodeDescription`.
@@ -669,24 +673,45 @@ The `SessionStore` type is exported alongside them. Storage is always declared:
 supplying a custom authored `backend` **without** an explicit `sessionStore`
 throws `SessionStoreRequiredError` at assembly.
 
-**The file operations want raw bytes and deletion.** `copy_file` and `move_file`
-write through the backend's text `write` first, under Deep Agents' convention:
+**Raw bytes and deletion are optional.** Deep Agents' backend protocol makes
+`downloadFiles`, `uploadFiles` and `delete` optional, and so does the workspace:
+a store with only the required methods serves everything, and each of the three
+degrades instead of throwing.
+
+- `downloadFiles` is always present. A store without it is read through
+  `readRaw`: bytes as they come, text encoded back to UTF-8. Text in which the
+  store's decoding replaced bytes (U+FFFD) is refused with `permission_denied`,
+  because the store cannot hand those bytes over unchanged. A download is exact
+  bytes or an error, never something else.
+- `uploadFiles` is present when the session store has it; Deep Agents appends to
+  its history file through `uploadFiles` when the workspace has one and through
+  `edit` otherwise. A mount whose store has none refuses that file with
+  `permission_denied`.
+- `delete` answers a store without it with an error.
+
+`copy_file` and `move_file` write through the backend's text `write` first,
+under Deep Agents' convention:
 
 - a path whose extension Deep Agents types as binary (images, audio, video, PDF,
   PowerPoint) is written as **base64**, and the backend must decode it and store
-  the bytes, as `FilesystemBackend` and `StoreBackend` do;
+  the bytes, as `FilesystemBackend` and `StoreBackend` do. The table of those
+  extensions is `BINARY_MIME_TYPES` on `@archmax-ai/harness/spec`;
 - valid UTF-8 is written as the text itself.
 
-Any other bytes (a `.docx`, a `.zip`, a Latin-1 text file) travel through
-`uploadFiles`, and `move_file`/`remove_file` need `delete`. Every write is read
-back (`downloadFiles`, else `readRaw`) and compared with the source. When the
-text channel did not keep the bytes (a backend storing the base64 string as
-given), the bytes go through `uploadFiles` if the backend has it. Otherwise the
-copy is refused, and a destination the operation created is removed again. The
-built-in stores and Deep Agents' `FilesystemBackend` and `StoreBackend` have all
-three methods. A store that keeps a text-typed path as decoded text
+So text and the binary types copy on any store. Only other bytes (a `.docx`, a
+`.zip`, a Latin-1 text file) need `uploadFiles`, and only `move_file` and
+`remove_file` need `delete`; without it they answer that the store cannot do
+that. Every write is read back (`downloadFiles`) and compared with the source.
+When the text channel did not keep the bytes (a backend storing the base64
+string as given), the bytes go through `uploadFiles` if the backend has it.
+Otherwise the copy is refused, and a destination the operation created is
+removed again. A store that keeps a text-typed path as decoded text
 (`StoreBackend`, so the memory store) cannot hold non-UTF-8 bytes under such a
 name, and a copy there is refused rather than altering the file.
+
+Deep Agents is handed the workspace **without** `delete`. Its own `delete` tool
+removes a folder and everything under it, and it registers that tool whenever
+its backend can delete; deleting a file is `remove_file`'s alone.
 
 **The same holds for a root.** `rootDir` is where the zero-config filesystem
 defaults are built: the conventional mounts, the `sessions/` store, the authoring
@@ -707,7 +732,7 @@ Governance varies by area:
 
 | Area | Access |
 | --- | --- |
-| `scratchpad/**` | the session's one working area, permitted in every state |
+| `scratchpad/**` | the session's one working area, open to the file tools in every state |
 | any other session path | governed by the state's `tools.allow` |
 | the offload areas | readable, and agent writes are refused |
 | `checkpoints/`, `artifacts/`, `_specs/` | outside the agent's address space |
@@ -775,6 +800,15 @@ const agent = await createAgent({
   mounts the state was given, a mount's `access: read`, the inherited denials,
   and `paths:` guards. A refused call never reaches the handler. A tool with no
   declaration has no path rules.
+- **An argument may hold a list of paths** (`files: string[]`). Each path is
+  governed with the argument's access, and a `paths:` guard tests each one: a
+  grant needs every path to match, a denial any. A declared argument holding
+  anything else (a number, an object, a list containing one) is refused
+  (`tool.path-argument`), so no path inside it passes ungoverned.
+- **Declaring paths only narrows.** The scratchpad and the offload areas are
+  open in every state only to the essential tools, the built-ins and your
+  `essentialTools`. A tool a state must grant stays refused where it is not
+  granted, whatever its paths are.
 - **`toolPaths`** on `createAgent` declares the same thing by tool name, for a
   tool not built with `toolsFromMap`: `toolPaths: { get_markdown: { path: "read" } }`.
   It wins over a descriptor's `paths`. Declaring a built-in tool's paths, or an
@@ -783,10 +817,12 @@ const agent = await createAgent({
   turn's workspace, bound to the session: the host's mounts with their read-only
   posture and the session zone at the root, the instance `read_file` resolves
   through. Besides text `read`/`readRaw`/`write`, it carries raw bytes
-  (`downloadFiles`/`uploadFiles`) and `delete`. A read-only mount refuses a
-  write, an upload (`permission_denied`) and a delete, naming the path as the
-  agent wrote it. Outside a turn the handler still runs, and reading
-  `context.workspace` throws.
+  (`downloadFiles`, and `uploadFiles` when the session store has it) and
+  `delete`, as described under the session store above. A read-only mount
+  refuses a write, an upload (`permission_denied`) and a delete, naming the path
+  as the agent wrote it. Outside a turn the handler still runs, and reading
+  `context.workspace` throws, saying why. The property is non-enumerable there,
+  so a deep-equality check or a logger walking the context skips it.
 
 The governed and the plain (`workflow: false`) agent hand the same context.
 `copy_file`, `move_file` and `remove_file` are the runtime's own tools in every

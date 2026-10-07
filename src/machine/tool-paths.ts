@@ -27,8 +27,9 @@ export const PATH_ACCESSES: readonly PathAccess[] = ["read", "list", "search", "
 export const MUTATING_ACCESSES: ReadonlySet<PathAccess> = new Set(["write", "remove"]);
 
 /**
- * The accesses the always-open `scratchpad/` permits in every state, whatever
- * the state's `allow` list says. Searching and executing are not among them.
+ * The accesses the always-open `scratchpad/` permits an essential tool in every
+ * state, whatever the state's `allow` list says. Searching and executing are not
+ * among them, and a tool a state must grant gets nothing from it.
  */
 export const SCRATCHPAD_ACCESSES: ReadonlySet<PathAccess> = new Set(["read", "list", "write", "remove"]);
 
@@ -119,10 +120,18 @@ export interface DeclaredPath {
   path: string;
 }
 
+/** A declared argument's value, read through the built-in alias as the tool itself reads it. */
+function declaredValue(tool: string, arg: string, args: Record<string, unknown>): unknown {
+  const alias = BUILT_IN_PATH_ALIASES[tool]?.[arg];
+  return args[arg] ?? (alias === undefined ? undefined : args[alias]);
+}
+
 /**
  * The declared path arguments a call actually carries, in declaration order. An
- * argument the call omits, or passes as something other than a string, names no
- * path: the tool's own argument check refuses it.
+ * argument holds one path or a list of paths; each path of a list is governed
+ * with the argument's access. An argument the call omits names no path, and
+ * neither does an empty list. A value of any other shape names no path here
+ * either: {@link malformedPathArgs} is how the kernel refuses it.
  */
 export function declaredPathsOf(
   tool: string,
@@ -130,14 +139,28 @@ export function declaredPathsOf(
   args: Record<string, unknown>,
 ): DeclaredPath[] {
   if (!paths) return [];
-  const aliases = BUILT_IN_PATH_ALIASES[tool];
   const found: DeclaredPath[] = [];
   for (const [arg, access] of Object.entries(paths)) {
-    const alias = aliases?.[arg];
-    const value = args[arg] ?? (alias === undefined ? undefined : args[alias]);
-    if (typeof value === "string") found.push({ arg, access, path: value });
+    const value = declaredValue(tool, arg, args);
+    const list = Array.isArray(value) ? value : [value];
+    for (const path of list) if (typeof path === "string") found.push({ arg, access, path });
   }
   return found;
+}
+
+/**
+ * The declared path arguments a call passes as something other than a path or
+ * a list of paths — a number, an object, a list holding one. A path rule cannot
+ * read such a value, so the kernel refuses the call rather than let a path
+ * inside it through ungoverned.
+ */
+export function malformedPathArgs(tool: string, paths: ToolPaths | undefined, args: Record<string, unknown>): string[] {
+  if (!paths) return [];
+  return Object.keys(paths).filter((arg) => {
+    const value = declaredValue(tool, arg, args);
+    if (value == null || typeof value === "string") return false;
+    return !Array.isArray(value) || value.some((path) => typeof path !== "string");
+  });
 }
 
 /** The arguments a `paths:` guard matches for `tool`: its declared ones, else `file_path`. */
@@ -147,14 +170,17 @@ export function pathArgsOf(paths: ToolPaths | undefined): string[] {
 }
 
 /**
- * The values a `paths:` guard on `tool` tests, one per argument it matches
- * ({@link pathArgsOf}), read through the built-in aliases as the path rules read
- * them. An argument the call omits is `undefined`, which no glob matches.
+ * The values a `paths:` guard on `tool` tests: every path of every argument it
+ * matches ({@link pathArgsOf}), read through the built-in aliases as the path
+ * rules read them — one value for an argument holding a path, one per element
+ * for a list, so a grant needs each element to match and a denial any. An
+ * argument the call omits, or passes as an empty list, is `undefined`, which no
+ * glob matches.
  */
 export function pathValuesOf(tool: string, paths: ToolPaths | undefined, args: Record<string, unknown>): unknown[] {
-  const aliases = BUILT_IN_PATH_ALIASES[tool];
-  return pathArgsOf(paths).map((arg) => {
-    const alias = aliases?.[arg];
-    return args[arg] ?? (alias === undefined ? undefined : args[alias]);
+  return pathArgsOf(paths).flatMap((arg) => {
+    const value = declaredValue(tool, arg, args);
+    if (!Array.isArray(value)) return [value];
+    return value.length > 0 ? value : [undefined];
   });
 }

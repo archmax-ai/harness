@@ -49,6 +49,24 @@ describe("toolsFromMap", () => {
     expect(await runWithToolContext({ workspace: workspace as never }, () => readTool!.invoke({}))).toBe(workspace);
   });
 
+  it("hands an out-of-turn context a caller can compare and serialize", async () => {
+    let seen: unknown;
+    const [tool] = toolsFromMap({
+      reader: {
+        description: "Reads.",
+        inputSchema: { type: "object", properties: {} },
+        handler: async (_input, context) => {
+          seen = context;
+          return "ok";
+        },
+      },
+    });
+    await tool!.invoke({});
+    expect(seen).toEqual({});
+    expect(JSON.stringify(seen)).toBe("{}");
+    expect("workspace" in (seen as object)).toBe(true);
+  });
+
   it("carries a descriptor's path declaration to assembly", () => {
     const tools = toolsFromMap({
       get_markdown: {

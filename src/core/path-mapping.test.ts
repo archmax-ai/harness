@@ -174,7 +174,7 @@ describe("mountSubtree raw-byte transfer", () => {
     ]);
     expect(seen).toEqual(["/skills/refund/a.png"]);
 
-    expect(await mounted.uploadFiles([["/refund/b.png", new Uint8Array([3])]])).toEqual([
+    expect(await mounted.uploadFiles!([["/refund/b.png", new Uint8Array([3])]])).toEqual([
       { path: "/refund/b.png", error: null },
     ]);
     expect(uploaded.map(([path]) => path)).toEqual(["/skills/refund/b.png"]);
@@ -185,7 +185,7 @@ describe("mountSubtree raw-byte transfer", () => {
     const mounted = mountSubtree(backend, "", { readOnly: true });
 
     expect(
-      await mounted.uploadFiles([
+      await mounted.uploadFiles!([
         ["/a.png", new Uint8Array([1])],
         ["/b.txt", new Uint8Array([2])],
       ]),
@@ -198,12 +198,37 @@ describe("mountSubtree raw-byte transfer", () => {
     expect((await mounted.downloadFiles(["/a.png"]))[0]?.error).toBeNull();
   });
 
-  it("throws when the wrapped backend has no raw transfer", async () => {
-    const { backend } = recordingBackend();
+  it("keeps the protocol's optional methods optional when the wrapped backend lacks them", async () => {
+    const { backend, seen } = recordingBackend();
     const mounted = mountSubtree(backend, "skills");
-    await expect(mounted.downloadFiles(["/x"])).rejects.toThrow(/does not support downloadFiles/);
-    await expect(mounted.uploadFiles([["/x", new Uint8Array()]])).rejects.toThrow(
-      /does not support uploadFiles/,
-    );
+
+    // A download is answered through `readRaw`, never a throw: a feature check
+    // that finds `downloadFiles` can rely on it.
+    expect(await mounted.downloadFiles(["/refund/SKILL.md"])).toEqual([
+      { path: "/refund/SKILL.md", content: new TextEncoder().encode("/skills/refund/SKILL.md"), error: null },
+    ]);
+    expect(seen).toEqual(["/skills/refund/SKILL.md"]);
+    // No upload channel to forward: the method is absent, not a stand-in that throws.
+    expect(mounted.uploadFiles).toBeUndefined();
+    expect(await mounted.delete("/refund/SKILL.md")).toEqual({
+      error: "Cannot delete 'refund/SKILL.md': the store serving it cannot delete.",
+    });
+  });
+
+  it("refuses a text download it cannot hand over unchanged", async () => {
+    const lossy: BackendProtocolV2 = {
+      ...recordingBackend().backend,
+      readRaw: () => ({ data: { content: "caf\uFFFD", mimeType: "text/plain", created_at: "", modified_at: "" } }),
+    };
+    expect(await mountSubtree(lossy, "").downloadFiles(["/latin1.txt"])).toEqual([
+      { path: "/latin1.txt", content: null, error: "permission_denied" },
+    ]);
+  });
+
+  it("answers a download of a missing file with file_not_found", async () => {
+    const missing: BackendProtocolV2 = { ...recordingBackend().backend, readRaw: () => ({ error: "File '/x' not found" }) };
+    expect(await mountSubtree(missing, "skills").downloadFiles(["/x"])).toEqual([
+      { path: "/x", content: null, error: "file_not_found" },
+    ]);
   });
 });

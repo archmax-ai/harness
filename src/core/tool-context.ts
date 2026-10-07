@@ -11,8 +11,12 @@ export interface ToolContext {
    * The turn's workspace: the host's mounts with their read-only posture and the
    * session zone at the root, bound to this session — the same instance
    * `read_file` resolves through. Besides text `read`/`write`, it carries raw
-   * bytes (`downloadFiles`/`uploadFiles`) and `delete`; a read-only mount refuses
-   * every write, upload and delete.
+   * bytes and `delete`, each optional in the protocol and degrading rather than
+   * throwing: `downloadFiles` always (through `readRaw` where a store has no raw
+   * channel), `uploadFiles` when the session store has it, `delete` answering an
+   * error where a store cannot. A read-only mount refuses every write, upload
+   * and delete. Outside a turn, reading it throws; the property is
+   * non-enumerable there.
    */
   workspace: BackendProtocolV2;
 }

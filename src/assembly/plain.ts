@@ -6,6 +6,7 @@ import { createDeepAgent } from "deepagents";
 import { createFileOperationTools } from "../core/file-operations.js";
 import { asCompiledAgentGraph, type CompiledAgentGraph } from "../core/deepagents.js";
 import { TOOL_MOCK_MIDDLEWARE_NAME } from "../core/tool-mocks.js";
+import { withoutDeletion } from "../core/workspace-router.js";
 import {
   fileReadMiddleware,
   frameworkPassthrough,
@@ -33,7 +34,9 @@ export function composePlain(
   const middleware = [todoMiddleware(), ...fileReadMiddleware(ctx), ...(ctx.params.middleware ?? [])];
   const deepAgent = createDeepAgent({
     model: ctx.model,
-    backend: ctx.backend,
+    // Without `delete`: Deep Agents' own recursive `delete` tool stays out, and
+    // `remove_file` is the agent's one way to delete a file.
+    backend: withoutDeletion(ctx.backend),
     // No machine, so there are no states to vary disclosure by: upstream's
     // skills middleware discloses every skill of the declared sources, which is
     // exactly right here and exactly wrong under a workflow.

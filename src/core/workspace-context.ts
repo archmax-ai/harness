@@ -254,6 +254,7 @@ export function createWorkspaceContext(
   const unsearchableRoutes = new Map(unsearchable.map((m) => [m.name, routes[m.key]!]));
   const backend = createWorkspaceRouter({
     composite,
+    defaultRoute: sessionZone,
     searchComposite,
     unsearchableRoutes,
     fileMounts,
