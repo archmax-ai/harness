@@ -34,7 +34,18 @@ is therefore in scope for a later `archmax_eval` call. Both get:
   script that overwrites `tools` gets it back at its next evaluation. A tool the
   state does not offer is left out of the listing, but its name still resolves:
   calling it is refused by governance with the same reason the model's own call
-  would get, which the script can catch.
+  would get, which the script can catch. A tool's result arrives as text:
+  `tools.readFile` resolves to the file's content, or, for a binary file, to the
+  notice `Error: '<path>' is a binary file (…) and was not read; …` (an image
+  included, even with the `images` option on, which shows images to the model
+  only; see
+  [the workspace](/guides/workflow-machine/#mount-governance)), so check before
+  you `JSON.parse` it. To duplicate, move or delete a file, call
+  `tools.copyFile({ source, destination })`, `tools.moveFile(…)` or
+  `tools.removeFile({ file_path })` rather than reading and writing it back: the
+  bytes move, binary files included, without paging through `readFile`'s line
+  limit, and each resolves to one line (`Copied …`, `Moved …`, `Removed …`, or
+  `Error: …`).
 - **`console.*` capture** and REPL state that persists across calls.
 - The last expression is returned to the model.
 
@@ -202,7 +213,7 @@ The input (`HookInput` in `@archmax-ai/harness/sandbox`; also available as the g
 | `variables` | The session's variables as a plain `name → value` map, including the built-in `trigger`. Read-only. |
 | `messages` | The recent transcript, newest last, as `{ role, text, toolCalls? }` objects. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or `runtime`. A `runtime` entry is a note the runtime wrote (an arrival, a decision, an error route), and `note` says which kind. |
 | `from`, `to`, `reason` | `after` hooks on an advance: the transition being attempted and the agent's reason. |
-| `tools` | The PTC bridge, camelCased: `tools.readFile({ file_path })`. A hook's lists every tool on the bridge, not only the state's. |
+| `tools` | The PTC bridge, camelCased: `tools.readFile({ file_path })`, which resolves to the file's text, or to the binary notice for a binary file. A hook's lists every tool on the bridge, not only the state's. |
 
 The verdict helpers are globals:
 

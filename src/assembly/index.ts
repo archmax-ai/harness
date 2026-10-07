@@ -48,6 +48,9 @@ import {
 } from "../machine/load-spec.js";
 import { WorkflowMachine } from "../machine/machine.js";
 import { assertNoReservedToolNames } from "../machine/tool-names.js";
+import { resolveToolPaths, type ToolPaths } from "../machine/tool-paths.js";
+import { toolPathsFromMetadata } from "../workflow/agent-tools.js";
+import type { ImageReadOptions } from "./image-reads.js";
 import { DEFAULT_TRIGGER_ID, resolveTrigger, type TriggerInput } from "../machine/triggers.js";
 import { buildSeededVariables } from "../machine/variables.js";
 import {
@@ -224,6 +227,25 @@ export interface CreateAgentParams {
    */
   essentialTools?: string[];
   /**
+   * The arguments of host tools that name workspace paths, and how each call
+   * uses them, by tool name: `{ get_markdown: { path: "read" } }`. Every path
+   * rule then governs those arguments as it governs the built-in file tools'.
+   * A tool built with `toolsFromMap` may carry its declaration on its
+   * descriptor (`paths`) instead; this option wins for a tool declared both
+   * ways. Declaring a built-in tool's paths throws a `ToolPathsError`.
+   */
+  toolPaths?: Record<string, ToolPaths>;
+  /**
+   * Show the model the images it reads. Off by default, because a model without
+   * vision rejects an image. On (`true`, or `{ maxBytes?, keep? }`), the model's
+   * `read_file` of a PNG, JPEG, GIF or WebP answers with one line naming it, and
+   * the image is added to each model request as a `user` message right after
+   * that batch of tool results — read from the workspace per request, so the
+   * bytes never enter the history, checkpoints, events or scripts. Every other
+   * binary file stays refused.
+   */
+  images?: boolean | ImageReadOptions;
+  /**
    * Custom governance rules inserted after the non-overridable safety rules and
    * the workflow `policy` rules, before the per-state `allow` defaults. A custom
    * rule may block a call a state would permit; it cannot loosen a safety rule.
@@ -304,9 +326,13 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   const skillSources = params.skills ?? [...DEFAULT_SKILL_SOURCES];
   const skillRegistry = await discoverSkills(workspace, skillSources, emit);
 
+  // Host tools' path declarations, from their descriptors and the option, resolved
+  // once: every machine of this assembly, root and delegated, governs by them.
+  const toolPaths = resolveToolPaths({ ...toolPathsFromMetadata(params.tools), ...params.toolPaths });
+
   const machine =
     loaded.usable && loaded.spec
-      ? WorkflowMachine.fromSpec(loaded.spec, params.essentialTools)
+      ? WorkflowMachine.fromSpec(loaded.spec, params.essentialTools, toolPaths)
       : null;
 
   // Fail closed when governance was requested but cannot be loaded. The plain
@@ -396,6 +422,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     skillTable: skillPrefixes(skillRegistry),
     runtimeContract,
     ...(pricing ? { pricing } : {}),
+    toolPaths,
   };
 
   const systemPrompt = await renderSystemPrompt(ctx, machine, loaded.body, { workflow: workflowName });

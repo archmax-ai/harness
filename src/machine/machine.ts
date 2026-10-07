@@ -6,6 +6,8 @@ import { normalizeHooks } from "../lifecycle/hook-shape.js";
 import {
   argsSatisfy,
   normalizeAllowEntry,
+  pathGuardMatches,
+  pathMatchers,
   type GuardResolutionFailure,
   type NormalizedAllowEntry,
 } from "./allow.js";
@@ -31,6 +33,13 @@ import {
   RAISE_TOOL,
   workflowSlugFromToolName,
 } from "./tool-names.js";
+import {
+  BUILT_IN_TOOL_PATH_TABLE,
+  pathArgsOf,
+  pathValuesOf,
+  type ToolPathTable,
+  type ToolPaths,
+} from "./tool-paths.js";
 import {
   specDisabled,
   type AllowEntry,
@@ -90,7 +99,8 @@ export class WorkflowMachine {
      * permitted in every state, exactly like the built-in {@link ESSENTIAL_TOOLS}.
      */
     private readonly extraEssential: ReadonlySet<string> = new Set(),
-
+    /** Every tool's declared path arguments: the built-ins plus the host's. */
+    private readonly toolPathTable: ToolPathTable = BUILT_IN_TOOL_PATH_TABLE,
   ) {
     if (!spec.states || Object.keys(spec.states).length === 0) {
       throw new Error("Invalid machine spec: missing states");
@@ -125,8 +135,24 @@ export class WorkflowMachine {
   static fromSpec(
     spec: MachineSpec,
     extraEssentialTools?: Iterable<string>,
+    toolPaths: ToolPathTable = BUILT_IN_TOOL_PATH_TABLE,
   ): WorkflowMachine {
-    return new WorkflowMachine(spec, new Set(extraEssentialTools));
+    return new WorkflowMachine(spec, new Set(extraEssentialTools), toolPaths);
+  }
+
+  /** The path arguments `tool` declares, or `undefined` for a tool with none. */
+  toolPaths(tool: string): ToolPaths | undefined {
+    return this.toolPathTable.get(tool);
+  }
+
+  /** The arguments a `paths:` guard on `tool` matches. */
+  pathArgs(tool: string): string[] {
+    return pathArgsOf(this.toolPaths(tool));
+  }
+
+  /** The values a `paths:` guard on `tool` tests for a call with `args`. */
+  pathValues(tool: string, args: Record<string, unknown>): unknown[] {
+    return pathValuesOf(tool, this.toolPaths(tool), args);
   }
 
   /**
@@ -496,11 +522,13 @@ export class WorkflowMachine {
   ): boolean {
     if (ALWAYS_ALLOWED_TOOLS.has(tool)) return true;
     return this.effectiveEntries(state).some(
-      (entry) =>
-        entry.tool === tool &&
-        argsSatisfy(entry.argMatchers, args, ctx?.variables, (failure) =>
-          ctx?.onUnresolved?.(failure),
-        ),
+      (entry) => {
+        if (entry.tool !== tool) return false;
+        const onUnresolved = (failure: GuardResolutionFailure) => ctx?.onUnresolved?.(failure);
+        if (!entry.fromPaths) return argsSatisfy(entry.argMatchers, args, ctx?.variables, onUnresolved);
+        // An unresolvable reference grants nothing.
+        return pathGuardMatches(entry, this.pathValues(tool, args), "every", ctx?.variables, onUnresolved) === true;
+      },
     );
   }
 
@@ -534,7 +562,9 @@ export class WorkflowMachine {
     return disclosed;
   }
 
-  private renderEntry({ tool, argMatchers }: NormalizedAllowEntry): string {
+  private renderEntry(entry: NormalizedAllowEntry): string {
+    const { tool } = entry;
+    const argMatchers = pathMatchers(entry, tool ? this.pathArgs(tool) : []);
     if (!argMatchers) return tool ?? "";
     const parts = Object.entries(argMatchers)
       .map(([name, globs]) => `${name}=${globs.join("|")}`)
@@ -572,7 +602,9 @@ export class WorkflowMachine {
    */
   describeArgConstraints(state: string, variables: VariableStore = {}): string[] {
     const lines: string[] = [];
-    for (const { tool, argMatchers } of this.effectiveEntries(state)) {
+    for (const entry of this.effectiveEntries(state)) {
+      const { tool } = entry;
+      const argMatchers = tool ? pathMatchers(entry, this.pathArgs(tool)) : null;
       if (!tool || !argMatchers) continue;
       const constraints = Object.entries(argMatchers)
         .map(([name, globs]) => {

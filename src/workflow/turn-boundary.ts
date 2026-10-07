@@ -1,13 +1,14 @@
 /**
  * The turn boundary: what happens once per invoke, before any model call.
  *
- * A turn boundary resets the turn's mechanics (rejected, raised, iterations,
- * beforeDone, parkCounts, park records and phase, replyOnly, the turn budget)
- * and retains the conversation (position, entryState, variables, transcript,
- * trail, files). Every ingress that begins a turn arrives here; a park
- * resumption re-enters at its own suspension through a `Command` and never
- * crosses this boundary — which is what makes "a disabled machine starts
- * nothing, finishes what it started" a property of the graph's shape.
+ * A turn boundary resets the turn's mechanics (rejected, failedDelegations,
+ * raised, iterations, beforeDone, parkCounts, park records and phase,
+ * replyOnly, the turn budget) and retains the conversation (position,
+ * entryState, variables, transcript, trail, files). Every ingress that begins
+ * a turn arrives here; a park resumption re-enters at its own suspension
+ * through a `Command` and never crosses this boundary — which is what makes "a
+ * disabled machine starts nothing, finishes what it started" a property of the
+ * graph's shape.
  */
 import { SESSION_ORIGIN, type WorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
 import type { Workspace } from "../core/workspace.js";
@@ -23,6 +24,7 @@ import { decisionRecordFor } from "./parks.js";
 import { requiresRefusal } from "./signature-checks.js";
 import { writeSpecSnapshotIfAbsent } from "./snapshot.js";
 import {
+  NO_PENDING_FAILURE,
   readVariables,
   readWorkflowState,
   reseedAll,
@@ -144,7 +146,7 @@ export async function openTurn(
   }
   return {
     workflowState: position,
-    rejected: null,
+    ...NO_PENDING_FAILURE,
     raised: null,
     iterations: {},
     beforeDone: {},

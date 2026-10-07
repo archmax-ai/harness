@@ -48,7 +48,8 @@ states:
         requires:                #   variables a firing must supply (a caller's required params):
           - order_id             #     a bare name is untyped (any value, null included)
           - { name: due, type: date, description: The day it is due. }  # typed: held at the boundary
-        returns: [result_file]   #   variables the run guarantees on completion (a caller's result)
+        returns: [result_file]   #   variables the run guarantees on completion (a caller's result);
+                                 #   short of them: a child returns what it set + a `note`; a top-level run is rejected
                                  #   entry types: string integer number boolean date date-time object array
     instructions: >-
       Record the decision in scratchpad/refund.json, then archmax_advance to
@@ -119,7 +120,8 @@ states:
   Host seeds (`--variables`, `createAgent({ variables })`, a delivery) are
   **locked**; the agent uses `archmax_get_variables`/`archmax_set_variables`
   (`lock: true` to freeze). Reserved: `trigger` (current trigger id, always
-  locked) and `title` (the run's one-line task label, agent-owned). A
+  locked) and `title` (the run's one-line task label, agent-owned; a
+  sub-workflow child is not asked for one). A
   `${{name}}` / `${{a.b.-1.c}}` reference works in `tools.allow` globs
   (guard) and inside any text tool argument the model writes (exact
   substitution, no retyping) — but not in scripts, which read
@@ -185,7 +187,16 @@ states:
   `requires` are the parameters (typed where the entries are typed; a
   mistyped argument is refused `invalid-param`, and `"${{count}}"` alone
   passes the value with its own type), its `returns` the result
-  (`{ message, returns }`; a mistyped typed return fails `invalid-return`).
+  (`{ message, returns }`; a child finishing with some unset completes, and
+  `returns` holds what it set plus a `note` naming the rest; a mistyped typed
+  return fails `invalid-return`). Each failed call is the
+  calling state's failure, recorded with its arguments and routed through
+  `on_error` when the agent finishes unless a later successful call of the
+  same workflow from the same state recovers it first. One success recovers
+  one failed call: the one whose arguments it repeats (compared after
+  `${{…}}` resolves, key order ignored), else the oldest. A sibling in the
+  same batch does not count; another workflow's success recovers nothing;
+  the route names every outstanding failure with its arguments.
   The trigger's `description` leads the tool description. Nothing captures the result — the caller records
   what it needs with `archmax_set_variables`, made mandatory by `requires`.
   The child is a separate session with a fresh transcript, sees only its
@@ -239,7 +250,8 @@ no way to see more of the graph.
 Closed by default; **deny beats allow, and no narrower level widens a denial.**
 
 - **Always on, never declared**: `ls`, `read_file`, `write_file`,
-  `edit_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`,
+  `edit_file`, `copy_file`, `move_file`, `remove_file`, `glob`, `grep`,
+  `write_todos`, `archmax_eval`, `archmax_run`,
   and the controls `archmax_advance`, `archmax_reset`, `archmax_wait`,
   `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. Any other
   tool needs an
@@ -247,8 +259,15 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   it. `task` is ungrantable (error).
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches
   if any glob matches; `${{var}}` allowed); `{ tool, paths: [...] }`
-  (shorthand for `args.file_path`). `"*"` as the tool is legal only in a
+  (guards every path argument the tool declares — all must match to grant,
+  any matching denies). `"*"` as the tool is legal only in a
   forbid list. Globs match dot-segments (`secrets/**` covers `secrets/.env`).
+- **Path rules read declared path arguments**: `copy_file`/`move_file` take
+  `{ source, destination, overwrite? }` (copy reads `source`, move removes it;
+  both write `destination`), `remove_file` takes `{ file_path }`. A removal is
+  refused wherever a write is; a call naming several paths is refused when any
+  one is. An existing destination is refused unless `overwrite: true`.
+  `forbid: [{ tool: "*", paths: [secrets/**] }]` blocks a copy in or out.
 - **Skills** are governed by **slug**, never path. Enabling a bundle makes
   `skills/<slug>/**` readable and its scripts runnable with no `tools.allow`
   entry; a disabled bundle is unreachable **and invisible** (not listed, not

@@ -36,9 +36,12 @@ describe("normalizeAllowEntry", () => {
       tool: "archmax_advance",
       argMatchers: { to: ["done"] },
     });
+    // `paths:` is stored under `file_path` and marked: it guards every path
+    // argument the matched tool declares.
     expect(normalizeAllowEntry({ tool: "write_file", paths: "output/x.json" })).toEqual({
       tool: "write_file",
       argMatchers: { file_path: ["output/x.json"] },
+      fromPaths: true,
     });
   });
 

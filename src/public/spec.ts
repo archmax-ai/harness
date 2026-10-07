@@ -233,7 +233,15 @@ export {
   /** Tools no list may grant (`task`). */
   UNGRANTABLE_TOOLS,
   ReservedToolNameError,
+  /** The runtime's file operations, always on in every agent. */
+  COPY_FILE_TOOL,
+  MOVE_FILE_TOOL,
+  REMOVE_FILE_TOOL,
+  RUNTIME_FILE_TOOLS,
 } from "../machine/tool-names.js";
+/** Each built-in tool's path arguments and how a call uses each. */
+export { BUILT_IN_TOOL_PATHS, PATH_ACCESSES } from "../machine/tool-paths.js";
+export type { ToolPaths, PathAccess } from "../machine/tool-paths.js";
 export { DEFAULT_SUB_WORKFLOW_DEPTH, DEFAULT_SUB_WORKFLOW_CONCURRENCY } from "../machine/delegation.js";
 
 // --- The root namespace ---------------------------------------------------------------

@@ -122,7 +122,9 @@ states:
 ```
 
 A start whose `due` is not a real `YYYY-MM-DD` day is refused before any model call, and a session
-that finishes with `total` unset or not a number is rejected. `signatureJsonSchema` on
+that finishes with `total` not a number is rejected. One that finishes with `total` unset is
+rejected too, unless it runs as a sub-workflow: then its caller gets the returns it did set, plus a
+`note` naming the rest. `signatureJsonSchema` on
 `@archmax-ai/harness/spec` turns the same signature into a JSON Schema. See
 [triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature).
 

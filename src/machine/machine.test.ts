@@ -350,18 +350,18 @@ describe("WorkflowMachine graph queries", () => {
         answer: { triggers: { manual: null } as const },
       },
     };
-    const m = WorkflowMachine.fromSpec(spec, ["get_markdown", "move_file"]);
+    const m = WorkflowMachine.fromSpec(spec, ["get_markdown", "archive_file"]);
 
     // Permitted in a state that declares nothing, exactly like a built-in.
     expect(m.checkAllowed("answer", "get_markdown", { path: "a.pdf" })).toBe(true);
-    expect(m.checkAllowed("answer", "move_file", { source: "a", destination: "b" })).toBe(true);
+    expect(m.checkAllowed("answer", "archive_file", { source: "a", destination: "b" })).toBe(true);
     // An undeclared, non-essential tool is still closed by default.
     expect(m.checkAllowed("answer", "download", { url: "https://x" })).toBe(false);
 
     // Disclosed to the model alongside the built-in surface.
     const disclosed = m.disclosedTools("answer");
     expect(disclosed.has("get_markdown")).toBe(true);
-    expect(disclosed.has("move_file")).toBe(true);
+    expect(disclosed.has("archive_file")).toBe(true);
     expect(disclosed.has("download")).toBe(false);
     expect(disclosed.has("read_file")).toBe(true);
 
@@ -491,7 +491,7 @@ describe("WorkflowMachine allow-only governance and allow_always", () => {
 tools:
   allow_always:
     - read_file
-    - { tool: move_file, paths: ["output/**"] }
+    - { tool: archive_file, paths: ["output/**"] }
     - { tool: write_file, args: { file_path: ["output/**"] } }
 states:
   constrained:
@@ -515,10 +515,10 @@ states:
 
   it("permits allow_always non-essential tools not mentioned by an allow state", async () => {
     const m = await load();
-    // move_file is not essential and not in `constrained`'s allow list, but
+    // archive_file is not essential and not in `constrained`'s allow list, but
     // allow_always grants it for output/**.
-    expect(m.checkAllowed("constrained", "move_file", { file_path: "output/x.json" })).toBe(true);
-    expect(m.checkAllowed("constrained", "move_file", { file_path: "other/x.json" })).toBe(false);
+    expect(m.checkAllowed("constrained", "archive_file", { file_path: "output/x.json" })).toBe(true);
+    expect(m.checkAllowed("constrained", "archive_file", { file_path: "other/x.json" })).toBe(false);
   });
 
   it("lets a state narrow the file-based sandbox tool it declares", async () => {
@@ -560,7 +560,7 @@ states:
     const text = m.describeAllowed("done");
     expect(text).toContain("ls");
     expect(text).toContain("read_file");
-    expect(text).toContain("move_file(file_path=output/**)");
+    expect(text).toContain("archive_file(file_path=output/**)");
     // The planning scratchpad and the interpreter are part of the essential
     // surface everywhere, and `done` narrows neither.
     expect(text).toContain("write_todos");
@@ -593,7 +593,7 @@ states:
     // The state's own arg-constrained entry.
     expect(lines).toContain("- read_file: file_path must match 'skills/**'");
     // An allow_always arg-constrained grant that binds (non-essential, not mentioned).
-    expect(lines).toContain("- move_file: file_path must match 'output/**'");
+    expect(lines).toContain("- archive_file: file_path must match 'output/**'");
     // The state's own entry granting the file-based sandbox tool binds too.
     expect(lines).toContain("- archmax_run: file_path must match 'scripts/**'");
     // The inert allow_always constraint on an essential tool is not presented.
@@ -604,7 +604,7 @@ states:
     const m = await load();
     const lines = m.describeArgConstraints("done");
     // `constrained`'s archmax_run entry is that state's, not the workflow's.
-    expect(lines).toEqual(["- move_file: file_path must match 'output/**'"]);
+    expect(lines).toEqual(["- archive_file: file_path must match 'output/**'"]);
   });
 
   it("returns no argument constraints when none are declared", async () => {

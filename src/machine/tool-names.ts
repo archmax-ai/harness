@@ -28,6 +28,19 @@ export const GET_VARIABLES_TOOL = "archmax_get_variables";
 export const SET_VARIABLES_TOOL = "archmax_set_variables";
 
 /**
+ * The runtime's own file operations, beside Deep Agents' built-ins and named
+ * like them (they act on the workspace, not on the run). Each works on one file
+ * and never reads it into the conversation; their path arguments are declared in
+ * `tool-paths.ts` and governed like every other tool's.
+ */
+export const COPY_FILE_TOOL = "copy_file";
+export const MOVE_FILE_TOOL = "move_file";
+export const REMOVE_FILE_TOOL = "remove_file";
+
+/** The runtime's file operations, which no host tool may share a name with. */
+export const RUNTIME_FILE_TOOLS: ReadonlySet<string> = new Set([COPY_FILE_TOOL, MOVE_FILE_TOOL, REMOVE_FILE_TOOL]);
+
+/**
  * Prefix of the tool that runs a sibling workflow as a sub-run:
  * `archmax_workflow_<slug>`, with the slug **verbatim** so the tool name, the
  * directory, the `tools.allow` entry, the mock key and the `ranWorkflow`
@@ -106,9 +119,10 @@ export const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 
 /**
  * The built-in tools essential in every assembly — always disclosed, always
- * permitted, never declared: the file tools, `write_todos`, and the two sandbox
- * tools. A script's `tools.*` calls are governed against the active state like a
- * direct call. A state entry naming an essential tool *narrows* the grant
+ * permitted, never declared: the file tools (the runtime's file operations
+ * among them), `write_todos`, and the two sandbox tools. A script's `tools.*` calls are
+ * governed against the active state like a direct call. A state entry naming
+ * an essential tool *narrows* the grant
  * (`{ tool: archmax_run, paths: [...] }`); `policy.forbid_tools` closes one.
  */
 export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
@@ -116,6 +130,9 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   "read_file",
   "write_file",
   "edit_file",
+  COPY_FILE_TOOL,
+  MOVE_FILE_TOOL,
+  REMOVE_FILE_TOOL,
   "glob",
   "grep",
   "write_todos",
@@ -137,25 +154,39 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
 export const UNGRANTABLE_TOOLS: ReadonlySet<string> = new Set(["task"]);
 
 /**
- * Thrown when a host-bound tool claims the reserved `archmax_` prefix; refused at
- * assembly rather than shadowed.
+ * Thrown when a host-bound tool claims the reserved `archmax_` prefix or a
+ * runtime file operation's name; refused at assembly rather than shadowed.
  */
 export class ReservedToolNameError extends Error {
-  constructor(readonly names: string[]) {
+  constructor(
+    readonly names: string[],
+    /** Which reservation was claimed: the control-tool prefix, or a runtime file operation's name. */
+    readonly reservation: "prefix" | "file-operation" = "prefix",
+  ) {
     const one = names.length === 1;
+    const listed = names.map((n) => `'${n}'`).join(", ");
     super(
-      `Host tool${one ? "" : "s"} ${names.map((n) => `'${n}'`).join(", ")} use${one ? "s" : ""} ` +
-        `the reserved '${ARCHMAX_TOOL_PREFIX}' prefix, which names the runtime's own control ` +
-        `tools. Rename ${one ? "it" : "them"}.`,
+      reservation === "prefix"
+        ? `Host tool${one ? "" : "s"} ${listed} use${one ? "s" : ""} the reserved ` +
+            `'${ARCHMAX_TOOL_PREFIX}' prefix, which names the runtime's own control tools. ` +
+            `Rename ${one ? "it" : "them"}.`
+        : `Host tool${one ? "" : "s"} ${listed} take${one ? "s" : ""} the name of the runtime's own ` +
+            `file operation${one ? "" : "s"} (${[...RUNTIME_FILE_TOOLS].join(", ")}), which every ` +
+            `agent already has. Drop ${one ? "it" : "them"}, or rename ${one ? "it" : "them"}.`,
     );
     this.name = "ReservedToolNameError";
   }
 }
 
-/** Refuse host tools that claim the `archmax_` namespace. */
+/**
+ * Refuse host tools that claim the `archmax_` namespace or the name of one of the
+ * runtime's file operations — two tools sharing a name would leave the model
+ * calling whichever the framework happened to keep.
+ */
 export function assertNoReservedToolNames(tools: readonly { name?: unknown }[] | undefined): void {
-  const claimed = (tools ?? [])
-    .map((tool) => tool.name)
-    .filter((name): name is string => typeof name === "string" && isReservedToolName(name));
+  const names = (tools ?? []).map((tool) => tool.name).filter((name): name is string => typeof name === "string");
+  const claimed = names.filter(isReservedToolName);
   if (claimed.length > 0) throw new ReservedToolNameError(claimed);
+  const shadowing = names.filter((name) => RUNTIME_FILE_TOOLS.has(name));
+  if (shadowing.length > 0) throw new ReservedToolNameError(shadowing, "file-operation");
 }

@@ -19,10 +19,11 @@ import type { Workspace } from "../core/workspace.js";
 import { createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
 import { createControlTools } from "./control-tools.js";
 import type { VariableStore } from "../machine/variables.js";
-import { returnsRejection } from "./signature-checks.js";
+import { checkReturns } from "./returns-check.js";
 import {
   currentWorkflowState,
   isReplyOnly,
+  pendingFailure,
   pendingParkOf,
   readRunUsage,
   readRaised,
@@ -30,6 +31,7 @@ import {
   readWorkflowState,
   WORKFLOW_STATUSES,
   workflowStateSchema,
+  type WorkflowStateFields,
   type WorkflowUpdate,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
@@ -113,6 +115,8 @@ export interface WorkflowMiddlewareOptions {
   seededVariables?: VariableStore;
   /** Token prices used to attach `costUsd` to usage events. */
   pricing?: PricingTable;
+  /** The sessions are a sub-workflow's children: the control tools ask for no title. */
+  child?: boolean;
 }
 
 /**
@@ -185,6 +189,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     ...(opts.stateModels ? { stateModels: opts.stateModels } : {}),
     ...(ptcGateway ? { ptcGateway } : {}),
     ...(subWorkflows ? { subWorkflows } : {}),
+    child: opts.child === true,
     sessionIdOf,
   });
   const parkCtx: ParkContext = {
@@ -195,6 +200,11 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     configOf,
   };
   const failureCtx = { machine, emit, sessionIdOf };
+  /** The state's `budget.maxTurns`, and the model calls this visit has made against it. */
+  const turnBudget = (fields: WorkflowStateFields, workflowState: string) => ({
+    maxTurns: machine.spec.states[workflowState]?.budget?.maxTurns,
+    spent: fields.stateTurns?.state === workflowState ? fields.stateTurns.count : 0,
+  });
   const turnCtx = {
     machine,
     emit,
@@ -262,8 +272,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         }
 
         // The exact per-state turn budget: this call would be one too many.
-        const maxTurns = machine.spec.states[workflowState]?.budget?.maxTurns;
-        const spent = fields.stateTurns?.state === workflowState ? fields.stateTurns.count : 0;
+        const { maxTurns, spent } = turnBudget(fields, workflowState);
         if (maxTurns != null && spent + 1 > maxTurns) {
           const routed = routeFailure(
             failureCtx,
@@ -355,11 +364,13 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         }
 
         // A rejection a tool committed (a terminal kernel block, an exhausted park
-        // budget, a failed sub-run) routes once the model has finished in the failing state.
-        if (fields.rejected) {
+        // budget), or a failed sub-run no later call of that workflow recovered,
+        // routes once the model has finished in the failing state.
+        const failure = pendingFailure(state);
+        if (failure) {
           return asHookResult({
             ...update,
-            ...routeFailure(failureCtx, state, runtime, workflowState, fields.rejected, "after-model"),
+            ...routeFailure(failureCtx, state, runtime, workflowState, failure, "after-model"),
           });
         }
 
@@ -391,9 +402,18 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           update.iterations = ctx.iterations;
         }
 
-        // The exit half of the trigger's signature, checked where a run completes — never at a park.
-        const unmet = returnsRejection(machine, fields.trigger?.id, workflowState, readVariables(state));
-        if (unmet) return asHookResult({ ...update, rejected: unmet, status: WORKFLOW_STATUSES.rejected });
+        // The exit half of the trigger's signature, checked where a run completes —
+        // never at a park, and never handed back: a child settles on what it set
+        // (its caller gets a note naming the rest); anything else short of it is rejected.
+        const returns = checkReturns(machine, {
+          trigger: fields.trigger?.id,
+          state: workflowState,
+          store: readVariables(state),
+          child: opts.child === true,
+        });
+        if (returns.verdict === "reject") {
+          return asHookResult({ ...update, rejected: returns.reason, status: WORKFLOW_STATUSES.rejected });
+        }
 
         emit({ type: "state-leave", state: workflowState, next: workflowState });
         return asHookResult({ ...update, status: WORKFLOW_STATUSES.completed });
@@ -411,7 +431,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
   return {
     parkMiddleware,
     middleware,
-    tools: createControlTools(),
+    tools: createControlTools({ child: opts.child === true }),
     lifecycle,
     dispose: (sessionId) => {
       // Requested per session, so it sweeps the session and every sub-run session nested beneath it.

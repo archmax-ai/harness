@@ -1,5 +1,6 @@
 import { withLangGraph } from "@langchain/langgraph/zod";
 import { z } from "zod";
+import { deepEqual } from "../core/match.js";
 import { emptyUsage, type UsageSummary } from "../core/usage.js";
 import type { TrailStep as PublicTrailStep } from "../public/sandbox.js";
 import type { VariableStore } from "../machine/variables.js";
@@ -88,6 +89,56 @@ export function isDecisionPark(
 
 export type PendingDelegation = z.infer<typeof pendingDelegationSchema>;
 
+/**
+ * One delegation call the model made whose child ran and did not finish: the
+ * calling state's failure, outstanding until a later successful call of the
+ * same workflow from the same state recovers it. Recorded per call, never per
+ * workflow, so two failed calls of one workflow are two failures and one
+ * success recovers at most one of them.
+ */
+export const delegationFailureSchema = z.object({
+  /** The failed call's id: what the record is held and recovered under. */
+  id: z.string(),
+  /** The calling state. */
+  state: z.string(),
+  workflow: z.string(),
+  /** The call's arguments, references resolved: what a retry is compared against. */
+  input: z.record(z.string(), z.unknown()),
+  /** The child's failure, as the call's tool error worded it. */
+  reason: z.string(),
+});
+
+export type DelegationFailure = z.infer<typeof delegationFailureSchema>;
+
+/**
+ * The failure a successful call of `workflow` from `state` with `input`
+ * recovers, among those outstanding, or `undefined`: the oldest one whose
+ * input it repeats, else the oldest of that workflow from that state. `taken`
+ * holds ids a sibling success in the same step already recovered, so one
+ * success never recovers a failure another one did.
+ */
+export function failureRecoveredBy(
+  outstanding: readonly DelegationFailure[],
+  call: { state: string; workflow: string; input: Record<string, unknown> },
+  taken: ReadonlySet<string> = new Set(),
+): DelegationFailure | undefined {
+  const candidates = outstanding.filter(
+    (failure) => failure.state === call.state && failure.workflow === call.workflow && !taken.has(failure.id),
+  );
+  return candidates.find((failure) => deepEqual(failure.input, call.input)) ?? candidates[0];
+}
+
+/**
+ * One outstanding failure as a route words it: the child's reason, and the
+ * arguments of the call that failed when it had any, so two failed calls of
+ * one workflow read as two.
+ */
+export function describeDelegationFailure(failure: DelegationFailure): string {
+  return Object.keys(failure.input).length > 0
+    ? `${failure.reason} (called with ${JSON.stringify(failure.input)})`
+    : failure.reason;
+}
+
 /** The state a park record names, or `""` when there is no record. */
 export function parkedStateOf(record: { state?: string } | null | undefined): string {
   return record?.state ?? "";
@@ -171,6 +222,12 @@ const workflowStateFields = {
   workflowState: z.string().optional(),
   /** Why the current turn was rejected; cleared on every transition and turn. */
   rejected: z.string().nullable().optional(),
+  /**
+   * Delegation calls whose child failed and that no later call of the same
+   * workflow from the same state has recovered. Routed like `rejected` once the
+   * model finishes, and cleared everywhere `rejected` is.
+   */
+  failedDelegations: z.array(delegationFailureSchema).nullable().optional(),
   /** The failure the agent raised this turn (`status: failed`); cleared on every turn. */
   raised: raiseRecordSchema.nullable().optional(),
   iterations: z.record(z.string(), z.number()).optional(),
@@ -304,6 +361,36 @@ const pendingDelegationsUpdateSchema = z.union([
   z.object({ remaining: z.array(pendingDelegationSchema) }),
 ]);
 
+/**
+ * A `failedDelegations` update: failed calls to record (each under its call
+ * id, appended in the order they failed, so a hook's echo is a no-op), `null`
+ * to clear, or `{ recovered }` — the id of the one failure a later successful
+ * call recovered.
+ *
+ * A reducer rather than a last value because a tool batch may carry several
+ * delegation calls, and each settles its own update in the same step.
+ */
+export type FailedDelegationsUpdate = DelegationFailure[] | null | { recovered: string };
+
+export function foldFailedDelegations(
+  acc: DelegationFailure[] | null | undefined,
+  update: FailedDelegationsUpdate | undefined,
+): DelegationFailure[] {
+  const current = acc ?? [];
+  if (update === undefined) return current;
+  if (update === null) return [];
+  if (!Array.isArray(update)) return current.filter((failure) => failure.id !== update.recovered);
+  if (update.length === 0) return current;
+  const incoming = new Set(update.map((failure) => failure.id));
+  return [...current.filter((failure) => !incoming.has(failure.id)), ...update];
+}
+
+const failedDelegationsUpdateSchema = z.union([
+  z.array(delegationFailureSchema),
+  z.null(),
+  z.object({ recovered: z.string() }),
+]);
+
 /** A field wrapped with its channel's fold; typed loosely, the object below is re-typed as a whole. */
 function reduced(
   field: z.ZodTypeAny,
@@ -333,6 +420,16 @@ export const workflowStateSchema = z.object({
         update as PendingDelegationsUpdate | undefined,
       ),
     (): PendingDelegation[] => [],
+  ),
+  failedDelegations: reduced(
+    workflowStateFields.failedDelegations,
+    failedDelegationsUpdateSchema,
+    (acc, update) =>
+      foldFailedDelegations(
+        acc as DelegationFailure[] | null | undefined,
+        update as FailedDelegationsUpdate | undefined,
+      ),
+    (): DelegationFailure[] => [],
   ),
   variables: reduced(
     workflowStateFields.variables,
@@ -431,11 +528,31 @@ export function isReplyOnly(state: unknown): boolean {
 }
 
 /** What a hook or a serviced tool call commits: a channel delta, appended messages, and where the loop goes next. */
-export type WorkflowUpdate = Partial<Omit<WorkflowStateFields, "pendingDelegations">> & {
+export type WorkflowUpdate = Partial<Omit<WorkflowStateFields, "pendingDelegations" | "failedDelegations">> & {
   pendingDelegations?: PendingDelegationsUpdate;
+  failedDelegations?: FailedDelegationsUpdate;
   messages?: unknown[];
   jumpTo?: "model" | "end";
 };
+
+/**
+ * Nothing pending to route: the committed rejection and every outstanding
+ * delegation failure, cleared together. Spread wherever a move, a park, a reset
+ * or a new turn forgives the state's failure, so the two never drift apart.
+ */
+export const NO_PENDING_FAILURE = { rejected: null, failedDelegations: null } as const satisfies WorkflowUpdate;
+
+/**
+ * The failure a session would route once the model finishes, or `undefined`:
+ * the rejection a tool or hook committed first, else every delegation failure
+ * still outstanding, worded in the order they failed.
+ */
+export function pendingFailure(state: unknown): string | undefined {
+  const fields = readWorkflowState(state);
+  if (fields.rejected) return fields.rejected;
+  const outstanding = fields.failedDelegations ?? [];
+  return outstanding.length > 0 ? outstanding.map(describeDelegationFailure).join(" ") : undefined;
+}
 
 /** The park record a session currently holds, on either channel, or `null`. */
 export function pendingParkOf(

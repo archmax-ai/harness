@@ -242,8 +242,8 @@ keys are `title:` and `instructions:`.
 Tool governance is **closed by default**. Every state always has the
 **always-on tools**:
 
-`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `write_todos`,
-`archmax_eval`, `archmax_run`.
+`ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`,
+`remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`.
 
 It also has the runtime controls `archmax_reset`, `archmax_wait`,
 `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, plus
@@ -254,6 +254,25 @@ delegation tools, and the rest.
 
 A state with **no `tools` block** therefore gets exactly the always-on surface.
 There is no syntax for a fully open state.
+
+The runtime's file operations, `copy_file({ source, destination, overwrite? })`,
+`move_file({ source, destination, overwrite? })` and `remove_file({ file_path })`,
+are always on for the same reason as the code interpreter below: they reach
+nothing the path rules do not let them. Every tool **declares its path
+arguments** and how a call uses each one: `read`, `list`, `search`, `write`,
+`remove` or `execute`. `copy_file` reads `source` and writes `destination`,
+`move_file` removes `source` and writes `destination`, and `remove_file` removes
+`file_path`. Every path rule reads those declarations, for the built-ins and for
+host tools (see [`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace)):
+
+- the read-only authored zone, the offload areas and a mount narrowed to
+  `access: read` refuse a `write` and a `remove` alike;
+- the runtime-internal areas, a skill the state does not enable and a mount it
+  was not given refuse every access;
+- `scratchpad/` is open to `read`, `list`, `write` and `remove` in every state.
+
+A call naming several paths is refused when any one of them is, and the refusal
+names the argument (`'copy_file' on 'skills/x.md' (destination)`).
 
 `archmax_eval`, the code interpreter, is always on because evaluated code reaches
 what the state already permits and no further. Its `tools.*` calls are decided
@@ -292,7 +311,10 @@ An `allow` entry is either a bare tool name or an object with `tool` plus any of
 these keys:
 
 - `args`: per-argument glob guards.
-- `paths`: a shorthand for a `file_path` guard.
+- `paths`: globs every path argument the tool declares must match (`file_path`
+  for the file tools, `path` for `ls`, `glob` and `grep`, both `source` and
+  `destination` for `copy_file` and `move_file`). A tool that declares none is
+  guarded on `file_path`.
 - `connection`: the connection slug this tool resolves through, when its
   collection has more than one connection. It is consumer-defined, and the
   runtime enforces governance without resolving connections.
@@ -764,6 +786,14 @@ checkpointed state, ending the turn. Three things cause one: a lifecycle hook
 execution error, an exhausted correction budget, and an exhausted execution
 budget (`maxTurns`, `timeoutMs` or `maxParks`).
 
+A [sub-workflow](/guides/sub-workflows/#failure-is-always-closed) call whose
+child fails is the calling state's failure too, but a recoverable one until the
+model finishes. Each failed call is recorded on its own, and a later successful
+call of the same workflow from the same state recovers one of them: the one
+whose arguments it repeats, else the oldest. Every failure still outstanding
+when the model finishes routes like a terminal rejection, and the route names
+each with its arguments. No success recovers a failure with another cause.
+
 In every terminal case the session routes to the named state. It appends an
 explicit `[error]` [runtime
 note](/guides/sessions/#delivering-the-event) to the transcript
@@ -807,6 +837,12 @@ state's included), and the trigger's `returns` are not checked. A raise also
 replaces a rejection still pending from earlier in the turn. Forbid the tool
 (`tools.forbid_always: [archmax_raise]`, or a state's `tools.forbid`) where the
 agent must not end the session itself.
+
+A session that finishes **short of its trigger's
+[`returns`](/guides/triggers/#a-trigger-may-declare-its-signature)** does not
+see `on_error` either. A top-level session ends `rejected`, naming what it left
+unset. A sub-workflow child completes instead, and its caller gets the returns
+it set plus a `note` naming the rest.
 
 ## `disabled`: take a workflow out of service
 
@@ -910,10 +946,18 @@ boundary. A firing that does not supply every name does not start. A delegating
 parent that does not is refused **before** the child is composed.
 
 `returns:` is the exit half. The named variables are ordinary variables, set
-with `archmax_set_variables` or by a script. A session that reaches a terminal
-state with any one of them unset is **rejected**. A session that *parks* goes
-unchecked, because it has not finished, and so does one the agent ended with
-`archmax_raise`: a failed session owes no returns.
+with `archmax_set_variables` or by a script. The check runs once, as the session
+finishes, and hands nothing back:
+
+- a **sub-workflow child** with one of them unset **completes**, and its caller
+  gets the returns it set plus `note: "Not all return variables were set by the
+  sub-workflow: '<name>' was not set."`;
+- a **top-level session** with one of them unset is **rejected**;
+- a typed one holding a mistyped value **rejects** the session either way.
+
+A session that *parks* goes unchecked, because it has not finished, and so does
+one the agent ended with `archmax_raise`: a failed session owes no returns.
+`note` is reserved, so a `returns` list may not name it.
 
 Each entry is a bare variable name, or an object `{ name, type?, description? }`
 naming one. The two spellings mix freely in one list. A bare name and an object
@@ -1109,6 +1153,9 @@ An entry's argument guards narrow what it denies.
 `{ tool: write_file, paths: ["logs/**"] }` denies that tool on those globs and
 leaves the rest alone, so the tool stays disclosed and the kernel refuses the
 matching call. A bare denial removes the tool from the model's picture entirely.
+A `paths:` denial matches a call when **any** of its declared paths matches, so
+`{ tool: "*", paths: ["secrets/**"] }` refuses a copy out of `secrets/` and a copy
+into it. (A `paths:` grant needs **every** path to match.)
 
 `archmax validate` flags three shapes here: a state whose `allow` list would
 permit a call a denial blocks, a state that both allows and forbids one tool,

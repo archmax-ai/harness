@@ -580,7 +580,7 @@ describe("typed trigger signatures", () => {
       withTrigger({
         description: "Refund one order and report the amount.",
         requires: ["order_id", { name: "due", type: "date", description: "The day the refund is due." }],
-        returns: [{ name: "total", type: "number" }, { name: "note" }],
+        returns: [{ name: "total", type: "number" }, { name: "remark" }],
       }),
     );
     expect(result.ok).toBe(true);

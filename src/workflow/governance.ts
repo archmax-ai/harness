@@ -110,6 +110,8 @@ export interface GovernanceContext {
   stateModels?: StateModels;
   ptcGateway?: PtcToolGateway;
   subWorkflows?: SubWorkflowDispatcher;
+  /** The sessions are a sub-workflow's children, whose caller reads what they return. */
+  child?: boolean;
   sessionIdOf(runtime: unknown): string;
 }
 
@@ -484,6 +486,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     // the turn ends on. This is the only place the graph is disclosed at all.
     const graph = renderStateGraph(machine, workflowState, {
       trigger: readWorkflowState(request.state).trigger?.id,
+      child: ctx.child === true,
     });
     if (graph) sections.push(graph);
     // The heading asserts itself over the transcript: a durable session carries

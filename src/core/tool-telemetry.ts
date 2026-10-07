@@ -31,7 +31,8 @@ export function toolOutputPreview(value: unknown): { output: string; truncated: 
 
 /** A concise, single-value hint for a tool call (e.g. its `file_path`), for the CLI. */
 export function toolCallDetail(args: Record<string, unknown>): string | undefined {
-  for (const key of ["file_path", "path", "to", "pattern", "command", "url"]) {
+  // A copy is named by where it lands, as a write is.
+  for (const key of ["file_path", "destination", "path", "to", "pattern", "command", "url"]) {
     const value = args[key];
     if (typeof value === "string" && value.trim()) return value;
   }

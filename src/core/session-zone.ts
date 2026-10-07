@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { BackendProtocolV2 } from "deepagents";
-import { mountSubtree } from "./path-mapping.js";
+import { mountSubtree, type MappedBackend } from "./path-mapping.js";
 import { isSessionAgnosticPath } from "./zones.js";
 
 /**
@@ -36,7 +36,7 @@ import { isSessionAgnosticPath } from "./zones.js";
  */
 export class SessionZoneRouter implements BackendProtocolV2 {
   private readonly binding = new AsyncLocalStorage<string>();
-  private readonly routed: BackendProtocolV2;
+  private readonly routed: MappedBackend;
 
   constructor(backend: BackendProtocolV2) {
     this.routed = mountSubtree(backend, () => this.binding.getStore(), {
@@ -90,5 +90,17 @@ export class SessionZoneRouter implements BackendProtocolV2 {
 
   edit(filePath: string, oldString: string, newString: string, replaceAll?: boolean) {
     return this.routed.edit(filePath, oldString, newString, replaceAll);
+  }
+
+  downloadFiles(paths: string[]) {
+    return this.routed.downloadFiles(paths);
+  }
+
+  uploadFiles(files: Array<[string, Uint8Array]>) {
+    return this.routed.uploadFiles(files);
+  }
+
+  delete(filePath: string) {
+    return this.routed.delete(filePath);
   }
 }

@@ -44,6 +44,7 @@ import type { HookSite } from "./on-error.js";
 import {
   currentWorkflowState,
   isReplyOnly,
+  NO_PENDING_FAILURE,
   parkedStateOf,
   pendingParkOf,
   readWorkflowState,
@@ -263,7 +264,7 @@ function presentDelegation(
     return {
       pendingInput: head.decision,
       status: WORKFLOW_STATUSES.awaitingInput,
-      rejected: null,
+      ...NO_PENDING_FAILURE,
       ...closingTurn(),
     };
   }
@@ -274,7 +275,7 @@ function presentDelegation(
     pendingDecision: { ...head.decision, seq },
     decisionCount: seq,
     status: WORKFLOW_STATUSES.awaitingDecision,
-    rejected: null,
+    ...NO_PENDING_FAILURE,
     ...closingTurn(),
   };
 }
@@ -426,7 +427,7 @@ function applyDecision(
     replyOnly: null,
     parkPhase: null,
     stateTurns: null,
-    rejected: null,
+    ...NO_PENDING_FAILURE,
     auditTrail: [humanStep],
     ...continueToModel(site),
   };
@@ -626,7 +627,7 @@ function applyDelivery(
     status: WORKFLOW_STATUSES.running,
     parkPhase: null,
     replyOnly: null,
-    rejected: null,
+    ...NO_PENDING_FAILURE,
     auditTrail: [{ to: slug, kind: "trigger", reason: deliveredId, ts: Date.now() } satisfies TrailStep],
     ...continueToModel(site),
   };

@@ -22,6 +22,7 @@ import {
   validateAdvanceEvidence,
   WAIT_TOOL,
 } from "./control-tools.js";
+import { SET_VARIABLES_TOOL } from "../machine/tool-names.js";
 import type { WorkflowStateFields } from "./state.js";
 
 function commandUpdate(result: unknown): Record<string, unknown> {
@@ -694,5 +695,20 @@ describe("handleSetVariables — typed returns", () => {
   it("checks nothing without the machine", () => {
     const outcome = handleSetVariables({ toolCallId: "c1", args: { variables: { approved: "yes" } }, state: state() });
     expect(outcome.delta).toBeDefined();
+  });
+});
+
+describe("set-variables tool declaration", () => {
+  const description = (opts?: { child?: boolean }) =>
+    createControlTools(opts).find((t) => t.name === SET_VARIABLES_TOOL)!.description;
+
+  it("asks a top-level session for its title", () => {
+    expect(description()).toMatch(/`title` is reserved .* set it early/);
+  });
+
+  // A child's title describes a session nothing lists: nothing it reads asks for one.
+  it("asks a child session for none, and is otherwise the same", () => {
+    expect(description({ child: true })).not.toMatch(/title/);
+    expect(description().startsWith(description({ child: true }))).toBe(true);
   });
 });

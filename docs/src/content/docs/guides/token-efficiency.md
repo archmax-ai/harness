@@ -10,22 +10,25 @@ prefix in full unless the provider serves it from cache.
 
 Measured on the bundled `order-lookup` example, one model call. Both columns were
 measured with the same package and dependency versions, so the comparison
-isolates the payload shaping:
+isolates the payload shaping. Today's column adds the file operations
+(`copy_file`, `move_file`, `remove_file`), which came later, at their own
+measured size:
 
 | Component | pre-reduction | today |
 | --- | --- | --- |
-| Tool schemas | 21,731 (~5,430 tok) | 19,807 (~4,950 tok) |
+| Tool schemas | 21,731 (~5,430 tok) | 22,057 (~5,510 tok) |
 | - `write_todos` alone | 12,175 | 12,175 (always disclosed) |
+| - the three file operations | — | 2,250 (always disclosed) |
 | - `task` alone | 1,924 | 0 (disclosed in no state) |
 | System prompt | 16,333 (~4,080 tok) | 9,321 (~2,330 tok) |
-| **Prefix per model call** | **38,064 (~9,520 tok)** | **29,128 (~7,280 tok)** |
+| **Prefix per model call** | **38,064 (~9,520 tok)** | **31,378 (~7,840 tok)** |
 
-One tool dominates the surface: `write_todos` alone is 56% of the tool schemas,
+One tool dominates the surface: `write_todos` alone is more than half of the tool schemas,
 and it is standard equipment in every assembly, so it stays. The whole reduction
 therefore comes out of the system prompt, which keeps the prefix saving modest.
 Caching removes the bulk of what is left.
 
-That is ~7.3k input tokens per call with *zero* host tools bound. Fourteen calls
+That is ~7.8k input tokens per call with *zero* host tools bound. Fourteen calls
 reaches 100k. A workspace binding 30-40 connector/MCP tools (~1.5k chars of
 schema each) roughly triples the prefix. The archmax harness addresses this in three ways: a
 smaller prefix, a cached prefix, and reporting so you can see both.
@@ -43,7 +46,7 @@ rendered from something the runtime enforces:
 2. The consumer's `systemPrompt` option.
 3. The platform prompt: how to move, which tools are the runtime's. It ships in the package; a
    workspace may override it with `.platform/system/GRAPH_STATE.md`. A plain agent has no
-   platform layer.
+   platform layer, and a sub-workflow's child reads it without the step that names the session.
 4. Workspace zones, rendered from the resolved mount table.
 5. The workflow header: the spec's `title` and `instructions`, and **no state of the graph**.
 6. `WORKFLOW.md`: the prose addendum, HTML comments stripped.
@@ -115,6 +118,11 @@ What the rendering does:
 - **HTML comments are stripped from the prose addendum.** `WORKFLOW.md` can
   therefore hold diagrams and rationale for whoever opens the file, without
   charging every model call for them.
+- **A sub-workflow's child starts on its work.** Its prompt does not ask it to
+  name its session, and its opening message carries the values of its scalar
+  inputs. A one-state child spends no model call on a title nothing lists, and
+  none reading inputs its caller already held. See
+  [what the child's model reads](/guides/sub-workflows/#what-the-childs-model-reads).
 
 The reduction leaves the workflow's top-level `instructions` in place. Those are
 standing direction for the whole session, so they sit in the static, cacheable

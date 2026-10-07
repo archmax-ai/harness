@@ -1324,6 +1324,130 @@ states:
     expect(committed.map((steps) => steps.map((s) => s.workflow))).toEqual([["enrich"], ["audit"]]);
     expect(committed.flat().every((s) => s.kind === "sub-workflow" && s.to === "g")).toBe(true);
   });
+
+  /**
+   * A failed child is recorded as the calling state's outstanding failure, one
+   * record per call with the call's input, and a later successful call of that
+   * same workflow from that same state recovers at most one of them: the one
+   * whose input it repeats, else the oldest.
+   */
+  describe("a delegation call's failure and its recovery", () => {
+    const delegatingYaml = `
+states:
+  g:
+    triggers: { manual: }
+    tools:
+      allow:
+        - { tool: archmax_workflow_enrich }
+        - { tool: archmax_workflow_audit }
+    transitions:
+      - to: done
+        description: finish
+  done:
+`;
+    /** One instrumentation, so sibling calls share the tool service as a real batch does. */
+    async function delegator(fails: (input: { params?: Record<string, unknown> }) => boolean) {
+      const machine = await WorkflowMachine.load(machineWorkspace(delegatingYaml), SPEC_PATHS);
+      if (!machine) throw new Error("failed to load delegating machine");
+      const instrumentation = createWorkflowInstrumentation({
+        machine,
+        executor: trackingExecutor(passOutcome).executor,
+        ptcNames: [],
+        onEvent: () => {},
+        subWorkflows: {
+          refusal: async () => undefined,
+          signature: async () => ({}),
+          drainDispatches: () => [],
+          dispatch: async (input) => {
+            if (fails(input)) throw new Error(`Sub-workflow '${input.workflow}' failed: no answer`);
+            return { result: "ok", workflow: input.workflow, state: "done" };
+          },
+          resume: async () => ({ result: "ok", workflow: "enrich", state: "done" }),
+          release: () => {},
+        },
+      });
+      const wrapToolCall = (
+        instrumentation.middleware as unknown as {
+          wrapToolCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
+        }
+      ).wrapToolCall;
+      return (slug: string, id: string, args: Record<string, unknown>, state: Record<string, unknown> = {}) =>
+        wrapToolCall(
+          {
+            toolCall: { name: `archmax_workflow_${slug}`, args, id },
+            runtime: { configurable: { thread_id: "t1" } },
+            state: { messages: [], workflowState: "g", ...state },
+          },
+          () => new ToolMessage({ content: "unreachable", tool_call_id: id, name: slug }),
+        );
+    }
+    const updateOf = (result: unknown) => (result as { update?: Record<string, unknown> } | undefined)?.update;
+    const failure = (id: string, input: Record<string, unknown>, workflow = "enrich") => ({
+      id,
+      state: "g",
+      workflow,
+      input,
+      reason: `${workflow} failed`,
+    });
+    const outstanding = {
+      failedDelegations: [failure("old-1", { order_id: "ORD-1" }), failure("old-2", { order_id: "ORD-2" })],
+    };
+
+    it("records each failed call with its id and resolved input, not as a committed rejection", async () => {
+      const call = await delegator(() => true);
+      const variables = { order: { value: "ORD-7", locked: false } };
+      const update = updateOf(await call("enrich", "c1", { order_id: "${{order}}" }, { variables }));
+      expect(update?.failedDelegations).toEqual([
+        { id: "c1", state: "g", workflow: "enrich", input: { order_id: "ORD-7" }, reason: "Sub-workflow 'enrich' failed: no answer" },
+      ]);
+      expect(update?.rejected).toBeUndefined();
+    });
+
+    it("recovers the failure whose input a later call repeats", async () => {
+      const call = await delegator(() => false);
+      expect(updateOf(await call("enrich", "c2", { order_id: "ORD-2" }, outstanding))?.failedDelegations).toEqual({
+        recovered: "old-2",
+      });
+    });
+
+    it("recovers the oldest failure when a corrected call repeats no input", async () => {
+      const call = await delegator(() => false);
+      expect(updateOf(await call("enrich", "c2", { order_id: "ORD-1b" }, outstanding))?.failedDelegations).toEqual({
+        recovered: "old-1",
+      });
+    });
+
+    it("lets two successes in one step recover two failures, never one twice", async () => {
+      const call = await delegator(() => false);
+      // Same snapshot, same step: two corrected retries, neither repeating an input.
+      const [first, second] = await Promise.all([
+        call("enrich", "c2", { order_id: "ORD-1b" }, outstanding),
+        call("enrich", "c3", { order_id: "ORD-2b" }, outstanding),
+      ]);
+      const recovered = [first, second].map((r) => (updateOf(r)?.failedDelegations as { recovered: string }).recovered);
+      expect(recovered.sort()).toEqual(["old-1", "old-2"]);
+    });
+
+    it("recovers nothing once a step's successes outnumber the failures", async () => {
+      const call = await delegator(() => false);
+      const one = { failedDelegations: [failure("old-1", { order_id: "ORD-1" })] };
+      const results = await Promise.all([
+        call("enrich", "c2", { order_id: "ORD-1" }, one),
+        call("enrich", "c3", { order_id: "ORD-1" }, one),
+      ]);
+      expect(results.filter((r) => r instanceof ToolMessage)).toHaveLength(1);
+    });
+
+    it("recovers nothing when another workflow succeeds", async () => {
+      const call = await delegator(() => false);
+      expect(updateOf(await call("audit", "c2", { order_id: "ORD-1" }, outstanding))?.failedDelegations).toBeUndefined();
+    });
+
+    it("commits nothing beyond its answer when no failure is outstanding", async () => {
+      const call = await delegator(() => false);
+      expect(await call("enrich", "c1", { order_id: "ORD-1" })).toBeInstanceOf(ToolMessage);
+    });
+  });
 });
 
 describe("workflow middleware tool-name resolution", () => {

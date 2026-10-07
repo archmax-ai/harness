@@ -7,9 +7,14 @@ import {
   isFinished,
   mergeVariables,
   foldTrail,
+  foldFailedDelegations,
+  failureRecoveredBy,
   foldPendingDelegations,
+  NO_PENDING_FAILURE,
   parkedStateOf,
+  pendingFailure,
   pendingParkOf,
+  type DelegationFailure,
   type PendingDelegation,
   type TrailStep,
   type WorkflowStateFields,
@@ -186,6 +191,50 @@ describe("state channels", () => {
     expect(foldPendingDelegations(held, null)).toEqual([]);
   });
 
+  const failed = (id: string, workflow = "enrich", input: Record<string, unknown> = { order_id: id }): DelegationFailure => ({
+    id,
+    state: "start",
+    workflow,
+    input,
+    reason: `Sub-workflow '${workflow}' failed.`,
+  });
+
+  /** A tool batch with two failing delegation calls used to write `rejected` twice in one step, which LangGraph refuses. */
+  it("records two delegation failures committed in one super-step", async () => {
+    const settled = await foldConcurrentUpdates(
+      { failedDelegations: [failed("c1", "a")] },
+      { failedDelegations: [failed("c2", "b")] },
+    );
+    expect(settled.failedDelegations?.map((f) => f.workflow).sort()).toEqual(["a", "b"]);
+  });
+
+  /** Two parallel calls of one workflow are two failures: neither is folded into the other. */
+  it("holds each failed call on its own, two of one workflow included", async () => {
+    const settled = await foldConcurrentUpdates(
+      { failedDelegations: [failed("c1", "enrich", { order_id: "ORD-1" })] },
+      { failedDelegations: [failed("c2", "enrich", { order_id: "ORD-2" })] },
+    );
+    expect(settled.failedDelegations?.map((f) => f.input.order_id).sort()).toEqual(["ORD-1", "ORD-2"]);
+    expect(foldFailedDelegations([failed("c1")], [failed("c2")]).map((f) => f.id)).toEqual(["c1", "c2"]);
+  });
+
+  it("is unchanged when a hook echoes the list it read", () => {
+    const held = foldFailedDelegations([], [failed("c1"), failed("c2")]);
+    expect(foldFailedDelegations(held, held)).toEqual(held);
+  });
+
+  it("recovers exactly the one failure named, by call id", () => {
+    const held = [failed("c1"), failed("c2"), failed("c3", "audit")];
+    expect(foldFailedDelegations(held, { recovered: "c1" }).map((f) => f.id)).toEqual(["c2", "c3"]);
+    // Recovering what is not outstanding changes nothing.
+    expect(foldFailedDelegations(held, { recovered: "c9" })).toEqual(held);
+  });
+
+  it("clears every failure on null", async () => {
+    const settled = await foldTwoUpdates({ failedDelegations: [failed("c1")] }, { failedDelegations: null });
+    expect(settled.failedDelegations).toEqual([]);
+  });
+
   it("still replaces a last-value field", async () => {
     const settled = await foldTwoUpdates({ workflowState: "first" }, { workflowState: "second" });
     expect(settled.workflowState).toBe("second");
@@ -235,6 +284,82 @@ describe("open/finished partition", () => {
     const open = statuses.filter((s) => !isFinished(s));
     expect(finished.length + open.length).toBe(statuses.length);
     expect(finished.sort()).toEqual(["completed", "failed", "rejected"]);
+  });
+});
+
+describe("pendingFailure", () => {
+  const failure = (id: string, workflow: string, reason: string, input: Record<string, unknown> = {}): DelegationFailure => ({
+    id,
+    state: "start",
+    workflow,
+    input,
+    reason,
+  });
+
+  it("is the committed rejection first, whatever delegations failed", () => {
+    expect(
+      pendingFailure({ rejected: "a guard could not be evaluated", failedDelegations: [failure("c1", "a", "A failed.")] }),
+    ).toBe("a guard could not be evaluated");
+  });
+
+  it("is every outstanding delegation failure, in the order they failed", () => {
+    expect(
+      pendingFailure({ failedDelegations: [failure("c1", "a", "A failed."), failure("c2", "b", "B failed.")] }),
+    ).toBe("A failed. B failed.");
+  });
+
+  it("names each failed call's input, so two calls of one workflow read as two", () => {
+    expect(
+      pendingFailure({
+        failedDelegations: [
+          failure("c1", "enrich", "Enrich failed.", { order_id: "ORD-1" }),
+          failure("c2", "enrich", "Enrich failed.", { order_id: "ORD-2" }),
+        ],
+      }),
+    ).toBe('Enrich failed. (called with {"order_id":"ORD-1"}) Enrich failed. (called with {"order_id":"ORD-2"})');
+  });
+
+  it("is undefined with nothing pending, and once both are cleared", () => {
+    expect(pendingFailure({})).toBeUndefined();
+    expect(pendingFailure({ ...NO_PENDING_FAILURE })).toBeUndefined();
+    expect(pendingFailure({ rejected: null, failedDelegations: [] })).toBeUndefined();
+  });
+});
+
+describe("failureRecoveredBy", () => {
+  const failure = (id: string, input: Record<string, unknown>, workflow = "enrich", state = "start"): DelegationFailure => ({
+    id,
+    state,
+    workflow,
+    input,
+    reason: "failed",
+  });
+  const outstanding = [
+    failure("c1", { order_id: "ORD-1" }),
+    failure("c2", { order_id: "ORD-2", note: { lang: "de", urgent: true } }),
+    failure("c3", { order_id: "ORD-1" }, "audit"),
+    failure("c4", { order_id: "ORD-3" }, "enrich", "review"),
+  ];
+  const retry = (input: Record<string, unknown>, workflow = "enrich", state = "start") => ({ state, workflow, input });
+
+  it("recovers the failure whose input the retry repeats, whatever its key order", () => {
+    expect(failureRecoveredBy(outstanding, retry({ note: { urgent: true, lang: "de" }, order_id: "ORD-2" }))?.id).toBe("c2");
+  });
+
+  it("recovers the oldest failure of that workflow from that state when no input repeats", () => {
+    expect(failureRecoveredBy(outstanding, retry({ order_id: "ORD-1b" }))?.id).toBe("c1");
+  });
+
+  it("never recovers another workflow's failure, or one from another state", () => {
+    expect(failureRecoveredBy(outstanding, retry({ order_id: "ORD-1" }, "other"))).toBeUndefined();
+    expect(failureRecoveredBy(outstanding, retry({ order_id: "ORD-1" }, "audit"))?.id).toBe("c3");
+    expect(failureRecoveredBy(outstanding, retry({ order_id: "ORD-3" }, "enrich", "review"))?.id).toBe("c4");
+    expect(failureRecoveredBy([failure("c4", { order_id: "ORD-3" }, "enrich", "review")], retry({ order_id: "ORD-3" }))).toBeUndefined();
+  });
+
+  it("skips a failure a sibling success already recovered, and recovers nothing once none is left", () => {
+    expect(failureRecoveredBy(outstanding, retry({ order_id: "ORD-1" }), new Set(["c1"]))?.id).toBe("c2");
+    expect(failureRecoveredBy(outstanding, retry({ order_id: "ORD-9" }), new Set(["c1", "c2"]))).toBeUndefined();
   });
 });
 

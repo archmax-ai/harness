@@ -438,7 +438,7 @@ describe("validateWorkflow", () => {
           "    - { tool: write_file, args: { file_path: [output/**] } }",
           "    - { tool: archmax_eval, args: { code: ['*'] } }",
           "    - { tool: archmax_run, paths: [skills/gate/scripts/**] }",
-          "    - { tool: move_file, paths: [output/**] }",
+          "    - { tool: archive_file, paths: [output/**] }",
           "states:",
           "  work:",
           "    triggers: { manual: }",
@@ -476,7 +476,7 @@ describe("validateWorkflow", () => {
       ),
     ).toBe(true);
     // Non-essential allow_always entries are the intended use — no warning.
-    expect(result.diagnostics.some((d) => /move_file/.test(d.message))).toBe(false);
+    expect(result.diagnostics.some((d) => /archive_file/.test(d.message))).toBe(false);
     // Warnings are non-fatal, and a state with no tools block is the ordinary
     // closed default — no diagnostics for it.
     expect(result.valid).toBe(true);

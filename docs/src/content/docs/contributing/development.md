@@ -61,7 +61,9 @@ declarative YAML documents, interpreted host-side by `archmax test`.
   the graph-state execution model merged into every governed agent's system
   prompt. `npm run build` generates `core/platform-prompt.generated.ts` from
   it, so it ships inside the code; edit the Markdown and run
-  `npm run generate:prompt` (a unit test fails while the two differ).
+  `npm run generate:prompt` (a unit test fails while the two differ). A passage
+  between `<!-- top-level-only -->` and `<!-- /top-level-only -->` lines is left
+  out of a sub-workflow child's prompt; the marker lines reach no model.
 - `skills/archmax-harness/` is the authoring skill, shipped as `dist/authoring-skill/archmax-harness`.
   `npx skills add archmax-ai/harness` discovers it as the repo's only public skill: the
   contributor skills under `.claude/skills/` carry `metadata.internal: true` so the skills

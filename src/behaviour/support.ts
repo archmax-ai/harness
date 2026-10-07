@@ -77,12 +77,18 @@ export interface IssuedCall {
 export interface ModelCall {
   /** Tool names bound for this call (from the most recent `bindTools`). */
   tools: string[];
+  /** What each tool bound for this call was described as, by name. */
+  toolDescriptions: Record<string, string>;
   /** The system prompt text, when one was present. */
   systemPrompt: string;
   /** Kinds of the messages the model was shown (`system`, `human`, `ai`, `tool`). */
   messageTypes: string[];
+  /** The text of every human-role message the model was shown, in order. */
+  humanTexts: string[];
   /** The tool answers the model was shown, correlated by the call id they answer. */
   toolAnswers: Array<{ callId: string; content: string; status?: string }>;
+  /** Each message's kind and its content parts, as the model was shown them (strings as one text part). */
+  parts: Array<{ type: string; parts: Array<{ type: string; [key: string]: unknown }> }>;
 }
 
 /**
@@ -94,6 +100,7 @@ export interface ModelCall {
 export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
   private cursor = 0;
   private lastBound: string[] = [];
+  private lastDescriptions: Record<string, string> = {};
   private seq = 0;
   /** Every tool the model was bound with, by name: what the model is told about each. */
   readonly boundTools = new Map<string, { description: string; schema: unknown }>();
@@ -135,8 +142,11 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
 
   bindTools(tools: unknown[]): BaseChatModel {
     this.lastBound = (tools as Array<{ name?: string }>).map((t) => String(t?.name ?? ""));
+    this.lastDescriptions = {};
     for (const bound of tools as Array<{ name?: string; description?: string; schema?: unknown }>) {
-      if (bound?.name) this.boundTools.set(bound.name, { description: String(bound.description ?? ""), schema: bound.schema });
+      if (!bound?.name) continue;
+      this.boundTools.set(bound.name, { description: String(bound.description ?? ""), schema: bound.schema });
+      this.lastDescriptions[bound.name] = String(bound.description ?? "");
     }
     return this as unknown as BaseChatModel;
   }
@@ -145,8 +155,10 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
     const system = messages.find((m) => m.getType() === "system");
     this.calls.push({
       tools: [...this.lastBound],
+      toolDescriptions: { ...this.lastDescriptions },
       systemPrompt: system ? contentToString(system.content) : "",
       messageTypes: messages.map((m) => m.getType()),
+      humanTexts: messages.filter((m) => m.getType() === "human").map((m) => contentToString(m.content)),
       toolAnswers: messages
         .filter((m) => m.getType() === "tool")
         .map((m) => {
@@ -157,6 +169,13 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
             ...(answer.status ? { status: answer.status } : {}),
           };
         }),
+      parts: messages.map((m) => ({
+        type: m.getType(),
+        parts:
+          typeof m.content === "string"
+            ? [{ type: "text", text: m.content }]
+            : (m.content as Array<{ type: string; [key: string]: unknown }>),
+      })),
     });
 
     // The cursor only moves past a scripted turn: a fallback reply consumes

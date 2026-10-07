@@ -109,12 +109,18 @@ When `mounts` is omitted on the default filesystem backend, the exported `defaul
 
 ### Requirement: Read-only is enforced at the mount and diagnosed by the kernel
 
-A mount SHALL be read-only unless declared `{ readOnly: false }`. A read-only mount SHALL itself refuse `write` and `edit` with an error naming the path in workspace form, so authored content cannot be modified even by a caller that bypasses governance; the kernel SHALL additionally block an agent tool call targeting a read-only mount with rule `zone.read-only`, naming `scratchpad/` as the writable alternative. `archmax validate` SHALL report a state `tools.allow` entry that would permit a write into a read-only mount. A mount declared writable SHALL be classified as session state — governed by the active state's `tools.allow` — rather than as authored.
+A mount SHALL be read-only unless declared `{ readOnly: false }`. A read-only mount SHALL itself refuse `write`, `edit` and `delete` with an error naming the path in workspace form (`data/logo.png`, not the route-relative `logo.png`), and SHALL refuse every file of an `uploadFiles` with `permission_denied` without delegating, so authored content cannot be modified even by a caller that bypasses governance; the kernel SHALL additionally block an agent tool call targeting a read-only mount with rule `zone.read-only`, naming `scratchpad/` as the writable alternative. `archmax validate` SHALL report a state `tools.allow` entry that would permit a write or a removal into a read-only mount, for every argument a tool declares as `write` or `remove`. A mount declared writable SHALL be classified as session state — governed by the active state's `tools.allow` — rather than as authored.
 
 #### Scenario: Mount refuses a write independently of governance
 
 - **WHEN** any component writes to a read-only mount's path directly through the workspace backend
 - **THEN** the mount returns an error and no file behind it is created or modified
+
+#### Scenario: Mount refuses an upload and a delete independently of governance
+
+- **WHEN** any component uploads bytes to, or deletes, a read-only mount's path directly through the workspace backend
+- **THEN** the upload answers `permission_denied` for that path, the delete answers an error naming
+  the path as written, and no file behind it is created, modified or removed
 
 #### Scenario: Agent write blocked by the kernel
 
@@ -537,3 +543,213 @@ After every model call the governance middleware SHALL read the provider's usage
 
 - **WHEN** two sessions run concurrently on one assembled agent with the tracker's handler as `onEvent`
 - **THEN** `totals("a")` and `totals("b")` each hold only their own session's usage and `totals()` holds the sum
+
+### Requirement: Reads are text only
+
+The workspace router SHALL serve `read` as text only. After routing a read (file mount or composite,
+as today), it SHALL refuse the result as **binary** when any of these holds:
+
+- the MIME type the route reports, or else the one Deep Agents' `read_file` derives from the path's
+  extension, is not a text type — exactly the set for which `read_file` would return a multimodal
+  content block (images other than SVG, audio, video, PDF, PPT/PPTX);
+- the content is bytes rather than a string;
+- the content is a string containing a NUL character (a binary file whose extension maps to text).
+
+A binary read SHALL be answered with the backend protocol's `{ error }`, which `read_file` renders
+as `Error: …`, and SHALL NOT carry the file's content in any form. The error SHALL name the path in
+workspace form, the MIME type (`application/octet-stream` when only the content showed the file is
+binary), and the size when the route returned the bytes, and SHALL say the file was not read and
+that `read_file` returns text files only — for example:
+`'scratchpad/chart.png' is a binary file (image/png, 24.1 KB) and was not read; read_file returns text files only.`
+A route's own `{ error }` (a missing file, a directory, a refused symlink) SHALL be returned
+unchanged, and a text result SHALL be returned unchanged.
+
+The refusal is the workspace's answer, not a governance verdict: no kernel rule fires and no
+`tool-blocked` event is emitted; the call settles as an ordinary tool result. It SHALL hold for every
+caller of `read` — the model's `read_file`, a sandbox or hook script's `tools.readFile`, which
+receives the error text as its string result — and for every route, the session zone, every mount
+and a consumer's custom backend alike, with one exception: with the `images` assembly option on, the
+model's own `read_file` of an image is answered as "An image the agent reads reaches the model"
+says. `readRaw` SHALL be unaffected.
+
+The `read_file` description handed to the model, in a governed and a plain agent alike, SHALL NOT
+promise multimodal content: Deep Agents' lines saying images, audio, video and PDFs return
+multimodal content blocks SHALL be replaced by one line saying a binary file is not returned and is
+reported as binary — and, with `images` on, that a PNG, JPEG, GIF or WebP image is shown right after
+the tool result. When those lines are not found, the description SHALL be left unchanged and one
+`warning` event SHALL say the upstream text may have been reworded.
+
+#### Scenario: An image is reported, not returned
+
+- **WHEN** the model calls `read_file` on `scratchpad/chart.png` in an agent without `images`
+- **THEN** the tool result is the single text `Error: 'scratchpad/chart.png' is a binary file (image/png, …) and was not read; read_file returns text files only.`, with no image block and no base64 in the message, the `tool-result` event, or the checkpoint
+
+#### Scenario: Every non-text type is refused
+
+- **WHEN** the model reads `.mp3`, `.mp4`, `.pdf` and `.pptx` files from a mount
+- **THEN** each read returns the binary notice naming that file's MIME type, and none returns an `audio`, `video` or `file` block
+
+#### Scenario: An unknown-extension binary is refused
+
+- **WHEN** the model reads `scratchpad/export.zip`, whose bytes contain NUL, and a file `scratchpad/blob` with no extension holding the same bytes
+- **THEN** both reads return the binary notice with `application/octet-stream`, not UTF-8-decoded content
+
+#### Scenario: Text still reads
+
+- **WHEN** the model reads `skills/order-data/assets/orders.json`, an SVG file, and a Latin-1 text file with an unknown extension
+- **THEN** each returns its line-numbered content exactly as before
+
+#### Scenario: A route's own error passes through
+
+- **WHEN** the model reads `scratchpad/missing.png`, which does not exist
+- **THEN** the result is the route's not-found error, not the binary notice
+
+#### Scenario: A script gets the notice as text
+
+- **WHEN** an `archmax_eval` script calls `await tools.readFile({ file_path: "scratchpad/chart.png" })`, with or without `images`
+- **THEN** the promise resolves to the binary notice string, not JSON carrying base64
+
+#### Scenario: A custom backend's bytes are refused
+
+- **WHEN** a consumer's mount backend answers `read` with `{ content: <Uint8Array>, mimeType: "image/png" }`
+- **THEN** the router returns the binary notice naming `image/png` and the byte size
+
+#### Scenario: The runtime's own reads are unaffected
+
+- **WHEN** the runtime reads a file through `readRaw`
+- **THEN** it receives the stored data, bytes included, as before
+
+#### Scenario: The description states the contract
+
+- **WHEN** a governed or a plain agent makes a model call that offers `read_file`
+- **THEN** the tool's description says binary files are reported as binary and not returned, and does not mention multimodal content blocks
+
+#### Scenario: Reworded upstream text warns once
+
+- **WHEN** Deep Agents' `read_file` description no longer contains the lines the runtime replaces
+- **THEN** the description is passed through unchanged and one `warning` event names `read_file`
+
+### Requirement: The workspace carries raw bytes and deletion
+
+The workspace backend SHALL carry `downloadFiles`, `uploadFiles` and `delete` end to end, routing each
+path as a read or a write is routed — an exact file mount to its backend, any other path through the
+composite — with paths canonicalized first and mapped in and out of every prefix (a mount's route, the
+session store's tenancy prefix, the bound session id), so no result names a session id or a
+store-internal path. A backend with no raw transfer SHALL make `downloadFiles`/`uploadFiles` throw,
+and one without deletion SHALL make `delete` answer an error, as Deep Agents' `CompositeBackend`
+does. Text-only callers SHALL be unaffected.
+
+#### Scenario: Bytes round-trip through the session zone
+
+- **WHEN** a caller uploads a PNG to `scratchpad/a.png` during a bound session and downloads it
+- **THEN** the bytes are equal, the result paths read `/scratchpad/a.png`, and a `delete` removes it
+
+### Requirement: File operations
+
+Every agent, governed or plain, SHALL have three file tools that act on one file without its content
+entering the conversation:
+
+- `copy_file({ source, destination, overwrite? })` SHALL write the source's bytes unchanged at the
+  destination, text and binary alike, creating the destination's parent folders and leaving the
+  source untouched.
+- `move_file({ source, destination, overwrite? })` SHALL do the same and then delete the source,
+  writing (and verifying) the destination first, so a failure leaves a duplicate rather than a loss.
+  A source the workspace serves read-only SHALL be refused before anything is written, governed or not.
+- `remove_file({ file_path })` SHALL delete one file.
+
+An existing destination SHALL be refused unless `overwrite: true`, leaving it unchanged. A source and
+destination naming the same file after canonicalization SHALL be refused without touching it. A
+missing source, a folder, or a path the backend's read refuses (a symlink) SHALL be refused naming the
+path, with nothing written; no operation SHALL read or write through a symlink the backend's `read`
+or `write` would refuse. A write to a binary-typed path SHALL go through the backend's `write` as
+base64, which the backend decodes (Deep Agents' convention), and valid UTF-8 as the text itself;
+other bytes SHALL go through `uploadFiles`. Every write SHALL be read back — through
+`downloadFiles`, else `readRaw` — and compared with the source's bytes. When the text channel did
+not keep them and the backend has `uploadFiles`, the bytes SHALL be uploaded and read back again.
+When the destination still does not hold the source's bytes, or the store serving the source can
+hand over a non-UTF-8 file only as decoded text, the operation SHALL fail saying so rather than
+report success, and a destination it created SHALL be removed again. Every result
+SHALL be one line naming the paths in workspace form — `Copied '<source>' to '<destination>'
+(<size>).`, `Moved …`, `Removed '<path>'.` — or `Error: …`, and SHALL NOT carry a store's own error
+text, which can name host paths or the session id. A host tool SHALL NOT take one of these names.
+
+#### Scenario: A template is copied without being read
+
+- **WHEN** the model copies `skills/data/assets/template.md` (900 lines) to `scratchpad/report.md`
+- **THEN** `scratchpad/report.md` holds all 900 lines byte for byte, the tool result is the one
+  `Copied …` line, and no line of the file appears in the conversation
+
+#### Scenario: Binary files copy byte for byte
+
+- **WHEN** the model copies a PNG and a `.docx` from a read-only skill bundle into `scratchpad/`
+- **THEN** each copy's bytes equal the source's, and the sources are unchanged
+
+#### Scenario: An existing destination needs overwrite
+
+- **WHEN** `scratchpad/out.md` exists and the model copies another file to it, first without and then with `overwrite: true`
+- **THEN** the first call is refused and the file is unchanged, and the second replaces it
+
+#### Scenario: A move writes before it removes
+
+- **WHEN** the model moves `scratchpad/a.docx` to `drafts/b.docx`
+- **THEN** `drafts/b.docx` holds the bytes and `scratchpad/a.docx` no longer exists
+
+#### Scenario: A move out of a read-only mount writes nothing
+
+- **WHEN** an ungoverned agent calls `move_file` from `skills/data/assets/logo.png` to `scratchpad/logo.png`
+- **THEN** the result is an error saying the source is served by a read-only mount, and `scratchpad/logo.png` does not exist
+
+#### Scenario: A store that keeps base64 as given
+
+- **WHEN** the destination's backend stores what `write` hands it unchanged, has no
+  `downloadFiles` and no `uploadFiles`, and the model copies a PNG to it
+- **THEN** the copy is refused, saying the store did not keep the file's bytes, and the destination
+  it created is removed; with `uploadFiles`, the same copy succeeds byte for byte
+
+#### Scenario: A store that cannot hold the bytes
+
+- **WHEN** the session store keeps text-typed files as decoded text and the model copies a `.docx`
+  into `scratchpad/`
+- **THEN** the result is an error saying the store did not keep the file's bytes, not a success
+
+### Requirement: An image the agent reads reaches the model
+
+`createAgent` SHALL accept `images` — `true`, or `{ maxBytes?, keep? }` — off by default, because a
+model without vision rejects an image. With it on, in a governed and a plain agent alike, the model's
+`read_file` of a PNG, JPEG, GIF or WebP image that the call's governance allows SHALL answer with one
+text line, `Image '<path>' (<type>, <size>) is shown below.`, and before every later model call of
+the session the image SHALL be read from the workspace and added to that call's **request** as a
+`user` message placed right after the batch of tool results that read it, as an `image_url` part
+carrying a data URL. No `tool` message SHALL carry an image part. The image's bytes SHALL NOT enter
+the message history, a checkpoint, a `tool-result` event or a script's result; the tool message
+records the path only.
+
+An image larger than `maxBytes` (default 10 MB) SHALL be answered with a line saying it was not shown,
+and nothing attached. Of the images read in the session, the most recent `keep` (default: all) SHALL
+stay attached on later calls; an older one SHALL be named in text as no longer attached. An image
+read earlier and since deleted or changed into something else SHALL be named in text as no longer
+available, and the model call SHALL go ahead. Every other binary file (HEIC/HEIF, audio, video, PDF,
+PowerPoint, `.docx`, `.zip`) SHALL stay refused with the binary notice, option on or off.
+
+#### Scenario: The image follows the tool results
+
+- **WHEN** an agent with `images: true` reads `attachments/photo.png`
+- **THEN** the next model request carries the image as an `image_url` part of a `user` message right
+  after that batch's tool results, no `tool` message carries an image part, and a chat-completions
+  endpoint accepts the request
+
+#### Scenario: No bytes are kept
+
+- **WHEN** that turn ends
+- **THEN** the checkpointed history, the `tool-result` event and a script's `tools.readFile` of the
+  same file carry no base64
+
+#### Scenario: A deleted image is named
+
+- **WHEN** an image read earlier in the session is deleted and the model is called again
+- **THEN** the request names the image as no longer available instead of attaching it, and the call succeeds
+
+#### Scenario: Other binaries stay refused
+
+- **WHEN** an agent with `images: true` reads a PDF
+- **THEN** the result is the binary notice and nothing is attached

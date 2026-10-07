@@ -163,7 +163,7 @@ export default async function hook({ state, phase, trigger, variables, messages,
 | `variables` | The run's variables as a plain `name → value` map, including the built-in `trigger`. Structured values are present whole (`variables.order.items[0].sku`). **Read-only**: assigning changes nothing, and the variable tools are absent from `tools.*` — a hook that could write variables would be editing the governance inputs of the state it judges. |
 | `messages` | The recent transcript (last 24 messages), newest last, as `{ role, text, toolCalls? }`. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, a completion check; `note` names the kind). A hook that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. |
 | `from`, `to`, `reason` | Present on `after` hooks: the transition the agent is attempting (`reason` is the agent's `archmax_advance` reason). |
-| `tools` | The privileged tool-call bridge (async), camelCased: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })` → file text. See [Governance](#governance-of-tools-calls). |
+| `tools` | The privileged tool-call bridge (async), camelCased: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })` → file text, or the binary notice for a binary file (see below). See [Governance](#governance-of-tools-calls). |
 
 **The verdict** — the three helpers are globals:
 
@@ -230,6 +230,32 @@ try {
   console.log(`could not write the report: ${err.message}`);
 }
 ```
+
+A **binary file** is not a refusal and does not throw: reads are text only, so
+`tools.readFile` on an image, audio, video, PDF or PowerPoint file, or on any
+file whose content holds a NUL byte (an archive, an Office document), resolves to
+the notice `Error: '<path>' is a binary file (<type>, <size>) and was not read;
+read_file returns text files only.` instead of content — an image too, even when
+the host turned on `images`, which shows images to the model only. A missing file reads as
+an `Error: …` string the same way. A script that parses what it read checks
+first:
+
+```js
+const text = await tools.readFile({ file_path: "scratchpad/upload.json" });
+const upload = text.startsWith("Error:") ? null : JSON.parse(text);
+```
+
+To **duplicate, move or delete** a file — a template, an image, a `.docx` —
+call `tools.copyFile({ source, destination, overwrite? })`,
+`tools.moveFile({ source, destination, overwrite? })` or
+`tools.removeFile({ file_path })` instead of reading and writing it back. The
+bytes move, binary files included, with no `readFile` line limit, and each
+call resolves to one line (`Copied '<source>' to '<destination>' (<size>).`,
+`Moved …`, `Removed '<path>'.`). They are governed by their declared paths like
+any other call, so a governance refusal (a destination in a read-only mount, a
+disabled skill's file) throws. A failure the operation itself meets (a missing
+source, a directory, an existing destination without `overwrite: true`)
+resolves to an `Error: …` string instead.
 
 **Authoring rule for `archmax_run` scripts:** if sandboxed code calls `tools.X`,
 the state's `allow` list must cover `tool: X` (with any argument constraints the

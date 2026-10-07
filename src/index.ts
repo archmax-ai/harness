@@ -123,8 +123,10 @@ export {
 } from "./machine/load-spec.js";
 /** A trigger id the machine does not declare. */
 export { UnknownTriggerError } from "./machine/triggers.js";
-/** A host tool wearing a reserved `archmax_` name. */
+/** A host tool wearing a reserved `archmax_` name, or a runtime file operation's name. */
 export { ReservedToolNameError } from "./machine/tool-names.js";
+/** A host path declaration the runtime cannot honour (a built-in tool, an unknown access). */
+export { ToolPathsError } from "./machine/tool-paths.js";
 /** A seeded variable name that is not a legal identifier. */
 export { InvalidVariableNameError } from "./machine/variables.js";
 /** A mount key shadows a session area. */
@@ -211,6 +213,14 @@ export { PLATFORM_PROMPT_PATH } from "./workflow/paths.js";
 export { resolveSystemPrompt } from "./core/prompt.js";
 /** Bind a `name → tool` map in the shape the `tools` option takes. */
 export { toolsFromMap } from "./workflow/agent-tools.js";
+/** One host tool for `toolsFromMap`: its schema, its declared paths, and a handler handed the turn's workspace. */
+export type { AgentToolDescriptor } from "./workflow/agent-tools.js";
+/** What a host tool's handler is handed: the turn's workspace. */
+export type { ToolContext } from "./core/tool-context.js";
+/** A tool's path arguments and how a call uses each — the `toolPaths` option's values. */
+export type { ToolPaths, PathAccess } from "./machine/tool-paths.js";
+/** The `images` option: show the model the images it reads. */
+export type { ImageReadOptions } from "./assembly/image-reads.js";
 /** A message's text, whatever content-block shape it arrived in. */
 export { contentToString } from "./core/messages.js";
 /** Whether a message is the assistant's turn. */

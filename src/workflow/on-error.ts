@@ -9,6 +9,7 @@ import { runtimeNote } from "../core/messages.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { decisionRecordFor } from "./parks.js";
 import {
+  NO_PENDING_FAILURE,
   readWorkflowState,
   WORKFLOW_STATUSES,
   type TrailStep,
@@ -43,6 +44,7 @@ export function routeFailure(
   const errorTarget = ctx.machine.onError(from);
   if (!errorTarget) {
     return {
+      ...NO_PENDING_FAILURE,
       rejected: reason,
       status: WORKFLOW_STATUSES.rejected,
       ...(site === "before-model" ? { jumpTo: "end" } : {}),
@@ -57,7 +59,7 @@ export function routeFailure(
       `[error] The '${from}' state failed: ${reason}. Routing to the '${errorTarget}' error handler.`,
     ),
     workflowState: errorTarget,
-    rejected: null,
+    ...NO_PENDING_FAILURE,
     status: WORKFLOW_STATUSES.running,
     pendingInput: null,
     pendingDecision: null,

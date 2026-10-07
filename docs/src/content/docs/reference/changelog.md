@@ -9,8 +9,97 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
-## 0.3.2 (unreleased)
+## 0.4.0 (unreleased)
 
+- **File operations: `copy_file`, `move_file`, `remove_file`.** Three new always-on tools, in
+  governed and plain agents alike, that work on one file without its content entering the
+  conversation. `copy_file({ source, destination, overwrite? })` copies the bytes, text or binary
+  (a `.png`, a `.docx`), creating the destination's folders. `move_file` takes the same arguments
+  and writes the destination before removing the source. `remove_file({ file_path })` deletes a
+  file. An existing destination is refused unless `overwrite: true`. Each answers with one line
+  (`Copied …`, `Moved …`, `Removed …`, or `Error: …`), and scripts reach them as
+  `tools.copyFile` and the rest. See
+  [file operations](/guides/workflow-machine/#file-operations-and-path-arguments).
+- **Path rules read each tool's declared path arguments.** The kernel used to apply its zone,
+  mount, skill and inherited-denial rules to a fixed list of file tools and their one
+  `file_path`/`path` argument. Every tool now declares its path arguments and how a call uses
+  each (`read`, `list`, `search`, `write`, `remove`, `execute`), and every path rule reads the
+  declaration. A call naming several paths is refused when any one is, and the refusal names the
+  argument. A removal is refused wherever a write is. A `paths:` guard matches the tool's declared
+  path arguments, so `{ tool: grep, paths: [...] }` now guards `grep`'s `path` (it used to match
+  no call). A `paths:` grant needs every path to match and a `paths:` denial needs any, so
+  `forbid: [{ tool: "*", paths: [secrets/**] }]` refuses a copy out of `secrets/` and into it.
+  The built-in tools' verdicts are otherwise unchanged. See
+  [`machine-spec`](/reference/machine-spec/#toolsallow-closed-by-default-governance).
+- **Host tools are governed by their paths and handed the turn's workspace.** An
+  `AgentToolDescriptor` may declare `paths`, or a host passes `toolPaths` to `createAgent`, and
+  its path arguments are then governed like the built-ins'. Before, a host tool reading a file
+  was bound by no path rule. Its handler gets a second argument, a `ToolContext` whose
+  `workspace` is the turn's workspace: the host's mounts and the session zone, bound to the
+  session, the instance `read_file` uses. The workspace now carries `downloadFiles`,
+  `uploadFiles` and `delete` through every layer, and a read-only mount refuses an upload and a
+  delete as it refuses a write. See
+  [host tools](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
+  **For hosts:** a host tool named `copy_file`, `move_file` or `remove_file` is now refused at
+  assembly (`ReservedToolNameError`), so drop your own. Declaring a built-in tool's paths throws
+  `ToolPathsError`. The three schemas add about 2,250 characters to every model call.
+- **A sub-workflow child goes straight to its work.** A one-state child spent two of its model
+  calls on bookkeeping: it named its session, because the platform prompt's step 1 said it was not
+  optional, and it read its inputs with `archmax_get_variables`, because its opening line told it
+  to. A child's title is never returned and describes a session nothing lists, and its caller
+  already held every input. A child's prompt now leaves out the "Name the run first" step and the
+  paragraph on `title`, and its `archmax_set_variables` description no longer asks for one. Its
+  opening message lists its inputs' values: strings JSON-quoted, numbers and booleans as written,
+  up to 200 characters each and 1,000 in all. Any other input is named, with
+  `archmax_get_variables` as the way to read it. A top-level session's prompt and its cacheable
+  prefix are byte-identical. **For hosts:** a child emits no `title-set` unless its caller passed a
+  `title`, and the `opening` note's text changes (its kind and shape do not). A workspace that
+  overrides the platform prompt (`.platform/system/GRAPH_STATE.md`) should wrap its own title
+  step in `<!-- top-level-only -->` / `<!-- /top-level-only -->` lines to get the same saving for
+  its children. See [what the child's model reads](/guides/sub-workflows/#what-the-childs-model-reads).
+- **A child short of its `returns` comes back with what it set and a `note`, and a caller's
+  successful retry recovers a failed delegation call.** A sub-workflow child that finished without
+  setting every declared return used to fail its caller outright, after a full run, although its
+  prompt said it "does not complete until every one is set"; the caller had to run it again. Now it
+  completes, with no second attempt and no extra model call, and the call's `returns` carry the
+  ones it did set plus
+  `note: "Not all return variables were set by the sub-workflow: 'description' was not set."`. The
+  calling agent decides what to do about the gap. A typed return holding a value of another type
+  still fails the call (`invalid-return`), and a top-level session finishing short of its returns
+  is still rejected. The rendered signature tells each which applies. On the calling side, a failed
+  delegation call no longer commits a rejection that nothing clears. Each failed call is recorded
+  with its arguments and stays the calling state's failure until a later successful call of the
+  same workflow from the same state recovers it. One success recovers one failed call: the one
+  whose arguments it repeats, else the oldest. A corrected retry therefore recovers, and a caller
+  that retries and then finishes no longer routes through `on_error`, but two parallel calls that
+  both failed need two successes. Another workflow's success, a sibling call in the same tool
+  batch and a rejection with another cause recover nothing. The route names every outstanding
+  failure with the arguments of its call. Two delegation calls failing in one tool batch no longer
+  crash the turn with `InvalidUpdateError`. **For hosts and authors:** `note` is now reserved, so a
+  trigger whose `returns` declares `note` fails to load: rename it. A routed delegation failure's
+  reason now ends with `(called with {…})` naming the call's arguments. A mocked sub-workflow that
+  omits a declared return answers with the `note` too, instead of failing. See
+  [what `returns` enforces](/guides/triggers/#a-trigger-may-declare-its-signature) and
+  [failure is always closed](/guides/sub-workflows/#failure-is-always-closed).
+- **Reads are text only.** `read_file` on an image, audio, video, PDF or PowerPoint file used to
+  hand the model the file as base64 in a multimodal block. An OpenAI-compatible tool message
+  cannot carry that block, so the request failed or the model read base64. The bytes also landed
+  in the session's checkpoints, in a script's `tools.readFile` result, and in `tool-result`
+  previews. A binary file with an unknown extension (`.zip`, `.docx`, `.bin`) came back as
+  decoded garbage. Both now return a notice instead:
+  `Error: '<path>' is a binary file (<type>, <size>) and was not read; read_file returns text files only.`
+  A file is binary by its type (as Deep Agents' `read_file` decides it) or by a NUL byte in its
+  content. The `read_file` description the model is handed says so, in governed and plain agents
+  alike. See [the workspace](/guides/workflow-machine/#mount-governance).
+  **For hosts:** a model with vision still sees the images it reads, once the host turns on
+  `images` (`createAgent({ images: true })`). The model's `read_file` of a PNG, JPEG, GIF or WebP
+  then answers with one line, and the image is added to each later model request as a `user`
+  message right after that batch of tool results. The image is read from the workspace for each
+  request, so its bytes never enter the history, checkpoints, events or scripts. Earlier images
+  stay attached (`keep`, default all), and one over `maxBytes` (default 10 MB) or deleted since
+  is named in text instead. Without the option, and for PDFs, audio and video either way, a
+  multimodal model no longer receives the file through `read_file`. See
+  [`images`](/reference/public-api/#images-showing-the-model-the-images-it-reads).
 - **The agent ends a failed task with `archmax_raise` instead of a reply.** On GPT-6 Luna, an
   agent whose work could not be completed explained the failure in a reply, which ends the
   session as a success: the e2e case for an order-store outage raised in 0 of 4 runs on 0.3.1's

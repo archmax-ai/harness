@@ -2,14 +2,29 @@ import {
   ADVANCE_TOOL,
   HARNESS_CONTROL_TOOLS,
   EVAL_TOOL,
-  RUN_TOOL,
   SET_VARIABLES_TOOL,
   UNGRANTABLE_TOOLS,
 } from "../machine/tool-names.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { ForbidEntry } from "../machine/types.js";
 import { FORBID_ANY_TOOL } from "../machine/spec-schema.js";
-import { argsSatisfy, normalizeAllowEntry, type GuardResolutionFailure } from "../machine/allow.js";
+import {
+  argsSatisfy,
+  normalizeAllowEntry,
+  pathGuardMatches,
+  type GuardResolutionFailure,
+  type NormalizedAllowEntry,
+} from "../machine/allow.js";
+import {
+  BUILT_IN_TOOL_PATH_TABLE,
+  declaredPathsOf,
+  MUTATING_ACCESSES,
+  OFFLOAD_ACCESSES,
+  pathValuesOf,
+  SCRATCHPAD_ACCESSES,
+  type DeclaredPath,
+  type ToolPaths,
+} from "../machine/tool-paths.js";
 import type { VariableStore } from "../machine/variables.js";
 import { unmetRequirements } from "../workflow/control-tools.js";
 import { canonicalizeRelPath } from "../core/workspace.js";
@@ -164,25 +179,35 @@ const TASK_BLOCK_MESSAGE =
 
 const ALLOW: Verdict = { decision: "allow", ruleId: "allow" };
 
-/** File-writing built-in tools whose `file_path` argument the kernel governs. */
-const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+type ToolCallAction = Extract<ProposedAction, { kind: "tool-call" }>;
 
 /**
- * File tools whose access to the always-open run areas is permitted in every
- * state, independent of the state's `allow` list.
+ * The workspace paths a call names, from the tool's declared path arguments
+ * (`machine/tool-paths.ts`). Every path rule reads this, so a tool is governed
+ * by what it declares — a built-in, a runtime file operation and a host tool
+ * alike — and a call naming several paths is refused when any one is.
  */
-const SESSION_OPEN_TOOLS = new Set(["read_file", "write_file", "edit_file", "ls"]);
+function pathsOf(action: ToolCallAction, api: RuleApi): DeclaredPath[] {
+  return declaredPathsOf(action.tool, toolPathsOf(action.tool, api), action.args);
+}
 
-/** Read-shaped file tools (offload areas are readable but never writable). */
-const READ_TOOLS = new Set(["read_file", "ls"]);
+/** A tool's declaration: the machine's table, else the built-ins (a rule run without a machine). */
+function toolPathsOf(tool: string, api: Partial<RuleApi>): ToolPaths | undefined {
+  return api.machine ? api.machine.toolPaths(tool) : BUILT_IN_TOOL_PATH_TABLE.get(tool);
+}
 
-/** Every file tool whose path argument the zone rules classify. */
-const PATH_TOOLS = new Set(["read_file", "write_file", "edit_file", "ls", "glob", "grep"]);
+/**
+ * How a refusal names the call: `'write_file' on 'x'`, and for a tool declaring
+ * several paths, which argument it was — `'copy_file' on 'x' (destination)`.
+ */
+function subject(action: ToolCallAction, path: DeclaredPath, api: RuleApi): string {
+  return `'${action.tool}' on ${pathLabel(action, path, api)}`;
+}
 
-/** The path argument a file tool carries, whatever it is named. */
-function pathArg(args: Record<string, unknown>): string | null {
-  const target = args.file_path ?? args.path;
-  return typeof target === "string" ? target : null;
+/** One path of a call, named with its argument when the tool declares several. */
+function pathLabel(action: ToolCallAction, path: DeclaredPath, api: RuleApi): string {
+  const several = Object.keys(toolPathsOf(action.tool, api) ?? {}).length > 1;
+  return `'${path.path}'${several ? ` (${path.arg})` : ""}`;
 }
 
 /**
@@ -341,13 +366,9 @@ const taskBlockRule: GovernanceRule = (action) => {
  */
 const readOnlyZoneRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
-  const { tool, args } = action;
-  if (
-    WRITE_TOOLS.has(tool) &&
-    typeof args.file_path === "string" &&
-    isReadOnlyZonePath(args.file_path, api.mountPrefixes)
-  ) {
-    const rel = normalizeZonePath(args.file_path);
+  for (const path of pathsOf(action, api)) {
+    if (!MUTATING_ACCESSES.has(path.access) || !isReadOnlyZonePath(path.path, api.mountPrefixes)) continue;
+    const rel = normalizeZonePath(path.path);
     // The mount itself, so a nested key is named as authored (`catalogs/eu`)
     // rather than by the segment it happens to sit under.
     const mount = mountNameOf(rel, api.mountPrefixes) ?? rel.split("/")[0];
@@ -355,7 +376,7 @@ const readOnlyZoneRule: GovernanceRule = (action, api) => {
       decision: "block",
       ruleId: "zone.read-only",
       reason:
-        `[workflow] BLOCKED: '${tool}' on '${args.file_path}' targets a read-only ` +
+        `[workflow] BLOCKED: ${subject(action, path, api)} targets a read-only ` +
         `mount ('${mount}'). Authored content is mounted read-only — write your files under ` +
         `'${SESSION_OPEN_DIR}/…' (persisted per-session in the session store).`,
       warn: true,
@@ -369,15 +390,15 @@ const readOnlyZoneRule: GovernanceRule = (action, api) => {
  * `_specs/`) are not addressable by agent tools at all — not read, not written.
  * They hold the runtime's own bookkeeping for the run being executed.
  */
-const runtimeInternalRule: GovernanceRule = (action) => {
-  if (action.kind !== "tool-call" || !PATH_TOOLS.has(action.tool)) return null;
-  const target = pathArg(action.args);
-  if (target == null || classifyWorkspacePath(target) !== "run-internal") return null;
+const runtimeInternalRule: GovernanceRule = (action, api) => {
+  if (action.kind !== "tool-call") return null;
+  const path = pathsOf(action, api).find((p) => classifyWorkspacePath(p.path) === "run-internal");
+  if (!path) return null;
   return {
     decision: "block",
     ruleId: "zone.runtime-internal",
     reason:
-      `[workflow] BLOCKED: '${action.tool}' on '${target}' targets a harness-internal run ` +
+      `[workflow] BLOCKED: ${subject(action, path, api)} targets a harness-internal run ` +
       `area (${SESSION_INTERNAL_DIRS.map((d) => `'${d}/'`).join(", ")}). These hold the runtime's ` +
       `own bookkeeping and are not part of your workspace — use '${SESSION_OPEN_DIR}/…' for ` +
       `your own files.`,
@@ -390,15 +411,17 @@ const runtimeInternalRule: GovernanceRule = (action) => {
  * evicted content there and hands the model the path, so reads are permitted
  * (see {@link runOpenAccessRule}) but an agent-initiated write is refused.
  */
-const runtimeManagedRule: GovernanceRule = (action) => {
-  if (action.kind !== "tool-call" || !WRITE_TOOLS.has(action.tool)) return null;
-  const filePath = action.args.file_path;
-  if (typeof filePath !== "string" || classifyWorkspacePath(filePath) !== "run-offload") return null;
+const runtimeManagedRule: GovernanceRule = (action, api) => {
+  if (action.kind !== "tool-call") return null;
+  const path = pathsOf(action, api).find(
+    (p) => MUTATING_ACCESSES.has(p.access) && classifyWorkspacePath(p.path) === "run-offload",
+  );
+  if (!path) return null;
   return {
     decision: "block",
     ruleId: "zone.runtime-managed",
     reason:
-      `[workflow] BLOCKED: '${action.tool}' on '${filePath}' targets a runtime-owned area ` +
+      `[workflow] BLOCKED: ${subject(action, path, api)} targets a runtime-owned area ` +
       `(${SESSION_OFFLOAD_DIRS.map((d) => `'${d}/'`).join(", ")}), where the runtime offloads ` +
       `oversized context. You may read those files; write your own under '${SESSION_OPEN_DIR}/…'.`,
     warn: true,
@@ -408,9 +431,9 @@ const runtimeManagedRule: GovernanceRule = (action) => {
 /**
  * Safety rule: a skill bundle the acting state does not enable is unreachable.
  * The enforcement half of skill governance (declared by `skills.allow` at the
- * spec root and on a state): binds every path-classified tool plus
- * {@link RUN_TOOL}, so a disabled capability can be neither read, listed,
- * searched, written, nor executed.
+ * spec root and on a state): binds every declared path of every call, whatever
+ * its access, so a disabled capability can be neither read, listed, searched,
+ * written, removed, nor executed.
  *
  * Non-overridable: evaluated with the safety rules, ahead of `policy`, consumer
  * rules, and the per-state `allow` default, so no declaration can reach into a
@@ -422,11 +445,23 @@ const skillRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call" || action.origin === "lifecycle") return null;
   const skills = api.skills ?? NO_SKILLS;
   if (skills.length === 0) return null;
-  const { tool, args, state } = action;
-  if (!PATH_TOOLS.has(tool) && tool !== RUN_TOOL) return null;
-  const target = pathArg(args);
-  if (target == null) return null;
-  const slug = skillOfPath(target, skills);
+  for (const path of pathsOf(action, api)) {
+    const verdict = skillVerdict(action, path, api, skills);
+    if (verdict) return verdict;
+  }
+  return null;
+};
+
+/** {@link skillRule} for one of a call's paths. */
+function skillVerdict(
+  action: ToolCallAction,
+  path: DeclaredPath,
+  api: RuleApi,
+  skills: SkillPrefixes,
+): Verdict | null {
+  const { state } = action;
+  const on = subject(action, path, api);
+  const slug = skillOfPath(path.path, skills);
   if (slug == null) return null;
   const enabled = api.machine.enabledSkills(
     state,
@@ -445,7 +480,7 @@ const skillRule: GovernanceRule = (action, api) => {
       decision: "block",
       ruleId: "skill.forbidden",
       reason:
-        `[workflow] BLOCKED: '${tool}' on '${target}' belongs to the skill '${slug}', which ` +
+        `[workflow] BLOCKED: ${on} belongs to the skill '${slug}', which ` +
         `${denial === "workflow" ? "'skills.forbid_always' denies in every state" : `state '${state}' forbids`}. ` +
         `A denial beats every grant. ${enabledHere}`,
       warn: true,
@@ -455,20 +490,20 @@ const skillRule: GovernanceRule = (action, api) => {
     decision: "block",
     ruleId: "skill.not-allowed",
     reason:
-      `[workflow] BLOCKED: '${tool}' on '${target}' belongs to the skill '${slug}', which is ` +
+      `[workflow] BLOCKED: ${on} belongs to the skill '${slug}', which is ` +
       `not enabled in state '${state}'. ` +
       enabledHere,
     warn: true,
   };
-};
+}
 
 /**
  * Safety rule: a mount the acting state does not have is unreachable.
  *
  * The enforcement half of mount governance (declared by `mounts.allow` at the
  * spec root and on a state), and the mirror of {@link skillRule}: it binds every
- * path-classified tool plus {@link RUN_TOOL}, so a mount the state cannot see
- * can be neither read, listed, searched, written, nor executed from.
+ * declared path of every call, so a mount the state cannot see can be neither
+ * read, listed, searched, written, removed, nor executed from.
  *
  * Two kinds of mount, one rule. A **governed** mount (`MountSpec.governed`) is
  * closed by default: reachable only where `enabledMounts` names it. An
@@ -491,12 +526,19 @@ const skillRule: GovernanceRule = (action, api) => {
  */
 const mountRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call" || action.origin === "lifecycle") return null;
+  for (const path of pathsOf(action, api)) {
+    const verdict = mountVerdict(action, path, api);
+    if (verdict) return verdict;
+  }
+  return null;
+};
+
+/** {@link mountRule} for one of a call's paths. */
+function mountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi): Verdict | null {
   const mounts = api.mountPrefixes ?? NO_MOUNTS;
-  const { tool, args, state } = action;
-  if (!PATH_TOOLS.has(tool) && tool !== RUN_TOOL) return null;
-  const target = pathArg(args);
-  if (target == null) return null;
-  const name = mountNameOf(normalizeZonePath(target), mounts);
+  const { state } = action;
+  const on = subject(action, path, api);
+  const name = mountNameOf(normalizeZonePath(path.path), mounts);
   if (name == null) return null;
   const denial = api.machine.mountDenial(state, name);
   const governed = mounts.governed.includes(name);
@@ -507,12 +549,12 @@ const mountRule: GovernanceRule = (action, api) => {
     // mount to reads without hiding it. The zone rule has already refused a
     // write into a mount the host serves read-only, so this only ever fires on
     // one the host declared writable.
-    if (!WRITE_TOOLS.has(tool) || api.machine.mountWritable(state, name, mounts)) return null;
+    if (!MUTATING_ACCESSES.has(path.access) || api.machine.mountWritable(state, name, mounts)) return null;
     return {
       decision: "block",
       ruleId: "mount.read-only",
       reason:
-        `[workflow] BLOCKED: '${tool}' on '${target}' targets the mount '${name}', which state ` +
+        `[workflow] BLOCKED: ${on} targets the mount '${name}', which state ` +
         `'${state}' may read but not write ('access: read'). Write your files under ` +
         `'${SESSION_OPEN_DIR}/…' instead.`,
       warn: true,
@@ -527,7 +569,7 @@ const mountRule: GovernanceRule = (action, api) => {
       decision: "block",
       ruleId: "mount.forbidden",
       reason:
-        `[workflow] BLOCKED: '${tool}' on '${target}' is under the mount '${name}', which ` +
+        `[workflow] BLOCKED: ${on} is under the mount '${name}', which ` +
         `${denial === "workflow" ? "'mounts.forbid_always' denies in every state" : `state '${state}' forbids`}. ` +
         `A denial beats every grant. ${enabledHere}`,
       warn: true,
@@ -537,12 +579,12 @@ const mountRule: GovernanceRule = (action, api) => {
     decision: "block",
     ruleId: "mount.not-allowed",
     reason:
-      `[workflow] BLOCKED: '${tool}' on '${target}' is under the mount '${name}', which state ` +
+      `[workflow] BLOCKED: ${on} is under the mount '${name}', which state ` +
       `'${state}' does not have. The path exists; this state was not given it. ` +
       enabledHere,
     warn: true,
   };
-};
+}
 
 /**
  * An **ancestor's** `mounts.forbid_always`, as rules the descendant inherits.
@@ -564,17 +606,17 @@ export function compileForbiddenMountRules(
     (action, api) => {
       if (action.kind !== "tool-call") return null;
       const mounts = api.mountPrefixes ?? NO_MOUNTS;
-      const { tool, args } = action;
-      if (!PATH_TOOLS.has(tool) && tool !== RUN_TOOL) return null;
-      const target = pathArg(args);
-      if (target == null) return null;
-      const name = mountNameOf(normalizeZonePath(target), mounts);
-      if (name == null || !denied.has(name)) return null;
+      let name: string | null = null;
+      const path = pathsOf(action, api).find((p) => {
+        name = mountNameOf(normalizeZonePath(p.path), mounts);
+        return name != null && denied.has(name);
+      });
+      if (!path || name == null) return null;
       return {
         decision: "block",
         ruleId: "mount.forbidden",
         reason:
-          `[workflow] BLOCKED: '${tool}' on '${target}' is under the mount '${name}', which ` +
+          `[workflow] BLOCKED: ${subject(action, path, api)} is under the mount '${name}', which ` +
           `workflow '${source}' denies in every state it delegates to ` +
           `(mounts.forbid_always). A denial beats every grant.`,
         warn: true,
@@ -597,17 +639,17 @@ export function compileForbiddenSkillRules(slugs: readonly string[], source: str
       if (action.kind !== "tool-call") return null;
       const skills = api.skills ?? NO_SKILLS;
       if (skills.length === 0) return null;
-      const { tool, args } = action;
-      if (!PATH_TOOLS.has(tool) && tool !== RUN_TOOL) return null;
-      const target = pathArg(args);
-      if (target == null) return null;
-      const slug = skillOfPath(target, skills);
-      if (slug == null || !denied.has(slug)) return null;
+      let slug: string | null = null;
+      const path = pathsOf(action, api).find((p) => {
+        slug = skillOfPath(p.path, skills);
+        return slug != null && denied.has(slug);
+      });
+      if (!path || slug == null) return null;
       return {
         decision: "block",
         ruleId: "skill.forbidden",
         reason:
-          `[workflow] BLOCKED: '${tool}' on '${target}' belongs to the skill '${slug}', which ` +
+          `[workflow] BLOCKED: ${subject(action, path, api)} belongs to the skill '${slug}', which ` +
           `workflow '${source}' denies in every state it delegates to ` +
           `(skills.forbid_always). A denial beats every grant.`,
         warn: true,
@@ -624,18 +666,22 @@ export function compileForbiddenSkillRules(slugs: readonly string[], source: str
  * still block it), just ahead of the per-state defaults — so it loosens only
  * the state `allow` list, never the governed run paths outside it.
  */
-const runOpenAccessRule: GovernanceRule = (action) => {
+const runOpenAccessRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
-  const target = pathArg(action.args);
-  if (target == null) return null;
-  const zone = classifyWorkspacePath(target);
-  if (zone === "run-open" && SESSION_OPEN_TOOLS.has(action.tool)) {
-    return { decision: "allow", ruleId: "tool.scratchpad" };
-  }
-  if (zone === "run-offload" && READ_TOOLS.has(action.tool)) {
-    return { decision: "allow", ruleId: "tool.offload-read" };
-  }
-  return null;
+  const paths = pathsOf(action, api);
+  if (paths.length === 0) return null;
+  // Open only when every path the call names is: a copy from a mount into the
+  // scratchpad is still decided by the state's grant for the tool.
+  const zones = paths.map((p) => {
+    const zone = classifyWorkspacePath(p.path);
+    if (zone === "run-open" && SCRATCHPAD_ACCESSES.has(p.access)) return "open";
+    if (zone === "run-offload" && OFFLOAD_ACCESSES.has(p.access)) return "offload";
+    return null;
+  });
+  if (zones.some((zone) => zone === null)) return null;
+  return zones.every((zone) => zone === "offload")
+    ? { decision: "allow", ruleId: "tool.offload-read" }
+    : { decision: "allow", ruleId: "tool.scratchpad" };
 };
 
 /**
@@ -695,16 +741,17 @@ function unresolvedGuardVerdict(
  * widen it; a state's entry may still *narrow* execution within the bundles.
  */
 const scriptSkillOnlyRule: GovernanceRule = (action, api) => {
-  if (action.kind !== "tool-call" || action.tool !== RUN_TOOL) return null;
-  const target = pathArg(action.args);
-  if (target == null) return null;
-  if (skillOfPath(target, api.skills ?? NO_SKILLS) != null) return null;
+  if (action.kind !== "tool-call") return null;
+  const path = pathsOf(action, api).find(
+    (p) => p.access === "execute" && skillOfPath(p.path, api.skills ?? NO_SKILLS) == null,
+  );
+  if (!path) return null;
   return {
     decision: "block",
     ruleId: "script.skill-only",
     reason:
-      `[workflow] BLOCKED: '${RUN_TOOL}' may only execute scripts that live in a skill bundle, ` +
-      `and '${target}' is not in one. Scripts the agent runs belong in ` +
+      `[workflow] BLOCKED: '${action.tool}' may only execute scripts that live in a skill bundle, ` +
+      `and '${path.path}' is not in one. Scripts the agent runs belong in ` +
       `'skills/<capability>/scripts/'; lifecycle hook scripts live on the authoring plane and are ` +
       `run by the harness, never by the agent.`,
     warn: true,
@@ -719,15 +766,21 @@ const scriptSkillOnlyRule: GovernanceRule = (action, api) => {
  * every state whatever it allows — the plane's isolation is structural, not
  * granted.
  */
-const governancePlaneRule: GovernanceRule = (action) => {
+const governancePlaneRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
   if (action.origin !== "script" && action.origin !== "lifecycle") return null;
-  const target = pathArg(action.args);
-  if (target == null) return null;
-  const { path: rel, escapes } = canonicalizeRelPath(target);
-  if (escapes) return null;
-  const prefix = authoringPlanePrefix(rel);
-  if (!prefix) return null;
+  // A tool that declares no paths is still read by its conventional path
+  // argument here: the plane's isolation does not wait on a declaration.
+  const declared = pathsOf(action, api).map((p) => p.path);
+  const fallback = action.args.file_path ?? action.args.path;
+  const targets = declared.length > 0 ? declared : typeof fallback === "string" ? [fallback] : [];
+  let prefix: string | null = null;
+  const target = targets.find((candidate) => {
+    const { path: rel, escapes } = canonicalizeRelPath(candidate);
+    prefix = escapes ? null : authoringPlanePrefix(rel);
+    return prefix != null;
+  });
+  if (target == null || prefix == null) return null;
   return {
     decision: "block",
     ruleId: "zone.governance-plane",
@@ -800,18 +853,19 @@ export function compileForbidRules(
   const rules: GovernanceRule[] = [];
 
   for (const entry of entries) {
-    const { tool, argMatchers } = normalizeAllowEntry(entry);
+    const normalized = normalizeAllowEntry(entry);
+    const { tool, argMatchers } = normalized;
     if (!tool) continue; // reported by the schema
     const anyTool = tool === FORBID_ANY_TOOL;
     const key = scope === "workflow" ? "tools.forbid_always" : `states.${state}.tools.forbid`;
     const where = scope === "workflow" ? `the workflow${from}` : `state '${state}'`;
-    rules.push((action, { variables }) => {
+    rules.push((action, api) => {
       if (action.kind !== "tool-call") return null;
       if (!anyTool && action.tool !== tool) return null;
       if (scope === "state" && action.state !== state) return null;
-      const guards = argMatchers ? describeGuards(argMatchers) : null;
-      if (argMatchers && !matchesEveryGuard(action.args, argMatchers, variables ?? {})) return null;
-      const target = typeof action.args.file_path === "string" ? ` on '${action.args.file_path}'` : "";
+      const guards = argMatchers ? describeGuards(normalized) : null;
+      if (argMatchers && !denialMatches(normalized, action, api)) return null;
+      const target = describeTargets(action, api);
       return {
         decision: "block",
         ruleId: scope === "workflow" ? "tool.forbidden" : "tool.forbidden-here",
@@ -828,33 +882,52 @@ export function compileForbidRules(
 }
 
 /**
- * Whether every one of an entry's argument guards matches the call's arguments.
+ * Whether a denial's guards match the call.
  *
- * Resolution is the allow side's own (`argsSatisfy`), so a guard binds the same
- * calls whichever list it is written in: `${{…}}` resolves against the run's
- * variables and a dotted name traverses nested arguments. A denial that
- * understood fewer guard forms than the grant beside it would silently match
- * nothing, which is the shape of issue #156.
+ * Resolution is the allow side's own, so a guard binds the same calls whichever
+ * list it is written in: `${{…}}` resolves against the run's variables and a
+ * dotted name traverses nested arguments. A denial that understood fewer guard
+ * forms than the grant beside it would silently match nothing, which is the
+ * shape of issue #156. A `paths:` guard matches when **any** path the call names
+ * does (the grant side needs every one).
  *
  * The one asymmetry is deliberate. An allow entry whose reference cannot be
  * resolved grants nothing; a forbid entry in the same position must **match**,
  * so an unresolvable guard closes the call rather than opening it.
  */
-function matchesEveryGuard(
-  args: Record<string, unknown>,
-  argMatchers: Record<string, string[]>,
-  variables: VariableStore,
-): boolean {
+function denialMatches(entry: NormalizedAllowEntry, action: ToolCallAction, api: RuleApi): boolean {
+  const variables = api.variables ?? {};
+  if (entry.fromPaths) {
+    const values = pathValuesOf(action.tool, toolPathsOf(action.tool, api), action.args);
+    return pathGuardMatches(entry, values, "any", variables) ?? true;
+  }
   let unresolved = false;
-  const satisfied = argsSatisfy(argMatchers, args, variables, () => {
+  const satisfied = argsSatisfy(entry.argMatchers, action.args, variables, () => {
     unresolved = true;
   });
   return satisfied || unresolved;
 }
 
-/** An entry's guards, for the refusal reason: `file_path=logs/**`. */
-function describeGuards(argMatchers: Record<string, string[]>): string {
-  return Object.entries(argMatchers)
+/**
+ * The paths a denied call named, for the refusal reason: ` on 'x'`, or for a
+ * tool declaring several, ` on 'a' (source), 'b' (destination)`. A tool that
+ * declares none is named by its `file_path`, as before the path table.
+ */
+function describeTargets(action: ToolCallAction, api: RuleApi): string {
+  const paths = pathsOf(action, api);
+  if (paths.length === 0) {
+    return typeof action.args.file_path === "string" ? ` on '${action.args.file_path}'` : "";
+  }
+  return ` on ${paths.map((p) => pathLabel(action, p, api)).join(", ")}`;
+}
+
+/**
+ * An entry's guards, for the refusal reason: `file_path=logs/**`, or for the
+ * `paths:` shorthand — which guards every path argument — `paths=logs/**`.
+ */
+function describeGuards(entry: NormalizedAllowEntry): string {
+  if (entry.fromPaths) return `paths=${(entry.argMatchers?.file_path ?? []).join("|")}`;
+  return Object.entries(entry.argMatchers ?? {})
     .map(([name, globs]) => `${name}=${globs.join("|")}`)
     .join(", ");
 }
@@ -884,7 +957,7 @@ function toolCallPipeline(
 /** Fold the tool-call rule pipeline: first non-null verdict wins, else allow. */
 function decideToolCall(
   machine: WorkflowMachine,
-  action: Extract<ProposedAction, { kind: "tool-call" }>,
+  action: ToolCallAction,
   customRules: GovernanceRule[],
   mountPrefixes: MountPrefixes,
   variables: VariableStore,

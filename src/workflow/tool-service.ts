@@ -30,8 +30,15 @@ import {
   setVariablesCommand,
   WAIT_TOOL,
 } from "./control-tools.js";
-import { readVariables, type PendingDecision, type TrailStep } from "./state.js";
-import { subWorkflowParkOf, type SubWorkflowDispatcher } from "./sub-workflow.js";
+import {
+  failureRecoveredBy,
+  readVariables,
+  readWorkflowState,
+  type DelegationFailure,
+  type PendingDecision,
+  type TrailStep,
+} from "./state.js";
+import { resolveParams, subWorkflowParkOf, type SubWorkflowDispatcher } from "./sub-workflow.js";
 import { delegationCallResult } from "./workflow-tools.js";
 import { buildRunnableConfig } from "./runtime-config.js";
 
@@ -90,6 +97,21 @@ function duplicateMoveRefusal(toolName: string, toolCallId: string, landedAt: st
       `state '${landedAt}'. One transition per message — decide where to go from ` +
       `there on your next turn.`,
   );
+}
+
+/**
+ * A delegation call's input as the child was seeded with it: its arguments with
+ * `${{…}}` references resolved against the caller's variables, so a retry that
+ * passes the literal value repeats a call that passed the reference. Only a call
+ * that resolved reaches a child, so the fallback to the raw arguments is a
+ * guard, not a path.
+ */
+function callInput(args: Record<string, unknown>, state: unknown, workflow: string): Record<string, unknown> {
+  try {
+    return resolveParams(args, readVariables(state), workflow);
+  } catch {
+    return args;
+  }
 }
 
 /** A governance refusal: an error-status tool message the model self-corrects on, marked for the session view. */
@@ -155,6 +177,14 @@ export function createToolService(ctx: ToolServiceContext) {
   const movedAtStep = new Map<string, { step: string; to: string }>();
 
   /**
+   * The outstanding delegation failures a model step's successful calls have
+   * already recovered, keyed by session id. Sibling calls read one step-start
+   * snapshot, so without it two successes in one batch could both pick the same
+   * failure, recovering one where they earned two.
+   */
+  const recoveredAtStep = new Map<string, { step: string; ids: Set<string> }>();
+
+  /**
    * The sub-runs a call caused, drained from the dispatcher's ledger as trail
    * steps. Drained after every call: a script's dispatches arrive during the
    * `archmax_run` call that ran it.
@@ -215,12 +245,30 @@ export function createToolService(ctx: ToolServiceContext) {
     const outcome = await withPairedEvents(call, args, async () => {
       try {
         const output = delegationCallResult(await dispatcher.dispatch(dispatchInput));
+        const answer = new ToolMessage({
+          content: typeof output === "string" ? output : JSON.stringify(output),
+          tool_call_id: toolCallId,
+          name: toolName,
+        });
+        // A retry that worked recovers at most one earlier failure of this
+        // workflow from this state: the one whose input it repeats, else the
+        // oldest. Read from the step's own snapshot, so only a failure an earlier
+        // model step committed is recovered — a sibling failing in this same
+        // batch is not "earlier", and still stands — and never one a sibling
+        // success in this step already recovered.
+        const step = stepIdOf(request.state);
+        const claimed = recoveredAtStep.get(sessionId);
+        const taken = claimed?.step === step ? claimed.ids : new Set<string>();
+        const recovered = failureRecoveredBy(
+          readWorkflowState(request.state).failedDelegations ?? [],
+          { state: workflowState, workflow, input: callInput(args, request.state, workflow) },
+          taken,
+        );
+        if (!recovered) return { message: answer };
+        taken.add(recovered.id);
+        recoveredAtStep.set(sessionId, { step, ids: taken });
         return {
-          message: new ToolMessage({
-            content: typeof output === "string" ? output : JSON.stringify(output),
-            tool_call_id: toolCallId,
-            name: toolName,
-          }),
+          message: new Command({ update: { failedDelegations: { recovered: recovered.id }, messages: [answer] } }),
         };
       } catch (err) {
         // The child stopped for a person. Recorded here, where checkpointed state
@@ -256,12 +304,21 @@ export function createToolService(ctx: ToolServiceContext) {
             }),
           };
         }
-        // A child that ran and did not finish is this state's failure: committed as
-        // `rejected`, so the run routes through `on_error` once the model has finished.
+        // A child that ran and did not finish is this state's failure, recorded
+        // per call as outstanding: the session routes it through `on_error` once
+        // the model has finished, unless a later successful call of the same
+        // workflow from this state recovers it first.
         const message = (err as Error)?.message ?? String(err);
+        const failure: DelegationFailure = {
+          id: callId,
+          state: workflowState,
+          workflow,
+          input: callInput(args, request.state, workflow),
+          reason: message,
+        };
         return {
           message: new Command({
-            update: { rejected: message, messages: [refusal(toolName, toolCallId, message)] },
+            update: { failedDelegations: [failure], messages: [refusal(toolName, toolCallId, message)] },
           }),
         };
       }
@@ -368,6 +425,7 @@ export function createToolService(ctx: ToolServiceContext) {
     serviceControlTool,
     releaseSession(sessionId: string): void {
       movedAtStep.delete(sessionId);
+      recoveredAtStep.delete(sessionId);
     },
   };
 }

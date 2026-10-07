@@ -81,10 +81,26 @@ a number stays a number and satisfies an `integer` parameter. An argument that
 mixes text with references, such as `"order ${{order_id}}"`, is substituted as
 text. An unresolvable reference fails the call with `unresolved-param`.
 
-The returns are held to their types too. A child that settles with a typed
-return holding another kind of value fails the call with `invalid-return`, naming
-the state, the variable and the type. One that leaves a return unset fails with
-`missing-return`. No partial result reaches the caller either way.
+A child that finishes with some of its returns unset is not sent back to set
+them. It completes, and the call answers with the returns it did set plus a
+`note` naming the rest:
+
+```json
+{
+  "message": "Invoice INV-159123 found.",
+  "returns": {
+    "corrected_invoice_number": "INV-159123",
+    "note": "Not all return variables were set by the sub-workflow: 'description' was not set."
+  }
+}
+```
+
+The calling agent decides what to do about the gap: carry on, ask, or call again.
+No model call is spent on a second attempt. The returns are held to their types
+too: a typed return holding another kind of value fails the call with
+`invalid-return`, naming the state, the variable and the type, and no partial
+result reaches the caller then. `note` is reserved, so a `returns` list may not
+declare it.
 
 The tool surface is closed by default, so a state reaches exactly the targets it
 names. Delegation needs no rule of its own. `policy.forbid_tools` blocks it like
@@ -158,7 +174,7 @@ started the session:
 | Half | When it bites |
 | --- | --- |
 | `requires` | a call short of any declared name, or with a value that does not conform to a typed entry, is refused before this workflow is composed |
-| `returns` | a session that reaches a terminal state with any declared name unset, or a typed one mistyped, is rejected |
+| `returns` | a child that finishes with a declared name unset completes, and its caller gets what it set plus a `note`; a top-level session is rejected; a typed one mistyped rejects either way |
 
 `archmax validate` checks the caller against the same declaration, offline.
 
@@ -181,8 +197,10 @@ rules still bind inside the child. That is the same check every other tool
 capability passes.
 
 A child session carries **no prose instruction**. It works from its own state
-`instructions` and the inputs it was seeded with, both of which reach the model
-through the system prompt. So a parent has nothing to write or keep in sync.
+`instructions`, which reach the model through the system prompt, and the inputs
+it was seeded with, whose short scalar values its opening message lists (see
+[what the child's model reads](#what-the-childs-model-reads)). So a parent has
+nothing to write or keep in sync.
 
 `session:` and `message:` on the trigger are host-facing keys a delegation
 ignores. A child session's id is derived from its caller's, and a delegation has
@@ -238,8 +256,10 @@ The child's **`title`** is among the things that stay behind. It is refused in
 `returns:` so it cannot be smuggled up. A child session's title names the child
 session's task, and merging it would rename the caller's.
 
-A caller that wants the child working under a particular label passes one *down*
-as an argument. It lands unlocked there, and the child may refine it. See
+A child is not asked to name its session either (see below). A caller that wants
+the child working under a particular label passes one *down* as an argument. It
+lands unlocked there and stays as passed, unless the child's own `instructions`
+tell it to write another. See
 [Two reserved names](/guides/workflow-machine/#two-reserved-names).
 
 The caller reads the declared returns off the tool result:
@@ -252,6 +272,55 @@ archmax_workflow_enrich-account({ account_id: "acct-42" })
 
 The two keep separate channels. The message is prose the model reads, and the
 returns are values a guard or a script reads by name.
+
+## What the child's model reads
+
+A child goes straight to its work. Its first model call is handed everything it
+needs to start, so a one-state child whose inputs are short scalars spends no
+call naming its session and none reading its inputs.
+
+**Its inputs, in its opening message.** A child's transcript starts with one
+message from the runtime, marked as an `opening`
+[runtime note](/reference/public-api/#reading-a-transcript). It lists the call's
+arguments by name, alphabetically, with their values:
+
+```
+Begin. Your instructions are already in context. You were started with these inputs:
+- amount: 412.5
+- invoice_id: "INV-159123"
+- urgent: true
+```
+
+A string is shown JSON-quoted, so a value reads as data: a line break or a
+`- name:` inside it stays inside the quotes and cannot pass for a line of the
+message. Numbers and booleans are shown as written. A value is left out, and
+only named, when it is anything else (a list, an object, `null`), when its
+rendering runs past 200 characters, or when it would take the message's values
+past 1,000 characters in all:
+
+```
+Not shown here: lines. Read one with archmax_get_variables when you need its value.
+```
+
+The message mentions `archmax_get_variables` only when it names an input like
+that. An input left out can still be passed to a tool whole as `${{lines}}`,
+without being read first.
+
+**No title step.** A child's title describes a session nothing lists, and it is
+never returned, so a child's prompt does not ask for one. Its platform prompt
+leaves out the "Name the run first" step and the paragraph explaining `title`,
+and its `archmax_set_variables` description leaves out the sentence asking for
+one. The rest of its platform prompt reads as a top-level session's does, with
+the movement steps renumbered. A top-level session reads all of it, so its
+cacheable prefix does not depend on whether it delegates.
+
+A workspace that [overrides the platform
+prompt](/guides/workflow-machine/#authoring-source-of-truth) decides what its
+children leave out the same way. A passage between a `<!-- top-level-only -->`
+line and a `<!-- /top-level-only -->` line is read by a top-level session and
+left out of a child's, and the marker lines reach neither. Where a left-out
+passage held items of a numbered list, the items after it are renumbered. An
+override without the markers reads the same in both sessions.
 
 ## Bounds
 
@@ -311,9 +380,10 @@ the calling workflow.
 ## Failure is always closed
 
 A child session fails when it is rejected, exceeds its budget, cannot be loaded,
-or completes short of a `returns` name it declared (`missing-return`) or with a
-typed return of the wrong kind (`invalid-return`). The call answers with a **tool
-error** naming the workflow and the reason.
+or completes with a typed return of the wrong kind (`invalid-return`). The call
+answers with a **tool error** naming the workflow and the reason. A child that
+merely left a return unset does not fail: its caller gets the rest with a `note`
+(see above).
 
 A child whose agent ended it with `archmax_raise` fails the call the same way,
 with the kind `raised`. The tool error names the child workflow, the state it
@@ -324,9 +394,30 @@ so the error is never reported as a missing return. To pass the failure up, the
 calling agent can raise in turn, with its own code.
 
 The calling agent can then retry with different inputs, route around it, or stop.
-Where it cannot recover, the state's `requires:` holds it in place until the work
-is genuinely done. The state's `on_error` catches the turn failure as it catches
-any other.
+Each failed call is the calling state's failure, recorded on its own with the
+arguments it was made with, and it stays outstanding until a later call of the
+**same workflow from the same state** succeeds. One success recovers **one**
+failed call: the one whose arguments it repeats, else the oldest one
+outstanding. Arguments are compared after their `${{…}}` references resolve, and
+key order does not matter. So a retry with the same arguments recovers its own
+failure, a retry with corrected arguments recovers one too, and the trail still
+records every call. When the model finishes with any failure still outstanding,
+the state's `on_error` catches it as it catches any other turn failure, or the
+turn ends rejected without one. The route names every outstanding failure with
+the arguments of its call.
+
+| After calls to `enrich` from `start` for `ORD-1` and `ORD-2` both fail | The failures |
+| --- | --- |
+| a later call to `enrich` for `ORD-1` succeeds | `ORD-1`'s is recovered; `ORD-2`'s still routes |
+| later calls for both succeed | both are recovered |
+| a later call to `enrich` for `ORD-9` succeeds | the oldest one is recovered; the other still routes |
+| a call to another workflow succeeds | both still stand |
+| a sibling call to `enrich` in the **same** tool batch succeeds | still stand: a recovery has to come from a later model step |
+| the agent advances, parks, or calls `archmax_reset` | are cleared, as a committed rejection always was |
+| the state also has a rejection with another cause (a terminal kernel block, an exhausted park budget) | that rejection still routes: only a failed delegation can be recovered |
+
+Where the agent cannot recover, the state's `requires:` holds it in place until
+the work is genuinely done.
 
 Refusals the runtime makes **before** anything runs are blocked calls rather than
 tool errors: depth, a cycle, a missing required input (`missing-param`), an input

@@ -32,13 +32,13 @@ import {
 } from "../machine/variables.js";
 import { signatureValueIssues, type SignatureEntry, type SignatureValueIssue } from "../machine/signature.js";
 import { MANUAL_TRIGGER } from "../machine/triggers.js";
-import { workflowToolName } from "../machine/tool-names.js";
+import { GET_VARIABLES_TOOL, workflowToolName } from "../machine/tool-names.js";
 import { DEFAULT_SUB_WORKFLOW_CONCURRENCY, DEFAULT_SUB_WORKFLOW_DEPTH } from "../machine/delegation.js";
 import { findMock, readMocks } from "../core/tool-mocks.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { readRaised, readReturns, readVariables, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
-import { returnsRejection } from "./signature-checks.js";
+import { missingReturnsNote, RETURNS_NOTE_VARIABLE, returnsRejection } from "./signature-checks.js";
 import {
   childRunConfig,
   releaseScopes,
@@ -58,7 +58,6 @@ export type SubWorkflowFailureKind =
   | "unresolved-param"
   | "missing-param"
   | "invalid-param"
-  | "missing-return"
   | "invalid-return"
   | "depth-exceeded"
   | "cycle"
@@ -203,14 +202,66 @@ export interface SubWorkflowResult {
   returns?: Record<string, unknown>;
 }
 
+/** The longest rendering of one input value an opening note shows; a longer one is named instead. */
+export const OPENING_VALUE_MAX_CHARS = 200;
+
+/** The most an opening note spends on input values in all; an input past it is named instead. */
+export const OPENING_VALUES_MAX_CHARS = 1_000;
+
 /**
- * The line a sub-run opens with. A chat request needs a message, and this is the
- * child's whole transcript at that moment, so it stays human-role, marked as an
- * `opening` runtime note.
+ * An input value as an opening note shows it: a string JSON-quoted, so a value
+ * reads as data and cannot open a line, a list item or a heading of its own; a
+ * finite number or a boolean as written. Anything else is not shown.
  */
-export const SUB_RUN_OPENING =
-  "Begin. Your instructions and your inputs are already in context; read any input you " +
-  "need with archmax_get_variables.";
+function renderInputValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    // JSON leaves the two Unicode line terminators bare; escaped, a value stays on its line.
+    return JSON.stringify(value).replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : undefined;
+  if (typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+/**
+ * The message a sub-run opens with. A chat request needs a message, and this is
+ * the child's whole transcript at that moment, so it stays human-role, marked as
+ * an `opening` runtime note.
+ *
+ * It carries the values of the call's scalar inputs, by name in alphabetical
+ * order, so a child does not spend a model call reading what its caller already
+ * knew. A value is shown when it renders within {@link OPENING_VALUE_MAX_CHARS}
+ * and the note's values stay within {@link OPENING_VALUES_MAX_CHARS}; any other
+ * input is named, with the tool that reads it. Only when every input is shown
+ * does the note say nothing about reading them.
+ */
+export function subRunOpening(inputs: Record<string, unknown>): string {
+  const shown: string[] = [];
+  const named: string[] = [];
+  let spent = 0;
+  for (const name of Object.keys(inputs).sort()) {
+    const rendered = renderInputValue(inputs[name]);
+    if (
+      rendered === undefined ||
+      rendered.length > OPENING_VALUE_MAX_CHARS ||
+      spent + rendered.length > OPENING_VALUES_MAX_CHARS
+    ) {
+      named.push(name);
+      continue;
+    }
+    spent += rendered.length;
+    shown.push(`- ${name}: ${rendered}`);
+  }
+  const begin = "Begin. Your instructions are already in context.";
+  const lines = shown.length > 0 ? [`${begin} You were started with these inputs:`, ...shown] : [begin];
+  if (named.length > 0) {
+    lines.push(
+      `${shown.length > 0 ? "Not shown here" : "Your inputs are not shown here"}: ${named.join(", ")}. ` +
+        `Read one with ${GET_VARIABLES_TOOL} when you need its value.`,
+    );
+  }
+  return lines.join("\n");
+}
 
 export const NO_RESULT_MESSAGE = "(the sub-workflow completed without a closing message)";
 
@@ -557,7 +608,7 @@ export function createSubWorkflowDispatcher(
     // Everything the child emits is tagged with this dispatch.
     const state = await withEventContext({ subWorkflowDispatchId: input.dispatchId }, () =>
       child.graph.invoke(
-        { messages: [humanNote("opening", SUB_RUN_OPENING)] },
+        { messages: [humanNote("opening", subRunOpening(input.params))] },
         { ...config, configurable, ...(input.signal ? { signal: input.signal } : {}) },
       ),
     );
@@ -583,11 +634,11 @@ export function createSubWorkflowDispatcher(
 
   /**
    * The declared returns of a child that settled, held to the target's typed
-   * signature: `missing-return` for an unset name, `invalid-return` for a value
-   * that does not conform. A child its own completion check rejected is
-   * reported by the same kinds, since that is the reason it was rejected; any
-   * other rejection stays `rejected`. A child that raised owes no returns: it
-   * fails as `raised`, carrying its agent's code and reason to the caller.
+   * signature. A child that left some unset completed anyway: its caller gets
+   * the ones it set and a `note` naming the rest. A value that does not conform
+   * fails the call `invalid-return` — the reason its own completion check
+   * rejected it; any other rejection stays `rejected`. A child that raised owes
+   * no returns: it fails as `raised`, carrying its agent's code and reason.
    */
   function settledReturns(
     workflow: string,
@@ -613,11 +664,11 @@ export function createSubWorkflowDispatcher(
     }
     const returns = readReturns(state, declared.map((entry) => entry.name));
     const issues = signatureValueIssues(declared, returns ?? {});
-    if (issues.length > 0) throw returnsFailure(workflow, `in state '${finishedIn}'`, issues);
+    if (invalidOf(issues).length > 0) throw returnsFailure(workflow, `in state '${finishedIn}'`, issues);
     // A rejection whose returns check passes against the target's own
     // signature still failed closed; it is only named for what it was.
     if (fields.rejected) throw failed(workflow, finishedIn, fields.rejected);
-    return returns;
+    return withMissingNote(returns, issues);
   }
 
   /** Continue a child that stopped for a person: the same invoke, entered with a `Command({ resume })`. */
@@ -716,26 +767,32 @@ function applyMock(
   const wanted = returns ?? [];
   if (wanted.length === 0) return { result, workflow, state };
 
+  // A mock stands in for the sub-run, so it is held to what a real one hands
+  // back: a mistyped value fails, and an unset one is named in the note.
   const supplied = (asObject?.returns ?? {}) as Record<string, unknown>;
   const issues = signatureValueIssues(wanted, supplied);
+  if (invalidOf(issues).length > 0) throw returnsFailure(workflow, "(mocked)", issues);
+  const handed = withMissingNote(
+    Object.fromEntries(wanted.map((entry) => [entry.name, supplied[entry.name]])),
+    issues,
+  );
+  return { result, workflow, state, ...(handed ? { returns: handed } : {}) };
+}
+
+/**
+ * The returns a caller gets: every declared one the child set, and — when it
+ * left any unset — a `note` naming them. Unset names are left out, never
+ * handed on as `undefined`.
+ */
+function withMissingNote(
+  returns: Record<string, unknown> | undefined,
+  issues: SignatureValueIssue[],
+): Record<string, unknown> | undefined {
+  if (!returns) return undefined;
   const unset = issues.filter((issue) => issue.kind === "missing").map((issue) => issue.name);
-  if (unset.length > 0) {
-    throw new SubWorkflowError(
-      "missing-return",
-      workflow,
-      `Mocked sub-workflow '${workflow}' supplies no ${unset.map((n) => `'${n}'`).join(", ")}, ` +
-        `which it declares in its '${MANUAL_TRIGGER}' trigger's 'returns'. Add ` +
-        `${unset.length === 1 ? "it" : "them"} under the mock's 'returns' — a mock stands in ` +
-        `for the sub-run, not for its contract.`,
-    );
-  }
-  if (issues.length > 0) throw returnsFailure(workflow, "(mocked)", issues);
-  return {
-    result,
-    workflow,
-    state,
-    returns: Object.fromEntries(wanted.map((entry) => [entry.name, supplied[entry.name]])),
-  };
+  if (unset.length === 0) return returns;
+  const set = Object.fromEntries(Object.entries(returns).filter(([name]) => !unset.includes(name)));
+  return { ...set, [RETURNS_NOTE_VARIABLE]: missingReturnsNote(unset) };
 }
 
 /** The invalid-value issues of a signature check, in declaration order. */
@@ -744,20 +801,10 @@ function invalidOf(issues: SignatureValueIssue[]): Extract<SignatureValueIssue, 
 }
 
 /**
- * A child whose declared returns are not what its signature promises: unset
- * names fail `missing-return`, and otherwise mistyped values `invalid-return`.
- * Either way no partial result reaches the caller.
+ * A child whose declared returns do not conform to its signature's types: the
+ * call fails `invalid-return`, and no partial result reaches the caller.
  */
 function returnsFailure(workflow: string, where: string, issues: SignatureValueIssue[]): SubWorkflowError {
-  const unset = issues.filter((issue) => issue.kind === "missing").map((issue) => `'${issue.name}'`);
-  if (unset.length > 0) {
-    return new SubWorkflowError(
-      "missing-return",
-      workflow,
-      `Sub-workflow '${workflow}' settled ${where} without setting ${unset.join(", ")}, which its ` +
-        `'${MANUAL_TRIGGER}' trigger declares in its 'returns'.`,
-    );
-  }
   return new SubWorkflowError(
     "invalid-return",
     workflow,
