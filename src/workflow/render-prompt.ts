@@ -78,7 +78,7 @@ function renderHooks(state: MachineState): string | null {
  * The declaration's own `description` is never rendered: it is written for a
  * caller, and this run's brief is its `instructions`.
  */
-function renderSignature(machine: WorkflowMachine, trigger: string | undefined): string[] {
+function renderSignature(machine: WorkflowMachine, trigger: string | undefined, child: boolean): string[] {
   const signature = trigger ? machine.signatureForTrigger(trigger) : undefined;
   if (!signature) return [];
   const lines: string[] = [];
@@ -91,7 +91,13 @@ function renderSignature(machine: WorkflowMachine, trigger: string | undefined):
     );
   }
   if (returns.length > 0) {
-    const how = `with \`${SET_VARIABLES_TOOL}\` — it does not complete until every one is set`;
+    // What the completion check actually does (`returns-check.ts`): a child's
+    // caller gets what was set and a note naming the rest; any other run is rejected.
+    const how = child
+      ? `with \`${SET_VARIABLES_TOOL}\` before it finishes — your caller gets the ones you set, ` +
+        `with a note naming any you did not`
+      : `with \`${SET_VARIABLES_TOOL}\` before it finishes — finishing without every one set ` +
+        `ends it rejected`;
     lines.push(
       isBare(returns)
         ? `This run must set ${names(returns)} ${how}.`
@@ -121,6 +127,8 @@ function renderEntry(entry: SignatureEntry): string {
 export interface StateGraphContext {
   /** The id of the trigger this session was started by, when one is recorded. */
   trigger?: string;
+  /** The session is a sub-workflow child, whose caller reads what it returns. */
+  child?: boolean;
 }
 
 /**
@@ -143,7 +151,7 @@ export function renderStateGraph(
 
   const hooks = renderHooks(declared);
   if (hooks) sections.push(`Hooks: ${hooks}`);
-  sections.push(...renderSignature(machine, ctx.trigger));
+  sections.push(...renderSignature(machine, ctx.trigger, ctx.child === true));
 
   const transitions = declared.transitions ?? [];
   sections.push(

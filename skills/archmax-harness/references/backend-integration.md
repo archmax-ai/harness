@@ -81,6 +81,7 @@ From `@archmax-ai/harness` (`src/index.ts`):
 | `SessionStoreRequiredError`, `SessionStoreCapabilityError` | class | Assembly / capability errors for run storage |
 | `workflowStateSchema`, `workflowPaths`, `sessionPaths`, `runArtifactPaths` | schema/fn | State schema + path helpers |
 | `runTests`, `RunTestsOptions`, `CaseResult` | fn/type | Run a workflow's cases — [against your own agent](#cases-against-your-agent) |
+| `toolsFromMap`, `AgentToolDescriptor`, `ToolContext`, `ToolPaths`, `PathAccess`, `ToolPathsError` | fn/type/class | Host tools: a `name → descriptor` map, each descriptor's declared `paths` and a handler handed the turn's workspace — [host tools](#host-tools) |
 | `SIGNATURE_TYPES`, `normalizeSignature`, `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues` | const/fn | A trigger's typed signature as JSON Schema and its conformance rule — [exposing a workflow](#exposing-a-workflow-to-outside-callers); also on `@archmax-ai/harness/spec` |
 
 ## createAgent options
@@ -98,6 +99,10 @@ All optional (`CreateAgentParams`, `src/assembly/index.ts`):
 | `mounts` | `Record<string, MountSpec>` | Authored mounts as a `CompositeBackend` route table: key → backend, or `{ backend, readOnly, governed, searchable }`. Trailing slash = directory mount; no slash = exact-path file mount (`"/AGENTS.md"`). Read-only unless declared otherwise. `governed: true` hands the spec's `mounts` block the decision of **which states** may reach it (closed by default, like a skill bundle) and whether each may write there; a mount not so declared is visible in every state exactly as today, so a table that marks nothing behaves unchanged. `readOnly` is a **ceiling** the spec cannot lift: a grant may narrow a writable mount to reads in a state, never open a read-only one. A key may be several segments deep (`"/catalogs/eu/"`); its **first** segment is what is reserved, so `/workflows/x/` fails as `/workflows/` does. Omitted on the default backend: `defaultMounts(rootDir)` (the conventional table — `/skills/`, `/.platform/`, `/AGENTS.md`, none governed — extend with `{ ...defaultMounts(root), "/templates/": … }`). Omitted with a custom `backend`: nothing authored is served; expose subtrees with `mountSubtree(backend, "skills")`. A key colliding with a run area — or naming the authoring-plane prefix (`/workflows/`) — throws `MountCollisionError`. `searchable: false` declares a mount the runtime never searches on its own initiative: a root-wide `grep`/`glob` fans out over the other mounts only, while a search the agent addresses at the mount (or a path inside it) still reaches its backend and returns the backend's own answer — matches or `{ error }` — verbatim. Use it for a backend that must refuse searches (a remote folder served live). Listing and reading are unchanged, the prompt marks it "browse only", names arrive as `MountPrefixes.unsearchable`, and it is ignored on a file mount. |
 | `sessionStore` | `SessionStore` | Physical storage for run state (checkpoints, artifacts, the per-session `scratchpad/`). Zero-config default: `createFilesystemSessionStore({ dir: "<rootDir>/sessions" })`. Required with a custom `backend` (else `SessionStoreRequiredError`). Build with `createBackendSessionStore({ backend, prefix? })` for S3-style storage or `createMemorySessionStore()` for ephemeral runs. |
 | `systemPrompt` | `string` | Appended after workspace `AGENTS.md`. |
+| `tools` | `StructuredTool[]` | Host tools, granted per state by `tools.allow`. Build them with `toolsFromMap` — see [host tools](#host-tools). A name starting `archmax_`, or naming a runtime file operation (`copy_file`, `move_file`, `remove_file`), throws `ReservedToolNameError`. |
+| `essentialTools` | `string[]` | Host tools treated as always on: disclosed and permitted in every state; a state's own entry still narrows one. |
+| `images` | `boolean \| ImageReadOptions` | Show a model with vision the images it reads: the model's `read_file` of a PNG/JPEG/GIF/WebP answers with one line and the image is added to each later request as a `user` message after that batch of tool results, read per request — no bytes in history, checkpoints, events or scripts. `{ maxBytes?, keep? }` (default 10 MB, every image). Off by default; every other binary stays refused. |
+| `toolPaths` | `Record<string, ToolPaths>` | Each host tool's path arguments and how a call uses each (`read`, `list`, `search`, `write`, `remove`, `execute`): `{ get_markdown: { path: "read" } }`. Every path rule then governs them like the built-ins'. Wins over a descriptor's `paths`; declaring a built-in's paths throws `ToolPathsError`. |
 | `checkpointer` | `BaseCheckpointSaver` | Custom-adapter escape hatch; takes precedence over the session store for checkpoint persistence. Defaults to a durable `BackendCheckpointSaver` writing through the session store. Use `MemorySaver` for ephemeral runs. |
 | `middleware` | `AgentMiddleware[]` | Extra middleware appended after workflow instrumentation. |
 | `onEvent` | `WorkflowEventHandler` | Subscribe to all lifecycle diagnostics; suppresses console output when set. |
@@ -429,7 +434,8 @@ opening, a human park, run-start seeding.
 rides its own event so that rule needs no exception, and it is safe there because
 a title is bounded to one short line by its write check. Indexing a run's title on
 your own record is a handler for this event and nothing else — no checkpoint read,
-which matters when you install your own checkpointer.
+which matters when you install your own checkpointer. A sub-workflow's child is not
+asked to name itself, so it emits none unless its caller passed a `title` down.
 
 ### Reading tokens and cost
 
@@ -594,6 +600,47 @@ A custom `backend` **requires** an explicit `sessionStore` — assembly throws
 `sessions/<sessionId>/…` namespace; the store owns where it physically lives.
 Persisting the session zone off-box (an S3-backed session store) is how you share run
 state across a worker fleet and an API.
+
+The file operations (`copy_file`, `move_file`, `remove_file`) want more than
+text. A write to a binary-typed path (an image, a PDF) carries **base64**, which
+the backend's `write` must decode — Deep Agents' convention. Bytes the text
+channel cannot carry (a `.docx`, a `.zip`, Latin-1 text) travel through
+`uploadFiles`, and a move or removal needs `delete`. Every copy is read back
+(`downloadFiles`, else `readRaw`); a store that kept something else is refused,
+never reported as copied. Implement all three methods and the base64 decode on a
+custom backend — mounts and session store alike. A read-only mount refuses an
+upload and a delete itself.
+
+### Host tools
+
+A host tool built with `toolsFromMap` reaches the workspace the way the
+built-in file tools do — no second routing table:
+
+```ts
+const tools = toolsFromMap({
+  get_markdown: {
+    description: "Read a document as Markdown.",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    paths: { path: "read" },              // governed like read_file's file_path
+    handler: async (input, { workspace }) => {
+      const raw = await workspace.readRaw(String(input.path));
+      return raw.error ? `Error: ${raw.error}` : toMarkdown(raw.data!);
+    },
+  },
+});
+const agent = await createAgent({ tools, essentialTools: ["get_markdown"] });
+```
+
+- `paths` declares the arguments that name workspace paths and how the call
+  uses each. Every path rule binds them: the read-only zone, the runtime's own
+  areas, the skills and mounts the state was given (`mount.not-allowed`,
+  `skill.not-allowed`), a mount's `access: read` (`mount.read-only` for a
+  `write` or `remove`), inherited denials and `paths:` guards. A refused call
+  never runs the handler. No declaration, no path rules.
+- `context.workspace` is the turn's workspace, bound to the session — the
+  instance `read_file` uses — with `downloadFiles`/`uploadFiles` and `delete`
+  besides the text methods. The plain agent hands the same context. Outside a
+  turn, reading it throws.
 
 ## Cases against your agent
 

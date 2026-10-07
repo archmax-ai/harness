@@ -3,9 +3,16 @@
  * workspace, with no machine, no control tools and no per-state gating.
  */
 import { createDeepAgent } from "deepagents";
+import { createFileOperationTools } from "../core/file-operations.js";
 import { asCompiledAgentGraph, type CompiledAgentGraph } from "../core/deepagents.js";
 import { TOOL_MOCK_MIDDLEWARE_NAME } from "../core/tool-mocks.js";
-import { frameworkPassthrough, rubricParams, todoMiddleware, type AssemblyContext } from "./compose.js";
+import {
+  fileReadMiddleware,
+  frameworkPassthrough,
+  rubricParams,
+  todoMiddleware,
+  type AssemblyContext,
+} from "./compose.js";
 
 /**
  * A skill source as upstream's middleware wants it: a leading-slash,
@@ -23,7 +30,7 @@ export function composePlain(
   systemPrompt: string,
 ): { graph: CompiledAgentGraph; toolMocks: boolean } {
   // The host's middleware rides after the runtime's own, as on the governed path.
-  const middleware = [todoMiddleware(), ...(ctx.params.middleware ?? [])];
+  const middleware = [todoMiddleware(), ...fileReadMiddleware(ctx), ...(ctx.params.middleware ?? [])];
   const deepAgent = createDeepAgent({
     model: ctx.model,
     backend: ctx.backend,
@@ -31,7 +38,9 @@ export function composePlain(
     // skills middleware discloses every skill of the declared sources, which is
     // exactly right here and exactly wrong under a workflow.
     skills: ctx.skillSources.map(asSkillSource),
-    tools: ctx.params.tools ?? [],
+    // The file tools are Deep Agents' plus the runtime's file operations, as on
+    // the governed path; no kernel runs here, so read-only mounts are what refuse.
+    tools: [...createFileOperationTools(ctx), ...(ctx.params.tools ?? [])],
     ...rubricParams(ctx),
     middleware,
     systemPrompt: { prefix: systemPrompt, base: null },

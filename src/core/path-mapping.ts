@@ -1,4 +1,4 @@
-import type { BackendProtocolV2 } from "deepagents";
+import type { BackendProtocolV2, DeleteResult, FileDownloadResponse, FileUploadResponse } from "deepagents";
 import { normalizeRelPath } from "./workspace.js";
 
 /**
@@ -17,13 +17,22 @@ import { normalizeRelPath } from "./workspace.js";
  *    agent-visible listings, so it is stripped on the way out.
  *
  * Inbound: `/x` → `/<prefix>/x`. Outbound: every `path` a result carries
- * (`ls`/`glob` entries, `grep` matches, `write`/`edit` results) is mapped back.
+ * (`ls`/`glob` entries, `grep` matches, `write`/`edit`/`delete` results,
+ * download and upload responses) is mapped back.
  * A result path that does not start with the prefix is left untouched — the
  * inner backend is free to report paths we did not ask about.
  */
 
 /** The prefix in effect for a call: a fixed string, or resolved per call. */
 export type PrefixResolver = () => string | undefined;
+
+/**
+ * A mapped backend: raw-byte transfer and deletion are always present. Transfer
+ * throws when the wrapped backend lacks it, as `CompositeBackend` does; deletion
+ * answers an error, as `CompositeBackend` does.
+ */
+export type MappedBackend = BackendProtocolV2 &
+  Required<Pick<BackendProtocolV2, "downloadFiles" | "uploadFiles" | "delete">>;
 
 function relPrefix(prefix: string): string {
   return normalizeRelPath(prefix).replace(/\/+$/, "");
@@ -46,7 +55,7 @@ export function mountSubtree(
   options: {
     passthrough?: (relPath: string, prefix: string) => boolean;
     /**
-     * Refuse `write`/`edit` at the mount instead of delegating. Read-only is a
+     * Refuse `write`/`edit`/`uploadFiles`/`delete` at the mount instead of delegating. Read-only is a
      * property of the mount, so an authored mount cannot be written through even
      * by a caller that bypasses governance — the kernel's `zone.read-only` rule
      * remains the agent-facing diagnostic, not the only enforcement.
@@ -61,7 +70,7 @@ export function mountSubtree(
      */
     displayPrefix?: string;
   } = {},
-): BackendProtocolV2 {
+): MappedBackend {
   const resolvePrefix: PrefixResolver =
     typeof prefix === "function" ? () => optionalRel(prefix()) : () => relPrefix(prefix);
   const passthrough = options.passthrough;
@@ -155,6 +164,33 @@ export function mountSubtree(
       const active = prefixFor(filePath);
       const res = await backend.edit(mapIn(filePath, active), oldString, newString, replaceAll);
       return res.path === undefined ? res : { ...res, path: mapOut(res.path, active) };
+    },
+
+    // Raw-byte transfer. A backend without it throws, as `CompositeBackend` does
+    // for a route without it, so a caller has one "unsupported" signal to handle.
+    async downloadFiles(paths: string[]): Promise<FileDownloadResponse[]> {
+      if (!backend.downloadFiles) throw new Error("Backend does not support downloadFiles");
+      const actives = paths.map(prefixFor);
+      const res = await backend.downloadFiles(paths.map((path, i) => mapIn(path, actives[i])));
+      return res.map((entry, i) => ({ ...entry, path: mapOut(entry.path, actives[i]) }));
+    },
+
+    async delete(filePath: string): Promise<DeleteResult> {
+      if (options.readOnly) return readOnlyError("delete", filePath);
+      if (!backend.delete) return { error: `Cannot delete '${displayPath(filePath)}': the store serving it cannot delete.` };
+      const active = prefixFor(filePath);
+      const res = await backend.delete(mapIn(filePath, active));
+      return res.path === undefined ? res : { ...res, path: mapOut(res.path, active) };
+    },
+
+    async uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
+      if (options.readOnly) return files.map(([path]) => ({ path, error: "permission_denied" }));
+      if (!backend.uploadFiles) throw new Error("Backend does not support uploadFiles");
+      const actives = files.map(([path]) => prefixFor(path));
+      const res = await backend.uploadFiles(
+        files.map(([path, content], i): [string, Uint8Array] => [mapIn(path, actives[i]), content]),
+      );
+      return res.map((entry, i) => ({ ...entry, path: mapOut(entry.path, actives[i]) }));
     },
   };
 }

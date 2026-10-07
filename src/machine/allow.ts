@@ -17,6 +17,12 @@ export interface NormalizedAllowEntry {
   tool: string | undefined;
   /** Per-argument glob matchers, or null to allow the tool with any arguments. */
   argMatchers: Record<string, string[]> | null;
+  /**
+   * The matchers came from the `paths:` shorthand. They are stored under
+   * `file_path` (the one path argument most tools declare), but they guard every
+   * path argument the matched tool declares — see {@link pathMatchers}.
+   */
+  fromPaths?: true;
 }
 
 /**
@@ -56,7 +62,7 @@ export function normalizeAllowEntry(entry: AllowEntry): NormalizedAllowEntry {
   }
   if (entry.paths !== undefined) {
     const globs = Array.isArray(entry.paths) ? entry.paths : [entry.paths];
-    return { tool, argMatchers: { [DEFAULT_PATH_ARG]: globs } };
+    return { tool, argMatchers: { [DEFAULT_PATH_ARG]: globs }, fromPaths: true };
   }
   return { tool, argMatchers: null };
 }
@@ -89,21 +95,64 @@ export function argsSatisfy(
 ): boolean {
   if (!argMatchers) return true;
   return Object.entries(argMatchers).every(([name, globs]) => {
-    const resolved: string[] = [];
-    for (const glob of globs) {
-      if (!hasVariableReference(glob)) {
-        resolved.push(glob);
-        continue;
-      }
-      const result = resolveGlob(glob, variables ?? {});
-      if (!result.ok) {
-        onUnresolved?.({ reference: result.reference, detail: result.detail });
-        return false;
-      }
-      resolved.push(result.pattern);
-    }
-    return valueMatches(resolvePath(args, name.split(".")), resolved);
+    const resolved = resolveGlobs(globs, variables, onUnresolved);
+    return resolved !== null && valueMatches(resolvePath(args, name.split(".")), resolved);
   });
+}
+
+/** A guard's globs with every `${{…}}` resolved, or `null` (reported) when one cannot be. */
+function resolveGlobs(
+  globs: string[],
+  variables?: VariableStore,
+  onUnresolved?: (failure: GuardResolutionFailure) => void,
+): string[] | null {
+  const resolved: string[] = [];
+  for (const glob of globs) {
+    if (!hasVariableReference(glob)) {
+      resolved.push(glob);
+      continue;
+    }
+    const result = resolveGlob(glob, variables ?? {});
+    if (!result.ok) {
+      onUnresolved?.({ reference: result.reference, detail: result.detail });
+      return null;
+    }
+    resolved.push(result.pattern);
+  }
+  return resolved;
+}
+
+/**
+ * An entry's matchers as a reader sees them for a tool whose path arguments are
+ * `pathArgs`: a `paths:` entry guards every one of them, any other entry is
+ * unchanged. For describing an entry; matching goes through
+ * {@link pathGuardMatches}, which also reads the built-in aliases.
+ */
+export function pathMatchers(entry: NormalizedAllowEntry, pathArgs: readonly string[]): Record<string, string[]> | null {
+  if (!entry.fromPaths || !entry.argMatchers) return entry.argMatchers;
+  const globs = entry.argMatchers[DEFAULT_PATH_ARG] ?? [];
+  return Object.fromEntries(pathArgs.map((arg) => [arg, globs]));
+}
+
+/**
+ * Whether a `paths:` guard matches a call's path values (`pathValuesOf`):
+ * `every` value for a grant — a call is admitted only when each path it names is
+ * — and `any` value for a denial — a copy out of `secrets/` and a copy into it
+ * are both a use of `secrets/`. `null` when a `${{…}}` reference cannot be
+ * resolved (reported through `onUnresolved`); the caller decides which way that
+ * fails.
+ */
+export function pathGuardMatches(
+  entry: NormalizedAllowEntry,
+  values: readonly unknown[],
+  mode: "every" | "any",
+  variables?: VariableStore,
+  onUnresolved?: (failure: GuardResolutionFailure) => void,
+): boolean | null {
+  const globs = resolveGlobs(entry.argMatchers?.[DEFAULT_PATH_ARG] ?? [], variables, onUnresolved);
+  if (globs === null) return null;
+  const test = (value: unknown) => valueMatches(value, globs);
+  return mode === "every" ? values.length > 0 && values.every(test) : values.some(test);
 }
 
 /**

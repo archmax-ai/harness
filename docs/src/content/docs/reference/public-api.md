@@ -33,7 +33,7 @@ is the same binding, and each light subpath has its own section below.
 
 ### Errors
 
-`WorkflowLoadError` `WorkflowDisabledError` `UnknownTriggerError` `ReservedToolNameError` `InvalidVariableNameError` `MountCollisionError` `SessionStoreRequiredError` `SessionStoreIdError` `SessionStoreCapabilityError` `AuthoringBackendExposedError` `WorkspaceRootRequiredError` `UnsupportedRuntimeContractError` `SessionNotParkedError` `InvalidDecisionTargetError` `EmptyMessageError` `SessionNotAwaitingInputError` `MissingDeliveryTriggerError` `SessionNotResumableError`
+`WorkflowLoadError` `WorkflowDisabledError` `UnknownTriggerError` `ReservedToolNameError` `ToolPathsError` `InvalidVariableNameError` `MountCollisionError` `SessionStoreRequiredError` `SessionStoreIdError` `SessionStoreCapabilityError` `AuthoringBackendExposedError` `WorkspaceRootRequiredError` `UnsupportedRuntimeContractError` `SessionNotParkedError` `InvalidDecisionTargetError` `EmptyMessageError` `SessionNotAwaitingInputError` `MissingDeliveryTriggerError` `SessionNotResumableError`
 
 ### Workspace composition
 
@@ -51,7 +51,7 @@ Every resume reads a parked session through these three:
 
 ### Prompt and message plumbing
 
-`resolveSystemPrompt` `toolsFromMap` `contentToString` `isAiMessage` `isRuntimeNote` `runtimeNoteKind` `lastAgentText` `RuntimeNoteKind` `RubricDeclaration` `SpecMetadata` `parseCodeDescription`
+`resolveSystemPrompt` `toolsFromMap` `AgentToolDescriptor` `ToolContext` `ToolPaths` `PathAccess` `ImageReadOptions` `contentToString` `isAiMessage` `isRuntimeNote` `runtimeNoteKind` `lastAgentText` `RuntimeNoteKind` `RubricDeclaration` `SpecMetadata` `parseCodeDescription`
 
 ### The machine
 
@@ -105,7 +105,8 @@ here for the weight of the import.
 - **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
 - **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
-- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
+- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
+- **Tool paths:** `BUILT_IN_TOOL_PATHS` `PATH_ACCESSES` `ToolPaths` `PathAccess`.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
 - **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `subRunIdentity`.
 - **Paths and scripts:** `DEFAULT_WORKFLOW` `HOOKS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveHookScript` `parseCodeDescription` `CodeDescription`.
@@ -241,7 +242,7 @@ The runtime writes messages of its own into a session's transcript, in six kinds
 | `error` | an `on_error` route |
 | `after` | a completion check asking for a revision |
 | `sub-workflow` | a resumed child's result |
-| `opening` | the line a child session opens with |
+| `opening` | the message a child session opens with, listing the values of its scalar inputs |
 
 Each note carries a structured marker, and the marker is the authority on
 authorship. Read it to slice a turn out of a session's messages, or to render a
@@ -395,9 +396,10 @@ supplies the id, and listening for external events is the host's job.
 A trigger may declare `returns:`: the variables a session started through it
 guarantees are set when it completes (see [triggers](/guides/triggers/)).
 A return is an ordinary variable, so it is read by name from `Outcome.variables`,
-or from a `SessionSummary`'s `variables`. The completion check rejects a session
-that finishes with a declared return unset, so a host sees the full set or a
-failure. A sub-workflow hands its returns back on the tool result instead.
+or from a `SessionSummary`'s `variables`. The completion check hands a session
+that finishes with a declared return unset back once, then rejects it, so a host
+sees the full set or a failure. A sub-workflow hands its returns back on the
+tool result instead.
 
 Every ingress enters through `MANUAL_TRIGGER`: a delegation, the CLI's `run`, a
 trigger-less invoke. `DEFAULT_TRIGGER_ID` is the same value, and delegation
@@ -667,6 +669,25 @@ The `SessionStore` type is exported alongside them. Storage is always declared:
 supplying a custom authored `backend` **without** an explicit `sessionStore`
 throws `SessionStoreRequiredError` at assembly.
 
+**The file operations want raw bytes and deletion.** `copy_file` and `move_file`
+write through the backend's text `write` first, under Deep Agents' convention:
+
+- a path whose extension Deep Agents types as binary (images, audio, video, PDF,
+  PowerPoint) is written as **base64**, and the backend must decode it and store
+  the bytes, as `FilesystemBackend` and `StoreBackend` do;
+- valid UTF-8 is written as the text itself.
+
+Any other bytes (a `.docx`, a `.zip`, a Latin-1 text file) travel through
+`uploadFiles`, and `move_file`/`remove_file` need `delete`. Every write is read
+back (`downloadFiles`, else `readRaw`) and compared with the source. When the
+text channel did not keep the bytes (a backend storing the base64 string as
+given), the bytes go through `uploadFiles` if the backend has it. Otherwise the
+copy is refused, and a destination the operation created is removed again. The
+built-in stores and Deep Agents' `FilesystemBackend` and `StoreBackend` have all
+three methods. A store that keeps a text-typed path as decoded text
+(`StoreBackend`, so the memory store) cannot hold non-UTF-8 bytes under such a
+name, and a copy there is refused rather than altering the file.
+
 **The same holds for a root.** `rootDir` is where the zero-config filesystem
 defaults are built: the conventional mounts, the `sessions/` store, the authoring
 backend. With none of `backend`, `mounts`, `sessionStore` and `authoring`
@@ -722,6 +743,81 @@ The agent exposes session handles over the same store:
 
 All options are additive. Omit every one and the agent behaves exactly as it did
 before they existed.
+
+### `tools`, `toolPaths`: host tools on the governed workspace
+
+A host tool reaches the workspace through the same routing and the same path
+rules as the built-in file tools. Build it with `toolsFromMap`:
+
+```ts
+import { createAgent, toolsFromMap, type AgentToolDescriptor } from "@archmax-ai/harness";
+
+const getMarkdown: AgentToolDescriptor = {
+  description: "Read a document as Markdown.",
+  inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  paths: { path: "read" },
+  handler: async (input, { workspace }) => {
+    const raw = await workspace.readRaw(String(input.path));
+    return raw.error ? `Error: ${raw.error}` : toMarkdown(raw.data!);
+  },
+};
+
+const agent = await createAgent({
+  tools: toolsFromMap({ get_markdown: getMarkdown }),
+  essentialTools: ["get_markdown"],
+});
+```
+
+- **`paths`** declares which arguments name workspace paths and how the call
+  uses each: `read`, `list`, `search`, `write`, `remove` or `execute`. Every
+  path rule of the kernel then binds them, exactly as it binds `read_file`'s
+  `file_path`: the read-only zone and the runtime's own areas, the skills and
+  mounts the state was given, a mount's `access: read`, the inherited denials,
+  and `paths:` guards. A refused call never reaches the handler. A tool with no
+  declaration has no path rules.
+- **`toolPaths`** on `createAgent` declares the same thing by tool name, for a
+  tool not built with `toolsFromMap`: `toolPaths: { get_markdown: { path: "read" } }`.
+  It wins over a descriptor's `paths`. Declaring a built-in tool's paths, or an
+  access not in the list, throws `ToolPathsError` at assembly.
+- **The handler's second argument** is a `ToolContext`. Its `workspace` is the
+  turn's workspace, bound to the session: the host's mounts with their read-only
+  posture and the session zone at the root, the instance `read_file` resolves
+  through. Besides text `read`/`readRaw`/`write`, it carries raw bytes
+  (`downloadFiles`/`uploadFiles`) and `delete`. A read-only mount refuses a
+  write, an upload (`permission_denied`) and a delete, naming the path as the
+  agent wrote it. Outside a turn the handler still runs, and reading
+  `context.workspace` throws.
+
+The governed and the plain (`workflow: false`) agent hand the same context.
+`copy_file`, `move_file` and `remove_file` are the runtime's own tools in every
+agent, so a host tool may not take one of those names (`ReservedToolNameError`).
+
+### `images`: showing the model the images it reads
+
+Reads are text only, so by default `read_file` answers an image with the binary
+notice. A host whose model has vision turns the images back on:
+
+```ts
+const agent = await createAgent({ images: true });            // or { maxBytes, keep }
+```
+
+- The model's `read_file` of a PNG, JPEG, GIF or WebP answers with one line,
+  `Image '<path>' (<type>, <size>) is shown below.`, after governance has allowed
+  the call.
+- Before every later model call the image is read from the workspace and added to
+  that **request** as a `user` message right after the batch of tool results that
+  read it, as an `image_url` part with a data URL. That is where chat completions
+  accepts an image, and no `tool` message carries one.
+- The bytes never enter the message history, a checkpoint, a `tool-result` event
+  or a script's `tools.readFile`, which keeps the binary notice. The tool message
+  records the path only.
+- `maxBytes` (default 10 MB) bounds what is sent; a larger image is answered with
+  a line saying so. `keep` (default every image) is how many of the session's
+  images stay attached on later calls, most recent first; an older one is named
+  in text, and the model can read it again. An image deleted since it was read is
+  named as no longer available, and the call goes ahead.
+- HEIC/HEIF, PDF, audio, video and every other binary stay refused, option on or
+  off. Leave it off for a model without vision, which rejects an image.
 
 ### `promptCache`, `pricing`: caching and cost
 
@@ -1310,7 +1406,9 @@ The runtime's own tools carry the `archmax_` prefix. Eight are fixed:
 
 The namespace is a guarantee rather than a convention, so a tool passed through
 `tools` whose name starts with the prefix is rejected at assembly with
-`ReservedToolNameError`. For delegation tools, `WORKFLOW_TOOL_PREFIX`,
+`ReservedToolNameError`. So is a host tool named `copy_file`, `move_file` or
+`remove_file`: those are the runtime's file operations, which every agent already
+has (`RUNTIME_FILE_TOOLS` on the spec subpath). For delegation tools, `WORKFLOW_TOOL_PREFIX`,
 `workflowToolName(slug)` and `workflowSlugFromToolName(name)` map slug and tool
 name in both directions. A host declaring a mock or a governance entry derives
 the spelling from those.
@@ -1563,6 +1661,10 @@ one, or session-start seeding. It carries the stored (trimmed) value.
 Two fields are conditional. `state` is absent for session-start seeding, and
 `callId` is there when a tool call made the write. A refused write emits nothing
 at all.
+
+A sub-workflow's child session is not asked to name itself, so it emits none
+unless its caller passed a `title` down as an argument (see
+[what the child's model reads](/guides/sub-workflows/#what-the-childs-model-reads)).
 
 Carrying the value is safe here and nowhere else, because `title` is the one
 session variable bounded by its write check: a non-empty single line of at most

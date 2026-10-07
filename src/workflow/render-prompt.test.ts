@@ -7,8 +7,8 @@ import { renderStateGraph, renderWorkflowPrompt } from "./render-prompt.js";
 const render = (spec: MachineSpec): string => renderWorkflowPrompt(WorkflowMachine.fromSpec(spec));
 
 /** Render the volatile half for one state of a spec. */
-const graph = (spec: MachineSpec, state: string, trigger?: string): string =>
-  renderStateGraph(WorkflowMachine.fromSpec(spec), state, trigger ? { trigger } : {}) ?? "";
+const graph = (spec: MachineSpec, state: string, trigger?: string, child = false): string =>
+  renderStateGraph(WorkflowMachine.fromSpec(spec), state, { ...(trigger ? { trigger } : {}), child }) ?? "";
 
 const SPEC: MachineSpec = {
   title: "Order lookup",
@@ -236,12 +236,21 @@ describe("renderStateGraph — the volatile half", () => {
       );
     });
 
-    it("names the returns and how they are set", () => {
+    it("names the returns, how they are set, and what finishing without them does", () => {
       const text = graph(signed, "enrich", "sub-workflow");
       expect(text).toContain(
         "This run must set enrichment_file, delayed with `archmax_set_variables`",
       );
-      expect(text).toContain("does not complete until every one is set");
+      expect(text).toContain("before it finishes — finishing without every one set ends it rejected.");
+    });
+
+    it("tells a sub-workflow child its caller gets what it set, with a note for the rest", () => {
+      const text = graph(signed, "enrich", "sub-workflow", true);
+      expect(text).toContain(
+        "This run must set enrichment_file, delayed with `archmax_set_variables` before it finishes — " +
+          "your caller gets the ones you set, with a note naming any you did not.",
+      );
+      expect(text).not.toContain("rejected");
     });
 
     /**
@@ -267,7 +276,7 @@ describe("renderStateGraph — the volatile half", () => {
               manual: {
                 description: "Refund one order.",
                 requires: ["order_id", { name: "due", type: "date", description: "The day the refund is due." }],
-                returns: [{ name: "total", type: "number", description: "Refunded amount in EUR." }, "note"],
+                returns: [{ name: "total", type: "number", description: "Refunded amount in EUR." }, "remark"],
               },
             },
             transitions: [{ to: "done", description: "Refunded." }],
@@ -283,9 +292,9 @@ describe("renderStateGraph — the volatile half", () => {
         );
         expect(text).toContain(
           [
-            "This run must set these with `archmax_set_variables` — it does not complete until every one is set:",
+            "This run must set these with `archmax_set_variables` before it finishes — finishing without every one set ends it rejected:",
             "- total (number) — Refunded amount in EUR.",
-            "- note",
+            "- remark",
           ].join("\n"),
         );
       });

@@ -13,12 +13,24 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { StructuredTool } from "@langchain/core/tools";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { mergeConfigs } from "@langchain/core/runnables";
-import { todoListMiddleware, type AgentMiddleware } from "langchain";
+import { createMiddleware, todoListMiddleware, type AgentMiddleware } from "langchain";
 import { createDeepAgent, type BackendProtocolV2, type CreateDeepAgentParams } from "deepagents";
 import { AGENT_DEFAULT_CONFIG } from "../agent.js";
 import {
+  READ_FILE_IMAGES_LINE,
+  READ_FILE_TEXT_ONLY_LINE,
+  textOnlyReadFileDescription,
+} from "../core/binary-read.js";
+import { createFileOperationTools } from "../core/file-operations.js";
+import { runWithToolContext } from "../core/tool-context.js";
+import { imageReadMiddleware, resolveImageReads } from "./image-reads.js";
+import {
   asCompiledAgentGraph,
   asDecisionGraph,
+  asModelCallResult,
+  asStructuredTools,
+  type AnyModelCallHandler,
+  type AnyModelCallRequest,
   type CompiledAgentGraph,
   type IntrospectableStateGraph,
 } from "../core/deepagents.js";
@@ -42,6 +54,7 @@ import {
 import { UNGRANTABLE_TOOLS, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
 import { workflowToolName } from "../machine/tool-names.js";
+import type { ToolPathTable } from "../machine/tool-paths.js";
 import { resolveTrigger, type TriggerInput } from "../machine/triggers.js";
 import { buildSeededVariables, unguaranteedReferenceWarnings } from "../machine/variables.js";
 import type { ResolvedRuntimeContract } from "../runtime/contract.js";
@@ -121,6 +134,11 @@ export interface AssemblyContext {
   runtimeContract: ResolvedRuntimeContract;
   /** Token prices, from the host option or the environment; absent means cost is never reported. */
   pricing?: PricingTable;
+  /**
+   * Every tool's declared path arguments — the built-ins plus the host's — which
+   * every machine of this assembly, root and delegated alike, governs by.
+   */
+  toolPaths: ToolPathTable;
 }
 
 /** What one governed composition is made for. */
@@ -143,6 +161,12 @@ export interface ComposeInput {
   inheritedPolicyRules?: GovernanceRule[];
   /** Child compositions, resolved lazily by slug. */
   registry: SubWorkflowRegistry;
+  /**
+   * This composition runs a sub-workflow's child sessions, which do not name
+   * themselves: `archmax_set_variables` asks for no title (the system prompt,
+   * rendered with `child`, leaves the step out too).
+   */
+  child?: boolean;
 }
 
 /** One composed governed agent. */
@@ -188,6 +212,65 @@ export function todoMiddleware(): AgentMiddleware {
 }
 
 /**
+ * Hand the model a `read_file` whose description matches the workspace's
+ * text-only reads (`core/binary-read.ts`): Deep Agents' own promises multimodal
+ * content blocks for images, audio, video and PDFs, which the workspace router
+ * refuses. `createDeepAgent` does not expose the filesystem middleware's
+ * description overrides, and LangChain rejects a `wrapModelCall` that swaps a
+ * registered tool for another instance (the tool node runs tools by identity),
+ * so the description is rewritten on the registered instance itself, once, on
+ * the first model call that offers it. The instance is this agent's own: Deep
+ * Agents builds the filesystem tools per agent. When the upstream lines are
+ * gone the description is left as it is and one `warning` says so.
+ *
+ * Both compositions install it, ahead of the provider cache and the host's
+ * middleware, so the first call they see already carries the final definition.
+ */
+export function readFileContractMiddleware(
+  emit: WorkflowEventEmitter,
+  options: { images?: boolean } = {},
+): AgentMiddleware {
+  const line = options.images ? READ_FILE_IMAGES_LINE : READ_FILE_TEXT_ONLY_LINE;
+  const settled = new WeakSet<StructuredTool>();
+  const settle = (tool: StructuredTool) => {
+    if (settled.has(tool)) return;
+    settled.add(tool);
+    const description = textOnlyReadFileDescription(tool.description, line);
+    if (description !== null) {
+      tool.description = description;
+      return;
+    }
+    emit({
+      type: "warning",
+      scope: "workflow",
+      message:
+        "could not replace the binary-file lines of Deep Agents' read_file description; it still " +
+        "promises multimodal content blocks although reads are text only — the upstream text may " +
+        "have been reworded",
+    });
+  };
+  return createMiddleware({
+    name: "ReadFileContract",
+    wrapModelCall: async (request: AnyModelCallRequest, handler: AnyModelCallHandler) => {
+      for (const tool of asStructuredTools(request.tools)) if (tool.name === "read_file") settle(tool);
+      return asModelCallResult(await handler(request), "the read_file contract");
+    },
+  }) as unknown as AgentMiddleware;
+}
+
+/**
+ * The `read_file` contract and, when the host turned it on, the image reads —
+ * one pair both compositions install at the same depth.
+ */
+export function fileReadMiddleware(ctx: AssemblyContext): AgentMiddleware[] {
+  const images = resolveImageReads(ctx.params.images);
+  return [
+    readFileContractMiddleware(ctx.emit, { images: images !== null }),
+    ...(images ? [imageReadMiddleware(ctx.backend, images)] : []),
+  ];
+}
+
+/**
  * The subagent parameters both compositions hand the framework: the workflow's
  * grading rubrics, registered so the framework provides the `task` tool the
  * runtime dispatches them through.
@@ -207,8 +290,8 @@ export function rubricParams(ctx: AssemblyContext): {
 
 /**
  * Bind `fn` to a session: the session zone's view (agent-visible paths resolve
- * against that session without its id embedded) plus the event envelope's
- * session context. The single ingress where a session id becomes a store
+ * against that session without its id embedded), the event envelope's session
+ * context, and the tool context host tools are handed. The single ingress where a session id becomes a store
  * address, so it refuses an id that would escape the session zone or shadow a
  * reserved root name.
  */
@@ -216,7 +299,11 @@ export function sessionBinder(ctx: AssemblyContext): <T>(sessionId: string, fn: 
   return (sessionId, fn) => {
     const rejection = sessionIdRejection(sessionId, ctx.mountPrefixes);
     if (rejection) throw new SessionStoreIdError(sessionId, rejection);
-    return withEventContext({ sessionId }, () => ctx.sessionZone.sessionScoped(sessionId, fn));
+    // A host tool's handler gets the same workspace the built-in file tools
+    // resolve through, bound to this session for the turn.
+    return withEventContext({ sessionId }, () =>
+      ctx.sessionZone.sessionScoped(sessionId, () => runWithToolContext({ workspace: ctx.backend }, fn)),
+    );
   };
 }
 
@@ -227,13 +314,14 @@ export function sessionBinder(ctx: AssemblyContext): <T>(sessionId: string, fn: 
  * the workspace zones by `resolveSystemPrompt`. The graph itself is not here: it
  * is disclosed per model call, for the active state only, by the middleware. A
  * plain agent (no machine) gets no platform prompt: it explains a graph there is
- * none of.
+ * none of. A child session's platform layer leaves out the top-level-only
+ * passages (`child`), so it is not asked to name itself.
  */
 export function renderSystemPrompt(
   ctx: AssemblyContext,
   machine: WorkflowMachine | null,
   body: string,
-  options: { workflow: string },
+  options: { workflow: string; child?: boolean },
 ): Promise<string> {
   const prose = stripHtmlComments(body).trim();
   const workflowPrompt = machine
@@ -241,6 +329,7 @@ export function renderSystemPrompt(
     : prose || null;
   return resolveSystemPrompt(ctx.workspace, {
     platformBackendPath: machine ? workflowPaths(options.workflow).platformPrompt : null,
+    ...(options.child ? { child: true } : {}),
     workflowPrompt,
     mountPrefixes: ctx.mountPrefixes,
     extra: ctx.params.systemPrompt,
@@ -473,6 +562,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     trigger: { id: defaultTrigger.id },
     seededVariables,
     ...(ctx.pricing ? { pricing: ctx.pricing } : {}),
+    ...(input.child ? { child: true } : {}),
   });
 
   // Native Anthropic/Bedrock caching is LangChain's own middleware; the
@@ -487,6 +577,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     todoMiddleware(),
     interpreter.middleware,
     instrumentation.middleware,
+    // Inside the workflow's own, so a governed read is decided before either acts.
+    ...fileReadMiddleware(ctx),
     ...(providerCacheMiddleware ? [providerCacheMiddleware] : []),
     ...(params.middleware ?? []),
   ];
@@ -520,7 +612,14 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     backend: ctx.backend,
     // Deliberately no `skills`: upstream's section cannot vary per state; the
     // workflow middleware renders the active state's set instead.
-    tools: [...interpreter.tools, ...instrumentation.tools, ...delegationTools, ...(params.tools ?? [])],
+    tools: [
+      ...interpreter.tools,
+      ...instrumentation.tools,
+      // The runtime's own file operations, beside the tools Deep Agents registers.
+      ...createFileOperationTools(ctx),
+      ...delegationTools,
+      ...(params.tools ?? []),
+    ],
     ...rubricParams(ctx),
     middleware: agentMiddleware,
     // the harness's prompt is the whole prefix; the upstream base prompt contradicts

@@ -5,6 +5,7 @@
  * session in the store exactly as a governed session's do.
  */
 import { afterEach, describe, expect, it } from "vitest";
+import { READ_FILE_TEXT_ONLY_LINE } from "../core/binary-read.js";
 import { createAgent, createMemorySessionStore, SessionStoreIdError } from "../index.js";
 import { AGENTS_MD, cleanupWorkspaces, makeWorkspace, ScriptedModel } from "./support.js";
 
@@ -87,5 +88,13 @@ describe("a plain agent", () => {
   it("reports the message count of a session that has not run as zero", async () => {
     const { agent } = await plainAgent([]);
     expect(await agent.sessions.messageCount("never")).toBe(0);
+  });
+  it("hands the model the text-only read_file description, as a governed agent does", async () => {
+    const { agent, model } = await plainAgent([{ reply: "done" }]);
+    await agent.invoke({ messages: [{ role: "user", content: "hi" }] } as never, { configurable: { thread_id: "rf" } });
+
+    const description = model.boundTools.get("read_file")?.description ?? "";
+    expect(description).toContain(READ_FILE_TEXT_ONLY_LINE);
+    expect(description).not.toContain("multimodal content blocks");
   });
 });

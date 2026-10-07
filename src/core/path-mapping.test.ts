@@ -145,3 +145,65 @@ describe("mountSubtree with a dynamic prefix", () => {
     expect(res.path).toBe("/session-1/checkpoints/cp-1.json");
   });
 });
+
+describe("mountSubtree raw-byte transfer", () => {
+  /** A backend whose raw transfer records the paths it was handed and echoes them. */
+  function transferBackend() {
+    const { backend, seen } = recordingBackend();
+    const uploaded: Array<[string, Uint8Array]> = [];
+    const full: BackendProtocolV2 = {
+      ...backend,
+      downloadFiles: (paths) => {
+        seen.push(...paths);
+        return paths.map((path) => ({ path, content: new Uint8Array([1, 2]), error: null }));
+      },
+      uploadFiles: (files) => {
+        uploaded.push(...files);
+        return files.map(([path]) => ({ path, error: null }));
+      },
+    };
+    return { backend: full, seen, uploaded };
+  }
+
+  it("maps paths in and out of downloads and uploads", async () => {
+    const { backend, seen, uploaded } = transferBackend();
+    const mounted = mountSubtree(backend, "skills");
+
+    expect(await mounted.downloadFiles(["/refund/a.png"])).toEqual([
+      { path: "/refund/a.png", content: new Uint8Array([1, 2]), error: null },
+    ]);
+    expect(seen).toEqual(["/skills/refund/a.png"]);
+
+    expect(await mounted.uploadFiles([["/refund/b.png", new Uint8Array([3])]])).toEqual([
+      { path: "/refund/b.png", error: null },
+    ]);
+    expect(uploaded.map(([path]) => path)).toEqual(["/skills/refund/b.png"]);
+  });
+
+  it("refuses every upload on a read-only mount without delegating", async () => {
+    const { backend, uploaded } = transferBackend();
+    const mounted = mountSubtree(backend, "", { readOnly: true });
+
+    expect(
+      await mounted.uploadFiles([
+        ["/a.png", new Uint8Array([1])],
+        ["/b.txt", new Uint8Array([2])],
+      ]),
+    ).toEqual([
+      { path: "/a.png", error: "permission_denied" },
+      { path: "/b.txt", error: "permission_denied" },
+    ]);
+    expect(uploaded).toEqual([]);
+    // Reads stay open on a read-only mount.
+    expect((await mounted.downloadFiles(["/a.png"]))[0]?.error).toBeNull();
+  });
+
+  it("throws when the wrapped backend has no raw transfer", async () => {
+    const { backend } = recordingBackend();
+    const mounted = mountSubtree(backend, "skills");
+    await expect(mounted.downloadFiles(["/x"])).rejects.toThrow(/does not support downloadFiles/);
+    await expect(mounted.uploadFiles([["/x", new Uint8Array()]])).rejects.toThrow(
+      /does not support uploadFiles/,
+    );
+  });
+});

@@ -56,10 +56,16 @@ export function delegationToolDescription(target: DelegationTarget): string {
   parts.push(
     returns.length
       ? `The result carries ${quoteList(returns)} under 'returns', alongside the ` +
-          `workflow's closing message under 'message'.`
+          `workflow's closing message under 'message'. A run that finished without setting some ` +
+          `of them returns the ones it set, with a 'note' under 'returns' naming the rest.`
       : `The result is the workflow's closing message.`,
   );
   parts.push(`One call runs it once; call it again (in the same turn) to run several at once.`);
+  parts.push(
+    `A call whose run fails answers with an error, and that failure fails your current state ` +
+      `when you finish, unless a later call of this workflow from the same state succeeds. ` +
+      `Each success recovers one failed call: the one it repeats, else the oldest.`,
+  );
   return parts.join(" ");
 }
 

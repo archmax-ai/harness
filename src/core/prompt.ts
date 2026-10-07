@@ -11,7 +11,8 @@
  *     It ships inside the code (`platform-prompt.md`, generated into
  *     `platform-prompt.generated.ts`); a workspace may override it at
  *     `.platform/system/GRAPH_STATE.md`. A plain agent has no machine for it to
- *     explain, so it gets no platform layer.
+ *     explain, so it gets no platform layer. A sub-workflow's child session
+ *     reads it without its top-level-only passages (see {@link platformPromptFor}).
  *  4. Workspace zones — rendered from the assembly's resolved mount table.
  *  5. The workflow header — the spec's `title` and root `instructions`, and no
  *     state of the graph: the graph is disclosed only from where the agent
@@ -51,6 +52,12 @@ export interface ResolveSystemPromptOptions {
    * for it to explain.
    */
   platformBackendPath: string | null;
+  /**
+   * The prompt is a sub-workflow's child session's: the platform layer leaves
+   * out its top-level-only passages (see {@link platformPromptFor}). Omitted, it
+   * is a top-level session's.
+   */
+  child?: boolean;
   /**
    * Pre-assembled workflow prompt text: the spec-rendered workflow header
    * followed by any `WORKFLOW.md` prose addendum (the caller composes both —
@@ -92,13 +99,74 @@ export function buildSystemPrompt(parts: SystemPromptParts): string {
     .join("\n\n");
 }
 
-/** The workspace's override when it serves one, else the bundled prompt. */
+/** Opens a platform-prompt passage only a top-level session reads; alone on its line. */
+export const TOP_LEVEL_ONLY_OPEN = "<!-- top-level-only -->";
+/** Closes a passage {@link TOP_LEVEL_ONLY_OPEN} opened; alone on its line. */
+export const TOP_LEVEL_ONLY_CLOSE = "<!-- /top-level-only -->";
+
+/** Which session a prompt is for: one a host started, or a sub-workflow's child. */
+export type PromptSession = "top-level" | "child";
+
+const ORDERED_ITEM = /^(\d+)\.(?=\s)/;
+
+/**
+ * The platform prompt as `session` reads it. A passage between
+ * {@link TOP_LEVEL_ONLY_OPEN} and {@link TOP_LEVEL_ONLY_CLOSE}, each alone on
+ * its line, is kept for a top-level session and left out for a child session,
+ * which does not name itself: its title would describe a session nothing
+ * lists. The marker lines reach neither, so a top-level session reads the text
+ * exactly as it did before the markers existed. Where a left-out passage held
+ * items of an ordered list, the items after it in that list are renumbered. An
+ * opening marker with no closing one leaves everything after it in place.
+ *
+ * The same rule applies to a workspace's override, so one copied from the
+ * bundled prompt keeps the omission and one without markers reads the same in
+ * both sessions.
+ */
+export function platformPromptFor(text: string, session: PromptSession): string {
+  if (!text.includes(TOP_LEVEL_ONLY_OPEN)) return text;
+  const kept: string[] = [];
+  /** The lines of the passage being read, or `null` outside one. */
+  let passage: string[] | null = null;
+  /** How many items of the ordered list being read a left-out passage held. */
+  let dropped = 0;
+  for (const line of text.split("\n")) {
+    const marker = line.trim();
+    if (passage === null && marker === TOP_LEVEL_ONLY_OPEN) {
+      passage = [];
+      continue;
+    }
+    if (passage !== null) {
+      if (marker !== TOP_LEVEL_ONLY_CLOSE) {
+        passage.push(line);
+        continue;
+      }
+      if (session === "top-level") kept.push(...passage);
+      else dropped += passage.filter((held) => ORDERED_ITEM.test(held)).length;
+      passage = null;
+      continue;
+    }
+    const item = ORDERED_ITEM.exec(line);
+    if (item && dropped > 0) {
+      kept.push(`${Number(item[1]) - dropped}${line.slice(item[1]!.length)}`);
+      continue;
+    }
+    // Any other unindented text ends the list a passage cut items from.
+    if (line.trim() !== "" && !/^\s/.test(line)) dropped = 0;
+    kept.push(line);
+  }
+  if (passage !== null) kept.push(...passage);
+  return kept.join("\n");
+}
+
+/** The workspace's override when it serves one, else the bundled prompt, as `session` reads it. */
 async function readPlatformPrompt(
   workspace: Workspace,
   backendPath: string | null,
+  session: PromptSession,
 ): Promise<string | null> {
   if (backendPath === null) return null;
-  return (await workspace.readText(backendPath)) || PLATFORM_PROMPT;
+  return platformPromptFor((await workspace.readText(backendPath)) || PLATFORM_PROMPT, session);
 }
 
 /** Load the prompt layers from the backend and merge them. */
@@ -108,7 +176,7 @@ export async function resolveSystemPrompt(
 ): Promise<string> {
   const agentsPath = opts.agentsPath ?? "AGENTS.md";
   const [platform, agents] = await Promise.all([
-    readPlatformPrompt(workspace, opts.platformBackendPath),
+    readPlatformPrompt(workspace, opts.platformBackendPath, opts.child ? "child" : "top-level"),
     workspace.readText(agentsPath),
   ]);
 

@@ -126,6 +126,13 @@ describe("delegation tool description", () => {
     expect(description).not.toContain("under 'returns'");
   });
 
+  it("says what a failed call does to the caller, and that a later success recovers it", () => {
+    const description = delegationToolDescription(SIGNED);
+    expect(description).toContain("that failure fails your current state when you finish");
+    expect(description).toContain("unless a later call of this workflow from the same state succeeds");
+    expect(description).toContain("Each success recovers one failed call: the one it repeats, else the oldest.");
+  });
+
   it("is deterministic", () => {
     expect(delegationToolDescription(SIGNED)).toBe(delegationToolDescription(SIGNED));
   });

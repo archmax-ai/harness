@@ -12,6 +12,7 @@ import { guardReferences, normalizeAllowEntry } from "./allow.js";
 import { normalizeMountGrants } from "./mount-grants.js";
 import { triggerDeclarationSchema } from "./spec-schema.js";
 import { ADVANCE_TOOL, ESSENTIAL_TOOLS } from "./tool-names.js";
+import { BUILT_IN_TOOL_PATHS, MUTATING_ACCESSES, SCRATCHPAD_ACCESSES } from "./tool-paths.js";
 import { declaredVariableNames } from "./triggers.js";
 import type { MachineSpec } from "./types.js";
 import { TRIGGER_VARIABLE } from "./variables.js";
@@ -308,9 +309,16 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
     // governance but cannot act as one there: `tool.scratchpad` allows the write
     // before the state's list is consulted, in every state.
     for (const entry of state.tools?.allow ?? []) {
-      const { tool, argMatchers } = normalizeAllowEntry(entry);
-      if ((tool !== "write_file" && tool !== "edit_file") || !argMatchers) continue;
-      const paths = argMatchers.file_path ?? [];
+      const normalized = normalizeAllowEntry(entry);
+      const { tool, argMatchers } = normalized;
+      if (!tool || !argMatchers) continue;
+      // A built-in that mutates, every path of which the scratchpad keeps open.
+      const declared = Object.entries(BUILT_IN_TOOL_PATHS[tool] ?? {});
+      const mutates = declared.some(([, access]) => MUTATING_ACCESSES.has(access));
+      if (!mutates || !declared.every(([, access]) => SCRATCHPAD_ACCESSES.has(access))) continue;
+      const paths = normalized.fromPaths
+        ? (argMatchers.file_path ?? [])
+        : declared.flatMap(([arg]) => argMatchers[arg] ?? []);
       if (paths.length === 0 || !paths.every((path) => classifyWorkspacePath(path) === "run-open")) {
         continue;
       }

@@ -182,8 +182,9 @@ Governance is **closed by default**: a grant has to be declared, and a denial
 beats every grant. Three things are present in every state without being asked
 for:
 
-- **The always-on tools**: `ls`, `read_file`, `write_file`, `edit_file`, `glob`,
-  `grep`, `write_todos`, `archmax_eval` and `archmax_run`.
+- **The always-on tools**: `ls`, `read_file`, `write_file`, `edit_file`,
+  `copy_file`, `move_file`, `remove_file`, `glob`, `grep`, `write_todos`,
+  `archmax_eval` and `archmax_run`.
 - **The runtime's own `archmax_*` controls**: `archmax_advance` in non-terminal
   states; `archmax_reset`, `archmax_wait`, `archmax_raise` and the variable tools
   everywhere.
@@ -221,9 +222,33 @@ states:
         # ordinary session path, as here.
 ```
 
-`{ tool, paths: [...] }` is a shorthand for `args: { file_path: [...] }`, and a
+`{ tool, paths: [...] }` guards every path argument the tool declares, and a
 bare string matches the tool with any arguments. `archmax_advance` is always
 permitted.
+
+### File operations and path arguments
+
+`copy_file`, `move_file` and `remove_file` work on one file at a time, text or
+binary, without its content entering the conversation:
+
+- `copy_file({ source, destination, overwrite? })` writes the source's bytes at
+  the destination, creating its folders. A file already there is refused unless
+  `overwrite: true`, and a source and destination naming the same file are
+  refused.
+- `move_file({ source, destination, overwrite? })` writes the destination before
+  removing the source, so a failure leaves a copy rather than a loss.
+- `remove_file({ file_path })` deletes one file.
+
+Every path rule reads each tool's **declared path arguments** and how the call
+uses each: `copy_file` reads `source` and writes `destination`, `move_file`
+removes `source`, `remove_file` removes `file_path`. A removal is refused wherever
+a write is, so a move out of a read-only mount is refused before anything is
+written. A call naming several paths is refused when any one is, and the refusal
+names the argument. A `paths:` grant must match every declared path, and a
+`paths:` denial matches when any does: `forbid: [{ tool: "*", paths: [secrets/**] }]`
+refuses a copy out of `secrets/` and a copy into it. Host tools declare their
+paths too, and are governed by the same rules (see
+[`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace)).
 
 `allow_always` entries are **grants** for tools that are not always on. A
 per-state entry for the same tool takes precedence, as in the example above.
@@ -364,6 +389,31 @@ Authored content is mounted read-only as backend routes the wiring code composes
 `skills/` and `AGENTS.md` from the conventional default, plus any mount you add.
 The workspace serves exactly what that table lists.
 
+Reads are **text only**, wherever the file lives. `read_file`, and a script's
+`tools.readFile`, never return a binary file's content. That covers an image,
+audio, video, PDF or PowerPoint file, by its extension or by the type the backend
+reports, and any file whose content holds a NUL byte: an archive, an Office
+document, a database. The read is answered with a notice instead:
+
+```text
+Error: 'scratchpad/chart.png' is a binary file (image/png, 24.1 KB) and was not read; read_file returns text files only.
+```
+
+The notice is the workspace's answer, not a governance refusal: no rule fires, no
+`on_error` route is taken, and the agent carries on. The `read_file` description
+the model is handed says so. A route's own error, such as a missing file, comes
+back as before, and the runtime's own reads of specs, hook sources and skills are
+unaffected.
+
+A host whose model has vision turns on
+[`images`](/reference/public-api/#images-showing-the-model-the-images-it-reads).
+The model's own `read_file` of a PNG, JPEG, GIF or WebP then answers
+`Image '<path>' (<type>, <size>) is shown below.`, and the image reaches the
+model in a `user` message right after that batch of tool results, read from the
+workspace for each request. The bytes stay out of the history, the checkpoints,
+the events and scripts. Every other binary file, and a script's `tools.readFile`
+of an image, still gets the notice.
+
 The system prompt's account of all this is **rendered from the resolved mount
 table**, so it names exactly the directories the workspace serves. A mount the
 host governs is named only where the state actually has it (see
@@ -461,7 +511,7 @@ contrast is worth holding onto:
 
 | | `trigger` | `title` |
 |---|---|---|
-| Who sets it | the runtime, at every arrival | the **agent**, prompted |
+| Who sets it | the runtime, at every arrival | the **agent**, prompted (a sub-workflow child is not) |
 | Locked | always | **never**, by any route |
 | Guaranteed set | yes, from the first turn | no; absent until written |
 | In a trigger's `requires` | accepted | accepted (seeded unlocked) |
@@ -475,6 +525,11 @@ agent is the one party that knows what a session is about, so it writes the
 title itself. The platform system prompt asks it to set one as its first
 activity, and to update it when the task turns into something the old title no
 longer describes.
+
+A [sub-workflow's child session](/guides/sub-workflows/#what-the-childs-model-reads)
+is not asked. Its title would describe a session nothing lists, and it is never
+returned to the caller, so the child's prompt leaves the step out and the child
+goes straight to its work.
 
 A host reads the title back off the session like any other variable. That is what
 puts a session's name in a listing alongside its session id and state slug.
@@ -626,6 +681,11 @@ hook meant to block.
 The two phases gate different things. A `before` hook decides entry, and a start
 state's can veto the whole session before any model work. An `after` hook decides
 the `archmax_advance` out of a state, or runs at completion for a terminal state.
+Once a completion passes its `after` hooks, the trigger's
+[`returns`](/guides/triggers/#a-trigger-may-declare-its-signature) are checked
+once, without handing anything back: a sub-workflow child short of them
+completes and its caller gets what it set plus a `note`, and a top-level session
+short of them is rejected.
 
 A refused entry is a **rejection**. The veto's reason is the turn's reply. The
 session routes through the state's `on_error` if it declares one, else settles
@@ -909,4 +969,7 @@ Keep each concern in its layer:
 
 Put workflow-specific routing, domain policy, and artifact rules in
 `workflow.yaml` and [skills](/guides/skills/). The platform prompt
-is for the runtime-generic execution model.
+is for the runtime-generic execution model. An override keeps the bundled
+prompt's `<!-- top-level-only -->` markers around what a sub-workflow's child
+should not read; see
+[what the child's model reads](/guides/sub-workflows/#what-the-childs-model-reads).

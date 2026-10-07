@@ -12,6 +12,7 @@ import { canonicalizeRelPath, normalizeRelPath, type Workspace } from "../core/w
 import { isSlug, SLUG_PATTERN } from "../machine/slug.js";
 import { createWorkspaceContext } from "../core/workspace-context.js";
 import { normalizeAllowEntry } from "../machine/allow.js";
+import { MUTATING_ACCESSES } from "../machine/tool-paths.js";
 import {
   normalizeMountGrants,
   type NormalizedMountGrant,
@@ -838,10 +839,18 @@ function validateStateGovernance(
     }
   }
 
-  // Writes the kernel will refuse even though the state's list permits them.
-  for (const { tool, argMatchers } of entries) {
-    if ((tool !== "write_file" && tool !== "edit_file") || !argMatchers) continue;
-    for (const filePath of argMatchers.file_path ?? []) {
+  // Writes the kernel will refuse even though the state's list permits them:
+  // every path argument a tool declares as a write or a removal, read from the
+  // same table the kernel decides by.
+  for (const entry of entries) {
+    const { tool, argMatchers } = entry;
+    if (!tool || !argMatchers) continue;
+    const mutating = Object.entries(machine.toolPaths(tool) ?? {}).filter(([, access]) =>
+      MUTATING_ACCESSES.has(access),
+    );
+    for (const [arg, filePath] of mutating.flatMap(([arg]) =>
+      (entry.fromPaths ? argMatchers.file_path : argMatchers[arg])?.map((glob) => [arg, glob] as const) ?? [],
+    )) {
       // The zone checks apply to globs too (`checkpoints/**` shares the prefix),
       // so they run before the concrete-path kernel probe below.
       const zone = classifyWorkspacePath(filePath);
@@ -856,7 +865,7 @@ function validateStateGovernance(
       if (filePath.includes("*")) continue;
       const verdict = decide(
         machine,
-        { kind: "tool-call", state: slug, tool, args: { file_path: filePath } },
+        { kind: "tool-call", state: slug, tool, args: { [arg]: filePath } },
         [],
         mountPrefixes,
       );

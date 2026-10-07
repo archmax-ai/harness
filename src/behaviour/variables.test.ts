@@ -305,16 +305,16 @@ describe("a typed trigger signature", () => {
   it("discloses each typed return identically on every model call of the turn", async () => {
     const { agent, model } = await assemble(
       workspaceWith(
-        typedSpec({ returns: [{ name: "total", type: "number", description: "Refunded amount in EUR." }, "note"] }),
+        typedSpec({ returns: [{ name: "total", type: "number", description: "Refunded amount in EUR." }, "remark"] }),
       ),
       {
         turns: [{ tool: "archmax_get_variables", args: {} }, advanceTo("done"), { reply: "ok" }],
-        params: { variables: { total: 12.5, note: "ok" } },
+        params: { variables: { total: 12.5, remark: "ok" } },
       },
     );
     await turn(agent, "s1", "go");
     const [first, second] = model.calls.map((call) => call.systemPrompt);
-    expect(first).toContain("- total (number) — Refunded amount in EUR.\n- note");
+    expect(first).toContain("- total (number) — Refunded amount in EUR.\n- remark");
     expect(second).toBe(first);
   });
 

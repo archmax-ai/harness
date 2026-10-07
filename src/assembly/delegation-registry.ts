@@ -62,7 +62,7 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
     // Rubrics are deliberately *not* inherited: a child is graded by the
     // standards its own spec declares, so its registry comes from `loaded.spec`
     // when the child runtime is composed, never from the caller's.
-    const machine = WorkflowMachine.fromSpec(loaded.spec, ctx.params.essentialTools);
+    const machine = WorkflowMachine.fromSpec(loaded.spec, ctx.params.essentialTools, ctx.toolPaths);
     // A caller enters where a host would: the `manual` entry. A machine with
     // none cannot be started at all (fail-closed, as at the host ingress).
     if (!machine.startStateForTrigger(MANUAL_TRIGGER)) {
@@ -79,7 +79,9 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
 
   async function compose(target: string, caller: DelegationCaller | undefined): Promise<SubWorkflowRuntime> {
     const { body, machine } = await load(target);
-    const systemPrompt = await renderSystemPrompt(ctx, machine, body, { workflow: target });
+    // A child does not name itself: its title would describe a session nothing
+    // lists, and asking for one costs every dispatch a model call.
+    const systemPrompt = await renderSystemPrompt(ctx, machine, body, { workflow: target, child: true });
     // The child's graders are its own: a rubric declared in one `workflow.yaml`
     // is not resolvable from another, so a sub-run is held to the standards its
     // own machine declares — and its `task` tool is registered with those.
@@ -100,6 +102,7 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
       // direct child of the root) inherits the root's alone.
       inheritedPolicyRules: caller?.inheritedPolicyRules ?? inheritedDenials(ctx, root),
       registry,
+      child: true,
     });
     // A child is driven exactly as the top-level agent drives itself: through
     // its turn runner, which binds the child's own session and streams its text.

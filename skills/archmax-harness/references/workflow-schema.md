@@ -534,9 +534,15 @@ states:
   wiring the SDK already reads, and a loose declaration that swallowed one would
   start the run somewhere you did not say.
 - `requires:` / `returns:` are the run's **signature**, and both are enforced. A
-  firing that does not supply every `requires` name does not start; a run that
-  reaches a terminal state without every `returns` name set is rejected (a run
-  that *parks* is not checked — it has not finished). Each entry is a bare
+  firing that does not supply every `requires` name does not start. `returns`
+  is checked once as the run finishes, and **nothing is handed back**: a
+  sub-workflow child with a name unset **completes**, and its caller gets the
+  returns it set plus `note: "Not all return variables were set by the
+  sub-workflow: '<name>' was not set."`; a top-level run with a name unset is
+  **rejected**; a typed one mistyped rejects either way. A run that *parks* is
+  not checked — it has not finished. `note` is reserved: a `returns` list may
+  not declare it. Want the model to try again? Check the returns in a terminal
+  `after` hook, which can `correct`. Each entry is a bare
   run-variable name (**untyped**: any value, `null` included) or a strict object
   `{ name, type?, description? }` naming one; the spellings mix in one list and
   names are distinct across both. What the agent must *do* to produce a
@@ -629,8 +635,8 @@ silently granting nothing. A host tool may never claim the prefix. Deep Agents' 
 (`read_file`, `task`, …) keep their own names.
 
 - A state with **no `tools` block** gets the **always-on tools only**
-  (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `write_todos`,
-  `archmax_eval`, `archmax_run`, `task`, plus the always-allowed `archmax_advance` and `allow_always`
+  (`ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`, `remove_file`, `glob`,
+  `grep`, `write_todos`, `archmax_eval`, `archmax_run`, plus the always-allowed `archmax_advance` and `allow_always`
   grants — minus
   whatever a `forbid` list denies there, and read-only-zone protection).
   Governance is closed by default; there is no way to declare a fully open state.
@@ -709,8 +715,8 @@ platform-provided tool resolves through when its collection has several) and
 runtime matches governance by `tool` name alone and never reads `source`.
 
 **The model is closed by default, and a denial beats every grant.** Every state always has the
-**always-on tools** (`ls`, `read_file`, `write_file`, `edit_file`, `glob`,
-`grep`, `write_todos`, `archmax_eval`, `archmax_run`). One built-in is **never
+**always-on tools** (`ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`,
+`remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`). One built-in is **never
 disclosed** and grantable by nothing: `task`, the runtime's own dispatch for
 grading rubrics — a rubric grades the agent rather than serving it, so naming
 `task` in an allow entry is a `validate` error and the kernel refuses the call.
@@ -721,7 +727,20 @@ default because the `tools.*` calls its code makes are decided against the activ
 state by the same kernel: it adds computation over what the state permits, not
 access. `archmax_run` — executing an authored script **file** — is always on on
 the same terms (the script is a file the state could already read); declare it
-per state to **narrow** which files may run there. Any other tool
+per state to **narrow** which files may run there. The file operations —
+`copy_file({ source, destination, overwrite? })`, `move_file` (same arguments)
+and `remove_file({ file_path })` — are always on on the same terms: every tool
+**declares its path arguments** with how the call uses each (`read`, `list`,
+`search`, `write`, `remove`, `execute`), and every path rule reads that
+declaration. `copy_file` reads `source` and writes `destination`; `move_file`
+**removes** `source`, so a move out of a read-only mount is refused before
+anything is written; a removal is refused wherever a write is. A call naming
+several paths is refused when any one is, naming the argument. `paths:` in an
+entry guards every declared path argument: a grant needs all of them to match
+(`{ tool: copy_file, paths: [skills/**, reports/**] }`), a denial needs one
+(`{ tool: "*", paths: [secrets/**] }` blocks a copy in or out). A host tool that
+declares its paths (`toolPaths`, or a descriptor's `paths`) is governed the same
+way. Any other tool
 must be declared in the state's `tools.allow` or workflow-level
 `tools.allow_always`. A `tools.allow` entry naming an always-on tool **narrows**
 it for that state.
@@ -983,7 +1002,7 @@ the host at assembly (`variables`, every seed locked), the agent mid-run
 
 | | `trigger` | `title` |
 |---|---|---|
-| Set by | the runtime, at every arrival | the **agent**, prompted by the platform prompt |
+| Set by | the runtime, at every arrival | the **agent**, prompted by the platform prompt (a sub-workflow child is not) |
 | Locked | always | **never**, by any route |
 | Guaranteed set | yes | no — absent until written |
 | In a trigger's `requires:` | accepted | accepted (seeded unlocked) |
@@ -992,7 +1011,10 @@ the host at assembly (`variables`, every seed locked), the agent mid-run
 `trigger` holds the current turn's trigger id. `title` holds a short one-line label
 naming the task the run is doing; the platform system prompt asks the agent to set
 one as its first activity and update it when the task changes significantly, so a
-host can name a run instead of showing a session id. A write must be a non-empty
+host can name a run instead of showing a session id. A sub-workflow's child is not
+asked — its title names a session nothing lists and is never returned — so its
+prompt leaves the step out; do not write "set the title" into a child's state
+`instructions` to bring it back. A write must be a non-empty
 single-line string of at most 200 characters (stored trimmed) and must not pass
 `lock: true` — both are refused, atomically, like every other `set_variables`
 rejection. A host may seed a `title`; it lands **unlocked** (the one exception to
@@ -1285,11 +1307,21 @@ enrich:
   no target may call none; `tools.forbid_always` blocks a delegation tool like any
   other.
 - **A failure is a tool error** the calling agent can handle; the state's
-  `on_error` catches the turn if it cannot. Depth, cycle, missing-input
+  `on_error` catches the turn if it cannot. Each failed call is recorded on
+  its own, with its arguments, and stays the calling state's failure until a
+  **later** successful call of the same workflow from the same state recovers
+  it. One success recovers **one** failed call: the one whose arguments it
+  repeats (compared after `${{…}}` resolves, key order ignored), else the
+  oldest — so two parallel calls that failed need two successes. A sibling
+  call in the same batch, another workflow's success, or a rejection with
+  another cause (a terminal kernel block, exhausted parks) recovers nothing,
+  and the route names every outstanding failure with its arguments. An
+  advance, a park or a reset clears them, as it clears any pending rejection. Depth, cycle, missing-input
   (`missing-param`), mistyped-input (`invalid-param`), unresolvable-reference
   (`unresolved-param`) and **disabled-target** refusals are blocked calls —
-  nothing ran, so correct the call and retry. A child whose returns are unset
-  (`missing-return`) or mistyped (`invalid-return`) is a failure: it ran.
+  nothing ran, so correct the call and retry. A child whose returns are
+  mistyped (`invalid-return`) is a failure: it ran. One that left returns unset
+  is not: the call answers with what it set and a `note`.
 - **A whole-argument reference keeps its type.** `{ quantity: "${{count}}" }`
   seeds the child with the number `count` holds, so it satisfies an `integer`
   parameter; `{ note: "order ${{order_id}}" }` is substituted as text.
@@ -1326,9 +1358,11 @@ enrich:
   reads `manual` either way, so the machine cannot branch on having been called.
 
   A dispatch missing a `requires` name is **refused before the child is
-  composed**; a child that completes without every `returns` name set is
-  **rejected** rather than handing back half a contract (a child that *parks* is
-  not checked — it has not finished). A typed entry is held to its type at both
+  composed**; a child that completes without every `returns` name set
+  **completes anyway**, and the call answers with the returns it set plus a
+  `note` naming the rest — no second attempt is spent, and the caller decides
+  (a child that *parks* is not checked — it has not finished; a child that
+  raises fails the call `raised`). A typed entry is held to its type at both
   ends: a mistyped argument is refused `invalid-param` before the child runs, and
   a mistyped return fails the call `invalid-return`. What the child must *do* to
   produce a variable belongs in the state `instructions` that set it. The names,
@@ -1343,13 +1377,24 @@ enrich:
   agent records what it needs with `archmax_set_variables`, or a script writes it,
   and the calling state's `requires:` is what makes that mandatory.
 - **Mocks are held to the same contract.** An `archmax_workflow_<slug>` mock for a
-  signed target supplies `returns:`, and one that omits a declared name
-  (`missing-return`) or supplies a mistyped typed one (`invalid-return`) fails
-  the mocked dispatch — a mock stands in for the sub-run, never for its agreement.
+  signed target supplies `returns:`. One that supplies a mistyped typed one
+  (`invalid-return`) fails the mocked dispatch, and one that omits a declared
+  name answers like a real child that left it unset: what it supplied, plus a
+  `note` — a mock stands in for the sub-run, never for its agreement.
 - **No prose crosses the boundary.** A sub-run gets no instruction from its
-  caller — it works from its own state `instructions` plus the arguments it was
-  seeded with as locked variables, both of which reach the model through the
-  system prompt. Nothing to author, nothing to keep in sync.
+  caller — it works from its own state `instructions` (system prompt) plus the
+  arguments it was seeded with as locked variables, whose values its opening
+  message lists: strings JSON-quoted, numbers and booleans as written. A list,
+  an object, `null`, a value rendering past 200 characters, or one past the
+  message's 1,000-character total is only named, with `archmax_get_variables`
+  as the way to read it. Nothing to author, nothing to keep in sync, and nothing
+  in the child's state `instructions` should say "read your inputs first".
+- **A child goes straight to its work.** Its prompt leaves out the platform
+  prompt's "Name the run first" step (a child's `title` is never returned), so a
+  one-state child with short scalar inputs spends its first model call on the
+  state's work. A workspace overriding the platform prompt
+  (`.platform/system/GRAPH_STATE.md`) keeps that by wrapping what children skip
+  in `<!-- top-level-only -->` … `<!-- /top-level-only -->` lines.
 - **Same agent, isolated context, shared session.** Same model, backend, host
   tools; its **own** grading rubrics, from its own spec; a fresh transcript; the child's *own* per-state
   `tools.allow`. It shares the run's session, so it writes `scratchpad/…` and

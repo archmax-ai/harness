@@ -64,8 +64,8 @@ states:
         requires: [order_id]
         returns: [enrichment_file, delayed]
     instructions: >-
-      Read `order_id` with archmax_get_variables, then read skills/order-data/assets/orders.json and
-      find that order. Write scratchpad/enrichment/<order_id>.json as
+      Your opening message gives `order_id`. Read skills/order-data/assets/orders.json and find
+      that order. Write scratchpad/enrichment/<order_id>.json as
       { "id": "<order id>", "customer": "<customer>", "status": "<status>",
       "delayed": <true|false> } - the file name carries the order id so
       concurrent sub-runs never overwrite each other.
@@ -73,7 +73,8 @@ states:
       Then set the two variables this workflow returns, with
       archmax_set_variables: `enrichment_file` is the path you just wrote, and
       `delayed` is true when the order is late and false otherwise. Your caller
-      reads them by name, so the run does not complete until both are set.
+      reads them by name, and any you leave unset reach it as a note saying
+      so — set both.
 
       Finally reply with one sentence naming the order and its status. This state
       is terminal - stop once the file is written, the returns are set, and you

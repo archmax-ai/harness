@@ -26,6 +26,7 @@ import {
   StreamingScriptedModel,
   toolResults,
   turn,
+  type ModelCall,
   type ScriptedTurn,
 } from "./support.js";
 
@@ -120,7 +121,7 @@ describe("a delegation call", () => {
     expect((await agent.sessions.get("s1"))?.variables?.from_email).toEqual({ value: "a@b.c", locked: true });
   });
 
-  it("routes a child that completes without its declared return to the caller's on_error", async () => {
+  it("completes a child that finishes without its declared return, handing the caller a note", async () => {
     const parent = {
       runtime: RUNTIME,
       states: {
@@ -130,14 +131,22 @@ describe("a delegation call", () => {
       },
     };
     const { agent, events } = await assemble(delegatingWorkspace(CHILD, parent), {
-      turns: [{ tool: CHILD_TOOL, args: { order_id: "ORD-7" } }, { reply: "forgot the file" }, { reply: "sorry" }],
+      turns: [
+        { tool: CHILD_TOOL, args: { order_id: "ORD-7" } },
+        // — child: finishes without the file, and is not handed back —
+        { reply: "forgot the file" },
+        // — parent —
+        { reply: "noted" },
+      ],
     });
     const { messages } = await turn(agent, "s1", "go");
-    expect(eventsOf(events, "sub-workflow-result")[0]?.status).toBe("error");
-    expect(eventsOf(events, "sub-workflow-result")[0]?.reason).toMatch(/enrichment_file/);
-    expect(eventsOf(events, "state-error-routed")).toMatchObject([{ state: "start", to: "failed" }]);
-    expect(messages.filter(isRuntimeNote).map(runtimeNoteKind)).toContain("error");
-    expect((await agent.sessions.get("s1"))?.workflowState).toBe("failed");
+    expect(eventsOf(events, "sub-workflow-result")[0]?.status).toBe("ok");
+    const result = toolResults(messages).find((r) => r.name === CHILD_TOOL);
+    expect(JSON.parse(result!.content).returns).toEqual({
+      note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set.",
+    });
+    expect(eventsOf(events, "state-error-routed")).toEqual([]);
+    expect((await agent.sessions.get("s1"))?.workflowState).toBe("start");
   });
 
   it("refuses a call missing a required param before any child runs", async () => {
@@ -274,21 +283,135 @@ describe("a typed call signature", () => {
     expect(JSON.parse(result!.content)).toMatchObject({ returns: { delayed: false } });
   });
 
-  it("settles a child whose typed return does not conform as a failure naming the type", async () => {
+  it("never hands on a value its type refuses: the write is refused, and the note names it", async () => {
     const { agent, events } = await assemble(delegatingWorkspace(TYPED_CHILD), {
       turns: [
         { tool: CHILD_TOOL, args: { order_id: "ORD-7", quantity: 2 } },
-        // — child: its write check refuses "no", and it finishes without a conforming value —
+        // — child: its write check refuses "no", so it finishes without the value —
         setDelayed("no"),
         { reply: "gave up" },
         // — parent —
         { reply: "parent" },
       ],
     });
-    await turn(agent, "s1", "go");
+    const { messages } = await turn(agent, "s1", "go");
     const [settled] = eventsOf(events, "sub-workflow-result");
-    expect(settled?.status).toBe("error");
-    expect(settled?.reason).toContain("'delayed'");
+    expect(settled?.status).toBe("ok");
+    const result = toolResults(messages).find((r) => r.name === CHILD_TOOL);
+    expect(JSON.parse(result!.content).returns).toEqual({
+      note: "Not all return variables were set by the sub-workflow: 'delayed' was not set.",
+    });
+  });
+});
+
+// A one-state child used to spend two model calls before its work: one naming a
+// session nothing lists, one reading inputs its caller already held. What its
+// model is handed now makes neither necessary; a caller's prompt is untouched.
+describe("what a child's model is handed", () => {
+  /** One state, scalar inputs, two returns: the shape of a lookup a caller fans out. */
+  const LOOKUP_CHILD = {
+    runtime: RUNTIME,
+    states: {
+      work: {
+        triggers: { manual: { requires: ["invoice_id", "amount", "urgent"], returns: ["status", "due"] } },
+      },
+    },
+  };
+  const setReturns = {
+    tool: "archmax_set_variables",
+    args: { variables: { status: "pending", due: "2026-10-31" } },
+  };
+
+  /** The platform layer of a system prompt: from its heading to the workspace zones. */
+  const platformLayer = (prompt: string) =>
+    prompt.slice(prompt.indexOf("# Graph state execution"), prompt.indexOf("## Workspace zones"));
+  const inState = (calls: ModelCall[], state: string) =>
+    calls.filter((call) => call.systemPrompt.includes(`## Current state: ${state}\n`));
+
+  it("asks the child for no title and hands it its inputs' values, with nothing to read", async () => {
+    const { agent, model, events } = await assemble(delegatingWorkspace(LOOKUP_CHILD), {
+      turns: [
+        { tool: CHILD_TOOL, args: { invoice_id: "INV-159123", amount: 412.5, urgent: true } },
+        // — child: straight to its work —
+        setReturns,
+        { reply: "INV-159123 is pending" },
+        // — parent —
+        { reply: "parent finished" },
+      ],
+    });
+    await turn(agent, "s1", "look up INV-159123");
+
+    const [opening] = inState(model.calls, "work");
+    expect(opening?.humanTexts).toEqual([
+      [
+        "Begin. Your instructions are already in context. You were started with these inputs:",
+        "- amount: 412.5",
+        '- invoice_id: "INV-159123"',
+        "- urgent: true",
+      ].join("\n"),
+    ]);
+    // Nothing the child reads asks it to name its session or to read its inputs.
+    const layer = platformLayer(opening!.systemPrompt);
+    expect(layer).toMatch(/^1\. Do the current state's work\./m);
+    expect(layer).not.toMatch(/title/i);
+    expect(opening!.toolDescriptions.archmax_set_variables).not.toMatch(/title/);
+    expect(opening!.humanTexts.join("\n")).not.toContain("archmax_get_variables");
+
+    const child = (await agent.sessions.list()).find((s) => s.parentSessionId === "s1");
+    expect(child?.status).toBe("completed");
+    expect(child?.variables?.title).toBeUndefined();
+    expect(eventsOf(events, "title-set").filter((e) => e.subWorkflowDispatchId)).toEqual([]);
+  });
+
+  it("leaves the caller's prompt as it was: named first, with the title explained", async () => {
+    const { agent, model } = await assemble(delegatingWorkspace(LOOKUP_CHILD), {
+      turns: [
+        { tool: CHILD_TOOL, args: { invoice_id: "INV-159123", amount: 412.5, urgent: true } },
+        setReturns,
+        { reply: "INV-159123 is pending" },
+        { reply: "parent finished" },
+      ],
+    });
+    await turn(agent, "s1", "look up INV-159123");
+
+    const calls = inState(model.calls, "start");
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const layer = platformLayer(call.systemPrompt);
+      expect(layer).toContain("1. **Name the run first.**");
+      expect(layer).toMatch(/^4\. The runtime validates the edge/m);
+      expect(layer).toContain("**Naming the run.**");
+      expect(layer).not.toContain("<!--");
+      expect(call.toolDescriptions.archmax_set_variables).toMatch(/`title` is reserved/);
+      expect(call.humanTexts).toEqual(["look up INV-159123"]);
+    }
+    // Byte-identical on both calls, around the child's run: the cacheable prefix holds.
+    expect(platformLayer(calls[0]!.systemPrompt)).toBe(platformLayer(calls[1]!.systemPrompt));
+  });
+
+  it("names an input it cannot show, with the tool that reads it", async () => {
+    const child = {
+      runtime: RUNTIME,
+      states: { work: { triggers: { manual: { requires: ["invoice_id", "lines"], returns: ["status"] } } } },
+    };
+    const { agent, model } = await assemble(delegatingWorkspace(child), {
+      turns: [
+        { tool: CHILD_TOOL, args: { invoice_id: "INV-1", lines: [{ sku: "A", qty: 2 }] } },
+        { tool: "archmax_set_variables", args: { variables: { status: "ok" } } },
+        { reply: "done" },
+        { reply: "parent finished" },
+      ],
+    });
+    await turn(agent, "s1", "go");
+
+    const [opening] = inState(model.calls, "work");
+    expect(opening?.humanTexts).toEqual([
+      [
+        "Begin. Your instructions are already in context. You were started with these inputs:",
+        '- invoice_id: "INV-1"',
+        "Not shown here: lines. Read one with archmax_get_variables when you need its value.",
+      ].join("\n"),
+    ]);
   });
 });
 

@@ -289,3 +289,179 @@ describe("workspace router search posture", () => {
       expect((ctx.backend as { routePrefixes?: string[] }).routePrefixes).toContain("/contracts/");
     }));
 });
+
+describe("workspace router text-only reads", () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+  const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0xc3, 0x28]);
+
+  /** A consumer backend that answers every read with the given result. */
+  function answering(result: unknown): BackendProtocolV2 {
+    return {
+      ls: async () => ({ files: [] }),
+      read: async () => result,
+      readRaw: async () => ({ error: "unused" }),
+      grep: async () => ({ matches: [] }),
+      glob: async () => ({ files: [] }),
+      write: async () => ({ error: "read-only" }),
+      edit: async () => ({ error: "read-only" }),
+    } as unknown as BackendProtocolV2;
+  }
+
+  const withAssets = <T>(
+    fn: (ctx: ReturnType<typeof createWorkspaceContext>) => Promise<T>,
+    extra: Record<string, import("./mounts.js").MountSpec> = {},
+  ) =>
+    withWorkspace(async (root) => {
+      writeFileSync(join(root, "skills", "logo.png"), PNG);
+      writeFileSync(join(root, "skills", "export.zip"), ZIP);
+      writeFileSync(join(root, "skills", "icon.svg"), "<svg/>");
+      const ctx = createWorkspaceContext({ rootDir: root, mounts: { ...defaultMounts(root), ...extra } });
+      return ctx.sessionZone.sessionScoped("s1", () => fn(ctx));
+    });
+
+  it("refuses an image by its type, naming the path, the type and the size", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.read("/skills/logo.png");
+      expect(res).toEqual({
+        error:
+          "'skills/logo.png' is a binary file (image/png, 10 B) and was not read; read_file returns text files only.",
+      });
+    }));
+
+  it("refuses an unknown-extension binary by its NUL bytes", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.read("skills/export.zip");
+      expect(res.content).toBeUndefined();
+      expect(res.error).toContain("'skills/export.zip' is a binary file (application/octet-stream)");
+    }));
+
+  it("refuses bytes a custom mount serves, and bytes a file mount serves", () =>
+    withAssets(
+      async (ctx) => {
+        const viaDir = await ctx.backend.read("uploads/scan");
+        expect(viaDir.error).toContain("'uploads/scan' is a binary file (image/png, 3 B)");
+        const viaFile = await ctx.backend.read("COVER.png");
+        expect(viaFile.error).toContain("'COVER.png' is a binary file (image/png, 2 B)");
+      },
+      {
+        "/uploads/": answering({ content: new Uint8Array(3), mimeType: "image/png" }),
+        "/COVER.png": answering({ content: new Uint8Array(2), mimeType: "image/png" }),
+      },
+    ));
+
+  it("passes a route's own error through", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.read("skills/missing.png");
+      expect(res.error).toBeDefined();
+      expect(res.error).not.toContain("binary file");
+    }));
+
+  it("reads text unchanged: JSON, SVG and a v1 file mount's bare string", () =>
+    withAssets(
+      async (ctx) => {
+        expect(String((await ctx.backend.read("skills/orders.json")).content)).toContain("A-1");
+        expect(String((await ctx.backend.read("skills/icon.svg")).content)).toContain("<svg/>");
+        expect(await ctx.backend.read("NOTES.md")).toBe("plain notes");
+      },
+      { "/NOTES.md": answering("plain notes") },
+    ));
+
+  it("refuses a v1 file mount's bare string carrying NUL", () =>
+    withAssets(
+      async (ctx) => {
+        expect((await ctx.backend.read("DATA.bin")).error).toContain("'DATA.bin' is a binary file");
+      },
+      { "/DATA.bin": answering("ab\u0000cd") },
+    ));
+
+  it("leaves readRaw alone: the runtime still gets the bytes", () =>
+    withAssets(async (ctx) => {
+      const res = await ctx.backend.readRaw("skills/logo.png");
+      expect(res.error).toBeUndefined();
+      expect(res.data?.content).toBeInstanceOf(Uint8Array);
+    }));
+});
+
+describe("workspace router raw-byte transfer", () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+
+  it("downloads from a directory mount, a file mount and the session zone", () =>
+    withWorkspace(async (root) => {
+      writeFileSync(join(root, "skills", "logo.png"), PNG);
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        await ctx.backend.write("scratchpad/notes.md", "hello");
+        const res = await ctx.backend.downloadFiles!(["./skills/logo.png", "AGENTS.md", "scratchpad/notes.md"]);
+        expect(res.map((r) => r.path)).toEqual(["/skills/logo.png", "/AGENTS.md", "/scratchpad/notes.md"]);
+        expect(res.map((r) => r.error)).toEqual([null, null, null]);
+        expect(Buffer.from(res[0]!.content!)).toEqual(Buffer.from(PNG));
+        expect(new TextDecoder().decode(res[1]!.content!)).toBe("persona");
+        expect(new TextDecoder().decode(res[2]!.content!)).toBe("hello");
+      });
+    }));
+
+  it("uploads bytes into the session zone, under the bound session", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        const res = await ctx.backend.uploadFiles!([["scratchpad/logo.png", PNG]]);
+        expect(res).toEqual([{ path: "/scratchpad/logo.png", error: null }]);
+        const [back] = await ctx.backend.downloadFiles!(["scratchpad/logo.png"]);
+        expect(Buffer.from(back!.content!)).toEqual(Buffer.from(PNG));
+      });
+    }));
+
+  it("refuses an upload into a read-only directory mount or file mount", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        const res = await ctx.backend.uploadFiles!([
+          ["skills/orders.json", PNG],
+          ["AGENTS.md", PNG],
+        ]);
+        expect(res.map((r) => r.error)).toEqual(["permission_denied", "permission_denied"]);
+        const orders = await ctx.backend.readRaw("skills/orders.json");
+        expect(orders.data?.content).toContain("A-1");
+      });
+    }));
+
+  it("reports a missing file as the route does", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        const [res] = await ctx.backend.downloadFiles!(["scratchpad/missing.png"]);
+        expect(res).toEqual({ path: "/scratchpad/missing.png", content: null, error: "file_not_found" });
+      });
+    }));
+});
+
+describe("workspace router deletion", () => {
+  it("deletes a session file under the bound session", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        await ctx.backend.uploadFiles!([["scratchpad/a.png", new Uint8Array([1, 2, 3])]]);
+        const res = await ctx.backend.delete!("./scratchpad/a.png");
+        expect(res.error).toBeUndefined();
+        // The session id never reaches a result path.
+        expect(res.path).toBe("/scratchpad/a.png");
+        const [gone] = await ctx.backend.downloadFiles!(["scratchpad/a.png"]);
+        expect(gone?.error).toBe("file_not_found");
+      });
+    }));
+
+  it("refuses a delete in a read-only directory or file mount, naming the path as written", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        expect(await ctx.backend.delete!("skills/orders.json")).toEqual({
+          error:
+            "Cannot delete 'skills/orders.json': it is served by a read-only mount. " +
+            "Only run state is writable in this workspace.",
+        });
+        expect((await ctx.backend.delete!("AGENTS.md")).error).toMatch(/read-only mount/);
+        const orders = await ctx.backend.readRaw("skills/orders.json");
+        expect(orders.data?.content).toContain("A-1");
+      });
+    }));
+});

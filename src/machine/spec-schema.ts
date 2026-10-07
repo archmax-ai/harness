@@ -20,6 +20,13 @@ import {
   VARIABLE_NAME_PATTERN,
 } from "./variables.js";
 
+/**
+ * The return a sub-workflow's caller finds when the sub-run left some of its
+ * `returns` unset (`RETURNS_NOTE_VARIABLE` in the runtime), so no trigger may
+ * declare it. Spelled here too because the schema must stay free of runtime imports.
+ */
+const RETURNS_NOTE_NAME = "note";
+
 // --- Shared scalars ------------------------------------------------------------
 
 const NON_EMPTY = "must be a non-empty string";
@@ -95,6 +102,7 @@ const mountName = z
  * direction — narrowing a writable mount to reads in the states that only need
  * to read it — which is the direction every level of this schema may move.
  */
+
 export const mountAccessSchema = z.enum(["read", "read_write"], {
   error: (issue) =>
     `unknown mount access '${String(issue.input)}' (expected 'read' or 'read_write')`,
@@ -498,6 +506,15 @@ function signatureSchema(key: "requires" | "returns") {
             message:
               `'${name}' is the built-in trigger variable, set by the harness and locked, so a ` +
               `run cannot declare it as something it produces.`,
+          });
+        }
+        if (key === "returns" && name === RETURNS_NOTE_NAME) {
+          ctx.addIssue({
+            code: "custom",
+            path: [index],
+            message:
+              `'${name}' is reserved in 'returns': a sub-run that finishes without setting all of ` +
+              `its returns hands its caller a '${name}' naming the ones it left unset.`,
           });
         }
         if (key === "returns" && name === TITLE_VARIABLE) {

@@ -1,7 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "./workspace.js";
-import { buildSystemPrompt, resolveSystemPrompt } from "./prompt.js";
+import {
+  buildSystemPrompt,
+  platformPromptFor,
+  resolveSystemPrompt,
+  TOP_LEVEL_ONLY_CLOSE,
+  TOP_LEVEL_ONLY_OPEN,
+} from "./prompt.js";
 import { PLATFORM_PROMPT } from "./platform-prompt.generated.js";
 import { PLATFORM_PROMPT_PATH } from "../workflow/paths.js";
 import { renderWorkspaceZones } from "./workspace-prompt.js";
@@ -91,7 +97,9 @@ describe("resolveSystemPrompt", () => {
   describe("platform prompt layer", () => {
     it("uses the bundled prompt when the workspace serves no override", async () => {
       const prompt = await resolveSystemPrompt(fakeWorkspace({}), governedOpts());
-      expect(layersOnly(prompt)).toBe(PLATFORM_PROMPT.trim());
+      expect(layersOnly(prompt)).toBe(platformPromptFor(PLATFORM_PROMPT, "top-level").trim());
+      // The passage markers are for whoever edits the file, never for the model.
+      expect(prompt).not.toContain("<!--");
     });
 
     it("uses the workspace's override when it serves one", async () => {
@@ -118,6 +126,15 @@ describe("resolveSystemPrompt", () => {
     it("ships exactly what platform-prompt.md says", async () => {
       const markdown = await readFile(new URL("./platform-prompt.md", import.meta.url), "utf8");
       expect(PLATFORM_PROMPT).toBe(markdown);
+    });
+
+    // A top-level session's prompt and its cache prefix must not move because a
+    // child's does: the markers are the only bytes it does not read.
+    it("hands a top-level session the Markdown less its marker lines, and nothing else", () => {
+      const markers = new Set([TOP_LEVEL_ONLY_OPEN, TOP_LEVEL_ONLY_CLOSE]);
+      const unmarked = PLATFORM_PROMPT.split("\n").filter((line) => !markers.has(line.trim())).join("\n");
+      expect(PLATFORM_PROMPT).toContain(TOP_LEVEL_ONLY_OPEN);
+      expect(platformPromptFor(PLATFORM_PROMPT, "top-level")).toBe(unmarked);
     });
   });
 
@@ -391,6 +408,114 @@ describe("resolveSystemPrompt", () => {
       const prompt = await shippedPlatformPrompt();
       expect(prompt).toContain("Naming the run");
     });
+  });
+
+  // A child's title describes a session nothing lists and is never returned, so
+  // asking for one cost every dispatch a model call and bought nothing.
+  describe("a child session is not asked to name itself", () => {
+    const childPrompt = async (files: Record<string, string> = {}) =>
+      resolveSystemPrompt(fakeWorkspace(files), { ...governedOpts(), child: true, workflowPrompt: null });
+    const topLevelPrompt = async (files: Record<string, string> = {}) =>
+      resolveSystemPrompt(fakeWorkspace(files), { ...governedOpts(), workflowPrompt: null });
+
+    it("leaves the naming step and its paragraph out, and renumbers how it moves", async () => {
+      const prompt = await childPrompt();
+      expect(prompt).not.toMatch(/title/i);
+      expect(prompt).not.toContain("Name the run first");
+      expect(prompt).not.toContain("Naming the run");
+      expect(prompt).not.toContain("<!--");
+      expect(prompt).toMatch(/^1\. Do the current state's work\./m);
+      expect(prompt).toMatch(/^2\. Call \*\*`archmax_advance/m);
+      expect(prompt).toMatch(/^3\. The runtime validates the edge/m);
+      expect(prompt).not.toMatch(/^4\. /m);
+    });
+
+    it("keeps every other line of the top-level prompt", async () => {
+      const child = (await childPrompt()).split("\n");
+      const topLevel = new Set((await topLevelPrompt()).split("\n"));
+      // Only the items after the left-out step differ, and only by their number.
+      const differing = child.filter((line) => !topLevel.has(line));
+      expect(differing.map((line) => line.slice(0, 3))).toEqual(["1. ", "2. ", "3. "]);
+      for (const line of differing) {
+        expect(topLevel.has(line.replace(/^\d+/, (n) => String(Number(n) + 1)))).toBe(true);
+      }
+    });
+
+    it("reads an override the same way: its marked passages are left out", async () => {
+      const override = [
+        "Rules.",
+        "",
+        "1. First.",
+        TOP_LEVEL_ONLY_OPEN,
+        "2. Top-level only.",
+        TOP_LEVEL_ONLY_CLOSE,
+        "3. Last.",
+        "",
+      ].join("\n");
+      const files = { [PLATFORM_BACKEND_PATH]: override };
+      expect(layersOnly(await childPrompt(files))).toBe("Rules.\n\n1. First.\n2. Last.");
+      expect(layersOnly(await topLevelPrompt(files))).toBe("Rules.\n\n1. First.\n2. Top-level only.\n3. Last.");
+    });
+
+    it("reads an override with no markers the same in both sessions", async () => {
+      const files = { [PLATFORM_BACKEND_PATH]: "Name the run first.\n" };
+      expect(layersOnly(await childPrompt(files))).toBe("Name the run first.");
+      expect(await childPrompt(files)).toBe(await topLevelPrompt(files));
+    });
+
+    it("gives a plain agent no platform layer either way", async () => {
+      const prompt = await resolveSystemPrompt(fakeWorkspace({ "AGENTS.md": "Persona.\n" }), {
+        ...baseOpts(),
+        child: true,
+      });
+      expect(layersOnly(prompt)).toBe("Persona.");
+    });
+  });
+});
+
+describe("platformPromptFor", () => {
+  const marked = (...lines: string[]) => lines.join("\n");
+
+  it("returns text without markers unchanged, for either session", () => {
+    const text = "1. One.\n2. Two.\n";
+    expect(platformPromptFor(text, "top-level")).toBe(text);
+    expect(platformPromptFor(text, "child")).toBe(text);
+  });
+
+  it("drops only the marker lines for a top-level session", () => {
+    const text = marked("a", TOP_LEVEL_ONLY_OPEN, "b", TOP_LEVEL_ONLY_CLOSE, "c");
+    expect(platformPromptFor(text, "top-level")).toBe("a\nb\nc");
+    expect(platformPromptFor(text, "child")).toBe("a\nc");
+  });
+
+  it("renumbers only the list a left-out passage cut items from, and keeps continuation lines", () => {
+    const text = marked(
+      TOP_LEVEL_ONLY_OPEN,
+      "1. Gone.",
+      "   still gone.",
+      TOP_LEVEL_ONLY_CLOSE,
+      "2. Kept.",
+      "   continued.",
+      "",
+      "3. Still the same list.",
+      "Paragraph.",
+      "",
+      "5. Another list, as written.",
+    );
+    expect(platformPromptFor(text, "child")).toBe(
+      marked("1. Kept.", "   continued.", "", "2. Still the same list.", "Paragraph.", "", "5. Another list, as written."),
+    );
+  });
+
+  it("tolerates markers indented or padded, as an editor may leave them", () => {
+    const text = marked("a", `  ${TOP_LEVEL_ONLY_OPEN} `, "b", ` ${TOP_LEVEL_ONLY_CLOSE}`, "c");
+    expect(platformPromptFor(text, "child")).toBe("a\nc");
+  });
+
+  it("keeps everything after an opening marker that is never closed", () => {
+    const text = marked("a", TOP_LEVEL_ONLY_OPEN, "b", "c");
+    expect(platformPromptFor(text, "child")).toBe("a\nb\nc");
+    expect(platformPromptFor(text, "top-level")).toBe("a\nb\nc");
   });
 });
 

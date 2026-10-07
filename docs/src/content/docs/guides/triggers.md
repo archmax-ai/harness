@@ -139,13 +139,25 @@ unsupplied is refused before the session starts, and the refusal names the
 trigger and the missing variables. The old failure mode started the session and
 died later at an unresolvable guard.
 
-`returns` is checked where a session completes. One that reaches a terminal
-state with a `returns` name unset is rejected. A session that *parks* is exempt,
-since it has not finished.
+`returns` is checked once, where a session completes, and nothing is handed
+back:
+
+- A **sub-workflow child** that finishes with a `returns` name unset still
+  completes. Its caller gets the returns it did set, plus a `note`:
+  `Not all return variables were set by the sub-workflow: 'description' was not set.`
+  The caller decides what to do about the rest; no second model call is spent.
+- A **top-level session** has no caller to read a note, so finishing with a name
+  unset rejects it, naming the state and the names.
+- A typed return holding another kind of value rejects the session either way,
+  so a wrong-typed value never reaches a caller.
+
+A session that *parks* is exempt, since it has not finished. `note` is reserved:
+a trigger's `returns` may not declare it. A workflow that wants the model to try
+again checks its returns in a terminal `after` hook, which can `correct`.
 
 Both are lists of run-variable names. The names ride in the prompt's
 current-state block, so the agent is told what it must produce in every state,
-before it can be failed for omitting it.
+and what finishing without them does, before it can be failed for omitting it.
 
 What the agent should *do* to produce a variable is said by that state's
 `instructions`, which is where every other variable's meaning already lives.
@@ -231,8 +243,8 @@ They all use the same trigger, and they differ in what a firing *carries*. A CLI
 or SDK invocation has a message, the prompt.
 
 A delegation has no message, so the child works from its own state
-`instructions` and the variables it was seeded with. The declaration reads the
-same either way.
+`instructions` and the variables it was seeded with, whose short scalar values
+its opening message lists. The declaration reads the same either way.
 
 So one declaration makes a workflow both runnable and callable:
 

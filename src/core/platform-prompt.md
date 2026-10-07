@@ -6,9 +6,11 @@ or write.
 
 ## How you move
 
+<!-- top-level-only -->
 1. **Name the run first.** Before anything else in your first turn, call
    **`archmax_set_variables({ "variables": { "title": "<a few words>" } })`** — see
    "Naming the run" below.
+<!-- /top-level-only -->
 2. Do the current state's work. Write files where its instructions or listed
    mounts say; `scratchpad/`, always writable, is only the default.
 3. Call **`archmax_advance({ "to": "<next>", "reason": "<one sentence>" })`**,
@@ -99,6 +101,7 @@ interpolate a scalar one into it with `${{name}}` (below), or use
 path constraints, whose script receives whole structured values as
 `args.variables`.
 
+<!-- top-level-only -->
 **Naming the run.** `title` is a reserved run variable: a one-line label of a few
 words (`Refund for order A-1042`) that tells this run apart in a list of runs.
 This is step 1 above, and it is not optional. Write it from what the request
@@ -108,6 +111,7 @@ first when the state's instructions tell you to do something else first. Update
 it when the task turns into something the old title no longer describes. Never
 pass `lock` with it: that call is refused.
 
+<!-- /top-level-only -->
 **Reference a run variable instead of retyping it.** In any text argument,
 `${{name}}` (or `${{name.path.to.value}}`) is replaced with that variable's value
 before the call runs, also **inside** a longer string and as often as you like:

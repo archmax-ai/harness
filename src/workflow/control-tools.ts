@@ -43,6 +43,7 @@ import {
 import { decisionRecordFor, inputRecordFor } from "./parks.js";
 import {
   currentWorkflowState,
+  NO_PENDING_FAILURE,
   readVariables,
   readWorkflowState,
   WORKFLOW_STATUSES,
@@ -203,11 +204,21 @@ export const setVariablesSchema = z.object({
 });
 
 /**
+ * What `archmax_set_variables` says about the reserved `title`, to a session
+ * that names itself. A sub-workflow's child does not (see `platformPromptFor`),
+ * so its description leaves the sentence out.
+ */
+const TITLE_GUIDANCE =
+  " `title` is reserved for a short single-line label naming this run's task: set it " +
+  "early, update it when the task changes, and never lock it.";
+
+/**
  * Every control tool, in registration order. Descriptions are paid for on every
  * model call, so they say only what the model cannot infer; the advance tool
  * does not repeat the transition catalog the prompt's graph section renders.
+ * `child` marks a sub-workflow's child session, which is not asked for a title.
  */
-export function createControlTools(): StructuredTool[] {
+export function createControlTools(opts: { child?: boolean } = {}): StructuredTool[] {
   return [
     declaration(
       ADVANCE_TOOL,
@@ -258,9 +269,8 @@ export function createControlTools(): StructuredTool[] {
       SET_VARIABLES_TOOL,
       "Record facts for the rest of the run; values may be structured. Pass " +
         "`lock: true` to make one permanent — required for anything a tool guard " +
-        "reads. Writing a locked variable is refused, not ignored. `title` is " +
-        "reserved for a short single-line label naming this run's task: set it " +
-        "early, update it when the task changes, and never lock it.",
+        "reads. Writing a locked variable is refused, not ignored." +
+        (opts.child ? "" : TITLE_GUIDANCE),
       setVariablesSchema,
     ),
   ];
@@ -354,7 +364,7 @@ export async function handleAdvance(
     // so the target's first model call does not run it a second time.
     beforeDone: { ...(fields.beforeDone ?? {}), [result.to]: true },
     // A successful transition clears an earlier rejection marker and starts the target's turn budget afresh.
-    rejected: null,
+    ...NO_PENDING_FAILURE,
     stateTurns: null,
     auditTrail: [step],
     messages: [
@@ -488,7 +498,7 @@ export function handleWait(machine: WorkflowMachine, request: WaitRequest): Wait
       status: WORKFLOW_STATUSES.awaitingInput,
       parkPhase: spokeSinceLastHumanMessage(messages) ? "suspend" : "closing",
       replyOnly: null,
-      rejected: null,
+      ...NO_PENDING_FAILURE,
       // Counted at the park that happened: a request the budget refused never becomes a park.
       parkCounts: { ...counts, [slug]: soFar + 1 },
       messages: [
@@ -554,7 +564,7 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
       workflowState: entry,
       iterations: {},
       beforeDone: {},
-      rejected: null,
+      ...NO_PENDING_FAILURE,
       stateTurns: null,
       auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
       messages: [
@@ -634,7 +644,7 @@ export function handleRaise(machine: WorkflowMachine, request: RaiseRequest): Ra
     message: commit({
       raised,
       status: WORKFLOW_STATUSES.failed,
-      rejected: null,
+      ...NO_PENDING_FAILURE,
       messages: [
         toolReply(
           RAISE_TOOL,
