@@ -25,9 +25,9 @@ states:
   clarify:
     instructions: >-
       Ask exactly one clarifying question - the smallest thing you need to
-      identify the order - then call archmax_wait with a reason naming what you
-      are waiting for. When the reply arrives you continue here: read it, and if
-      it identifies the order, advance to answer.
+      identify the order - and in that same message call archmax_wait with a
+      reason naming what you are waiting for. When the reply arrives you
+      continue here: read it, and if it identifies the order, advance to answer.
     transitions:
       - to: answer
         description: The reply identifies the order.

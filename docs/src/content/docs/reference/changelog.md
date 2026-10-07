@@ -9,7 +9,26 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
-## 0.3.1 (unreleased)
+## 0.3.2 (unreleased)
+
+- **The agent ends a failed task with `archmax_raise` instead of a reply.** On GPT-6 Luna, an
+  agent whose work could not be completed explained the failure in a reply, which ends the
+  session as a success: the e2e case for an order-store outage raised in 0 of 4 runs on 0.3.1's
+  prompt. "When the work fails" is its own section of the platform prompt again; it bounds
+  recovery to a retry or two and says to make the call in the same message as the explanation,
+  and the tool description says that a reply which only explains the failure reports it as a
+  success. The same case now raises in 9 of 10 runs, and no case that should complete raised.
+  The prompt stays a fifth below 0.3.0's (1,787 tokens). See
+  [ending a session as a failure](/guides/workflow-machine/#ending-a-session-as-a-failure).
+- **The reference workspace asks for the follow-up call in the same message.** `refund-request`
+  and `clarify` (and the clarify examples in the sessions guide and the authoring skill) now say
+  to call `archmax_advance` or `archmax_wait` in the same message as the text for the person.
+  With the wording "…, then call…", GPT-6 Luna wrote the text and stopped.
+- **The agent e2e reruns a failed case once.** On a live model a case can miss a step it
+  passes nine runs in ten; a failed case now runs once more on its own, and CI fails only when it
+  fails again.
+
+## 0.3.1
 
 - **A sub-workflow child's streamed text is no longer reported as its caller's.** A child runs
   inside its caller's tool call and inherited the caller's callbacks, the handler of the caller's
