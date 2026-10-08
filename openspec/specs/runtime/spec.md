@@ -634,9 +634,14 @@ views SHALL exclude notes from the tool calls a run made and from the reply it e
 The model SHALL read the system prompt in this order: `AGENTS.md`; the consumer `systemPrompt`; the
 platform prompt (compiled into the runtime, or `.platform/system/GRAPH_STATE.md` when the workspace
 serves it; absent for a plain agent); the workspace zones section; the workflow graph
-section; `WORKFLOW.md` with HTML comments stripped; Deep Agents' tool guidance; and the volatile
-"Current state" block. Deep Agents' base prompt SHALL be dropped (`systemPrompt: { prefix, base:
-null }`). Layers one to six SHALL form the static prefix, identical on every model call of a session.
+section; `WORKFLOW.md` with HTML comments stripped; the middleware's tool guidance (the
+`write_todos` section; Deep Agents 1.13 appends none for its file tools); and the volatile "Current
+state" block. Deep Agents' base prompt SHALL be dropped (`systemPrompt: { prefix, base: null }`).
+Layers one to six SHALL form the static prefix, identical on every model call of a session. Deep
+Agents offers no per-agent opt-out from a harness profile, so a model it keeps a profile for SHALL
+also read that profile's suffix after layer six: Deep Agents looks the profile up from the client's
+provider and its `model_name` or `modelName`, so a LangChain `ConfigurableModel` is matched and a
+`ChatOpenAI` instance, which sets only `model`, is not.
 The workspace zones section SHALL be rendered from the resolved `MountPrefixes`: `scratchpad/` as
 the always-writable working area, the offload areas as readable only, then **one line per ungoverned
 mount — its name as the agent addresses it (a directory with a trailing slash, a file by its exact
@@ -654,6 +659,12 @@ the "Current state" block.
 - **WHEN** a workflow has both `workflow.yaml` and `WORKFLOW.md`
 - **THEN** the prompt carries the rendered graph section followed by the prose, and a workflow with
   no `WORKFLOW.md` assembles with the graph section alone
+
+#### Scenario: A Codex model reads Deep Agents' suffix
+
+- **WHEN** a governed agent runs on `initChatModel("gpt-5.2-codex", { modelProvider: "openai" })`
+- **THEN** its static prompt carries Deep Agents' "Codex-Specific Behavior" suffix after the
+  composed layers, while the same id on a `ChatOpenAI` instance carries none
 
 #### Scenario: Governed mounts keep the prefix stable
 
@@ -749,6 +760,13 @@ The static block and the disclosed tool order SHALL be byte-identical across a s
 calls. Assembly SHALL emit one `prompt-shaping` event naming the cache strategy and the withheld
 built-in tools.
 
+For a `ChatAnthropic` and a `ChatBedrockConverse` model, `createDeepAgent` installs LangChain's
+caching middleware itself, whatever the configuration. With caching enabled, the runtime's
+same-named middleware SHALL replace Deep Agents', so the configured lifetime holds; with caching
+disabled, Deep Agents' remains, and the model SHALL still be cached with a five-minute lifetime. On a
+`ChatAnthropic` model, Deep Agents' own breakpoint middleware SHALL mark the last system block — the
+volatile block — on every call, enabled or not.
+
 #### Scenario: Claude over an OpenAI-compatible endpoint
 
 - **WHEN** the model id names Claude and the client is `ChatOpenAI`
@@ -760,6 +778,18 @@ built-in tools.
 - **THEN** no system block carries `cache_control`
 - **AND** assembly emits no `warning` about prompt caching
 - **AND** the `prompt-shaping` event names the `unsupported` strategy
+
+#### Scenario: Deep Agents marks a ChatAnthropic agent's volatile block
+
+- **WHEN** a governed agent runs on `ChatAnthropic` with `promptCache: { enabled: true, ttl: "1h" }`
+- **THEN** the static block is unmarked, the volatile block carries `{ type: "ephemeral" }`, and the
+  `cache_control` model setting carries `ttl: "1h"`
+
+#### Scenario: Turning caching off leaves Deep Agents' caching on
+
+- **WHEN** a governed agent runs on `ChatAnthropic` or `ChatBedrockConverse` with
+  `promptCache: { enabled: false }`
+- **THEN** the `cache_control` model setting is still `{ type: "ephemeral", ttl: "5m" }`
 
 ### Requirement: Typed lifecycle event stream
 

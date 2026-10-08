@@ -106,7 +106,7 @@ All optional (`CreateAgentParams`, `src/assembly/index.ts`):
 | `checkpointer` | `BaseCheckpointSaver` | Custom-adapter escape hatch; takes precedence over the session store for checkpoint persistence. Defaults to a durable `BackendCheckpointSaver` writing through the session store. Use `MemorySaver` for ephemeral runs. |
 | `middleware` | `AgentMiddleware[]` | Extra middleware appended after workflow instrumentation. |
 | `onEvent` | `WorkflowEventHandler` | Subscribe to all lifecycle diagnostics; suppresses console output when set. |
-| `promptCache` | `PromptCacheOptions` | `{ enabled?, ttl?: "5m" \| "1h" }`. Provider prompt caching for the stable prefix; on by default. Falls back to `settings.prompt_cache`, then `ARCHMAX_PROMPT_CACHE`/`_TTL`. |
+| `promptCache` | `PromptCacheOptions` | `{ enabled?, ttl?: "5m" \| "1h" }`. Provider prompt caching for the stable prefix; on by default. Falls back to `settings.prompt_cache`, then `ARCHMAX_PROMPT_CACHE`/`_TTL`. Turning it off does not stop `ChatAnthropic` or `ChatBedrockConverse` caching: Deep Agents installs LangChain's caching middleware for them itself (5-minute lifetime). |
 | `pricing` | `PricingTable` | USD per 1M tokens, keyed by model id (`default` matches any): `{ input?, output?, cacheRead?, cacheWrite? }`. Looked up by the id the response reported, else the id the runtime was configured to run — so a keyed table prices a workload behind a proxy that echoes no model back. Input rate applies to the input tokens the cache did not serve. Makes `costUsd` appear on usage events, run metadata, and the CLI footer. Falls back to `ARCHMAX_PRICE_*`. Unpriced → tokens only. |
 
 Fails closed: throws `WorkflowLoadError` if the named workflow's `workflow.yaml`
@@ -617,6 +617,10 @@ else is refused, never reported as copied. A read-only mount refuses an upload
 and a delete itself. Deep Agents is handed the workspace without `delete`, so its
 own recursive `delete` tool never exists: `remove_file` is the one way to delete
 a file.
+
+A store's `grep` receives the call's match cap as its fourth argument,
+`maxCount` (the agent's `max_count`, else Deep Agents' 1,000). A store may stop
+there and return `truncated: true`; the workspace caps one that ignores it.
 
 ### Host tools
 

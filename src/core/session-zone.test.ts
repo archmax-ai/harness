@@ -121,6 +121,17 @@ describe("SessionZoneRouter — grep/glob with no explicit path", () => {
       expect(paths).toEqual(["/scratchpad/needle.txt"]);
     });
   });
+
+  it("hands grep's match cap to the store", async () => {
+    const router = makeRouter();
+
+    await router.sessionScoped("session-a", async () => {
+      await router.write("/scratchpad/needles.txt", "needle\nneedle\nneedle\n");
+      const result = await router.grep("needle", "/scratchpad", null, 2);
+      expect(result.matches).toHaveLength(2);
+      expect(result.truncated).toBe(true);
+    });
+  });
 });
 
 describe("SessionZoneRouter — the session id never reaches the caller", () => {

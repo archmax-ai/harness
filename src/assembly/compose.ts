@@ -202,11 +202,14 @@ export function frameworkPassthrough(
 }
 
 /**
- * The planning scratchpad: `write_todos` is always-on and deepagents 1.11.1 does
- * not register it, so the assembly installs langchain's `todoListMiddleware`.
+ * The planning scratchpad: `write_todos` is always-on and Deep Agents 1.13 does
+ * not register it (only its Codex harness profile adds the middleware), so the
+ * assembly installs langchain's `todoListMiddleware`.
  * Must sit outermost among the runtime's own middleware so its guidance lands on
  * the system prompt **before** the workflow instrumentation splits it into
- * `[static, volatile]` blocks.
+ * `[static, volatile]` blocks. On a model with the Codex profile, Deep Agents
+ * merges it into the profile's tail position instead, past the split (pinned in
+ * `behaviour/upstream-additions.test.ts`).
  */
 export function todoMiddleware(): AgentMiddleware {
   return todoListMiddleware() as unknown as AgentMiddleware;
@@ -276,17 +279,15 @@ export function fileReadMiddleware(ctx: AssemblyContext): AgentMiddleware[] {
  * grading rubrics, registered so the framework provides the `task` tool the
  * runtime dispatches them through.
  *
- * They are never *disclosed* — `task` is withheld in every state and grantable by
- * nothing — so registering a grader here gives the graded agent no reach; it only
- * gives the runtime a runnable. `generalPurposeAgent: false` holds
- * unconditionally: there is no agent-facing subagent in this SDK, so the
- * framework's default general-purpose one would be a tool nothing may call.
+ * Under a workflow they are never *disclosed* — `task` is withheld in every state
+ * and grantable by nothing — so registering a grader gives the graded agent no
+ * reach; it only gives the runtime a runnable. Deep Agents also builds its
+ * general-purpose subagent beside them, and `createDeepAgent` takes no parameter
+ * that turns it off (only a harness profile does): a governed agent cannot reach
+ * it, and a plain agent is offered `task` with it, as a plain Deep Agent is.
  */
-export function rubricParams(ctx: AssemblyContext): {
-  subagents: LoadedRubric[];
-  generalPurposeAgent: boolean;
-} {
-  return { subagents: ctx.subagents, generalPurposeAgent: false };
+export function rubricParams(ctx: AssemblyContext): { subagents: LoadedRubric[] } {
+  return { subagents: ctx.subagents };
 }
 
 /**
@@ -509,15 +510,13 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     input.workflow,
     cacheConfig.enabled,
   );
-  // Conditional built-ins no state of this workflow discloses: reported so the
-  // saving is visible, and used to prune the matching upstream prompt guidance.
+  // Built-ins no state of this workflow discloses, reported so a host sees what
+  // the model is never shown: `task`, in every state of every assembly.
   const disclosedAnywhere = new Set(
     Object.keys(target.spec.states).flatMap((slug) => [...target.disclosedTools(slug)]),
   );
-  // `task` is withheld in every state of every assembly, so its upstream
-  // guidance is pruned unconditionally rather than per-assembly.
-  const withheldBuiltins = [...UNGRANTABLE_TOOLS].filter((tool) => !disclosedAnywhere.has(tool));
-  emit({ type: "prompt-shaping", cache: cacheStrategy, withheld: withheldBuiltins });
+  const withheld = [...UNGRANTABLE_TOOLS].filter((tool) => !disclosedAnywhere.has(tool));
+  emit({ type: "prompt-shaping", cache: cacheStrategy, withheld });
 
   // One dispatcher per composition, so the depth, cycle and concurrency bounds
   // are enforced in one place and every dispatch is reported the same way. A
@@ -556,7 +555,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     subWorkflows: dispatcher,
     ...(params.hookExecutors ? { hookExecutors: params.hookExecutors } : {}),
     onEvent: emit,
-    promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl, withheldBuiltins },
+    promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl },
     stateModels,
     workspace,
     workflowName: input.workflow,

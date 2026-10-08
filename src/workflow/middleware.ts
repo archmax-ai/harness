@@ -56,7 +56,6 @@ import {
 
 export type { PromptShaping, StateModels } from "./governance.js";
 export { resolveToolName } from "./governance.js";
-export { pruneUndisclosedToolSections, upstreamSectionsFor, type PruneResult } from "./prompt-pruning.js";
 
 export interface WorkflowInstrumentation {
   /**

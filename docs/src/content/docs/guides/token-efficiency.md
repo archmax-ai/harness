@@ -50,7 +50,8 @@ rendered from something the runtime enforces:
 4. Workspace zones, rendered from the resolved mount table.
 5. The workflow header: the spec's `title` and `instructions`, and **no state of the graph**.
 6. `WORKFLOW.md`: the prose addendum, HTML comments stripped.
-7. Deep Agents' tool guidance: the file tools' and `write_todos`' sections, from their middleware.
+7. Middleware tool guidance: the `write_todos` section from LangChain's todo middleware, and on a
+   plain agent Deep Agents' skills section. Deep Agents 1.13 appends no guidance for its file tools.
 8. The volatile "Current state" block, per model call: the current date and
    time, then the active state's instructions, skills, variables, argument
    constraints, **its own outgoing transitions**, its hooks, and the run's
@@ -60,6 +61,13 @@ Layers 1-6 are handed to Deep Agents as `{ prefix, base: null }`. Its own base
 prompt ("You are a Deep Agent…", ~1,700 characters) is dropped: it is generic
 assistant guidance that contradicts layer 3. Layers 1-7 are the static, cacheable
 prefix. Layer 8 is never cached.
+
+**A model with a Deep Agents harness profile gets a suffix after layer 6.** Deep Agents keeps
+prompt suffixes for a few model ids (three Claude models and the `gpt-5.x-codex` family) and
+appends the matching one even with `base: null`. `createDeepAgent` takes no per-agent opt-out. It
+looks the profile up from the client's provider and its `model_name` or `modelName`. A LangChain
+`ConfigurableModel` (`initChatModel`) is matched, but a `ChatOpenAI` instance sets only `model`,
+so the env-configured model never is.
 
 **The clock lives in layer 8, and is rounded.** Every model call opens with
 `Current date and time: 2026-09-10 14:30 UTC (Thursday), rounded down to the
@@ -112,9 +120,6 @@ What the rendering does:
   A [grading rubric](/guides/grading-rubrics/) grades the agent,
   so the tool belongs to the runtime. Its schema is ~1,900 characters, and no
   state ever sends it.
-- **Upstream guidance for a withheld tool is pruned** from the system prompt by
-  exact heading match. If an upstream rewording makes a heading unmatchable, the
-  prompt is left untouched and a `warning` event says so.
 - **HTML comments are stripped from the prose addendum.** `WORKFLOW.md` can
   therefore hold diagrams and rationale for whoever opens the file, without
   charging every model call for them.
@@ -176,8 +181,8 @@ The archmax harness marks the stable prefix so the provider serves it at cache-r
 To make that possible, the system message is split into two content blocks. The
 **static** block (persona, platform prompt, rendered workflow header, upstream
 guidance) is byte-identical for the whole session and carries the cache
-breakpoint. The **volatile** block holds the active state's section, and is never
-marked.
+breakpoint. The **volatile** block holds the active state's section, and the
+harness never marks it (Deep Agents does, on `ChatAnthropic`; see below).
 
 Which mechanism applies is resolved from the model. **LangChain owns the
 provider mechanics wherever it has them**:
@@ -188,6 +193,21 @@ provider mechanics wherever it has them**:
 | `ChatBedrockConverse` (Claude/Nova) | LangChain's `bedrockPromptCachingMiddleware` |
 | Claude over an OpenAI-compatible endpoint | Explicit `cache_control` on the static block (no LangChain built-in exists for this path) |
 | Anything else | No markers. OpenAI and Gemini do automatic prefix caching, which the stable prefix already serves. |
+
+**Deep Agents caches `ChatAnthropic` and `ChatBedrockConverse` on its own.** For those two
+clients `createDeepAgent` installs LangChain's caching middleware itself, whatever `promptCache`
+says:
+
+- With caching on, the harness's copy of that middleware replaces Deep Agents', so your lifetime
+  holds.
+- With caching off, Deep Agents' copy stays: the model is still cached, with a 5-minute lifetime.
+- On `ChatAnthropic`, Deep Agents also puts its own breakpoint on the last system block, which is
+  the volatile block.
+- `ChatBedrockConverse` places its system cache point after the last system block, so on Bedrock
+  the cached system prefix includes the volatile block too.
+
+A turn that changes the volatile block therefore re-writes the system prefix on these clients.
+Calls within one state, where the volatile block holds still, read from cache as usual.
 
 An unrecognized model never fails a session. It gets no markers and no
 `warning`; the `prompt-shaping` event names its strategy (`unsupported`). To
@@ -323,6 +343,7 @@ provider serves it from cache like the rest of the prefix.
 
 ## Turning caching off
 
-`ARCHMAX_PROMPT_CACHE=0` removes every cache marker. What the kernel permits is
-decided by the spec and the governance rules, so it reads the same with caching
-on or off.
+`ARCHMAX_PROMPT_CACHE=0` removes every cache marker the harness places. A `ChatAnthropic` or
+`ChatBedrockConverse` model is still cached by the middleware Deep Agents adds for it (see
+[prompt caching](#prompt-caching)). What the kernel permits is decided by the spec and the
+governance rules, so it reads the same with caching on or off.

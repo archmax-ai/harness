@@ -1,7 +1,7 @@
 /**
- * The delegation bounds a dispatcher enforces by default. Declared apart from the
- * dispatcher so a host configuring `bounds` — or a browser-side editor showing
- * what a workflow overrides — reads them without the LangGraph runtime.
+ * The delegation bounds every dispatcher enforces. No `createAgent` option and no
+ * spec setting changes them; they are declared apart from the dispatcher so a
+ * host or a browser-side editor can show them without the LangGraph runtime.
  */
 
 /** Default nesting bound: a sub-workflow session is a whole extra agent session. */

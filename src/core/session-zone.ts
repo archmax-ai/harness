@@ -84,8 +84,8 @@ export class SessionZoneRouter implements BackendProtocolV2 {
     return this.routed.readRaw(filePath);
   }
 
-  grep(pattern: string, path?: string | null, glob?: string | null) {
-    return this.routed.grep(pattern, path, glob);
+  grep(pattern: string, path?: string | null, glob?: string | null, maxCount?: number | null) {
+    return this.routed.grep(pattern, path, glob, maxCount);
   }
 
   glob(pattern: string, path?: string) {

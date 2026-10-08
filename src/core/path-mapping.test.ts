@@ -101,6 +101,20 @@ describe("mountSubtree with a static prefix", () => {
     await mounted.glob("*", undefined);
     expect(seen).toEqual(["null", "undefined"]);
   });
+
+  it("hands grep's match cap to the store", async () => {
+    const { backend } = recordingBackend();
+    const caps: unknown[] = [];
+    const grep = backend.grep.bind(backend);
+    backend.grep = (pattern, path, glob, maxCount) => {
+      caps.push(maxCount);
+      return grep(pattern, path, glob, maxCount);
+    };
+    const mounted = mountSubtree(backend, "skills");
+    await mounted.grep("x", "/refund", null, 2);
+    await mountSubtree(backend, "", { readOnly: true }).grep("x", "/refund", null, 3);
+    expect(caps).toEqual([2, 3]);
+  });
 });
 
 describe("mountSubtree with a dynamic prefix", () => {

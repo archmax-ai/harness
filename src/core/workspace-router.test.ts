@@ -210,12 +210,12 @@ describe("workspace router search posture", () => {
     withContracts(async (ctx, spies) => {
       for (const spelling of ["contracts", "/contracts/", "./contracts"]) {
         expect(await ctx.backend.grep("x", spelling), `grep ${spelling}`).toEqual({ error: REFUSAL });
-        expect(spies.grep).toHaveBeenLastCalledWith("x", "/", undefined);
+        expect(spies.grep).toHaveBeenLastCalledWith("x", "/", undefined, undefined);
       }
       expect(await ctx.backend.glob("**/*.md", "/contracts/2026")).toEqual({ error: REFUSAL });
       expect(spies.glob).toHaveBeenLastCalledWith("**/*.md", "/2026");
-      expect(await ctx.backend.grep("x", "contracts/2026", "*.md")).toEqual({ error: REFUSAL });
-      expect(spies.grep).toHaveBeenLastCalledWith("x", "/2026", "*.md");
+      expect(await ctx.backend.grep("x", "contracts/2026", "*.md", 2)).toEqual({ error: REFUSAL });
+      expect(spies.grep).toHaveBeenLastCalledWith("x", "/2026", "*.md", 2);
     }));
 
   it("returns an addressed search that succeeds in workspace form", () =>
