@@ -97,7 +97,7 @@
     "@langchain/openai": "^1.5.13",
     "@langchain/quickjs": "^0.6.3",
     "deepagents": "^1.13.4",
-    "dotenv": "^17.4.2",
+    "dotenv": "^18.0.5",
     "gray-matter": "^4.0.3",
     "just-bash": "^3.4.2",
     "langchain": "^1.5.4",
