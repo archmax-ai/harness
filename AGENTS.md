@@ -164,8 +164,9 @@ subscriber. Runtime notes are marked tool pairs (`isRuntimeNote`, `runtimeNoteKi
 person's message. The system prompt has eight layers in a fixed order (`src/core/prompt.ts`):
 `AGENTS.md`, consumer `systemPrompt`, the platform prompt (governed agents only),
 workspace zones (rendered from mounts), the graph section (rendered from the spec),
-`WORKFLOW.md`, Deep Agents' tool guidance, and the volatile "Current state" block. Layers 1–6
-are the cacheable prefix; Deep Agents' base prompt is dropped.
+`WORKFLOW.md`, the middleware's tool guidance (`write_todos`; Deep Agents 1.13 adds none for its
+file tools), and the volatile "Current state" block. Layers 1–6 are the cacheable prefix; Deep
+Agents' base prompt is dropped.
 
 ## Directory map
 

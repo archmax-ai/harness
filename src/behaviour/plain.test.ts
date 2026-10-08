@@ -97,4 +97,14 @@ describe("a plain agent", () => {
     expect(description).toContain(READ_FILE_TEXT_ONLY_LINE);
     expect(description).not.toContain("multimodal content blocks");
   });
+
+  // `createDeepAgent` builds its general-purpose subagent and takes no parameter
+  // that leaves it out; with no state to withhold `task`, a plain agent offers it.
+  it("is offered Deep Agents' task tool with its general-purpose subagent, as a plain Deep Agent is", async () => {
+    const { agent, model } = await plainAgent([{ reply: "done" }]);
+    await agent.invoke({ messages: [{ role: "user", content: "hi" }] } as never, { configurable: { thread_id: "gp" } });
+
+    expect(model.calls[0]?.tools).toContain("task");
+    expect(model.boundTools.get("task")?.description).toContain("general-purpose");
+  });
 });

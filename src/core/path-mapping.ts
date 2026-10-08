@@ -141,11 +141,11 @@ export function mountSubtree(
       return backend.readRaw(mapIn(filePath, prefixFor(filePath)));
     },
 
-    async grep(pattern: string, path?: string | null, glob?: string | null) {
+    async grep(pattern: string, path?: string | null, glob?: string | null, maxCount?: number | null) {
       const target = path ?? "";
       const active = prefixFor(target);
       const searchPath = path == null && !active ? path : mapIn(target, active);
-      const res = await backend.grep(pattern, searchPath, glob);
+      const res = await backend.grep(pattern, searchPath, glob, maxCount);
       const matches = res.matches?.map((match) => ({ ...match, path: mapOut(match.path, active) }));
       return matches ? { ...res, matches } : res;
     },

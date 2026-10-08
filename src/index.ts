@@ -262,8 +262,9 @@ export type { ValidationResult, Diagnostic } from "./validate/validate.js";
 export type { GovernanceRule } from "./kernel/kernel.js";
 
 /**
- * The dispatcher's default delegation bounds. Public because a host configuring
- * `bounds` needs to know what it is overriding.
+ * The delegation bounds every dispatcher enforces: how deep sub-workflows nest
+ * and how many of one session's run at once. No option changes them; they are
+ * public so a host can show them.
  */
 export {
   DEFAULT_SUB_WORKFLOW_DEPTH,

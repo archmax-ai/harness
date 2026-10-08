@@ -452,6 +452,15 @@ describe("prompt caching over ChatOpenAI", () => {
     expect(blocks[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "5m" });
     expect(shaping(events)).toMatchObject({ cache: "anthropic-compat" });
   });
+
+  // Deep Agents injects no `task` guidance, so a governed turn has nothing to
+  // prune and nothing to warn about; the event still names what is withheld.
+  it("raises no warning about the withheld task tool's guidance", async () => {
+    const { events } = await oneTurn("gpt-5");
+    const warnings = events.flatMap((e) => (e.type === "warning" ? [e.message] : []));
+    expect(warnings.filter((message) => /prune|\btask\b/i.test(message))).toEqual([]);
+    expect(shaping(events)).toMatchObject({ withheld: ["task"] });
+  });
 });
 
 describe("createAgent run metadata + spec snapshot", () => {

@@ -1756,40 +1756,14 @@ describe("workflow middleware prompt shaping", () => {
     }
   });
 
-  it("prunes the upstream guidance of a withheld built-in", async () => {
-    const prompt = [
-      "# Persona",
-      "",
-      "## Important Task Tool Usage Notes to Remember",
-      "",
-      "Task guidance.",
-      "",
-      "## Filesystem Tools",
-      "",
-      "Keep me.",
-    ].join("\n");
-    const { request, warnings } = await callWithShaping({ withheldBuiltins: ["task"] }, prompt);
-    const staticBlock = request.systemMessage.content[0].text;
-    expect(staticBlock).not.toContain("Task guidance");
-    expect(staticBlock).toContain("Keep me.");
+  // Deep Agents injects no `task` guidance (`createDeepAgent` hands its subagent
+  // middleware no system prompt), so there is nothing to cut: the static block is
+  // the composed prompt, byte for byte, whatever headings it carries.
+  it("hands the composed static prompt to the model unchanged", async () => {
+    const prompt = "# Persona\n\n## Important Task Tool Usage Notes to Remember\n\n\n\nKept as written.\n";
+    const { request, warnings } = await callWithShaping({}, prompt);
+    expect(request.systemMessage.content[0].text).toBe(prompt);
     expect(warnings).toEqual([]);
-  });
-
-  it("warns and leaves the prompt intact when the tool's guidance is absent entirely", async () => {
-    const { request, warnings } = await callWithShaping(
-      { withheldBuiltins: ["task"] },
-      "# Persona\n\nNo upstream sections here.",
-    );
-    expect(request.systemMessage.content[0].text).toBe("# Persona\n\nNo upstream sections here.");
-    expect(warnings.join(" ")).toContain("could not prune");
-  });
-
-  // Nothing selects a different rendering: with no withheld built-ins there is
-  // nothing to prune, and that is the only condition that decides it.
-  it("prunes nothing when no built-in is withheld", async () => {
-    const prompt = "# Persona\n\n## Important Task Tool Usage Notes to Remember\n\nTask guidance.";
-    const { request } = await callWithShaping({ withheldBuiltins: [] }, prompt);
-    expect(request.systemMessage.content[0].text).toContain("Task guidance.");
   });
 
   it("leaves model settings untouched (provider caching is LangChain's middleware)", async () => {

@@ -55,7 +55,6 @@ import {
 } from "./prompt-cache.js";
 import { replyOnlyDirective } from "./parks.js";
 import { renderStateGraph } from "./render-prompt.js";
-import { pruneUndisclosedToolSections } from "./prompt-pruning.js";
 import { blockedMessage, createToolService } from "./tool-service.js";
 import { buildRunnableConfig } from "./runtime-config.js";
 
@@ -94,8 +93,6 @@ export interface StateModels {
 export interface PromptShaping {
   cacheStrategy?: PromptCacheStrategy;
   cacheTtl?: CacheTtl;
-  /** Conditional built-ins this assembly withholds; their upstream prompt guidance is pruned. */
-  withheldBuiltins?: string[];
 }
 
 export interface GovernanceContext {
@@ -343,32 +340,6 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     lifecycleCtx,
   });
 
-  // The static prompt is identical on every call of a run; memoized by incoming
-  // text because a byte difference is a cache miss.
-  const staticPromptCache = new Map<string, string>();
-  function shapeStaticPrompt(text: string): string {
-    const cached = staticPromptCache.get(text);
-    if (cached !== undefined) return cached;
-    let shaped = text;
-    const withheld = ctx.shaping.withheldBuiltins ?? [];
-    if (withheld.length > 0 && text) {
-      const result = pruneUndisclosedToolSections(text, withheld);
-      shaped = result.text;
-      if (result.missingTools?.length) {
-        emit({
-          type: "warning",
-          scope: "workflow",
-          message:
-            `could not prune the upstream prompt guidance for withheld tool(s) ` +
-            `(${result.missingTools.join(", ")}); its text is unchanged and still billed ` +
-            `— the expected section headings may have been reworded upstream`,
-        });
-      }
-    }
-    staticPromptCache.set(text, shaped);
-    return shaped;
-  }
-
   /**
    * Filter a scoped listing (`ls`, `glob`, `grep`) to what the state can reach:
    * the kernel refuses a path inside a disabled skill bundle or a mount the
@@ -552,7 +523,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
 
     applySystemMessage(
       request,
-      shapeStaticPrompt(staticPromptOf(request)),
+      staticPromptOf(request),
       volatileSection(request, workflowState, replyOnly),
       strategy === "anthropic-compat" ? cacheControl(cacheTtl) : undefined,
     );

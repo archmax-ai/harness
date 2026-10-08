@@ -20,8 +20,9 @@
  *     layer is therefore a function of the header alone and does not grow with
  *     the state count.
  *  6. `WORKFLOW.md` — the optional prose addendum, HTML comments stripped.
- *  7. Deep Agents' tool guidance — the file tools' and `write_todos`' sections,
- *     appended by their middleware.
+ *  7. Middleware tool guidance — the `write_todos` section, appended by
+ *     langchain's todo middleware (Deep Agents 1.13 appends no file-tool
+ *     guidance), and on a plain agent Deep Agents' skills section.
  *  8. The volatile "Current state" block — the current date and time, then the
  *     active state's instructions, skills, mounts, variables, argument
  *     constraints and its own outgoing transitions, appended per model call by

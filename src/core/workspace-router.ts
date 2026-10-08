@@ -1,10 +1,11 @@
-import type {
-  BackendProtocolV2,
-  CompositeBackend,
-  DeleteResult,
-  FileDownloadResponse,
-  FileInfo,
-  FileUploadResponse,
+import {
+  applyGrepMaxCount,
+  type BackendProtocolV2,
+  type CompositeBackend,
+  type DeleteResult,
+  type FileDownloadResponse,
+  type FileInfo,
+  type FileUploadResponse,
 } from "deepagents";
 import { binaryReadError } from "./binary-read.js";
 import { downloadViaReadRaw } from "./raw-download.js";
@@ -38,7 +39,10 @@ import type { MountPrefixes } from "./mounts.js";
  *     declared `searchable: false` is therefore absent from the composite that
  *     serves searches, and a search addressed at it (the mount or a path inside
  *     it) is delegated to its route directly, so the backend's own answer —
- *     matches or refusal — reaches the caller verbatim.
+ *     matches or refusal — reaches the caller verbatim. A grep's `maxCount`
+ *     reaches every route, and the total is capped on both paths (the
+ *     composite's own cap, or the router's on the direct one), so a store that
+ *     ignores the cap still answers within it.
  *  5. **Text-only reads.** A `read` whose result is binary — a non-text MIME
  *     type, bytes, or NUL in decoded text — is answered with the binary notice
  *     (`core/binary-read.ts`) instead of content, so no caller of `read_file`
@@ -206,18 +210,22 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
       return file ? file.backend.readRaw(file.key) : composite.readRaw(target);
     },
 
-    async grep(pattern: string, path?: string | null, glob?: string | null) {
-      if (path == null) return searchComposite.grep(pattern, path, glob);
+    async grep(pattern: string, path?: string | null, glob?: string | null, maxCount?: number | null) {
+      if (path == null) return searchComposite.grep(pattern, path, glob, maxCount);
       const target = canonical(path);
       const direct = addressedUnsearchable(target);
-      if (!direct) return searchComposite.grep(pattern, target, glob);
-      const res = await direct.backend.grep(pattern, direct.routePath, glob);
+      if (!direct) return searchComposite.grep(pattern, target, glob, maxCount);
+      const res = await direct.backend.grep(pattern, direct.routePath, glob, maxCount);
       if (res.error) return res;
-      // Re-apply the route prefix as the composite does for its own routes.
-      return {
-        ...res,
-        matches: (res.matches ?? []).map((m) => ({ ...m, path: `/${direct.name}${m.path}` })),
-      };
+      // Re-apply the route prefix as the composite does for its own routes, and
+      // its cap too: a store may ignore `maxCount`.
+      return applyGrepMaxCount({
+        result: {
+          ...res,
+          matches: (res.matches ?? []).map((m) => ({ ...m, path: `/${direct.name}${m.path}` })),
+        },
+        maxCount,
+      });
     },
 
     async glob(pattern: string, path?: string) {

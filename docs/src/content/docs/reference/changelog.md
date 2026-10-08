@@ -9,6 +9,39 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.4.2
+
+- **`grep`'s `max_count` reaches the store.** Deep Agents passes a search's cap to the backend as a
+  fourth argument, and the workspace's wrappers took three, so neither the agent's `max_count` nor
+  Deep Agents' default of 1,000 matches ever applied. The store returned every match, and only Deep
+  Agents' 80,000-character limit on the answer cut it short. The session zone, every mount and
+  every `mountSubtree` mount now forward it, and a search addressed at a `searchable: false` mount
+  is capped even when its store ignores the cap. **For hosts:** a custom store's `grep` now
+  receives `maxCount`. See
+  [session storage](/reference/public-api/#session-storage-sessionstore-and-the-sessions-handles).
+- **No more "could not prune" warning.** The harness cut Deep Agents' `task` guidance out of the
+  system prompt, but Deep Agents 1.13 never adds that guidance. The pruning found nothing and warned
+  on every governed assembly. It is gone. The prompt is unchanged with one exception: the pruning
+  also collapsed runs of three or more line breaks, so authored prose holding such a run now
+  reaches the model as written. The `prompt-shaping` event still names the withheld tools.
+- **Deep Agents 1.13.4 or later.** The `read_file` description the harness rewrites exists only in
+  1.13, so the dependency floor is now `^1.13.4`. The harness also stopped passing
+  `generalPurposeAgent: false`, which is not a `createDeepAgent` parameter and never had an effect.
+  As before, a plain agent is offered Deep Agents' `task` tool with its general-purpose subagent,
+  and a governed agent never is. See
+  [`Agent`, in detail](/reference/public-api/#agent-in-detail).
+- **What Deep Agents adds per model is now documented and pinned by tests.**
+  - A model with a Deep Agents harness profile gets that profile's prompt suffix, and
+    `createDeepAgent` has no per-agent opt-out. A Codex model reached through `initChatModel` is
+    told to "bias to action", against every human state. The env-configured `ChatOpenAI` is not
+    affected: Deep Agents reads no model id from it.
+  - `ChatAnthropic` and `ChatBedrockConverse` are cached by Deep Agents' own middleware even with
+    `promptCache` off. On `ChatAnthropic`, Deep Agents also places a breakpoint on the volatile
+    block.
+
+  See [what the model reads](/guides/token-efficiency/#what-the-model-reads-in-order) and
+  [prompt caching](/guides/token-efficiency/#prompt-caching).
+
 ## 0.4.1
 
 - **A store without the protocol's optional methods works again.** Deep Agents makes

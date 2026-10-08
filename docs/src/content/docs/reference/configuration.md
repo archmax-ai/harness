@@ -80,7 +80,7 @@ priced at the cache-read rate below. See
 
 | Variable | Description |
 | --- | --- |
-| `ARCHMAX_PROMPT_CACHE` | Master switch (default on). `0` removes every cache marker. |
+| `ARCHMAX_PROMPT_CACHE` | Master switch (default on). `0` removes every cache marker the harness places; Deep Agents still caches a `ChatAnthropic` or `ChatBedrockConverse` model. |
 | `ARCHMAX_PROMPT_CACHE_TTL` | Cache lifetime: `5m` (default) or `1h`. A 1-hour lifetime costs more per cache write and pays off for sessions that pause. |
 
 Precedence runs the same way: the `promptCache` option to `createAgent`, then

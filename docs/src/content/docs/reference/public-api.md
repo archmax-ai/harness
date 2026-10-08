@@ -312,7 +312,10 @@ A plain agent behaves like a governed one in most other respects. It honours
 `middleware`. Every `invoke`, `stream` and `streamEvents` on it is bound to the
 session named by `configurable.thread_id`, and its `scratchpad/…` and offload
 paths land under `<sessionId>/` in the session store just as a governed session's
-do. A reserved or escaping id is refused before anything is written.
+do. A reserved or escaping id is refused before anything is written. Like any
+plain Deep Agent, it is offered Deep Agents' `task` tool with Deep Agents'
+general-purpose subagent, which `createDeepAgent` takes no parameter to leave
+out. No state of a governed agent offers `task`.
 
 An ungoverned assembly has `agent.workflow === undefined`, so `send`,
 `resolveTrigger` and `decide` are unreachable, and misuse is a compile-time type
@@ -559,7 +562,7 @@ const agent = await createAgent({
 
   A search addressed **at** the mount, or at a path inside it, still reaches the
   backend with the route-relative path. Its answer comes back verbatim, matches
-  or the backend's own `{ error }`. Listing and reading behave as they always
+  (capped at the call's `max_count`) or the backend's own `{ error }`. Listing and reading behave as they always
   do, and the prompt marks the mount "browse only".
 
   The resolved names arrive as `MountPrefixes.unsearchable`. The kernel and
@@ -688,6 +691,12 @@ degrades instead of throwing.
   `edit` otherwise. A mount whose store has none refuses that file with
   `permission_denied`.
 - `delete` answers a store without it with an error.
+
+**`grep`'s match cap reaches the store.** Deep Agents passes a `grep` call's
+`max_count` (1,000 when the agent sets none) to the backend as the fourth
+argument, `maxCount`, and every layer of the workspace forwards it. A store may
+stop at the cap and mark the result `truncated: true`; the workspace caps one
+that ignores it.
 
 `copy_file` and `move_file` write through the backend's text `write` first,
 under Deep Agents' convention:
@@ -868,12 +877,13 @@ const agent = await createAgent({
 The model-facing payload has **one** shape, and every option and spec setting
 leaves that rendering alone. The static prefix holds nothing of the graph's
 position: the active state's instructions, edges, markers and hooks arrive per
-turn. `task` is withheld in every state, with that tool's upstream guidance
-pruned along with it.
+turn. `task` is withheld in every state.
 
 - **`promptCache`** marks the stable prefix so the provider serves it from cache.
   On by default. `{ enabled: false }`, `settings.prompt_cache`, or
-  `ARCHMAX_PROMPT_CACHE=0` turn it off.
+  `ARCHMAX_PROMPT_CACHE=0` turn it off, except on `ChatAnthropic` and
+  `ChatBedrockConverse`, which Deep Agents caches on its own. See
+  [prompt caching](/guides/token-efficiency/#prompt-caching).
 - **`pricing`** supplies USD-per-1M-token rates so `costUsd` appears on usage
   events, in session artifacts, and in the CLI footer. An unpriced model reports
   its tokens and leaves cost out, since cost is measured from the rates you give.
