@@ -41,6 +41,7 @@ import {
   type VariableStore,
 } from "../machine/variables.js";
 import { decisionRecordFor, inputRecordFor } from "./parks.js";
+import { fileValueIssues, type FileValueCheck } from "./signature-checks.js";
 import {
   currentWorkflowState,
   NO_PENDING_FAILURE,
@@ -210,7 +211,8 @@ export const setVariablesSchema = z.object({
  */
 const TITLE_GUIDANCE =
   " `title` is reserved for a short single-line label naming this run's task: set it " +
-  "early, update it when the task changes, and never lock it.";
+  "early, rename it only when the whole conversation has moved to a different subject " +
+  "(a follow-up on the same one keeps it), and never lock it.";
 
 /**
  * Every control tool, in registration order. Descriptions are paid for on every
@@ -233,8 +235,9 @@ export function createControlTools(opts: { child?: boolean } = {}): StructuredTo
       "Start the workflow over from the state the conversation began in, keeping the " +
         "conversation and any work already written. Use it when this state cannot serve " +
         "what was asked: a wrong branch, a path no transition from here reaches, or a " +
-        "follow-up arriving in a terminal state, where the run already finished. Call it " +
-        "before answering, not after.",
+        "follow-up arriving in a terminal state the run moved into and finished in. Call it " +
+        "before answering, not after. Not needed when this state can serve the message, and " +
+        "never from the state the conversation began in.",
       resetSchema,
     ),
     declaration(
@@ -724,6 +727,8 @@ export interface SetVariablesOutcome {
 export function handleSetVariables(
   request: VariableToolRequest,
   machine?: WorkflowMachine,
+  /** Why a `file` return being written names no file the session may read ({@link fileReturnsRefusal}). */
+  fileRefusal?: string,
 ): SetVariablesOutcome {
   const refuse = (text: string) => ({ message: refusal(SET_VARIABLES_TOOL, request.toolCallId, text) });
   const parsed = setVariablesSchema.safeParse(request.args);
@@ -765,6 +770,7 @@ export function handleSetVariables(
 
   const mistyped = machine ? mistypedReturns(machine, request.state, variables) : undefined;
   if (mistyped) return refuse(`${SET_VARIABLES_TOOL} rejected: ${mistyped} Nothing was written.`);
+  if (fileRefusal) return refuse(`${SET_VARIABLES_TOOL} rejected: ${fileRefusal} Nothing was written.`);
 
   const locked = lock === true;
   const delta: VariableStore = {};
@@ -806,6 +812,35 @@ function mistypedReturns(
   return (
     `trigger '${trigger}' declares ${invalid.length === 1 ? "this return" : "these returns"} typed: ` +
     `${invalid.map((issue) => issue.message).join("; ")}. Write a value of the declared type.`
+  );
+}
+
+/**
+ * Why a write names, for a `file` return of the current turn's trigger, a path
+ * that is a folder, holds nothing, or the session may not read — or
+ * `undefined`. Asynchronous, so it is decided before the write and handed to
+ * {@link handleSetVariables}; a value of the wrong shape is
+ * {@link mistypedReturns}' to refuse.
+ */
+export async function fileReturnsRefusal(
+  machine: WorkflowMachine,
+  state: unknown,
+  args: Record<string, unknown>,
+  check: FileValueCheck,
+): Promise<string | undefined> {
+  const trigger = readWorkflowState(state).trigger?.id;
+  const written = args.variables;
+  if (!trigger || !written || typeof written !== "object" || Array.isArray(written)) return undefined;
+  const values = written as Record<string, unknown>;
+  const entries = (machine.signatureForTrigger(trigger)?.returns ?? []).filter(
+    (entry) => entry.type === "file" && Object.hasOwn(values, entry.name),
+  );
+  if (entries.length === 0) return undefined;
+  const issues = await fileValueIssues(entries, values, check);
+  if (issues.length === 0) return undefined;
+  return (
+    `trigger '${trigger}' declares ${issues.length === 1 ? "this return" : "these returns"} as a file: ` +
+    `${issues.map((issue) => issue.message).join("; ")}. Write the file first, or name one this session may read.`
   );
 }
 

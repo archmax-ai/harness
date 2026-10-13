@@ -21,7 +21,7 @@ import {
   type VariableStore,
 } from "../machine/variables.js";
 import { decisionRecordFor } from "./parks.js";
-import { requiresRefusal } from "./signature-checks.js";
+import { requiresFileIssues, requiresRefusal, type FileValueCheck } from "./signature-checks.js";
 import { writeSpecSnapshotIfAbsent } from "./snapshot.js";
 import {
   NO_PENDING_FAILURE,
@@ -47,6 +47,8 @@ export interface TurnBoundaryContext {
   defaultTrigger?: { id: string };
   /** Host-seeded run variables, applied at each turn boundary (already locked). */
   seededVariables?: VariableStore;
+  /** The `file` type's runtime check for a session in a state; omitted, a `file` value is held to its shape alone. */
+  files?: (state: string, variables: VariableStore) => FileValueCheck;
 }
 
 /**
@@ -126,7 +128,15 @@ export async function openTurn(
   if (typeof seededTitle === "string") emit({ type: "title-set", title: seededTitle });
 
   // The entry half of the trigger's signature: a run that cannot satisfy its own contract reaches no model.
-  const refusal = requiresRefusal(machine, trigger.id, openingVariables);
+  const fileIssues = ctx.files
+    ? await requiresFileIssues(
+        machine,
+        trigger.id,
+        openingVariables,
+        ctx.files(position, { ...readVariables(state), ...openingVariables }),
+      )
+    : [];
+  const refusal = requiresRefusal(machine, trigger.id, openingVariables, fileIssues);
   if (refusal) return refuse(refusal, { variables: openingVariables });
 
   emit({ type: "state-enter", state: position });

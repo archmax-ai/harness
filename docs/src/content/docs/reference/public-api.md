@@ -33,7 +33,7 @@ is the same binding, and each light subpath has its own section below.
 
 ### Errors
 
-`WorkflowLoadError` `WorkflowDisabledError` `UnknownTriggerError` `ReservedToolNameError` `ToolPathsError` `InvalidVariableNameError` `MountCollisionError` `SessionStoreRequiredError` `SessionStoreIdError` `SessionStoreCapabilityError` `AuthoringBackendExposedError` `WorkspaceRootRequiredError` `UnsupportedRuntimeContractError` `SessionNotParkedError` `InvalidDecisionTargetError` `EmptyMessageError` `SessionNotAwaitingInputError` `MissingDeliveryTriggerError` `SessionNotResumableError`
+`WorkflowLoadError` `WorkflowDisabledError` `UnknownTriggerError` `ReservedToolNameError` `ToolPathsError` `InvalidVariableNameError` `MountCollisionError` `SessionStoreRequiredError` `SessionStoreIdError` `SessionStoreCapabilityError` `AuthoringBackendExposedError` `WorkspaceRootRequiredError` `UnsupportedRuntimeContractError` `SessionNotParkedError` `InvalidDecisionTargetError` `EmptyMessageError` `InvalidTurnFileError` `SessionNotAwaitingInputError` `MissingDeliveryTriggerError` `SessionNotResumableError`
 
 ### Workspace composition
 
@@ -88,7 +88,7 @@ Every type the barrel exports. A type reachable from a public signature is itsel
 public, because an exported function is usable only when you can name what it
 returns.
 
-`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
+`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnFile` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
 
 ## `@archmax-ai/harness/spec`
 
@@ -199,8 +199,8 @@ if (issues.length > 0) return badRequest(issues.map((issue) => issue.message));
 ```
 
 `signatureJsonSchema` yields `{ type: "object", properties, required }`: one property
-per entry in declaration order, every name required, `date` and `date-time` as a
-string with that `format`, and an untyped entry as `{}`. `signatureValueIssues`
+per entry in declaration order, every name required, `date`, `date-time` and `file`
+as a string with that `format`, and an untyped entry as `{}`. `signatureValueIssues`
 returns one issue per missing name (`kind: "missing"`) and per value that does not
 conform (`kind: "invalid"`, with the declared `type` and the JSON kind `found`). It
 never coerces, so convert form text before you validate it: the string `"4"` is not
@@ -293,6 +293,12 @@ if (agent.workflow) {
   outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed hook)
   outcome.exit;          // SessionExit on a turn the agent ended: { success: true } when "completed",
                          // { success: false, code, reason } when "failed" (the agent called archmax_raise)
+  // A turn may hand the session files: each is placed in its scratchpad/attachments/
+  // and its variable seeded, locked, with the path — what a `file` input takes.
+  await agent.workflow.send(sessionId, {
+    message: "Reconcile this invoice",
+    files: { invoice: { name: "invoice.pdf", content: bytes } },
+  });
   // …and the three resumes, as payloads of the same call or as their own verbs:
   await agent.workflow.send(sessionId, { decision: { target: "approve" } });
   await agent.workflow.send(sessionId, { delivery: { trigger: { id: "email_reply" }, variables } });
@@ -301,6 +307,22 @@ if (agent.workflow) {
   const answer = await agent.workflow.reply(sessionId, "Any news?"); // parked session, still parked
 }
 ```
+
+**Handing a turn files.** `TurnInput.files` maps a variable to a `TurnFile`,
+`{ name, content }`, where `content` is the file's exact bytes. Before the turn
+starts, the runtime places each file in the session's `scratchpad/attachments/`
+under `name`, or under `name` with a `-1`, `-2`, … suffix before the extension when
+the name is taken, so a later turn never overwrites an earlier file. It then seeds
+the variable, locked, with the placed path, exactly as `variables` would. That is
+the value a [`file` entry](/reference/machine-spec/#the-signature-requires-and-returns)
+of the trigger's `requires` takes. A delivery to a session parked with
+`archmax_wait` places them the same way. `send` throws `InvalidTurnFileError`
+before anything is written when a variable name is invalid, when a variable is
+also given in `variables`, when `name` is not one plain file name, or when the
+session is parked at a human state, which takes a reply only. It also throws it
+when the session store cannot hold the bytes exactly (a non-text file in a store
+without `uploadFiles`). `sessions.seed` writes files without seeding anything;
+`files` is the path for a `file` input.
 
 **Ungoverned by declaration.** Omitting `workflow` still *looks for* the default
 workflow (`DEFAULT_WORKFLOW`) on the authoring backend, and governs the agent

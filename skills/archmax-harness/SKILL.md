@@ -60,7 +60,7 @@ then verify. Do not write a file, validate, and discover the next file.
    (another workflow, a host's MCP tool or form), give its trigger a
    `description` for the caller and a `requires`/`returns` signature, typing an
    entry (`{ name, type, description }`; `string` `integer` `number` `boolean`
-   `date` `date-time` `object` `array`) where the caller must build or read the
+   `date` `date-time` `object` `array` `file`) where the caller must build or read the
    value. The runtime holds typed entries at start, at `archmax_set_variables`
    and at completion ([`references/workflow-schema.md`](references/workflow-schema.md)).
    Decide how the work can **fail**, too: the agent ends a session it cannot
@@ -230,7 +230,7 @@ Rules that follow:
 ```bash
 archmax validate [workflow] [--json]            # offline; run after every structural edit
 archmax test [workflow] [filter] [--json]       # cases; filter = case-id substring
-archmax run <workflow> "<prompt>" [--session <id>] [--trigger <id>] [--variables '<json>']
+archmax run <workflow> "<prompt>" [--session <id>] [--trigger <id>] [--variables '<json>'] [--file <var>=<path>]...
 archmax sessions [session] [--json]             # list, or one session's variables (value + locked)
 archmax decide <session> --to <state> [--comment "…"]   # resume a human state
 archmax reply <session> "<message>"             # message a parked run; it stays parked

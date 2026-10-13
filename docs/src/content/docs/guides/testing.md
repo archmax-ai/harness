@@ -399,6 +399,21 @@ The default target wires the middleware for you, and a host-supplied target
 must [wire it itself](#running-cases-from-a-host). A case that declares no mocks
 runs against any workflow-governed target.
 
+A mocked sub-workflow is held to its target's signature, `file` returns included.
+A `file` return names a file in the case's own session, seeded with `workspace:`.
+The runtime copies it into `scratchpad/attachments/` exactly as it copies a real
+child's file back, so the case sees the path a real call would give. A mock
+naming a file that is not there fails the call:
+
+```yaml
+workspace:
+  scratchpad/fixtures/report.json: { total: 412.5 }
+mocks:
+  - tool: archmax_workflow_reconcile
+    result:
+      returns: { report: scratchpad/fixtures/report.json }   # arrives as scratchpad/attachments/report.json
+```
+
 ## Start conditions: trigger, variables, and workspace
 
 A case declares the conditions its session starts from on the document itself.

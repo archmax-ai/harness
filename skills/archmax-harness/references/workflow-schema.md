@@ -557,7 +557,9 @@ states:
 - **`type`** is one of `string`, `integer` (no fractional part), `number`
   (finite), `boolean`, `date` (RFC 3339 `YYYY-MM-DD`, a real calendar day),
   `date-time` (RFC 3339 with a mandatory `Z`/`±hh:mm` offset), `object` (not an
-  array) or `array`. Nothing is coerced (`"4"` is not an `integer`) and a typed
+  array), `array` or `file` (a path from the workspace root, such as
+  `scratchpad/attachments/invoice.pdf` or `skills/billing/assets/template.pdf`; see
+  [Passing files](#passing-files)). Nothing is coerced (`"4"` is not an `integer`) and a typed
   entry never takes `null`. It is held **at the start** (a mistyped seed is
   refused before any model call), **at the write** (`archmax_set_variables` of a
   mistyped typed return of the current trigger is a correctable refusal,
@@ -565,6 +567,17 @@ states:
   run — in practice a script or hook write). There are no enums, item or
   property schemas, ranges or optional inputs. An unknown `type`, an unknown
   entry key (`default:`) or an empty `description` fails load.
+- **A `file` value must name a readable file.** The pure rule checks only the
+  path's shape (a host runs it in a browser). At the start, at the write, at
+  completion and at a delegation call the runtime also requires a **file** (not a
+  folder) at the path that the session may read **on runtime authority** — the
+  rules a hook is bound by: zone rules (`checkpoints/`, `artifacts/`, `_specs/`
+  never) and every workflow-wide `forbid_always`, inherited ones included; the
+  state's allow list and mount/skill grants do not narrow it. So tell the agent to
+  write the file *before* it sets a `file` return: `archmax_set_variables` refuses
+  a path with nothing there. A host hands a file in with `TurnInput.files` (CLI:
+  `archmax run … --file invoice=./invoice.pdf`), which places it under
+  `scratchpad/attachments/` and seeds the path.
 - **When to type.** Type an entry when something outside the session reads the
   contract: a delegating model that must build the argument, a host publishing an
   MCP tool or a start form. Leave it bare when any value will do. Typing a
@@ -1015,7 +1028,8 @@ the host at assembly (`variables`, every seed locked), the agent mid-run
 
 `trigger` holds the current turn's trigger id. `title` holds a short one-line label
 naming the task the run is doing; the platform system prompt asks the agent to set
-one as its first activity and update it when the task changes significantly, so a
+one as its first activity, and to rename it only when the whole conversation has
+moved to a different subject (a follow-up on the same subject keeps it), so a
 host can name a run instead of showing a session id. A sub-workflow's child is not
 asked — its title names a session nothing lists and is never returned — so its
 prompt leaves the step out; do not write "set the title" into a child's state
@@ -1340,7 +1354,7 @@ enrich:
   delegation may happen is decided by the caller's `tools.allow` entry. A target
   with no `manual` entry has no state to start in and fails closed. `session:` and
   `message:` on that trigger are host-facing keys a delegation ignores: a sub-run
-  shares its parent's session, and carries no message. `sub-workflow` is no longer
+  is its own session, derived from its caller's, and carries no message. `sub-workflow` is no longer
   a trigger id — load and `validate` report it with the rename.
 - **Declare the child's signature** on that trigger — the contract, enforced both
   ways and at both ingresses:
@@ -1400,14 +1414,17 @@ enrich:
   state's work. A workspace overriding the platform prompt
   (`.platform/system/GRAPH_STATE.md`) keeps that by wrapping what children skip
   in `<!-- top-level-only -->` … `<!-- /top-level-only -->` lines.
-- **Same agent, isolated context, shared session.** Same model, backend, host
+- **Same agent, isolated context, own session.** Same model, backend, host
   tools; its **own** grading rubrics, from its own spec; a fresh transcript; the child's *own* per-state
-  `tools.allow`. It shares the run's session, so it writes `scratchpad/…` and
-  `scratchpad/…` exactly as the parent does and the parent reads them afterwards.
+  `tools.allow`. It is a separate session (`<parent>~<state>:<workflow>:<n>`)
+  with its own checkpoints and its own `scratchpad/`: a path it reads or writes
+  resolves inside its own session, so it can neither see nor overwrite a file of
+  its caller's, and concurrent sub-runs cannot collide on a path.
 - **Nothing crosses implicitly.** Down: only the arguments the call passed —
   the calling run's own variables are not copied. Up: only the result message
-  and the files. Everything the child sets is discarded when it finishes.
-- **Give each concurrent sub-run its own output path** — they share one run zone.
+  and the declared returns. Everything else the child sets or writes stays in its
+  session. The only files that cross are runtime-made copies of `file` arguments
+  and `file` returns (see "Passing files" below).
 - **Bounds** — the dispatcher's `bounds: { maxDepth: 3, maxConcurrent: 4 }`. No longer a spec key: the strict schema rejects `settings.sub_workflows` by name.
   Excess concurrency queues; depth and cycles are refused.
 - **Params are the sub-run's initial variables** — same construction, same name
@@ -1434,6 +1451,46 @@ parent reading a field the child does not return is an **error**; a state whose
 `params:` do not cover the target's `requires:` is a **warning** (the advance may
 still carry it), and a fan-out is exempt from that warning because its
 entries' keys are not knowable statically.
+
+### Passing files
+
+A sub-run's `scratchpad/` is not its caller's, so a bare path string returned by a
+child (`returns: [result_file]`, untyped) names a file the caller **cannot
+read**. Type the entry `file` instead, and the runtime copies the file across:
+
+```yaml
+# the child
+triggers:
+  manual:
+    requires: [{ name: invoice, type: file }]
+    returns: [{ name: report, type: file }]
+```
+
+- **Down.** The caller passes any path in its workspace (`scratchpad/inbox/a.pdf`,
+  `skills/billing/assets/template.pdf`). Before the child starts, the runtime
+  copies the exact bytes into the **child's** `scratchpad/attachments/` (same name;
+  two arguments with one name take `-1`, `-2`) and seeds the child with that path,
+  so its opening message shows it. The child edits its own copy and never the
+  caller's file. The argument is a `read` path argument of the delegation tool, so
+  a `paths:` guard on the allow entry and the zone and mount rules bind it. An
+  argument naming nothing is refused `invalid-param` before the child runs. A
+  failed call's record names the caller's path.
+- **Up.** On completion, each `file` return the child set is copied into the
+  **caller's** `scratchpad/attachments/` and the result names that path. A taken
+  name gets the lowest free `-1`, `-2`, … before the extension (`report-1.pdf`), so
+  repeated or parallel calls never overwrite each other or the caller's files. A
+  return whose file is gone at completion fails the call `invalid-return`.
+- **No laundering.** A `file` value must name a file the session may read on
+  runtime authority, and a child inherits every ancestor's `forbid_always`. So a
+  child cannot hand back a file its caller's workflow denies: its agent's write
+  is refused, and a script's write is rejected at completion.
+- **Instructions to write.** Tell the child to write the file *first* and then set
+  the return to its path. Tell the caller the returned path is under
+  `scratchpad/attachments/`. Name files for what they hold (`<order_id>.json`):
+  the name survives the copy.
+- **Mocks and cases.** A mocked `file` return names a file in the case's own
+  session (seed it with `workspace:`), and it arrives copied into
+  `scratchpad/attachments/` like a real one. Assert the copy's path.
 
 ### A parked run may speak, never act
 

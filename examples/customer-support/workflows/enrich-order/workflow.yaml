@@ -49,10 +49,16 @@ states:
     # supply, and what this machine guarantees it has set by the time it
     # finishes. Both are enforced whichever ingress started the run — a dispatch
     # (or a CLI run) missing `order_id` is refused before this workflow is
-    # composed, and a run that finishes without both returns set is rejected
-    # rather than handing a caller half a contract. `archmax validate` checks a
-    # caller against the same declaration, so a caller reading a field this
-    # machine does not produce is caught before any model call.
+    # composed, and a sub-run that finishes without both returns set answers its
+    # caller with the ones it set and a note naming the rest. `archmax validate`
+    # checks a caller against the same declaration, so a caller reading a field
+    # this machine does not produce is caught before any model call.
+    #
+    # `enrichment_file` is typed `file`. A sub-run is its own session with its
+    # own `scratchpad/`, so a bare path to the file it wrote would mean nothing
+    # to its caller. As a `file` return, the runtime copies the file into the
+    # caller's `scratchpad/attachments/` when the sub-run finishes and hands the
+    # caller that path; a name already taken there gets a `-1`, `-2`, … suffix.
     #
     # Names only, deliberately: what each variable *holds* is said by the state
     # instructions that set it, which is where every other variable's meaning
@@ -62,13 +68,15 @@ states:
     triggers:
       manual:
         requires: [order_id]
-        returns: [enrichment_file, delayed]
+        returns:
+          - { name: enrichment_file, type: file, description: "The order's enrichment as JSON." }
+          - delayed
     instructions: >-
       Your opening message gives `order_id`. Read skills/order-data/assets/orders.json and find
       that order. Write scratchpad/enrichment/<order_id>.json as
       { "id": "<order id>", "customer": "<customer>", "status": "<status>",
-      "delayed": <true|false> } - the file name carries the order id so
-      concurrent sub-runs never overwrite each other.
+      "delayed": <true|false> } - the file name carries the order id, so the
+      copy your caller receives is named for its order.
 
       Then set the two variables this workflow returns, with
       archmax_set_variables: `enrichment_file` is the path you just wrote, and
@@ -80,8 +88,6 @@ states:
       is terminal - stop once the file is written, the returns are set, and you
       have summarized.
     # No `tools` block. The enrichment file lands under `scratchpad/`, the run's
-    # single working area, which every state may write — so a path guard naming
-    # `${{order_id}}` there would look like it isolated one sub-run from another
-    # without doing so. What actually keeps concurrent sub-runs from colliding is
-    # that each writes its own file name (and each has its own run folder to
-    # begin with, since a sub-run is its own session).
+    # single working area, which every state may write. Concurrent sub-runs
+    # cannot collide there: each is its own session with its own `scratchpad/`,
+    # and the copies their caller receives never overwrite one another.

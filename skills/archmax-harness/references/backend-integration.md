@@ -333,9 +333,11 @@ turn ended in — the position, variables, transcript and files are already ther
 message.
 
 The runtime does not reposition a later turn, so nothing is injected into the
-transcript to explain a jump. When a turn needs a path the current state cannot
-reach, the agent calls `archmax_reset` to return to the state the conversation began
-in (available in every state). To continue *mid-state* instead — inside the state
+transcript to explain a jump. When the current state can serve the new message, the
+agent answers there without a reset. That includes a terminal state that is also the
+state the conversation began in, such as a one-state chat workflow. When a turn needs
+a path the current state cannot reach, the agent calls `archmax_reset` to return to
+the state the conversation began in (available in every state). To continue *mid-state* instead — inside the state
 that stopped, with the arrival in its transcript — the turn must park rather than
 finish.
 
@@ -378,7 +380,7 @@ const outcome = await agent.workflow!.send(sessionId, { message: "Refund the ord
 
 - `signatureJsonSchema(entries)` → `{ type: "object", properties, required }`:
   one property per entry in declaration order, every name required,
-  `date`/`date-time` as `{ type: "string", format }`, an untyped entry as `{}`,
+  `date`/`date-time`/`file` as `{ type: "string", format }`, an untyped entry as `{}`,
   an entry's `description` carried over. It adds no `additionalProperties`; set
   it for your own ingress.
 - `signatureValueIssues(entries, values)` → one issue per missing name and per
@@ -387,6 +389,19 @@ const outcome = await agent.workflow!.send(sessionId, { message: "Refund the ord
   `"4"` to `4` before it validates or seeds.
 - A trigger's `description` is written for the caller. Use it as the MCP tool
   or operation description. The session's own model never sees it.
+- **A `file` entry** (`format: "file"` in the schema) takes a workspace path. To
+  hand a session an uploaded file, pass it on the turn rather than writing into
+  the store yourself:
+  `send(sessionId, { message, files: { invoice: { name: "invoice.pdf", content: bytes } } })`.
+  The runtime places the bytes in the session's `scratchpad/attachments/` (a taken
+  name gets `-1`, `-2`, …), seeds `invoice`, locked, with the placed path, and the
+  turn boundary then checks that the file is there and readable. `send` throws
+  `InvalidTurnFileError`, before anything is written, for a bad variable or file
+  name, a variable also given in `variables`, a session parked at a human state, or
+  bytes the store cannot hold exactly (a non-text file needs a store with
+  `uploadFiles`). `signatureValueIssues` checks only a `file` value's shape, so a
+  start form validates the path the upload will produce, or skips the entry and
+  lets `files` supply it.
 - A host that reads specs itself must read `requires`/`returns` through
   `normalizeSignature` (both spellings → `{ name, type?, description? }[]`),
   never as `string[]`: an entry may be an object. Hosts must be on the release
@@ -708,7 +723,7 @@ real). A bespoke target that intercepts by other means sets
 `capabilities.toolMocks` itself. Mockless cases run against any
 workflow-governed target.
 
-**Sub-workflows inherit the assembly.** When a workflow delegates (by advancing
+**Sub-workflows inherit the assembly.** When a workflow delegates (by calling
 an `archmax_workflow_<slug>` tool), the child runtime is
 composed from the *same* resolved inputs as the parent — model and
 `modelFactory`, `backend` and `mounts`, `sessionStore` and `checkpointer`, host
@@ -721,11 +736,14 @@ never delegated to is never loaded, and one delegated from many places is
 composed once. A child whose spec is broken surfaces as a *dispatch* failure, not
 an assembly failure — a parent still assembles.
 
-The child runs on the parent's **session id** (which is what gives it the same
-run zone) under a nested checkpoint namespace, so `sessions.list()` reports one
-session and the parent session's metrics include the child's tokens.
-`capabilities.subWorkflows` is stamped `true` for a governed assembly and `false`
-for the plain one.
+The child runs as a **separate session**, `<parent>~<state>:<workflow>:<n>`, in
+the same session store, with its own checkpoints, its own token accounting and its
+own file space: its `scratchpad/` is not its caller's, so it can neither read nor
+overwrite a file of its caller's. `sessions.list()` reports it beside its caller
+with `parentSessionId` naming the caller, and `sessions.delete` removes it by its
+own id. The only files that cross are the runtime's copies of declared `file` arguments and
+`file` returns. `capabilities.subWorkflows` is stamped `true` for a governed
+assembly and `false` for the plain one.
 
 Omit both options and behavior is identical to `archmax test`. Cases run
 sequentially (`tests.maxConcurrency` above 1 is rejected, not silently

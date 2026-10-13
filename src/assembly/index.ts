@@ -52,7 +52,8 @@ import { resolveToolPaths, type ToolPaths } from "../machine/tool-paths.js";
 import { toolPathsFromMetadata } from "../workflow/agent-tools.js";
 import type { ImageReadOptions } from "./image-reads.js";
 import { DEFAULT_TRIGGER_ID, resolveTrigger, type TriggerInput } from "../machine/triggers.js";
-import { buildSeededVariables } from "../machine/variables.js";
+import { buildSeededVariables, VARIABLE_NAME_PATTERN } from "../machine/variables.js";
+import { SEED_VARIABLES_KEY } from "../sessions/scope.js";
 import {
   isRuntimeContractSupported,
   resolveRuntimeContract,
@@ -66,7 +67,17 @@ import {
   createSpecSnapshotReader,
 } from "../sessions/operations.js";
 import { resolveSession } from "../sessions/resolve.js";
-import { decide, deliver, EmptyMessageError, outcomeOf, reply, resume, settle } from "../sessions/resume.js";
+import {
+  decide,
+  deliver,
+  EmptyMessageError,
+  InvalidTurnFileError,
+  outcomeOf,
+  reply,
+  resume,
+  settle,
+} from "../sessions/resume.js";
+import { createSessionFiles, isPlainFileName } from "../core/attachments.js";
 import { BackendCheckpointSaver } from "../workflow/checkpointer.js";
 import { DEFAULT_WORKFLOW, workflowPaths } from "../workflow/paths.js";
 import type { PromptCacheOptions } from "../workflow/prompt-cache.js";
@@ -462,6 +473,33 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   const agentMembers = members(composed.graph, composed.dispose, composed.toolMocks);
   const { resumable, driver } = composed;
 
+  // A turn's files: placed in the session's attachments, each seeding its variable with the path.
+  const sessionFiles = createSessionFiles(backend, sessionBinder(ctx));
+  const checkTurnFiles = (sessionId: string, turn: TurnInput): void => {
+    for (const [variable, file] of Object.entries(turn.files ?? {})) {
+      const refuse = (reason: string) => new InvalidTurnFileError(sessionId, variable, reason);
+      if (!VARIABLE_NAME_PATTERN.test(variable)) {
+        throw refuse("it is not a valid variable name (lowercase letters, digits and underscores, starting with a letter).");
+      }
+      if (turn.variables && Object.hasOwn(turn.variables, variable)) {
+        throw refuse("the turn gives it in both 'files' and 'variables'; give it once.");
+      }
+      if (typeof file?.name !== "string" || !isPlainFileName(file.name)) {
+        throw refuse(`'${String(file?.name)}' is not one plain file name (no '/', '\\', '.' or '..').`);
+      }
+      if (!(file.content instanceof Uint8Array)) throw refuse("its content is not bytes (a Uint8Array).");
+    }
+  };
+  const placeTurnFiles = async (sessionId: string, turn: TurnInput): Promise<Record<string, unknown>> => {
+    const seeded: Record<string, unknown> = {};
+    for (const [variable, file] of Object.entries(turn.files ?? {})) {
+      const placed = await sessionFiles.place(sessionId, file.name, file.content);
+      if ("error" in placed) throw new InvalidTurnFileError(sessionId, variable, placed.error);
+      seeded[variable] = placed.path;
+    }
+    return seeded;
+  };
+
   const workflow: WorkflowSurface = {
     name: workflowName,
     machine,
@@ -486,6 +524,8 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       // A turn: the session's disposition decides whether it is a fresh turn, a
       // reply to a person's hold, or a delivery to a waiting park.
       const turn = input as TurnInput;
+      checkTurnFiles(sessionId, turn);
+      const hasFiles = Object.keys(turn.files ?? {}).length > 0;
       const resolved = await workflow.resolveSession({
         sessionId,
         ...(turn.trigger ? { trigger: turn.trigger } : {}),
@@ -493,13 +533,21 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
         ...(turn.sessionPath ? { sessionPath: turn.sessionPath } : {}),
       });
       if (resolved.disposition === "reply") {
+        if (hasFiles) {
+          throw new InvalidTurnFileError(
+            sessionId,
+            Object.keys(turn.files!)[0]!,
+            "the session is parked at a human state, which takes a reply only; decide it first.",
+          );
+        }
         return outcomeOf(await resume(resumable, sessionId, { message: turn.message }, config), "reply");
       }
       if (resolved.disposition === "resume") {
         // The person's message travels with the firing rather than being dropped.
+        const seeds = { ...(turn.variables ?? {}), ...(await placeTurnFiles(sessionId, turn)) };
         const delivery = {
           trigger: turn.trigger ?? { id: DEFAULT_TRIGGER_ID },
-          ...(turn.variables ? { variables: turn.variables } : {}),
+          ...(Object.keys(seeds).length > 0 ? { variables: seeds } : {}),
           ...(turn.message?.trim() ? { message: turn.message } : {}),
         };
         return outcomeOf(await resume(resumable, sessionId, { delivery }, config), "deliver");
@@ -508,19 +556,19 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       const message = (turn.message ?? "").trim();
       if (!message) throw new EmptyMessageError(sessionId);
       const trigger = { id: resolveTrigger(machine, turn.trigger).id };
+      // Validated here, so a bad name is refused before anything runs.
+      if (turn.variables) buildSeededVariables(turn.variables);
+      const seeds = { ...(turn.variables ?? {}), ...(hasFiles ? await placeTurnFiles(sessionId, turn) : {}) };
       const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, config, {
-        configurable: { thread_id: sessionId },
-      });
-      const result = await driver.invoke(
-        {
-          messages: [{ role: "user", content: message }],
-          trigger,
-          // Seeded per turn, locked, like a delivery's seeds; the channel's
-          // merge keeps the first lock, so a later seed cannot overwrite it.
-          ...(turn.variables ? { variables: buildSeededVariables(turn.variables) } : {}),
+        configurable: {
+          thread_id: sessionId,
+          // Seeded per turn, locked, through the per-invocation seed channel the
+          // turn boundary reads — so they are this turn's opening variables, and
+          // a trigger's `requires` is checked against them.
+          ...(Object.keys(seeds).length > 0 ? { [SEED_VARIABLES_KEY]: seeds } : {}),
         },
-        turnConfig,
-      );
+      });
+      const result = await driver.invoke({ messages: [{ role: "user", content: message }], trigger }, turnConfig);
       return outcomeOf(settle(result, sessionId), "turn");
     },
   };

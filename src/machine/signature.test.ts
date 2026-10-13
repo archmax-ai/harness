@@ -60,8 +60,9 @@ describe("signatureJsonSchema", () => {
         date_time: { type: "string", format: "date-time" },
         object: { type: "object" },
         array: { type: "array" },
+        file: { type: "string", format: "file" },
       },
-      required: ["string", "integer", "number", "boolean", "date", "date_time", "object", "array"],
+      required: ["string", "integer", "number", "boolean", "date", "date_time", "object", "array", "file"],
     });
   });
 
@@ -178,6 +179,29 @@ describe("signatureValueIssues", () => {
     bad("date-time", "2026-03-01T24:00:00Z");
     bad("date-time", "2026-03-01T09:30:00+24:00");
     bad("date-time", "2026-03-01");
+  });
+
+  it("takes any path from the workspace root as a file, judging its shape only", () => {
+    ok("file", "scratchpad/attachments/invoice.pdf");
+    ok("file", "/scratchpad/attachments/invoice.pdf");
+    ok("file", "skills/billing/assets/template.pdf");
+    ok("file", "report");
+    ok("file", ".env");
+    bad("file", "");
+    bad("file", "/");
+    bad("file", "scratchpad/");
+    bad("file", "scratchpad//invoice.pdf");
+    bad("file", "//scratchpad/invoice.pdf");
+    bad("file", "scratchpad/../checkpoints/cp-1.json");
+    bad("file", "./scratchpad/invoice.pdf");
+    bad("file", "scratchpad\\invoice.pdf");
+    bad("file", "scratchpad/in\0voice.pdf");
+    bad("file", { path: "scratchpad/invoice.pdf" });
+    const [issue] = signatureValueIssues(typed("file"), { v: "scratchpad/" });
+    expect(issue!.message).toBe(
+      "'v' must be a path to a file in the workspace (e.g. scratchpad/attachments/invoice.pdf), " +
+        'but a string ("scratchpad/") arrived',
+    );
   });
 
   it("refuses null for a typed entry and takes it for an untyped one", () => {

@@ -972,8 +972,8 @@ included. Names are distinct across both spellings, so
 other key (a misspelled `type`, say) is a load error naming the entry and the key,
 rather than a silent "untyped".
 
-`type` is one of eight words. Six are JSON Schema's own types; `date` and
-`date-time` are JSON Schema string formats, promoted because a host renders and
+`type` is one of nine words. Six are JSON Schema's own types; `date`,
+`date-time` and `file` are string formats, promoted because a host renders and
 validates them differently from free text. One conformance rule decides every
 check, and nothing is coerced:
 
@@ -987,6 +987,7 @@ check, and nothing is coerced:
 | `date-time` | a string that is an RFC 3339 date-time with an offset, `Z` or `±hh:mm` | `{ type: string, format: date-time }` |
 | `object` | an object that is not an array | `{ type: object }` |
 | `array` | an array | `{ type: array }` |
+| `file` | a string naming a path from the workspace root (`scratchpad/attachments/invoice.pdf`, `skills/billing/assets/template.pdf`): at most one leading `/`, no empty, `.` or `..` segment, no backslash and no trailing `/` | `{ type: string, format: file }` |
 
 A typed entry never takes `null`, because the JSON Schema a host publishes from it
 would refuse `null` too. Typing stops at this level: there are no item schemas, no
@@ -1004,6 +1005,17 @@ Where the types are held:
 - **At completion.** A session whose typed return holds a non-conforming value is
   rejected like one that left it unset. In practice this catches script and hook
   writes, which the write check does not see.
+
+A `file` value is held to more than its shape. The conformance rule checks the
+path alone, so a host can run it anywhere, but at each of those three places, and
+at a [delegation call](/guides/sub-workflows/#passing-files), the runtime also
+requires the path to name a **file** (not a folder) that the session **may read
+on runtime authority**. Runtime authority is the authority a hook runs on: the
+state's allow list and the mount and skill grants do not bind it, but the zone
+rules (`checkpoints/`, `artifacts/` and `_specs/` are never readable) and every
+workflow-wide denial do, `forbid_always` lists inherited from a caller included.
+A value naming a path with nothing there, a folder, or a path those rules deny is
+refused like a non-conforming one, naming the variable and the cause.
 
 An entry's `description` says what the variable holds, for whoever supplies or
 reads it. What the agent should *do* to produce a return still belongs in the

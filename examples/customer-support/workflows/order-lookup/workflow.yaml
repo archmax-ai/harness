@@ -367,7 +367,8 @@ states:
       This state serves the enrichment request that started the run - it is
       always the right place to be, so answer here. Read `enrichments` with
       archmax_get_variables: it holds one object per order that was enriched,
-      each carrying `enrichment_file` (the path that sub-run wrote) and
+      each carrying `enrichment_file` (your copy of the file that sub-run
+      wrote, under scratchpad/attachments/) and
       `delayed` (whether that order is late). Reply with a short summary naming
       each order, whether it is delayed, and where its file is. Do not re-read
       the order data. This state is terminal.

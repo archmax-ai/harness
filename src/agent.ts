@@ -53,8 +53,23 @@ export interface TurnInput {
   trigger?: TriggerInput;
   /** Variables seeded for this turn, locked — the same seeds a delivery carries. */
   variables?: Record<string, unknown>;
+  /**
+   * Files handed to the session, by the variable each seeds: placed in its
+   * `scratchpad/attachments/` (a taken name gets a `-1`, `-2`, … suffix) before
+   * the turn starts, and the variable seeded, locked, with the placed path — what
+   * a `file` entry of the trigger's `requires` takes. Not for a session parked at
+   * a human state, which takes a reply only.
+   */
+  files?: Record<string, TurnFile>;
   /** Where a firing's session id lives, overriding the trigger's declaration. */
   sessionPath?: string;
+}
+
+/** One file a host hands a turn: its file name and its exact bytes. */
+export interface TurnFile {
+  /** One plain file name (no `/`, `\`, `.` or `..`), kept unless taken. */
+  name: string;
+  content: Uint8Array;
 }
 
 /** What {@link WorkflowSurface.send} takes: a turn, or one of the three resumes. */

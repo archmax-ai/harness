@@ -128,12 +128,20 @@ rejected too, unless it runs as a sub-workflow: then its caller gets the returns
 `@archmax-ai/harness/spec` turns the same signature into a JSON Schema. See
 [triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature).
 
+An entry typed `file` takes a path from the workspace root. A host hands one in with
+`send(sessionId, { message, files: { invoice: { name, content } } })`, or the CLI with
+`--file invoice=./invoice.pdf`, and the file lands in the session's `scratchpad/attachments/`. A
+sub-workflow is its own session with its own files, so a `file` argument is copied into the child,
+and a `file` return is copied back under a name that never overwrites the caller's files. See
+[passing files](https://harness.archmax.ai/guides/sub-workflows/#passing-files).
+
 `examples/customer-support/` in this repository is a complete reference workspace.
 
 ### The CLI
 
 ```bash
 npx archmax run order-lookup "Which orders are delayed for Acme?" --root ./my-workspace
+npx archmax run reconcile "Reconcile this" --file invoice=./invoice.pdf  # hand the session a file
 npx archmax test order-lookup --root ./my-workspace       # run the workflow's cases
 npx archmax validate order-lookup --root ./my-workspace   # static checks, no model calls
 npx archmax sessions --root ./my-workspace                # list durable sessions

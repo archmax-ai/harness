@@ -112,6 +112,35 @@ describe("delegation tool description", () => {
     expect(JSON.stringify(delegationToolSchema(target))).not.toContain("PRIVATE BRIEF");
   });
 
+  it("says how files cross only when the target declares a file entry", () => {
+    const files = delegationToolDescription({
+      workflow: "reconcile",
+      requires: [{ name: "invoice", type: "file" }, { name: "due", type: "date" }],
+      returns: [{ name: "report", type: "file" }],
+    });
+    expect(files).toContain(
+      "Pass 'invoice' as the path of a file in your workspace; the workflow works on its own copy, so your file is never changed.",
+    );
+    expect(files).toContain(
+      "'report' arrives as a copy in your 'scratchpad/attachments/', and the result names its path; a name already " +
+        "taken there gets a '-1', '-2', … suffix, so no file of yours is overwritten.",
+    );
+    const schema = delegationToolSchema({ workflow: "reconcile", requires: [{ name: "invoice", type: "file" }] });
+    expect((schema.properties as Record<string, unknown>).invoice).toMatchObject({ type: "string", format: "file" });
+
+    // Without a file entry the description reads exactly as it always has.
+    expect(delegationToolDescription({ ...SIGNED, requires: [{ name: "order_id", type: "string" }] })).toBe(
+      "Run the 'enrich-order' workflow (Order enrichment) to completion and return its result. It runs as its own " +
+        "governed machine with its own states and tools; your run stays where it is and continues when the call " +
+        "answers. It requires 'order_id', which the call must supply. The result carries 'enrichment_file' and " +
+        "'delayed' under 'returns', alongside the workflow's closing message under 'message'. A run that finished " +
+        "without setting some of them returns the ones it set, with a 'note' under 'returns' naming the rest. One " +
+        "call runs it once; call it again (in the same turn) to run several at once. A call whose run fails answers " +
+        "with an error, and that failure fails your current state when you finish, unless a later call of this " +
+        "workflow from the same state succeeds. Each success recovers one failed call: the one it repeats, else the oldest.",
+    );
+  });
+
   it("names the workflow, its title, its required inputs and its returns", () => {
     const description = delegationToolDescription(SIGNED);
     expect(description).toContain("'enrich-order'");

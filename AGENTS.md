@@ -47,7 +47,7 @@ The `bin` is `archmax` → `dist/cli.js`. A declarative command table (`src/cli.
 
 | Command                                                  | Purpose                                                               |
 | -------------------------------------------------------- | --------------------------------------------------------------------- |
-| `archmax run <workflow> <prompt...>`                     | Start or continue a session (`--session`, `--trigger`, `--variables`) |
+| `archmax run <workflow> <prompt...>`                     | Start or continue a session (`--session`, `--trigger`, `--variables`, `--file`) |
 | `archmax test [workflow] [filter]`                       | Run the workflow's cases; `--json`                                    |
 | `archmax validate [workflow]`                            | Static validation, no model calls; `--json`                           |
 | `archmax sessions [session]`                             | List durable sessions or show one; `--json`                           |

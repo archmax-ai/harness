@@ -22,6 +22,7 @@ import {
   ScriptedModel,
   skillMarkdown,
   statesEntered,
+  storeFile,
   STREAM_FAILURE,
   StreamingScriptedModel,
   toolResults,
@@ -119,6 +120,35 @@ describe("a delegation call", () => {
     const child = (await agent.sessions.list()).find((s) => s.parentSessionId === "s1");
     expect(child?.variables?.from_email).toBeUndefined();
     expect((await agent.sessions.get("s1"))?.variables?.from_email).toEqual({ value: "a@b.c", locked: true });
+  });
+
+  it("gives the child a file space of its own: it neither sees nor overwrites its caller's files", async () => {
+    const { agent, model, store } = await assemble(delegatingWorkspace(), {
+      turns: [
+        { tool: "write_file", args: { file_path: "scratchpad/result.json", content: "parent" } },
+        { tool: "write_file", args: { file_path: "scratchpad/secret.txt", content: "parent only" } },
+        { tool: CHILD_TOOL, args: { order_id: "ORD-7" } },
+        // — child —
+        { tool: "write_file", args: { file_path: "scratchpad/notes.md", content: "child notes" } },
+        { tool: "write_file", args: { file_path: "scratchpad/result.json", content: "child" } },
+        { tool: "read_file", args: { file_path: "scratchpad/secret.txt" } },
+        setReturn,
+        { reply: "child done" },
+        // — parent —
+        { reply: "parent done" },
+      ],
+    });
+    await turn(agent, "s1", "go");
+
+    const childId = (await agent.sessions.list()).find((s) => s.parentSessionId === "s1")!.sessionId;
+    expect(await storeFile(store, "/s1/scratchpad/result.json")).toBe("parent");
+    expect(await storeFile(store, `/${childId}/scratchpad/result.json`)).toBe("child");
+    expect(await storeFile(store, `/${childId}/scratchpad/notes.md`)).toBe("child notes");
+    expect(await storeFile(store, "/s1/scratchpad/notes.md")).toBeUndefined();
+    expect(await storeFile(store, `/${childId}/scratchpad/secret.txt`)).toBeUndefined();
+    // The child's read resolved against its own session, where nothing is at that path.
+    const answers = model.calls.flatMap((call) => call.toolAnswers.map((answer) => answer.content));
+    expect(answers.some((content) => content.includes("parent only"))).toBe(false);
   });
 
   it("completes a child that finishes without its declared return, handing the caller a note", async () => {
@@ -906,5 +936,350 @@ describe("a child that parks awaiting input parks the parent on the same channel
     const outcome = await agent.workflow.deliver("s1", { trigger: { id: "email_reply" } });
 
     expect(outcome.status).toBe("completed");
+  });
+});
+
+describe("files across a delegation", () => {
+  /** A child that takes a `source` file and returns a `report` file. */
+  const FILE_CHILD = {
+    runtime: RUNTIME,
+    states: {
+      work: {
+        triggers: {
+          manual: { requires: [{ name: "source", type: "file" }], returns: [{ name: "report", type: "file" }] },
+        },
+      },
+    },
+  };
+  /** Bytes that are not UTF-8, so only an exact-byte copy keeps them. */
+  const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0xff, 0xfe, 0x00, 0x80, 0x0a]);
+  const setVars = (variables: Record<string, unknown>) => ({ tool: "archmax_set_variables", args: { variables } });
+  const writeFile = (file_path: string, content: string) => ({ tool: "write_file", args: { file_path, content } });
+
+  async function bytesAt(store: import("../index.js").SessionStore, path: string): Promise<Uint8Array | undefined> {
+    const [res] = await store.backend.downloadFiles!([path]);
+    return res?.content ?? undefined;
+  }
+  async function seed(store: import("../index.js").SessionStore, path: string, bytes: Uint8Array | string) {
+    const content = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+    const [res] = await store.backend.uploadFiles!([[path, content]]);
+    expect(res?.error ?? null).toBeNull();
+  }
+  const resultOf = (messages: unknown[], index = 0) => {
+    const result = toolResults(messages).filter((r) => r.name === CHILD_TOOL)[index];
+    return { ...result, parsed: result?.status === "error" ? undefined : (JSON.parse(result!.content) as { returns?: Record<string, unknown> }) };
+  };
+  const childIds = async (agent: Awaited<ReturnType<typeof assemble>>["agent"]) =>
+    (await agent.sessions.list()).filter((s) => s.parentSessionId === "s1").map((s) => s.sessionId).sort();
+
+  it("seeds the child with its own copy of a file argument, and copies a file return back", async () => {
+    const { agent, model, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "scratchpad/inbox/invoice.pdf" } },
+        // — child: changes its copy, writes a report, returns it —
+        writeFile("scratchpad/attachments/invoice.pdf", "JVBERg=="),
+        writeFile("scratchpad/out/report.md", "# Report"),
+        setVars({ report: "scratchpad/out/report.md" }),
+        { reply: "reconciled" },
+        // — parent —
+        { reply: "parent done" },
+      ],
+    });
+    await seed(store, "/s1/scratchpad/inbox/invoice.pdf", PDF);
+    const { messages } = await turn(agent, "s1", "reconcile");
+
+    const [childId] = await childIds(agent);
+    const child = await agent.sessions.get(childId!);
+    expect(child?.variables?.source).toEqual({ value: "scratchpad/attachments/invoice.pdf", locked: true });
+    // The opening note shows the child its own path, never the caller's.
+    const opening = model.calls.flatMap((call) => call.humanTexts).find((text) => text.startsWith("Begin."));
+    expect(opening).toContain('source: "scratchpad/attachments/invoice.pdf"');
+    // The child changed its copy; the caller's file is the bytes it had.
+    expect(await bytesAt(store, "/s1/scratchpad/inbox/invoice.pdf")).toEqual(PDF);
+
+    const { parsed } = resultOf(messages);
+    expect(parsed?.returns).toEqual({ report: "scratchpad/attachments/report.md" });
+    expect(await storeFile(store, "/s1/scratchpad/attachments/report.md")).toBe("# Report");
+    expect(await storeFile(store, `/${childId}/scratchpad/out/report.md`)).toBe("# Report");
+  });
+
+  it("copies the exact bytes of a binary argument into the child", async () => {
+    const { agent, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "/scratchpad/inbox/invoice.pdf" } },
+        setVars({ report: "scratchpad/attachments/invoice.pdf" }),
+        { reply: "returned it" },
+        { reply: "parent done" },
+      ],
+    });
+    await seed(store, "/s1/scratchpad/inbox/invoice.pdf", PDF);
+    const { messages } = await turn(agent, "s1", "go");
+    const [childId] = await childIds(agent);
+    expect(await bytesAt(store, `/${childId}/scratchpad/attachments/invoice.pdf`)).toEqual(PDF);
+    expect(resultOf(messages).parsed?.returns).toEqual({ report: "scratchpad/attachments/invoice.pdf" });
+    expect(await bytesAt(store, "/s1/scratchpad/attachments/invoice.pdf")).toEqual(PDF);
+  });
+
+  it("never overwrites: a second call's file and an agent's own file keep theirs", async () => {
+    const { agent, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [
+        writeFile("scratchpad/attachments/report.md", "mine"),
+        { tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } },
+        writeFile("scratchpad/report.md", "first"),
+        setVars({ report: "scratchpad/report.md" }),
+        { reply: "one" },
+        { tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } },
+        writeFile("scratchpad/report.md", "second"),
+        setVars({ report: "scratchpad/report.md" }),
+        { reply: "two" },
+        { reply: "parent done" },
+      ],
+    });
+    await seed(store, "/s1/scratchpad/a.md", "A");
+    const { messages } = await turn(agent, "s1", "go");
+    expect(resultOf(messages, 0).parsed?.returns).toEqual({ report: "scratchpad/attachments/report-1.md" });
+    expect(resultOf(messages, 1).parsed?.returns).toEqual({ report: "scratchpad/attachments/report-2.md" });
+    expect(await storeFile(store, "/s1/scratchpad/attachments/report.md")).toBe("mine");
+    expect(await storeFile(store, "/s1/scratchpad/attachments/report-1.md")).toBe("first");
+    expect(await storeFile(store, "/s1/scratchpad/attachments/report-2.md")).toBe("second");
+  });
+
+  it("gives concurrent calls in one tool batch distinct names, each holding its own child's file", async () => {
+    const { agent, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [
+        {
+          batch: ["a", "b", "c"].map((dir) => ({ tool: CHILD_TOOL, args: { source: `scratchpad/${dir}/report.md` } })),
+        },
+        // — each child returns its own copy of what it was given, in whichever order they run —
+        setVars({ report: "scratchpad/attachments/report.md" }),
+        setVars({ report: "scratchpad/attachments/report.md" }),
+        setVars({ report: "scratchpad/attachments/report.md" }),
+      ],
+    });
+    for (const dir of ["a", "b", "c"]) await seed(store, `/s1/scratchpad/${dir}/report.md`, dir.toUpperCase());
+    const { messages } = await turn(agent, "s1", "go");
+
+    const results = toolResults(messages).filter((r) => r.name === CHILD_TOOL);
+    expect(results).toHaveLength(3);
+    const paths = results.map((r) => (JSON.parse(r.content) as { returns: { report: string } }).returns.report);
+    expect(new Set(paths)).toEqual(
+      new Set([
+        "scratchpad/attachments/report.md",
+        "scratchpad/attachments/report-1.md",
+        "scratchpad/attachments/report-2.md",
+      ]),
+    );
+    // Each call's copy holds the bytes of the file that call passed.
+    const contents = await Promise.all(paths.map((path) => storeFile(store, `/s1/${path}`)));
+    expect(contents.sort()).toEqual(["A", "B", "C"]);
+  });
+
+  it("refuses an argument naming no file before any child runs", async () => {
+    const { agent, events } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [{ tool: CHILD_TOOL, args: { source: "scratchpad/inbox/missing.pdf" } }, { reply: "parent" }],
+    });
+    const { messages } = await turn(agent, "s1", "go");
+    const result = resultOf(messages);
+    expect(result.status).toBe("error");
+    expect(result.content).toContain("'source' must name a file, but nothing is at 'scratchpad/inbox/missing.pdf'");
+    expect(eventsOf(events, "state-enter").filter((e) => e.subWorkflowDispatchId)).toEqual([]);
+    expect(await childIds(agent)).toEqual([]);
+  });
+
+  it("copies an authored file argument like a session file", async () => {
+    const root = makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      // The caller reads the bundle it passes from, so its state must have it.
+      "workflows/w/workflow.yaml": { ...PARENT, skills: { allow_always: ["billing"] } },
+      "workflows/enrich/workflow.yaml": FILE_CHILD,
+      "skills/billing/SKILL.md": skillMarkdown("billing"),
+      "skills/billing/assets/template.md": "Dear customer,",
+    });
+    const { agent, store } = await assemble(root, {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "skills/billing/assets/template.md" } },
+        setVars({ report: "scratchpad/attachments/template.md" }),
+        { reply: "child" },
+        { reply: "parent" },
+      ],
+    });
+    const { messages } = await turn(agent, "s1", "go");
+    const [childId] = await childIds(agent);
+    expect(await storeFile(store, `/${childId}/scratchpad/attachments/template.md`)).toBe("Dear customer,");
+    expect(resultOf(messages).parsed?.returns).toEqual({ report: "scratchpad/attachments/template.md" });
+  });
+
+  it("binds a paths guard on the delegation tool to its file arguments", async () => {
+    const parent = {
+      runtime: RUNTIME,
+      states: {
+        start: {
+          triggers: { manual: null },
+          tools: { allow: [{ tool: CHILD_TOOL, paths: ["scratchpad/inbox/**"] }] },
+          transitions: [{ to: "done", description: "Test edge to done." }],
+        },
+        done: {},
+      },
+    };
+    const { agent, events, store } = await assemble(delegatingWorkspace(FILE_CHILD, parent), {
+      turns: [{ tool: CHILD_TOOL, args: { source: "scratchpad/private/payroll.md" } }, { reply: "blocked" }],
+    });
+    await seed(store, "/s1/scratchpad/private/payroll.md", "secret");
+    await turn(agent, "s1", "go");
+    expect(blockedTools(events)).toEqual([CHILD_TOOL]);
+    expect(eventsOf(events, "sub-workflow-start")).toEqual([]);
+    expect(await childIds(agent)).toEqual([]);
+  });
+
+  it("fails the call when the child's returned file is gone at its completion", async () => {
+    const { agent, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } },
+        writeFile("scratchpad/report.md", "x"),
+        setVars({ report: "scratchpad/report.md" }),
+        { tool: "remove_file", args: { file_path: "scratchpad/report.md" } },
+        { reply: "child" },
+        { reply: "parent" },
+      ],
+    });
+    await seed(store, "/s1/scratchpad/a.md", "A");
+    const { messages } = await turn(agent, "s1", "go");
+    const result = resultOf(messages);
+    expect(result.status).toBe("error");
+    expect(result.content).toContain("could not hand back");
+    expect(result.content).toContain("'report' must name a file, but nothing is at 'scratchpad/report.md'");
+    expect(await storeFile(store, "/s1/scratchpad/attachments/report.md")).toBeUndefined();
+  });
+
+  it("keeps a file its ancestor denies out of the caller: the child cannot hand it back", async () => {
+    const parent = { ...PARENT, skills: { forbid_always: ["billing"] } };
+    const root = makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      "workflows/w/workflow.yaml": parent,
+      "workflows/enrich/workflow.yaml": { ...FILE_CHILD, skills: { allow_always: ["billing"] } },
+      "skills/billing/SKILL.md": skillMarkdown("billing"),
+      "skills/billing/assets/salaries.md": "secret",
+    });
+    const { agent, store } = await assemble(root, {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } },
+        setVars({ report: "skills/billing/assets/salaries.md" }),
+        { reply: "child" },
+        { reply: "parent" },
+      ],
+    });
+    await seed(store, "/s1/scratchpad/a.md", "A");
+    const { messages } = await turn(agent, "s1", "go");
+    // The child's write is refused; it completes without the return, so nothing is copied.
+    const { parsed } = resultOf(messages);
+    expect(parsed?.returns).toEqual({
+      note: "Not all return variables were set by the sub-workflow: 'report' was not set.",
+    });
+    expect(await storeFile(store, "/s1/scratchpad/attachments/salaries.md")).toBeUndefined();
+  });
+
+  it("records a failed call with the path the caller passed, not the child's copy", async () => {
+    const parent = {
+      runtime: RUNTIME,
+      states: {
+        start: {
+          triggers: { manual: null },
+          tools: { allow: [CHILD_TOOL] },
+          on_error: "failed",
+          transitions: [{ to: "done", description: "Test edge to done." }],
+        },
+        done: {},
+        failed: {},
+      },
+    };
+    const { agent, events, store } = await assemble(delegatingWorkspace(FILE_CHILD, parent), {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "scratchpad/inbox/invoice.md" } },
+        { tool: "archmax_raise", args: { code: "unreadable", reason: "Cannot read it." } },
+        { reply: "parent gives up" },
+      ],
+    });
+    await seed(store, "/s1/scratchpad/inbox/invoice.md", "I");
+    await turn(agent, "s1", "go");
+    const routed = eventsOf(events, "state-error-routed")[0];
+    expect(routed?.reason).toContain("scratchpad/inbox/invoice.md");
+    expect(routed?.reason).not.toContain("scratchpad/attachments/invoice.md");
+  });
+
+  it("resolves a script's reference before copying the file it names", async () => {
+    const { agent, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [
+        {
+          tool: "archmax_eval",
+          args: { code: 'const r = await tools.archmaxWorkflowEnrich({ source: "${{invoice_path}}" }); r;' },
+        },
+        // — child —
+        setVars({ report: "scratchpad/attachments/invoice.md" }),
+        { reply: "child" },
+        // — parent —
+        { reply: "parent" },
+      ],
+      params: { variables: { invoice_path: "scratchpad/inbox/invoice.md" } },
+    });
+    await seed(store, "/s1/scratchpad/inbox/invoice.md", "INVOICE");
+    const { messages } = await turn(agent, "s1", "go");
+    const [childId] = await childIds(agent);
+    expect(await storeFile(store, `/${childId}/scratchpad/attachments/invoice.md`)).toBe("INVOICE");
+    const evaluated = toolResults(messages).find((r) => r.name === "archmax_eval");
+    expect(evaluated?.content).toContain("scratchpad/attachments/invoice.md");
+    expect(await storeFile(store, "/s1/scratchpad/attachments/invoice.md")).toBe("INVOICE");
+  });
+
+  it("copies a file return back when a child that parked settles", async () => {
+    const PARKING = {
+      runtime: RUNTIME,
+      states: {
+        draft: {
+          triggers: FILE_CHILD.states.work.triggers,
+          transitions: [{ to: "review", description: "Test edge to review." }],
+        },
+        review: { type: "human", transitions: [{ to: "approved", type: "approve", description: "Test edge to approved." }] },
+        approved: {},
+      },
+    };
+    const { agent, model, store } = await assemble(delegatingWorkspace(PARKING), {
+      turns: [
+        { tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } },
+        // — child: returns its copy, then waits for a reviewer —
+        setVars({ report: "scratchpad/attachments/a.md" }),
+        advanceTo("review", "needs a reviewer"),
+      ],
+    });
+    await seed(store, "/s1/scratchpad/a.md", "A");
+    await turn(agent, "s1", "go");
+    expect((await agent.sessions.get("s1"))?.status).toBe("awaiting_decision");
+    expect(await storeFile(store, "/s1/scratchpad/attachments/a.md")).toBeUndefined();
+
+    model.enqueue({ reply: "approved" }, { reply: "parent done" });
+    const decided = await agent.workflow.decide("s1", { target: "approved" });
+    expect(decided.status).toBe("completed");
+    expect(await storeFile(store, "/s1/scratchpad/attachments/a.md")).toBe("A");
+    const note = decided.messages.find((m) => runtimeNoteKind(m) === "sub-workflow" && messageType(m) === "tool");
+    expect(JSON.stringify(note)).toContain("scratchpad/attachments/a.md");
+  });
+
+  it("hands a mocked file return on as a copy, held to the same rule", async () => {
+    const { agent, store } = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [{ tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } }, { reply: "parent" }],
+    });
+    await seed(store, "/s1/scratchpad/a.md", "A");
+    await seed(store, "/s1/scratchpad/fixtures/report.txt", "fixture");
+    const mocks = [{ name: CHILD_TOOL, result: { message: "mocked", returns: { report: "scratchpad/fixtures/report.txt" } } }];
+    const outcome = await agent.workflow.send("s1", { message: "go" }, { configurable: { __toolMocks: mocks } });
+    expect(resultOf(outcome.messages).parsed?.returns).toEqual({ report: "scratchpad/attachments/report.txt" });
+    expect(await storeFile(store, "/s1/scratchpad/attachments/report.txt")).toBe("fixture");
+
+    const missing = await assemble(delegatingWorkspace(FILE_CHILD), {
+      turns: [{ tool: CHILD_TOOL, args: { source: "scratchpad/a.md" } }, { reply: "parent" }],
+    });
+    await seed(missing.store, "/s1/scratchpad/a.md", "A");
+    const gone = [{ name: CHILD_TOOL, result: { returns: { report: "scratchpad/fixtures/none.txt" } } }];
+    const failed = await missing.agent.workflow.send("s1", { message: "go" }, { configurable: { __toolMocks: gone } });
+    expect(resultOf(failed.messages).status).toBe("error");
   });
 });

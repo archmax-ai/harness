@@ -4,7 +4,7 @@
  * turn through `agent.workflow.send`; `decide` / `reply` / `deliver` each
  * resume one, and every outcome is described the same way.
  */
-import type { Agent, WorkflowSurface } from "../agent.js";
+import type { Agent, TurnFile, WorkflowSurface } from "../agent.js";
 import type { TriggerInput } from "../machine/triggers.js";
 import type { DecideOutcome, Outcome, ReplyOutcome, SessionExit } from "../sessions/resume.js";
 import type { ParkChannel, PendingDecision, PendingInput } from "../workflow/state.js";
@@ -145,6 +145,8 @@ export interface RunTurnInput {
   prompt: string;
   trigger?: TriggerInput;
   variables?: Record<string, unknown>;
+  /** Local files handed to the turn (`--file`), each seeding its variable with the placed path. */
+  files?: Record<string, TurnFile>;
   sessionId?: string;
   sessionPath?: string;
 }
@@ -246,6 +248,7 @@ export async function driveTurn(agent: Agent, style: Style, usage: UsageTracker,
       message: input.prompt,
       trigger,
       ...(input.variables ? { variables: input.variables } : {}),
+      ...(input.files ? { files: input.files } : {}),
       ...(input.sessionPath ? { sessionPath: input.sessionPath } : {}),
     });
     const code = printOutcome(style, workflow.machine, sessionId, outcome);

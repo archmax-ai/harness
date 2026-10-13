@@ -22,7 +22,7 @@ it and exit 0.
 | `stderr` | Narration: the session header, the state flow, warnings, the token-usage footer, `--verbose` event lines. |
 | exit `0` | The command did its job; a park counts. |
 | exit `1` | A failure: a failed case, an invalid workflow, a refused turn, a runtime error the CLI recognises. |
-| exit `2` | A usage error: unknown flag, missing argument, malformed `--variables`, unusable session id. One line plus `try archmax <command> --help`. |
+| exit `2` | A usage error: unknown flag, missing argument, malformed `--variables` or `--file`, unusable session id. One line plus `try archmax <command> --help`. |
 
 ### Global options
 
@@ -44,7 +44,7 @@ with `--workflow <slug>`, with the same inference.
 ## `archmax run`
 
 ```
-archmax run <workflow> <prompt...> [--trigger <id>] [--variables <json>] [--session <id>] [--session-path <path>] [--verbose]
+archmax run <workflow> <prompt...> [--trigger <id>] [--variables <json>] [--file <variable>=<path>]... [--session <id>] [--session-path <path>] [--verbose]
 ```
 
 Runs one turn and prints the reply to `stdout`. Both arguments are required, and
@@ -54,6 +54,7 @@ the prompt is the rest of the line.
 | --- | --- |
 | `--trigger <id>` | Trigger starting the turn (default `manual`). It enters the state declaring it. An undeclared id fails before any model call, listing the declared triggers (exit 1). |
 | `--variables <json>` | Session variables as a JSON object, seeded locked. Malformed or non-object JSON is a usage error (exit 2). |
+| `--file <variable>=<path>` | Repeatable. Hands the session the local file at `<path>` (relative to the working directory): it is placed in the session's `scratchpad/attachments/` under its base name, with a `-1`, `-2`, … suffix when the name is taken, and `<variable>` is seeded, locked, with the placed path. This is what a [`file` input](/reference/machine-spec/#the-signature-requires-and-returns) takes. A flag without `=`, an invalid variable name, a variable named twice or also given in `--variables`, or a file that cannot be read is a usage error (exit 2). |
 | `--session <id>` | The conversation this firing belongs to: continues the session that carries it, or starts one under that id. |
 | `--session-path <path>` | Dotted path into `--variables` holding the session id, overriding the trigger's declared session path. |
 | `--verbose` | One raw line per lifecycle event on `stderr`. |

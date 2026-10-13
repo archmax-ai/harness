@@ -365,6 +365,26 @@ describe("resolveSystemPrompt", () => {
       expect(prompt).toMatch(/Skills\s+available in this state/);
       expect(prompt).not.toContain("skills/<name>/SKILL.md");
     });
+
+    // Told only when to reset, a model reset on every new message, even to the
+    // state it was already in.
+    it("says a follow-up the state can serve is answered without a reset", async () => {
+      const prompt = await shippedPlatformPrompt();
+      expect(flat(prompt)).toContain("When that state can serve it, stay and answer there");
+      expect(flat(prompt)).toContain("a new message is not a reason to reset");
+      expect(flat(prompt)).toContain("never call it while you are still in that state");
+    });
+
+    // The volatile block already stays silent there (see `governance.ts`); the
+    // static rule must not contradict it.
+    it("takes a terminal state the conversation began in out of the terminal-state rule", async () => {
+      const prompt = await shippedPlatformPrompt();
+      expect(flat(prompt)).toContain("A terminal state you moved into never serves a follow-up");
+      expect(flat(prompt)).toContain("Three cases take no reset");
+      expect(flat(prompt)).toContain(
+        "a terminal state the conversation began in, where a reset would leave you exactly where you are",
+      );
+    });
   });
 
   describe("the reserved title is disclosed", () => {
@@ -391,9 +411,15 @@ describe("resolveSystemPrompt", () => {
       expect(flat(prompt)).toContain("before any other tool call");
     });
 
-    it("asks for updates as the task changes", async () => {
+    // Read against the latest message, "update it when the task changes" renamed
+    // the run on every follow-up.
+    it("asks for a rename only when the whole conversation's subject changes", async () => {
       const prompt = await shippedPlatformPrompt();
+      expect(flat(prompt)).toContain("the conversation **as a whole** has moved to a subject");
       expect(flat(prompt)).toContain("the old title no longer describes");
+      expect(flat(prompt)).toContain("Judge that against the whole conversation, not its latest message");
+      expect(flat(prompt)).toContain("on the same subject keeps the title");
+      expect(flat(prompt)).toContain("name what the whole conversation is about");
     });
 
     it("names the tool that writes it and warns off locking", async () => {

@@ -4,14 +4,16 @@
  * event sink behind the state flow and the usage tracker, and the one
  * `withSession` wrapper every session command runs its body inside.
  */
-import { existsSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { createAgent } from "../assembly/index.js";
-import type { Agent, WorkflowSurface } from "../agent.js";
+import type { Agent, TurnFile, WorkflowSurface } from "../agent.js";
+import { VARIABLE_NAME_PATTERN } from "../machine/variables.js";
 import { UnknownTriggerError, type TriggerInput } from "../machine/triggers.js";
 import { WorkflowDisabledError, WorkflowLoadError } from "../machine/load-spec.js";
 import {
   EmptyMessageError,
+  InvalidTurnFileError,
   InvalidDecisionTargetError,
   MissingDeliveryTriggerError,
   SessionNotAwaitingInputError,
@@ -62,6 +64,46 @@ export function parseVariablesJson(raw: string | undefined): Record<string, unkn
     );
   }
   return value as Record<string, unknown>;
+}
+
+/**
+ * `--file <variable>=<path>` occurrences as a turn's files: each local file read
+ * (relative to the working directory) under its base name. The CLI is a host, so
+ * it reads the local filesystem; the runtime places the bytes in the session.
+ * Every problem is a usage error, found before anything is assembled.
+ */
+export function parseFileFlags(
+  raw: string[] | undefined,
+  variables: Record<string, unknown> | undefined,
+): Record<string, TurnFile> | undefined {
+  if (!raw || raw.length === 0) return undefined;
+  const files: Record<string, TurnFile> = {};
+  for (const flag of raw) {
+    const at = flag.indexOf("=");
+    if (at <= 0 || at === flag.length - 1) {
+      throw new UsageError(`--file '${flag}' must be <variable>=<path> (e.g. --file invoice=./invoice.pdf)`);
+    }
+    const variable = flag.slice(0, at);
+    const path = flag.slice(at + 1);
+    if (!VARIABLE_NAME_PATTERN.test(variable)) {
+      throw new UsageError(
+        `--file '${flag}': '${variable}' is not a valid variable name (lowercase letters, digits and underscores, starting with a letter)`,
+      );
+    }
+    if (Object.hasOwn(files, variable)) throw new UsageError(`--file names '${variable}' more than once`);
+    if (variables && Object.hasOwn(variables, variable)) {
+      throw new UsageError(`--file '${flag}': '${variable}' is also given in --variables; give it once`);
+    }
+    let content: Uint8Array;
+    try {
+      if (!statSync(path).isFile()) throw new Error("not a file");
+      content = new Uint8Array(readFileSync(path));
+    } catch {
+      throw new UsageError(`--file '${flag}': cannot read the file '${path}'`);
+    }
+    files[variable] = { name: basename(path), content };
+  }
+  return files;
 }
 
 /** The raw event line for `--verbose`, including the two events the default console output skips. */
@@ -119,6 +161,7 @@ const KNOWN_ERRORS = [
   SessionNotParkedError,
   InvalidDecisionTargetError,
   EmptyMessageError,
+  InvalidTurnFileError,
   SessionNotAwaitingInputError,
   MissingDeliveryTriggerError,
   SessionNotResumableError,

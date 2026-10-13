@@ -48,6 +48,8 @@ export type {
   WorkflowSurface,
   /** A turn's input to `agent.workflow.send`. */
   TurnInput,
+  /** A file a host hands a turn (`TurnInput.files`). */
+  TurnFile,
   /** What `agent.workflow.send` takes: a turn or a resume. */
   SendInput,
 } from "./agent.js";
@@ -154,6 +156,8 @@ export {
   InvalidDecisionTargetError,
   /** A reply with nothing to answer. */
   EmptyMessageError,
+  /** A turn's `files` entry that cannot be handed to the session. */
+  InvalidTurnFileError,
   /** A delivery to a session not parked with `archmax_wait`. */
   SessionNotAwaitingInputError,
   /** A delivery naming no trigger id. */

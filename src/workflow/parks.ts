@@ -517,7 +517,11 @@ async function resumeDelegated(
       resume,
       state: from,
     });
-    text = `[sub-workflow: ${result.workflow}] ${result.result}`;
+    // The returns ride with the closing message, as a direct call's answer carries
+    // them: a `file` return's path is where the caller's copy landed.
+    text =
+      `[sub-workflow: ${result.workflow}] ${result.result}` +
+      (result.returns ? `\nreturns: ${JSON.stringify(result.returns)}` : "");
   } catch (err) {
     // Parked again — a second decision inside the same child, re-presented on the spot.
     const reparked = subWorkflowParkOf(err);

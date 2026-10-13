@@ -357,6 +357,45 @@ Two consequences worth knowing:
 - **A session that has not run yet simply has no checkpoint**, and opens at its
   trigger's entry state.
 
+## Files handed to a session
+
+Every file the runtime hands a session lands in that session's
+`scratchpad/attachments/`:
+
+- **A host's files.** `agent.workflow.send(sessionId, { message, files })` takes
+  `files` as variable → `{ name, content }`. Each file is placed before the turn
+  starts, and its variable is seeded, locked, with the placed path. The CLI does
+  the same with `archmax run … --file invoice=./invoice.pdf`.
+- **A sub-workflow's `file` arguments.** They are copied into the *child's*
+  attachments before it starts (see [passing
+  files](/guides/sub-workflows/#passing-files)).
+- **A sub-workflow's `file` returns.** They are copied into the *caller's*
+  attachments when the child finishes.
+
+A placement keeps the file's own name unless that name is taken. Then it inserts
+`-1`, `-2`, … before the last extension, using the lowest free number:
+
+| Already in `scratchpad/attachments/` | A new `report.pdf` lands at |
+| --- | --- |
+| nothing | `report.pdf` |
+| `report.pdf` | `report-1.pdf` |
+| `report.pdf`, `report-1.pdf` | `report-2.pdf` |
+
+A name with no extension takes the suffix at its end (`notes-1`, `.env-1`), and only
+the last extension moves (`archive.tar-1.gz`). Placements into one session run one
+at a time, so concurrent sub-workflows returning files of the same name each take
+their own. A placement never overwrites a file.
+
+The bytes arrive exactly. A file that is not text needs a session store that
+takes raw bytes (`uploadFiles`). The filesystem and memory stores do, and so does a
+`createBackendSessionStore` over a backend that has `uploadFiles`. Through a store
+without it, such a file is refused with an error naming the path, and nothing is
+written. A text file is placed either way.
+
+`agent.sessions.seed(sessionId, files)` is the other way in. It writes files at
+paths you choose and seeds no variable, so it suits fixtures. `files` on a turn is
+the way to satisfy a trigger's [`file` input](/guides/triggers/#typing-a-signature).
+
 ## How a session ended
 
 A finished turn ends one of three ways, and the outcome says which:
@@ -409,17 +448,22 @@ the model reads and the state it occupies always agree.
 That state may be one with no outgoing transitions (an `answer` state, say). The
 turn still runs there, under that state's tool governance.
 
-When what was asked needs a path the current state cannot reach, the agent calls
-**`archmax_reset`** to return to the state the conversation began in. `archmax_reset`
-is available in every state, and it keeps the transcript, the variables and the
-files. A workflow that expects follow-ups can also declare the re-entry
-transitions it wants.
+When the current state can serve the new message, the agent answers there, with no
+reset. When what was asked needs a path the current state cannot reach, the agent
+calls **`archmax_reset`** to return to the state the conversation began in.
+`archmax_reset` is available in every state, and it keeps the transcript, the
+variables and the files. A workflow that expects follow-ups can also declare the
+re-entry transitions it wants.
 
-The prompt says so outright. A model sitting in a terminal state would otherwise
-answer the follow-up in place and skip every state the answer depends on, so the
-graph-state prompt tells it to reset *before* answering. While a terminal state is
-current, the per-turn state block repeats that instruction, on exactly the turns
-where it applies.
+The prompt says so outright. A model sitting in a terminal state it moved into would
+otherwise answer the follow-up in place and skip every state the answer depends on,
+so the graph-state prompt tells it to reset *before* answering. The per-turn state
+block repeats that instruction on exactly the turns where it applies.
+
+A reset only ever returns to the state the conversation began in, so the prompt
+also tells the agent never to call it while it is still there. A terminal state that
+is the one the conversation began in, as in a one-state chat workflow, answers its
+follow-ups in place.
 
 A turn boundary resets the turn's own mechanics:
 

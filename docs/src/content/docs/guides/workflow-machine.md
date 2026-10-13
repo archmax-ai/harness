@@ -529,8 +529,10 @@ contrast is worth holding onto:
 **`title`** is a short one-line label naming the task the session is doing. The
 agent is the one party that knows what a session is about, so it writes the
 title itself. The platform system prompt asks it to set one as its first
-activity, and to update it when the task turns into something the old title no
-longer describes.
+activity. After that, the agent renames the session only when the conversation as
+a whole has moved to a subject the old title no longer describes. It judges this
+against the whole conversation, not the latest message, so a follow-up, a
+correction or a side question on the same subject keeps the title.
 
 A [sub-workflow's child session](/guides/sub-workflows/#what-the-childs-model-reads)
 is not asked. Its title would describe a session nothing lists, and it is never

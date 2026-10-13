@@ -21,7 +21,9 @@ import {
   READ_FILE_TEXT_ONLY_LINE,
   textOnlyReadFileDescription,
 } from "../core/binary-read.js";
-import { createFileOperationTools } from "../core/file-operations.js";
+import { createFileOperationTools, workspaceEntryKind } from "../core/file-operations.js";
+import { createSessionFiles } from "../core/attachments.js";
+import { fileGovernance, runtimeReadDenial } from "../workflow/file-values.js";
 import { runWithToolContext } from "../core/tool-context.js";
 import { imageReadMiddleware, resolveImageReads } from "./image-reads.js";
 import {
@@ -46,16 +48,11 @@ import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
 import { loadPromptCacheEnv } from "../env.js";
 import { BUILTIN_HOOK_KINDS } from "../lifecycle/runner.js";
-import {
-  compileForbiddenSkillRules,
-  compileForbiddenMountRules,
-  compileForbidRules,
-  type GovernanceRule,
-} from "../kernel/kernel.js";
+import { workflowDenials, type GovernanceRule } from "../kernel/kernel.js";
 import { UNGRANTABLE_TOOLS, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
 import { workflowToolName } from "../machine/tool-names.js";
-import type { ToolPathTable } from "../machine/tool-paths.js";
+import type { ToolPaths, ToolPathTable } from "../machine/tool-paths.js";
 import { resolveTrigger, type TriggerInput } from "../machine/triggers.js";
 import { buildSeededVariables, unguaranteedReferenceWarnings } from "../machine/variables.js";
 import type { ResolvedRuntimeContract } from "../runtime/contract.js";
@@ -451,7 +448,11 @@ function describeDeclaredModels(machine: WorkflowMachine): string {
 /** Compose one governed agent for `input.machine`. */
 export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput): Promise<Composed> {
   const { params, emit, workspace, authoring } = ctx;
-  const target = input.machine;
+  // Every sibling this machine's allow lists name, read first: a delegation
+  // tool's schema feeds the system prompt, so an unusable target fails assembly,
+  // and a target's `file` arguments are path arguments the kernel governs.
+  const delegationSignatures = await readDelegationSignatures(input);
+  const target = input.machine.withToolPaths(delegationFilePaths(delegationSignatures));
   const governanceRules = [...(input.inheritedPolicyRules ?? []), ...(params.policyRules ?? [])];
   const settings = target.harnessSettings;
 
@@ -522,6 +523,16 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   // are enforced in one place and every dispatch is reported the same way. A
   // child of this composition inherits what it inherited plus its own policy:
   // denials accumulate down the chain, never resetting to the root's.
+  // A `file` argument is read from the caller and copied into the child, a
+  // `file` return copied back: across sessions, each bound in turn.
+  const callerFiles = fileGovernance({
+    machine: target,
+    workflow: input.workflow,
+    policyRules: governanceRules,
+    mountPrefixes: ctx.mountPrefixes,
+    skills: ctx.skillTable,
+    kind: (path) => workspaceEntryKind(ctx.backend, path),
+  });
   const dispatcher = createSubWorkflowDispatcher({
     registry: input.registry,
     machine: target,
@@ -530,6 +541,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
       ...workflowDenials(target, input.workflow),
     ],
     onEvent: emit,
+    files: createSessionFiles(ctx.backend, sessionBinder(ctx)),
+    readDenial: (state, path, variables) => runtimeReadDenial(callerFiles, state, path, variables),
   });
 
   // Validate the assembly-time default trigger (fails closed on an unknown id).
@@ -563,6 +576,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     seededVariables,
     ...(ctx.pricing ? { pricing: ctx.pricing } : {}),
     ...(input.child ? { child: true } : {}),
+    // Through the workspace, bound to the turn's session: what a `file` value names.
+    entryKind: (path) => workspaceEntryKind(ctx.backend, path),
   });
 
   // Native Anthropic/Bedrock caching is LangChain's own middleware; the
@@ -583,22 +598,9 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     ...(params.middleware ?? []),
   ];
 
-  // One tool per sibling this machine's allow lists name. A delegation tool's
-  // schema feeds the system prompt, so an unusable target fails assembly.
+  // One tool per sibling this machine's allow lists name.
   const delegationTools: StructuredTool[] = [];
-  for (const slug of target.delegationTargets()) {
-    let signature: Awaited<ReturnType<SubWorkflowRegistry["signature"]>>;
-    try {
-      signature = await input.registry.signature(slug);
-    } catch (err) {
-      const raw = err instanceof SubWorkflowError ? err.message : String(err);
-      const detail = raw.replace(/^Cannot run sub-workflow '[^']*':\s*/, "");
-      throw new WorkflowLoadError(
-        input.workflow,
-        workflowPaths(input.workflow).workflowYaml,
-        `it allows '${workflowToolName(slug)}', but ${detail}`,
-      );
-    }
+  for (const [slug, signature] of delegationSignatures) {
     // `disabled` is dropped: a description is built once at assembly, so
     // "currently disabled" would be stale and destabilize the cacheable prefix.
     const { disabled: _disabled, ...described } = signature;
@@ -658,19 +660,39 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   };
 }
 
+type DelegationSignatures = Map<string, Awaited<ReturnType<SubWorkflowRegistry["signature"]>>>;
+
+/** The signature of every sibling `input.machine` may delegate to, by slug; an unreadable one fails assembly. */
+async function readDelegationSignatures(input: ComposeInput): Promise<DelegationSignatures> {
+  const signatures: DelegationSignatures = new Map();
+  for (const slug of input.machine.delegationTargets()) {
+    try {
+      signatures.set(slug, await input.registry.signature(slug));
+    } catch (err) {
+      const raw = err instanceof SubWorkflowError ? err.message : String(err);
+      const detail = raw.replace(/^Cannot run sub-workflow '[^']*':\s*/, "");
+      throw new WorkflowLoadError(
+        input.workflow,
+        workflowPaths(input.workflow).workflowYaml,
+        `it allows '${workflowToolName(slug)}', but ${detail}`,
+      );
+    }
+  }
+  return signatures;
+}
+
 /**
- * One workflow's **workflow-wide** denials, as rules a descendant inherits:
- * `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`,
- * named with the workflow that declared them. A per-state `forbid` is not
- * inherited — it governs that state's turns, not a child session — and neither
- * is any grant.
+ * The path arguments of the delegation tools: each target's `file` arguments,
+ * declared `read`, so the kernel governs them as it governs any read — a
+ * `paths:` guard on the tool and the zone and mount rules bind them.
  */
-function workflowDenials(machine: WorkflowMachine, source: string): GovernanceRule[] {
-  return [
-    ...compileForbidRules(machine.spec.tools?.forbid_always, { scope: "workflow", source }),
-    ...compileForbiddenSkillRules(machine.spec.skills?.forbid_always ?? [], source),
-    ...compileForbiddenMountRules(machine.spec.mounts?.forbid_always ?? [], source),
-  ];
+function delegationFilePaths(signatures: DelegationSignatures): Record<string, ToolPaths> {
+  const declared: Record<string, ToolPaths> = {};
+  for (const [slug, signature] of signatures) {
+    const files = (signature.requires ?? []).filter((entry) => entry.type === "file");
+    if (files.length > 0) declared[workflowToolName(slug)] = Object.fromEntries(files.map((entry) => [entry.name, "read"]));
+  }
+  return declared;
 }
 
 /** The denials a direct child inherits from the root machine — the chain's first link. */

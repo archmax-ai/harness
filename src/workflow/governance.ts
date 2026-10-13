@@ -17,7 +17,8 @@ import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import { ADVANCE_TOOL, entryStateOf, RESET_TOOL, unresolvedArgumentMessage } from "./control-tools.js";
-import { resolveArguments } from "../machine/variables.js";
+import { resolveArguments, type VariableStore } from "../machine/variables.js";
+import type { FileValueCheck } from "./signature-checks.js";
 import {
   currentWorkflowState,
   isReplyOnly,
@@ -109,6 +110,8 @@ export interface GovernanceContext {
   subWorkflows?: SubWorkflowDispatcher;
   /** The sessions are a sub-workflow's children, whose caller reads what they return. */
   child?: boolean;
+  /** The `file` type's runtime check for a session in a state; omitted, a `file` value is held to its shape alone. */
+  files?: (state: string, variables: VariableStore) => FileValueCheck;
   sessionIdOf(runtime: unknown): string;
 }
 
@@ -337,6 +340,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     lifecycle,
     mountPrefixes,
     ...(subWorkflows ? { subWorkflows } : {}),
+    ...(ctx.files ? { files: ctx.files } : {}),
     lifecycleCtx,
   });
 
