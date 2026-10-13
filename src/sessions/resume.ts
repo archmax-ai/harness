@@ -137,6 +137,19 @@ export class EmptyMessageError extends Error {
   }
 }
 
+/** Thrown when a turn's `files` cannot be handed to the session; nothing of the turn has run. */
+export class InvalidTurnFileError extends Error {
+  constructor(
+    readonly sessionId: string,
+    /** The variable the file was to seed. */
+    readonly variable: string,
+    reason: string,
+  ) {
+    super(`Cannot hand session '${sessionId}' the file for '${variable}': ${reason}`);
+    this.name = "InvalidTurnFileError";
+  }
+}
+
 /** Thrown when a delivery targets a session that is not parked awaiting input. */
 export class SessionNotAwaitingInputError extends Error {
   constructor(readonly sessionId: string) {

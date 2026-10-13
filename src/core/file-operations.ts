@@ -221,6 +221,14 @@ async function writeDestination(
     const back = await readBack(backend, path);
     return back !== null && sameBytes(back, bytes);
   };
+  // Bytes no text channel carries, to a store with no raw one: refused before
+  // anything is written, rather than claiming the path and leaving it behind.
+  if (!binaryType && text === null && !backend.uploadFiles) {
+    return (
+      `Cannot ${verb} to '${path}': the store serving it holds files of this type as text, this file is ` +
+      `not text, and the store cannot take raw bytes. Nothing was written.`
+    );
+  }
   if (binaryType || text !== null) {
     const content = binaryType ? Buffer.from(bytes).toString("base64") : text!;
     const refused = await attempt(path, verb, async () => backend.write(keyOf(path), content));
@@ -288,6 +296,62 @@ async function precheckTransfer(
     };
   }
   return { from, to, fresh: !existed };
+}
+
+/**
+ * What `path` names, by a listing of its parent: a file, a folder, or nothing.
+ * A listing rather than a read, so a large file is never loaded to learn that it
+ * exists. A path that does not canonicalize names nothing.
+ */
+export async function workspaceEntryKind(
+  backend: BackendProtocolV2,
+  path: string,
+): Promise<"file" | "directory" | "missing"> {
+  const resolved = canonicalizeRelPath(path);
+  if (resolved.escapes || resolved.path === "") return "missing";
+  const at = resolved.path.lastIndexOf("/");
+  const parent = at < 0 ? "" : resolved.path.slice(0, at);
+  const name = resolved.path.slice(at + 1);
+  try {
+    const listing = await backend.ls(keyOf(parent));
+    for (const entry of listing.files ?? []) {
+      const trimmed = entry.path.replace(/\/+$/, "");
+      if (trimmed.slice(trimmed.lastIndexOf("/") + 1) !== name) continue;
+      return entry.is_dir || entry.path.endsWith("/") ? "directory" : "file";
+    }
+  } catch {
+    // An unlistable parent holds nothing this can name.
+  }
+  return "missing";
+}
+
+/**
+ * One workspace file's exact bytes, or why they cannot be read — the refusals
+ * `copy_file` meets, worded for a copy. The runtime's own cross-session copies
+ * (a sub-workflow's `file` arguments and returns) read through this.
+ */
+export async function readWorkspaceBytes(
+  backend: BackendProtocolV2,
+  path: string,
+): Promise<{ bytes: Uint8Array } | { error: string }> {
+  const canonical = canonicalPaths("copy", path);
+  if ("error" in canonical) return canonical;
+  return readSource(backend, canonical.paths[0]!, "copy");
+}
+
+/**
+ * Write `bytes` at `path`, a path no file holds, and confirm the store kept
+ * them: `null`, or why not, with nothing left behind. The exact-bytes guarantee
+ * `copy_file` gives — never a lossy text write of a file that is not text.
+ */
+export async function writeWorkspaceBytes(
+  backend: BackendProtocolV2,
+  path: string,
+  bytes: Uint8Array,
+): Promise<string | null> {
+  const canonical = canonicalPaths("copy", path);
+  if ("error" in canonical) return canonical.error;
+  return writeDestination(backend, canonical.paths[0]!, bytes, "copy", true);
 }
 
 /** Copy one workspace file. Paths in any spelling; the result names them in canonical form. */

@@ -54,7 +54,7 @@ The signature comes from the target, not from the caller:
 ```
 archmax_workflow_enrich-order({ order_id: "ORD-1003" })
   → { message: "Enriched ORD-1003.",
-      returns: { enrichment_file: "scratchpad/enrichment/ORD-1003.json", delayed: true } }
+      returns: { enrichment_file: "scratchpad/attachments/ORD-1003.json", delayed: true } }
 ```
 
 Its **parameters** are the target's `requires:`, each marked required, and its
@@ -162,7 +162,9 @@ states:
     triggers:
       manual:
         requires: [account_id]                 # what a caller must supply
-        returns: [enrichment_file, risk_level] # what this machine guarantees it sets
+        returns:                               # what this machine guarantees it sets
+          - { name: enrichment_file, type: file }  # copied back to the caller
+          - risk_level
     transitions:
       - to: write
   write: {}
@@ -237,13 +239,16 @@ machine, starting with a fresh transcript.
 | Direction | Crosses |
 | --- | --- |
 | Down | the call's arguments, locked as session variables (except `title`, which stays unlocked) |
-| Up | the declared `returns`, the result message, and any files the child wrote |
-| Never | the child's other variables, its `title`, its transcript, or its audit trail |
+| Up | the declared `returns` and the result message; a `file` return arrives as a copy (see [passing files](#passing-files)) |
+| Never | the child's other variables, its `title`, its transcript, its audit trail, or any other file it wrote |
 
 The child is its own **session**, `<parent>~<state>:<workflow>:<n>`, with its own
-checkpoints and its own `scratchpad/…`. `archmax sessions` lists it with
-`parentSessionId` naming the caller. What the caller reads back is the tool result,
-never the child's files.
+checkpoints and its own file space. `archmax sessions` lists it with
+`parentSessionId` naming the caller. Its `scratchpad/` is not its caller's: a path
+it reads or writes resolves inside its own session, so it can neither see nor
+overwrite a file of its caller's. What the caller reads back is the tool result.
+The only files that cross are copies the runtime makes of declared `file`
+arguments (down) and `file` returns (up).
 
 A child session sees **only** what its caller declared. The delegating session's
 own variables stay behind, so anything the child needs must be named as an
@@ -267,11 +272,78 @@ The caller reads the declared returns off the tool result:
 ```
 archmax_workflow_enrich-account({ account_id: "acct-42" })
   → { message: "Enriched acct-42.",
-      returns: { enrichment_file: "scratchpad/e/acct-42.json", risk_level: "low" } }
+      returns: { enrichment_file: "scratchpad/attachments/acct-42.json", risk_level: "low" } }
 ```
 
 The two keep separate channels. The message is prose the model reads, and the
 returns are values a guard or a script reads by name.
+
+## Passing files
+
+A child's `scratchpad/` is not its caller's, so a path means nothing on the other
+side of the call. A file crosses only as a **copy the runtime makes**, and only
+for an entry the target declares `type: file`:
+
+```yaml
+# workflows/reconcile/workflow.yaml
+states:
+  work:
+    triggers:
+      manual:
+        requires: [{ name: invoice, type: file, description: The invoice to reconcile. }]
+        returns: [{ name: report, type: file }]
+```
+
+**Down.** The caller passes a path in its own workspace: a session file such as
+`scratchpad/inbox/invoice.pdf`, or an authored one such as
+`skills/billing/assets/template.pdf`. Before the child starts, the runtime copies
+the file's exact bytes into the child's `scratchpad/attachments/` under the same
+name, and seeds the child with *that* path:
+
+```
+archmax_workflow_reconcile({ invoice: "scratchpad/inbox/invoice.pdf" })
+  # the child holds scratchpad/attachments/invoice.pdf, and its `invoice`
+  # variable (and opening message) read that path
+```
+
+The child works on its own copy, so nothing it does changes the caller's file. Two
+arguments with the same file name take `-1`, `-2`, … suffixes in declaration
+order. The read is the calling state's:
+
+- A `file` argument is a `read` path argument of the delegation tool, so the zone
+  and mount rules bind it, and so does a `paths:` guard on the tool's allow entry
+  (`{ tool: archmax_workflow_reconcile, paths: ["scratchpad/inbox/**"] }`).
+- An argument naming nothing, or a folder, is refused `invalid-param` before any
+  child runs.
+- A failed call is recorded, and named in an `on_error` route, with the path the
+  caller passed, not the child's copy.
+
+**Up.** When the child finishes, the runtime copies each `file` return it set into
+the **caller's** `scratchpad/attachments/` and hands the caller that path:
+
+```
+  → { message: "Reconciled.", returns: { report: "scratchpad/attachments/report.pdf" } }
+```
+
+The copy never overwrites anything. When the name is taken, by the caller's own
+file, an earlier call or a sibling call finishing at the same moment, the copy
+gets the lowest free suffix (`report-1.pdf`, `report-2.pdf`). So ten parallel
+calls returning `report.pdf` leave ten files, each call naming its own. The
+child's original stays in the child's session.
+
+A child can hand back only what its caller could read on runtime authority. Every
+`forbid_always` list of every ancestor binds the child, and a `file` value must name a
+file the session may read under those rules. So a child cannot return a file its
+caller's workflow denies: the agent's write of such a return is refused, and a
+value a script wrote is rejected when the child completes. A return whose file is
+gone when the child completes, or that cannot be copied, fails the call
+`invalid-return`. A child that parks at a human state copies its returns when it
+finally completes, and the note the caller then reads carries them beside the
+child's closing message.
+
+For a case, a mocked `file` return names a file in the calling session itself,
+seeded with `workspace:`, and it is copied into `scratchpad/attachments/` like a
+real one. See [testing](/guides/testing/).
 
 ## What the child's model reads
 

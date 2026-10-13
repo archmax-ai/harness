@@ -140,6 +140,19 @@ export class WorkflowMachine {
     return new WorkflowMachine(spec, new Set(extraEssentialTools), toolPaths);
   }
 
+  /**
+   * This machine with `extra` path declarations added to its table: how a
+   * composition declares the `file` arguments of the delegation tools it binds,
+   * which only reading each target's signature reveals. The spec, the essential
+   * tools and every other declaration are unchanged.
+   */
+  withToolPaths(extra: Readonly<Record<string, ToolPaths>>): WorkflowMachine {
+    if (Object.keys(extra).length === 0) return this;
+    const table = new Map(this.toolPathTable);
+    for (const [tool, paths] of Object.entries(extra)) table.set(tool, Object.freeze({ ...paths }));
+    return new WorkflowMachine(this.spec, this.extraEssential, table);
+  }
+
   /** The path arguments `tool` declares, or `undefined` for a tool with none. */
   toolPaths(tool: string): ToolPaths | undefined {
     return this.toolPathTable.get(tool);

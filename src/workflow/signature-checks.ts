@@ -8,23 +8,100 @@
  * completion check rejected without importing the middleware.
  */
 import type { WorkflowMachine } from "../machine/machine.js";
-import { signatureValueIssues } from "../machine/signature.js";
+import {
+  isFilePath,
+  signatureValueIssues,
+  type SignatureEntry,
+  type SignatureValueIssue,
+} from "../machine/signature.js";
 import { SET_VARIABLES_TOOL } from "../machine/tool-names.js";
 import { storeValues, type VariableStore } from "../machine/variables.js";
+
+// --- File values ------------------------------------------------------------------
+
+/** An `invalid` issue, as the file check reports one. */
+export type InvalidValueIssue = Extract<SignatureValueIssue, { kind: "invalid" }>;
+
+/**
+ * What the file check asks of the session a `file` value belongs to: what a
+ * path names in its workspace, and why it may not read it on runtime authority
+ * (the rules that bind a hook — the zone rules and every workflow-wide denial,
+ * inherited ones included), or `undefined` when it may.
+ */
+export interface FileValueCheck {
+  kind(path: string): Promise<"file" | "directory" | "missing">;
+  denied(path: string): string | undefined;
+}
+
+/** A `file` value in the canonical form the workspace addresses it by: no leading `/`. */
+export function filePathOf(value: string): string {
+  return value.startsWith("/") ? value.slice(1) : value;
+}
+
+/**
+ * The runtime half of the `file` type: one issue per `file` entry whose value
+ * has the right shape (the pure rule's business) but names a path this session
+ * may not read, a folder, or nothing. Entries of another type, unset values and
+ * malformed paths are left to {@link signatureValueIssues}.
+ */
+export async function fileValueIssues(
+  entries: readonly SignatureEntry[],
+  values: Readonly<Record<string, unknown>>,
+  check: FileValueCheck,
+): Promise<InvalidValueIssue[]> {
+  const issues: InvalidValueIssue[] = [];
+  for (const entry of entries) {
+    if (entry.type !== "file") continue;
+    const value = Object.hasOwn(values, entry.name) ? values[entry.name] : undefined;
+    if (typeof value !== "string" || !isFilePath(value)) continue;
+    const path = filePathOf(value);
+    const issue = (message: string) =>
+      issues.push({ kind: "invalid", name: entry.name, type: "file", found: "string", message });
+    const denied = check.denied(path);
+    if (denied) {
+      issue(`'${entry.name}' names '${path}', which this session may not read: ${denied}`);
+      continue;
+    }
+    const kind = await check.kind(path);
+    if (kind === "directory") issue(`'${entry.name}' must name a file, but '${path}' is a folder`);
+    else if (kind === "missing") issue(`'${entry.name}' must name a file, but nothing is at '${path}'`);
+  }
+  return issues;
+}
+
+/** Whether a signature list declares any `file` entry: only then does a site pay for the file check. */
+export function hasFileEntries(entries: readonly SignatureEntry[] | undefined): boolean {
+  return (entries ?? []).some((entry) => entry.type === "file");
+}
+
+// --- The session boundary -------------------------------------------------------------
+
+/** The file issues of the `file` entries a trigger's `requires` declares, for {@link requiresRefusal}. */
+export async function requiresFileIssues(
+  machine: WorkflowMachine,
+  triggerId: string,
+  opening: VariableStore,
+  files: FileValueCheck,
+): Promise<InvalidValueIssue[]> {
+  const entries = machine.signatureForTrigger(triggerId)?.requires ?? [];
+  return hasFileEntries(entries) ? fileValueIssues(entries, storeValues(opening), files) : [];
+}
 
 /**
  * Why a turn's opening variables do not satisfy its trigger's `requires`, or
  * `undefined` when they do: every missing name in one sentence, then each value
- * that does not conform to its declared type.
+ * that does not conform to its declared type, then each of `fileIssues` (from
+ * {@link requiresFileIssues}).
  */
 export function requiresRefusal(
   machine: WorkflowMachine,
   triggerId: string,
   opening: VariableStore,
+  fileIssues: readonly InvalidValueIssue[] = [],
 ): string | undefined {
   const entries = machine.signatureForTrigger(triggerId)?.requires ?? [];
   if (entries.length === 0) return undefined;
-  const issues = signatureValueIssues(entries, storeValues(opening));
+  const issues: SignatureValueIssue[] = [...signatureValueIssues(entries, storeValues(opening)), ...fileIssues];
   if (issues.length === 0) return undefined;
   const missing = issues.filter((issue) => issue.kind === "missing").map((issue) => `'${issue.name}'`);
   const invalid = issues.filter((issue) => issue.kind === "invalid").map((issue) => issue.message);
@@ -47,16 +124,33 @@ export interface ReturnsShortfall {
   invalid: string[];
 }
 
-/** The session's {@link ReturnsShortfall}, or `undefined` when it owes its trigger nothing. */
+/** The file issues of the `file` entries a trigger's `returns` declares, for {@link returnsShortfall}. */
+export async function returnsFileIssues(
+  machine: WorkflowMachine,
+  triggerId: string | undefined,
+  store: VariableStore,
+  files: FileValueCheck,
+): Promise<InvalidValueIssue[]> {
+  if (!triggerId) return [];
+  const entries = machine.signatureForTrigger(triggerId)?.returns ?? [];
+  return hasFileEntries(entries) ? fileValueIssues(entries, storeValues(store), files) : [];
+}
+
+/**
+ * The session's {@link ReturnsShortfall}, or `undefined` when it owes its
+ * trigger nothing: its unset and non-conforming returns, plus `fileIssues`
+ * (from {@link returnsFileIssues}).
+ */
 export function returnsShortfall(
   machine: WorkflowMachine,
   triggerId: string | undefined,
   store: VariableStore,
+  fileIssues: readonly InvalidValueIssue[] = [],
 ): ReturnsShortfall | undefined {
   if (!triggerId) return undefined;
   const entries = machine.signatureForTrigger(triggerId)?.returns ?? [];
   if (entries.length === 0) return undefined;
-  const issues = signatureValueIssues(entries, storeValues(store));
+  const issues: SignatureValueIssue[] = [...signatureValueIssues(entries, storeValues(store)), ...fileIssues];
   if (issues.length === 0) return undefined;
   return {
     trigger: triggerId,
@@ -75,9 +169,20 @@ export function returnsRejection(
   triggerId: string | undefined,
   state: string,
   store: VariableStore,
+  fileIssues: readonly InvalidValueIssue[] = [],
 ): string | undefined {
-  const owed = returnsShortfall(machine, triggerId, store);
+  const owed = returnsShortfall(machine, triggerId, store, fileIssues);
   return owed ? returnsRejectionFor(owed, state) : undefined;
+}
+
+/**
+ * Whether a session's `rejected` reason is a completion check's refusal of its
+ * returns — the sentences {@link returnsRejectionFor} writes, and nothing else
+ * does. The dispatcher reads a child rejected for its returns as a returns
+ * failure (`invalid-return`), any other rejection as `rejected`.
+ */
+export function isReturnsRejection(reason: string): boolean {
+  return /^Completed in state '[^']*' (?:without setting |with returns that do not conform )/.test(reason);
 }
 
 /** The rejection a {@link ReturnsShortfall} settles as, worded for the state the session finished in. */

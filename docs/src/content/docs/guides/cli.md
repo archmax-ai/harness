@@ -14,7 +14,7 @@ Arguments are **positional**, and the optional keyed things are flags:
 | | |
 | --- | --- |
 | Positional | `<workflow>`, `<prompt>`, `<filter>`, `<session>`, `<message>`, `<command>` |
-| Flags | `--root`, `--workflow`, `--trigger`, `--variables`, `--session`, `--session-path`, `--to`, `--comment`, `--verbose`, `--json` |
+| Flags | `--root`, `--workflow`, `--trigger`, `--variables`, `--file`, `--session`, `--session-path`, `--to`, `--comment`, `--verbose`, `--json` |
 
 Each flag has one spelling, apart from `--help`, which also accepts `-h`.
 
@@ -79,6 +79,15 @@ archmax run order-lookup "Report requested" --trigger report_requested --variabl
 
 Both fail before any model call. An unknown trigger id lists the declared ones
 and exits 1. Malformed or non-object JSON is a usage error, exit 2.
+
+A workflow whose trigger takes a [`file` input](/guides/triggers/#typing-a-signature)
+gets it with `--file <variable>=<path>`, once per file. The local file is placed
+in the session's `scratchpad/attachments/` and the variable is seeded with that
+path:
+
+```bash
+archmax run reconcile "Reconcile this invoice" --file invoice=./invoices/2026-03.pdf
+```
 
 ### Sessions and parks
 

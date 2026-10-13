@@ -12,7 +12,7 @@
  */
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { VariableStore } from "../machine/variables.js";
-import { returnsRejectionFor, returnsShortfall } from "./signature-checks.js";
+import { returnsRejectionFor, returnsShortfall, type InvalidValueIssue } from "./signature-checks.js";
 
 /** Where the check runs: the session as it finishes. */
 export interface ReturnsCheckInput {
@@ -23,6 +23,8 @@ export interface ReturnsCheckInput {
   store: VariableStore;
   /** Whether the session is a sub-workflow child, whose caller reads what it set. */
   child: boolean;
+  /** The `file` returns that name no file the session holds and may read (`returnsFileIssues`). */
+  fileIssues?: readonly InvalidValueIssue[];
 }
 
 export type ReturnsCheck =
@@ -32,7 +34,7 @@ export type ReturnsCheck =
   | { verdict: "reject"; reason: string };
 
 export function checkReturns(machine: WorkflowMachine, input: ReturnsCheckInput): ReturnsCheck {
-  const owed = returnsShortfall(machine, input.trigger, input.store);
+  const owed = returnsShortfall(machine, input.trigger, input.store, input.fileIssues);
   if (!owed) return { verdict: "complete" };
   if (input.child && owed.invalid.length === 0) return { verdict: "complete" };
   return { verdict: "reject", reason: returnsRejectionFor(owed, input.state) };

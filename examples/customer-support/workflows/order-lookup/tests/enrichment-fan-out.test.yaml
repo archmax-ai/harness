@@ -21,6 +21,12 @@ variables:
   orders_to_enrich:
     - order_id: "ORD-1002"
     - order_id: "ORD-1003"
+# `enrichment_file` is a `file` return: a mocked sub-run names a file in this
+# session, which the runtime copies into scratchpad/attachments/ exactly as it
+# copies a real sub-run's file back. These are those files.
+workspace:
+  scratchpad/fixtures/ORD-1002.json: { id: "ORD-1002", customer: "Acme", status: "shipped", delayed: false }
+  scratchpad/fixtures/ORD-1003.json: { id: "ORD-1003", customer: "Acme", status: "delayed", delayed: true }
 mocks:
   # Matched on each call's own arguments, so every sub-run gets its own answer —
   # which is what proves the calls are not sharing inputs.
@@ -34,7 +40,7 @@ mocks:
       # its contract, and one free to answer in a shape the machine could never
       # produce would make this case pass against nothing.
       returns:
-        enrichment_file: "scratchpad/enrichment/ORD-1002.json"
+        enrichment_file: "scratchpad/fixtures/ORD-1002.json"
         delayed: false
   - tool: archmax_workflow_enrich-order
     whenInput:
@@ -42,7 +48,7 @@ mocks:
     result:
       message: "ORD-1003 is delayed."
       returns:
-        enrichment_file: "scratchpad/enrichment/ORD-1003.json"
+        enrichment_file: "scratchpad/fixtures/ORD-1003.json"
         delayed: true
 steps:
   - send: "Enrich the requested orders."
@@ -69,8 +75,8 @@ steps:
       expect:
         enrichments:
           - order_id: "ORD-1002"
-            enrichment_file: "scratchpad/enrichment/ORD-1002.json"
+            enrichment_file: "scratchpad/attachments/ORD-1002.json"
             delayed: false
           - order_id: "ORD-1003"
-            enrichment_file: "scratchpad/enrichment/ORD-1003.json"
+            enrichment_file: "scratchpad/attachments/ORD-1003.json"
             delayed: true

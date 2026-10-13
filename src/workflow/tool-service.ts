@@ -11,7 +11,8 @@ import type { WorkflowMachine } from "../machine/machine.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import type { MountPrefixes } from "../core/mounts.js";
 import { toolCallDetail, toolOutputPreview } from "../core/tool-telemetry.js";
-import { TITLE_VARIABLE } from "../machine/variables.js";
+import { TITLE_VARIABLE, type VariableStore } from "../machine/variables.js";
+import type { FileValueCheck } from "./signature-checks.js";
 import { workflowSlugFromToolName } from "../machine/tool-names.js";
 import type { WorkflowToolCallRequest } from "../core/deepagents.js";
 import {
@@ -23,6 +24,7 @@ import {
   handleReset,
   handleSetVariables,
   handleWait,
+  fileReturnsRefusal,
   RAISE_TOOL,
   refusal,
   RESET_TOOL,
@@ -48,6 +50,8 @@ export interface ToolServiceContext {
   lifecycle: LifecycleRunner;
   mountPrefixes: MountPrefixes;
   subWorkflows?: SubWorkflowDispatcher;
+  /** The `file` type's runtime check for a session in a state; omitted, a `file` value is held to its shape alone. */
+  files?: (state: string, variables: VariableStore) => FileValueCheck;
   lifecycleCtx(sessionId: string, state: unknown, messages: unknown[]): LifecycleContext;
 }
 
@@ -399,8 +403,11 @@ export function createToolService(ctx: ToolServiceContext) {
         return outcome.message;
       }
       case SET_VARIABLES_TOOL: {
+        const files = ctx.files
+          ? await fileReturnsRefusal(machine, state, args, ctx.files(workflowState, readVariables(state)))
+          : undefined;
         const outcome = await withPairedEvents(call, args, () => {
-          const written = handleSetVariables({ toolCallId, args, state }, machine);
+          const written = handleSetVariables({ toolCallId, args, state }, machine, files);
           // Only a write that landed is announced; a refusal is visible as the tool's error result.
           if (written.written) {
             emit({ type: "variables-set", state: workflowState, names: written.written, locked: written.locked === true, callId });

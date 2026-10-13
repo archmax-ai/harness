@@ -7,8 +7,8 @@
  * target, an unresolvable param, and a child that parks with nothing to resume
  * it all raise {@link SubWorkflowError}; nothing returns a half-finished sub-run.
  * **Nothing crosses implicitly**: down, only the arguments the call passed; up,
- * only the closing message, the declared returns, and what the child wrote to
- * the run zone.
+ * only the closing message, the declared returns, and the runtime's copies of
+ * its declared `file` returns. A child's files stay in its own session.
  */
 
 import { Command, GraphInterrupt, isGraphInterrupt } from "@langchain/langgraph";
@@ -37,8 +37,17 @@ import { DEFAULT_SUB_WORKFLOW_CONCURRENCY, DEFAULT_SUB_WORKFLOW_DEPTH } from "..
 import { findMock, readMocks } from "../core/tool-mocks.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
-import { readRaised, readReturns, readVariables, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
-import { missingReturnsNote, RETURNS_NOTE_VARIABLE, returnsRejection } from "./signature-checks.js";
+import { readRaised, readReturns, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
+import {
+  fileValueIssues,
+  filePathOf,
+  hasFileEntries,
+  isReturnsRejection,
+  missingReturnsNote,
+  RETURNS_NOTE_VARIABLE,
+  type FileValueCheck,
+} from "./signature-checks.js";
+import { baseName, type SessionFiles } from "../core/attachments.js";
 import {
   childRunConfig,
   releaseScopes,
@@ -277,6 +286,17 @@ export interface SubWorkflowDispatcherOptions {
   /** `maxDepth` bounds nesting, `maxConcurrent` bounds one session's in-flight sub-runs. */
   bounds?: { maxDepth?: number; maxConcurrent?: number };
   onEvent?: WorkflowEventHandler;
+  /**
+   * The runtime's access to the caller's and the child's files: how a `file`
+   * argument is copied into the child and a `file` return copied back. Absent, a
+   * target declaring a `file` entry cannot be dispatched (it fails closed).
+   */
+  files?: SessionFiles;
+  /**
+   * Why the calling session, in `state`, may not read `path` on runtime authority
+   * — the check a `file` argument is held to before anything is copied.
+   */
+  readDenial?: (state: string, path: string, variables: VariableStore) => string | undefined;
 }
 
 export interface SubWorkflowDispatcher {
@@ -392,6 +412,59 @@ export function createSubWorkflowDispatcher(
       `Sub-workflow '${workflow}' was rejected in state '${finishedIn}': ${rejected}`,
     );
 
+  /** The file check a `file` argument is held to: a file the caller holds and may read on runtime authority. */
+  function callerFiles(input: DispatchSubWorkflowInput): FileValueCheck {
+    const callerId = sessionScopeFrom(input.config).sessionId;
+    return {
+      kind: (path) => (opts.files ? opts.files.kind(callerId, path) : Promise.resolve("missing")),
+      denied: (path) => opts.readDenial?.(input.state, path, input.variables),
+    };
+  }
+
+  /** The port, or the closed failure of a dispatch that would have to copy a file without one. */
+  function filesFor(workflow: string): SessionFiles {
+    if (opts.files) return opts.files;
+    throw new SubWorkflowError(
+      "error",
+      workflow,
+      `Sub-workflow '${workflow}' declares a 'file' entry, but this assembly cannot copy files between sessions.`,
+    );
+  }
+
+  /**
+   * Copy each `file` argument into the child's `scratchpad/attachments/`, in
+   * declaration order, and return the seeds with the child-side paths. The
+   * child gets its own copy: nothing it does reaches the caller's file.
+   */
+  async function copyFilesIn(
+    workflow: string,
+    requires: SignatureEntry[],
+    params: Record<string, unknown>,
+    callerId: string,
+    childId: string,
+  ): Promise<Record<string, unknown>> {
+    if (!hasFileEntries(requires)) return params;
+    const files = filesFor(workflow);
+    const seeds = { ...params };
+    for (const entry of requires) {
+      const value = params[entry.name];
+      if (entry.type !== "file" || typeof value !== "string") continue;
+      const path = filePathOf(value);
+      const read = await files.read(callerId, path);
+      const placed = "error" in read ? read : await files.place(childId, baseName(path), read.bytes);
+      if ("error" in placed) {
+        throw new SubWorkflowError(
+          "invalid-param",
+          workflow,
+          `Refusing to run sub-workflow '${workflow}': its argument '${entry.name}' could not be copied ` +
+            `into the sub-workflow: ${placed.error}`,
+        );
+      }
+      seeds[entry.name] = placed.path;
+    }
+    return seeds;
+  }
+
   /** Everything that can refuse a dispatch, before anything is composed. Shared by `dispatch` and `refusal`. */
   async function check(input: DispatchSubWorkflowInput): Promise<{
     params: Record<string, unknown>;
@@ -459,6 +532,19 @@ export function createSubWorkflowDispatcher(
         `Refusing to run sub-workflow '${workflow}': ${invalid.map((issue) => issue.message).join("; ")}. ` +
           `Call it again with ${invalid.length === 1 ? "a value" : "values"} of the declared type.`,
       );
+    }
+    // A `file` argument must name a file the caller holds and may read: it is
+    // copied into the child before the child runs, so a miss is refused here.
+    if (hasFileEntries(requires)) {
+      const missingFiles = await fileValueIssues(requires, params, callerFiles(input));
+      if (missingFiles.length > 0) {
+        throw new SubWorkflowError(
+          "invalid-param",
+          workflow,
+          `Refusing to run sub-workflow '${workflow}': ${missingFiles.map((issue) => issue.message).join("; ")}. ` +
+            `Call it again with ${missingFiles.length === 1 ? "a path" : "paths"} naming a file this session may read.`,
+        );
+      }
     }
     return { params, signature, ...(mock ? { mock } : {}) };
   }
@@ -530,13 +616,24 @@ export function createSubWorkflowDispatcher(
     try {
       const { params, signature, mock } = await check(input);
       if (mock) {
-        const mocked = applyMock(mock, workflow, signature.returns);
+        // A mock has no child session: its `file` returns name the caller's own
+        // files (a case seeds them), copied by the same rule a real return is.
+        const mocked = await applyMock(mock, workflow, signature.returns, (declared, handed) =>
+          copyFilesBack(workflow, declared, handed, scope.sessionId, scope.sessionId),
+        );
         settle("ok", undefined, mocked.returns);
         record(input.config, { workflow, status: "ok" });
         return mocked;
       }
       const result = await withSlot(() =>
-        run({ ...input, dispatchId, identity, params, returns: signature.returns ?? [] }),
+        run({
+          ...input,
+          dispatchId,
+          identity,
+          params,
+          requires: signature.requires ?? [],
+          returns: signature.returns ?? [],
+        }),
       );
       settle("ok", undefined, result.returns);
       record(input.config, { workflow, status: "ok" });
@@ -592,6 +689,7 @@ export function createSubWorkflowDispatcher(
       dispatchId: string;
       identity: string;
       params: Record<string, unknown>;
+      requires: SignatureEntry[];
       returns: SignatureEntry[];
     },
   ): Promise<SubWorkflowResult> {
@@ -602,13 +700,19 @@ export function createSubWorkflowDispatcher(
       workflow,
       dispatchId: input.dispatchId,
     });
-    // Exactly what the caller declared: the child seeds them as its host would, locked.
-    const configurable = { ...(config.configurable ?? {}), [SEED_VARIABLES_KEY]: { ...input.params } };
+    const sessions = {
+      callerId: sessionScopeFrom(input.config).sessionId,
+      childId: sessionScopeFrom(config).sessionId,
+    };
+    // Exactly what the caller declared — a `file` argument as the child's own
+    // copy — seeded as its host would, locked.
+    const seeds = await copyFilesIn(workflow, input.requires, input.params, sessions.callerId, sessions.childId);
+    const configurable = { ...(config.configurable ?? {}), [SEED_VARIABLES_KEY]: seeds };
 
     // Everything the child emits is tagged with this dispatch.
     const state = await withEventContext({ subWorkflowDispatchId: input.dispatchId }, () =>
       child.graph.invoke(
-        { messages: [humanNote("opening", subRunOpening(input.params))] },
+        { messages: [humanNote("opening", subRunOpening(seeds))] },
         { ...config, configurable, ...(input.signal ? { signal: input.signal } : {}) },
       ),
     );
@@ -628,7 +732,7 @@ export function createSubWorkflowDispatcher(
           `'${fields.status}' but no pending suspension, so nothing could resume it.`,
       );
     }
-    const returns = settledReturns(workflow, child.machine, state, finishedIn, input.returns);
+    const returns = await settledReturns(workflow, state, finishedIn, input.returns, sessions);
     return { result: closingMessage(state), workflow, state: finishedIn, ...(returns ? { returns } : {}) };
   }
 
@@ -638,15 +742,17 @@ export function createSubWorkflowDispatcher(
    * the ones it set and a `note` naming the rest. A value that does not conform
    * fails the call `invalid-return` — the reason its own completion check
    * rejected it; any other rejection stays `rejected`. A child that raised owes
-   * no returns: it fails as `raised`, carrying its agent's code and reason.
+   * no returns: it fails as `raised`, carrying its agent's code and reason. A
+   * `file` return is copied into the caller's `scratchpad/attachments/` under a
+   * name nothing there holds, and handed on as that path.
    */
-  function settledReturns(
+  async function settledReturns(
     workflow: string,
-    machine: WorkflowMachine,
     state: Record<string, unknown>,
     finishedIn: string,
     declared: SignatureEntry[],
-  ): Record<string, unknown> | undefined {
+    sessions: { callerId: string; childId: string },
+  ): Promise<Record<string, unknown> | undefined> {
     const fields = readWorkflowState(state);
     if (fields.status === WORKFLOW_STATUSES.failed) {
       const raised = readRaised(state);
@@ -657,18 +763,57 @@ export function createSubWorkflowDispatcher(
           `'${raised?.state ?? finishedIn}': ${raised?.reason ?? "no reason recorded"}`,
       );
     }
-    const store = readVariables(state);
-    const trigger = fields.trigger?.id ?? MANUAL_TRIGGER;
-    if (fields.rejected && fields.rejected !== returnsRejection(machine, trigger, finishedIn, store)) {
-      throw failed(workflow, finishedIn, fields.rejected);
-    }
+    if (fields.rejected && !isReturnsRejection(fields.rejected)) throw failed(workflow, finishedIn, fields.rejected);
     const returns = readReturns(state, declared.map((entry) => entry.name));
     const issues = signatureValueIssues(declared, returns ?? {});
     if (invalidOf(issues).length > 0) throw returnsFailure(workflow, `in state '${finishedIn}'`, issues);
-    // A rejection whose returns check passes against the target's own
-    // signature still failed closed; it is only named for what it was.
-    if (fields.rejected) throw failed(workflow, finishedIn, fields.rejected);
-    return withMissingNote(returns, issues);
+    // Rejected for its returns, though their shapes conform: a `file` return
+    // naming no file it may hand on. Failed closed as the returns failure it is.
+    if (fields.rejected) {
+      throw new SubWorkflowError(
+        "invalid-return",
+        workflow,
+        `Sub-workflow '${workflow}' settled in state '${finishedIn}' with returns it could not hand back: ` +
+          fields.rejected,
+      );
+    }
+    const handed = withMissingNote(returns, issues);
+    return handed && hasFileEntries(declared)
+      ? copyFilesBack(workflow, declared, handed, sessions.childId, sessions.callerId)
+      : handed;
+  }
+
+  /**
+   * Copy each `file` return from the session that holds it into the caller's
+   * `scratchpad/attachments/`, under a name nothing there holds — an earlier or
+   * concurrent call's copy included — and hand the caller that path instead.
+   */
+  async function copyFilesBack(
+    workflow: string,
+    declared: SignatureEntry[],
+    returns: Record<string, unknown>,
+    fromId: string,
+    callerId: string,
+  ): Promise<Record<string, unknown>> {
+    const files = filesFor(workflow);
+    const handed = { ...returns };
+    for (const entry of declared) {
+      const value = returns[entry.name];
+      if (entry.type !== "file" || typeof value !== "string") continue;
+      const path = filePathOf(value);
+      const read = await files.read(fromId, path);
+      const placed = "error" in read ? read : await files.place(callerId, baseName(path), read.bytes);
+      if ("error" in placed) {
+        throw new SubWorkflowError(
+          "invalid-return",
+          workflow,
+          `Sub-workflow '${workflow}' returned '${entry.name}' as '${path}', which could not be copied back: ` +
+            placed.error,
+        );
+      }
+      handed[entry.name] = placed.path;
+    }
+    return handed;
   }
 
   /** Continue a child that stopped for a person: the same invoke, entered with a `Command({ resume })`. */
@@ -700,7 +845,10 @@ export function createSubWorkflowDispatcher(
       const fields = readWorkflowState(state);
       const finishedIn = fields.workflowState ?? child.machine.entry;
       const declared = (await opts.registry.signature(workflow)).returns ?? [];
-      const returns = settledReturns(workflow, child.machine, state, finishedIn, declared);
+      const returns = await settledReturns(workflow, state, finishedIn, declared, {
+        callerId: sessionScopeFrom(input.config).sessionId,
+        childId: sessionScopeFrom(config).sessionId,
+      });
       settle({ status: "ok", returns });
       return { result: closingMessage(state), workflow, state: finishedIn, ...(returns ? { returns } : {}) };
     } catch (err) {
@@ -741,11 +889,12 @@ export function createSubWorkflowDispatcher(
 }
 
 /** Turn a matched mock into the dispatch's result, held to the target's declared contract like a real sub-run. */
-function applyMock(
+async function applyMock(
   mock: { result?: unknown },
   workflow: string,
-  returns?: SignatureEntry[],
-): SubWorkflowResult {
+  returns: SignatureEntry[] | undefined,
+  copyBack: (declared: SignatureEntry[], handed: Record<string, unknown>) => Promise<Record<string, unknown>>,
+): Promise<SubWorkflowResult> {
   const declared = mock.result;
   if (declared != null && typeof declared === "object" && "error" in declared) {
     throw new SubWorkflowError(
@@ -772,10 +921,11 @@ function applyMock(
   const supplied = (asObject?.returns ?? {}) as Record<string, unknown>;
   const issues = signatureValueIssues(wanted, supplied);
   if (invalidOf(issues).length > 0) throw returnsFailure(workflow, "(mocked)", issues);
-  const handed = withMissingNote(
+  const set = withMissingNote(
     Object.fromEntries(wanted.map((entry) => [entry.name, supplied[entry.name]])),
     issues,
   );
+  const handed = set && hasFileEntries(wanted) ? await copyBack(wanted, set) : set;
   return { result, workflow, state, ...(handed ? { returns: handed } : {}) };
 }
 

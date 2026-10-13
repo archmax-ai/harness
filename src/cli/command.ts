@@ -19,8 +19,10 @@ export interface OptionSpec {
   description: string;
   placeholder?: string;
   short?: string;
+  /** The flag may be given more than once; its value is then the list of every occurrence. */
+  multiple?: boolean;
 }
-export type Values = Record<string, string | boolean | undefined>;
+export type Values = Record<string, string | boolean | string[] | undefined>;
 export interface Invocation {
   positionals: string[];
   values: Values;
@@ -55,7 +57,7 @@ export function parseInvocation(cmd: Command, args: string[]): Invocation {
   const options = Object.fromEntries(
     Object.entries({ ...GLOBAL_OPTIONS, ...cmd.options }).map(([name, spec]) => [
       name,
-      { type: spec.type, ...(spec.short ? { short: spec.short } : {}) },
+      { type: spec.type, ...(spec.short ? { short: spec.short } : {}), ...(spec.multiple ? { multiple: true } : {}) },
     ]),
   );
   let parsed: ReturnType<typeof parseNodeArgs>;

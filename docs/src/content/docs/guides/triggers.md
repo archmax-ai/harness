@@ -183,7 +183,7 @@ states:
 ```
 
 `type` is one of `string`, `integer`, `number`, `boolean`, `date`, `date-time`,
-`object` or `array`, with the conformance rules in the
+`object`, `array` or `file`, with the conformance rules in the
 [reference](/reference/machine-spec/#the-signature-requires-and-returns). A bare
 name stays untyped and takes any value, `null` included. A typed entry takes
 neither `null` nor a value of another kind, and nothing is coerced, so the string
@@ -199,6 +199,17 @@ The types are held in three places:
 - **At completion.** A session that still holds a mistyped return is rejected,
   naming the terminal state, the variable and the type. The write check already
   covers the agent's own writes, so this catches a script or hook that wrote one.
+
+A `file` entry's value is a path from the workspace root:
+`scratchpad/attachments/invoice.pdf` for a file in the session, or
+`skills/billing/assets/template.pdf` for an authored one. The shape check is the
+same pure rule a host runs. In the same three places the runtime also checks that
+a file is at the path and that the session may read it on runtime authority, the
+rules a hook is bound by. So a seed naming a file that is not there is refused
+before any model call, and `archmax_set_variables({ variables: { report:
+"scratchpad/report.md" } })` is refused until the agent has written that file. A
+host hands a session a file with [`TurnInput.files`](/guides/sessions/#files-handed-to-a-session),
+which places it and seeds the path for you.
 
 The agent sees each typed entry with its type and description beside its name,
 as `total (number) — Refunded amount in EUR.`. The declaration's own
@@ -282,8 +293,9 @@ caller delegates to it. A caller that needs the child to know passes an ordinary
 variable.
 
 `session:` and `message:` are ordinary host-facing keys on `manual`, and a
-delegation ignores both. Its session derives from the caller's, and it carries
-no message.
+delegation ignores both. A delegated run is a separate session whose id derives
+from the caller's (`<caller>~<state>:<workflow>:<n>`), with its own `scratchpad/`,
+and it carries no message.
 
 :::caution[A delegated workflow needs a `manual` entry]
 A sub-workflow is entered through `manual`, like `archmax run`. A workflow with

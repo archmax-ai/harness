@@ -13,7 +13,9 @@ import type { MachineSpec, SignatureEntryDeclaration } from "./types.js";
 /**
  * The types a signature entry may declare: JSON Schema's own type words, plus its
  * two string formats `date` and `date-time`, promoted because a host renders and
- * validates them differently from free text.
+ * validates them differently from free text, and `file`: a workspace path naming
+ * a file, which a host renders as a file picker and the runtime copies across a
+ * sub-workflow boundary.
  */
 export const SIGNATURE_TYPES = [
   "string",
@@ -24,6 +26,7 @@ export const SIGNATURE_TYPES = [
   "date-time",
   "object",
   "array",
+  "file",
 ] as const;
 
 /** One of {@link SIGNATURE_TYPES}. */
@@ -124,7 +127,7 @@ export function signatureForTrigger(spec: MachineSpec, triggerId: string): Trigg
 /** One property of {@link signatureJsonSchema}'s output. An untyped entry has no `type`. */
 export interface SignaturePropertySchema {
   type?: "string" | "integer" | "number" | "boolean" | "object" | "array";
-  format?: "date" | "date-time";
+  format?: "date" | "date-time" | "file";
   description?: string;
 }
 
@@ -138,7 +141,7 @@ export interface SignatureJsonSchema {
 /**
  * The one mapping from signature entries to a JSON Schema object: one property
  * per entry in declaration order, the six JSON Schema type words as themselves,
- * `date`/`date-time` as a string with that `format`, an untyped entry as `{}`,
+ * `date`/`date-time`/`file` as a string with that `format`, an untyped entry as `{}`,
  * and every name `required` — each `requires` entry is mandatory, and the
  * completion check guarantees each `returns` entry is set. The delegation tool's
  * input schema is built by it, so a host building an MCP tool, a form or an API
@@ -148,7 +151,7 @@ export function signatureJsonSchema(entries: readonly SignatureEntry[]): Signatu
   const properties: Record<string, SignaturePropertySchema> = {};
   for (const entry of entries) {
     const property: SignaturePropertySchema =
-      entry.type === "date" || entry.type === "date-time"
+      entry.type === "date" || entry.type === "date-time" || entry.type === "file"
         ? { type: "string", format: entry.type }
         : entry.type
           ? { type: entry.type }
@@ -167,7 +170,9 @@ export function signatureJsonSchema(entries: readonly SignatureEntry[]): Signatu
  * order; an empty list when the map satisfies the signature. A name is set when
  * `values` holds it with any value but `undefined`. An untyped entry takes any
  * value, `null` included; a typed one never takes `null`. Nothing is coerced —
- * the string `"4"` is not an `integer`.
+ * the string `"4"` is not an `integer`. A `file` value is judged by its shape
+ * alone: whether a file is there, and whether the session may read it, is the
+ * runtime's check where the value crosses a boundary.
  */
 export function signatureValueIssues(
   entries: readonly SignatureEntry[],
@@ -212,6 +217,8 @@ function conforms(type: SignatureType, value: unknown): boolean {
       return value !== null && typeof value === "object" && !Array.isArray(value);
     case "array":
       return Array.isArray(value);
+    case "file":
+      return typeof value === "string" && isFilePath(value);
   }
 }
 
@@ -225,6 +232,7 @@ const TYPE_PHRASES: Record<SignatureType, string> = {
   "date-time": "a date-time (an RFC 3339 date-time with an offset, e.g. 2026-03-01T09:30:00Z)",
   object: "an object",
   array: "an array",
+  file: "a path to a file in the workspace (e.g. scratchpad/attachments/invoice.pdf)",
 };
 
 function valueKind(value: unknown): SignatureValueKind {
@@ -241,6 +249,20 @@ function arrived(found: SignatureValueKind, value: unknown): string {
   if (found === "string" && (value as string).length <= 40) return `${article} string (${JSON.stringify(value)})`;
   if (found === "number") return `${article} number (${String(value)})`;
   return `${article} ${found}`;
+}
+
+// --- File paths ---------------------------------------------------------------------
+
+/**
+ * A workspace path from the root, as a `file` value spells it: at most one
+ * leading `/`, then one or more segments, none empty, `.` or `..`, with no
+ * backslash, no NUL and no trailing `/`. A shape rule only — it names where a
+ * file would be, never whether one is there.
+ */
+export function isFilePath(value: string): boolean {
+  const path = value.startsWith("/") ? value.slice(1) : value;
+  if (path === "" || path.includes("\\") || path.includes("\0")) return false;
+  return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
 // --- RFC 3339 -----------------------------------------------------------------------

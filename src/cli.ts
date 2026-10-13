@@ -34,6 +34,7 @@ import {
   bootstrap,
   createEventSink,
   isKnown,
+  parseFileFlags,
   parseVariablesJson,
   printSessionHeader,
   resolveWorkflow,
@@ -117,6 +118,13 @@ const COMMANDS: Record<string, Command> = {
         description: "Trigger starting the turn (default: manual); enters the state declaring it",
       },
       variables: OPT.variables,
+      file: {
+        type: "string",
+        multiple: true,
+        placeholder: "<variable>=<path>",
+        description:
+          "Hand the session a local file: placed in scratchpad/attachments/, its path seeded as <variable>; repeatable",
+      },
       session: {
         type: "string",
         placeholder: "<id>",
@@ -136,6 +144,7 @@ const COMMANDS: Record<string, Command> = {
       const workflow = resolveWorkflow(workflowArg, inv.root);
       if (!prompt) throw new UsageError("a prompt is required");
       const variables = parseVariablesJson(inv.values.variables as string | undefined);
+      const files = parseFileFlags(inv.values.file as string[] | undefined, variables);
       const trigger = inv.values.trigger ? { id: inv.values.trigger as string } : undefined;
       const style = createStyle();
       printSessionHeader(style, workflow, inv.root, true);
@@ -149,6 +158,7 @@ const COMMANDS: Record<string, Command> = {
         prompt,
         ...(trigger && { trigger }),
         ...(variables && { variables }),
+        ...(files && { files }),
         ...(inv.values.session ? { sessionId: inv.values.session as string } : {}),
         ...(inv.values["session-path"]
           ? { sessionPath: inv.values["session-path"] as string }

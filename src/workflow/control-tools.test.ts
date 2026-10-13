@@ -647,6 +647,20 @@ describe("handleReset", () => {
   });
 });
 
+describe("reset tool declaration", () => {
+  const description = () => createControlTools().find((t) => t.name === RESET_TOOL)!.description;
+
+  // A reset is not a ritual for a new turn: one from where it would land moves nothing.
+  it("says when a reset is not needed", () => {
+    expect(description()).toMatch(/Not needed when this state can serve the message/);
+    expect(description()).toMatch(/never from the state the conversation began in/);
+  });
+
+  it("asks for one only in a terminal state the run moved into", () => {
+    expect(description()).toMatch(/a terminal state the run moved into and finished in/);
+  });
+});
+
 describe("handleSetVariables — typed returns", () => {
   const typedMachine = WorkflowMachine.fromSpec({
     states: {
@@ -704,6 +718,11 @@ describe("set-variables tool declaration", () => {
 
   it("asks a top-level session for its title", () => {
     expect(description()).toMatch(/`title` is reserved .* set it early/);
+  });
+
+  it("asks for a rename only when the whole conversation's subject changes", () => {
+    expect(description()).toMatch(/rename it only when the whole conversation has moved to a different subject/);
+    expect(description()).toMatch(/a follow-up on the same one keeps it/);
   });
 
   // A child's title describes a session nothing lists: nothing it reads asks for one.

@@ -112,3 +112,24 @@ describe("deleting a file", () => {
     );
   });
 });
+
+describe("placing an attachment through a store without raw upload", () => {
+  it("refuses bytes it cannot carry exactly, writing nothing", async () => {
+    const { placeAttachment } = await import("../core/attachments.js");
+    const { workspaceEntryKind } = await import("../core/file-operations.js");
+    const store = bare(createMemorySessionStore().backend);
+    // Zip-container bytes, as a `.docx` holds: not UTF-8, under an extension typed as text.
+    const docx = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0xff, 0xd8, 0x00, 0x80]);
+    const placed = await placeAttachment(store, "s1", "contract.docx", docx);
+    expect(placed).toEqual({
+      error:
+        "Cannot copy to 'scratchpad/attachments/contract.docx': the store serving it holds files of this type as " +
+        "text, this file is not text, and the store cannot take raw bytes. Nothing was written.",
+    });
+    expect(await workspaceEntryKind(store, "scratchpad/attachments/contract.docx")).toBe("missing");
+    // Text it can carry is placed as usual.
+    expect(await placeAttachment(store, "s1", "notes.md", new TextEncoder().encode("# Notes"))).toEqual({
+      path: "scratchpad/attachments/notes.md",
+    });
+  });
+});

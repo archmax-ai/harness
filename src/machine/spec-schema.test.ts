@@ -593,8 +593,18 @@ describe("typed trigger signatures", () => {
     expect(issue?.message).toContain("Entry 'amount'");
     expect(issue?.message).toContain('"float"');
     expect(issue?.message).toContain(
-      "string, integer, number, boolean, date, date-time, object or array",
+      "string, integer, number, boolean, date, date-time, object, array or file",
     );
+  });
+
+  it("accepts a file entry in requires and in returns", () => {
+    const result = parseMachineSpec(
+      withTrigger({
+        requires: [{ name: "invoice", type: "file", description: "The invoice to reconcile." }],
+        returns: [{ name: "report", type: "file" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
   });
 
   it("refuses an unknown entry key, naming the entry and the key", () => {

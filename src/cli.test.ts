@@ -342,3 +342,71 @@ describe("test", () => {
     expect(stdout).toBe("");
   });
 });
+
+describe("--file on run", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  /** A workspace whose one workflow takes an `invoice` file, and a local file to hand it. */
+  function fixture(): { root: string; local: string } {
+    const root = mkdtempSync(join(tmpdir(), "cli-file-"));
+    dirs.push(root);
+    const spec = [
+      "states:",
+      "  start:",
+      "    triggers:",
+      "      manual:",
+      "        requires: [{ name: invoice, type: file }]",
+    ].join("\n");
+    mkdirSync(resolve(root, "workflows/p"), { recursive: true });
+    writeFileSync(resolve(root, "workflows/p/workflow.yaml"), spec);
+    const local = resolve(root, "invoice.pdf");
+    writeFileSync(local, Buffer.from([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]));
+    return { root, local };
+  }
+
+  it("refuses a malformed --file before any assembly, exit 2, one line", async () => {
+    const { root, local } = fixture();
+    const cases: Array<[string[], string]> = [
+      [["--file", "invoice"], "must be <variable>=<path>"],
+      [["--file", `Invoice=${local}`], "'Invoice' is not a valid variable name"],
+      [["--file", `invoice=${local}.missing`], "cannot read the file"],
+      [["--file", `invoice=${local}`, "--file", `invoice=${local}`], "names 'invoice' more than once"],
+      [["--file", `invoice=${local}`, "--variables", '{"invoice":"x"}'], "also given in --variables"],
+    ];
+    for (const [flags, message] of cases) {
+      const { code, stderr, stdout } = await run(["run", "p", "go", "--root", root, ...flags]);
+      expect(code, flags.join(" ")).toBe(2);
+      expect(stderr, flags.join(" ")).toContain(message);
+      expect(stdout).toBe("");
+    }
+  });
+
+  it("hands the local file to the turn: placed in the session, its path seeded", async () => {
+    const { root, local } = fixture();
+    const { parseFileFlags } = await import("./cli/bootstrap.js");
+    const { driveTurn } = await import("./cli/turn.js");
+    const { createStyle } = await import("./cli/style.js");
+    const { createUsageTracker } = await import("./core/usage.js");
+    const files = parseFileFlags([`invoice=${local}`], undefined);
+    expect(files?.invoice?.name).toBe("invoice.pdf");
+
+    const model = new ScriptedModel([{ reply: "received" }]);
+    const agent = await createAgent({ workflow: "p", model: model as never, onEvent: () => {}, workspace: { rootDir: root } });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const code = await driveTurn(agent, createStyle({ noColor: true } as never), createUsageTracker(), {
+      workflow: "p",
+      prompt: "go",
+      files: files!,
+      sessionId: "s1",
+    });
+    expect(code).toBe(0);
+    const placed = resolve(root, "sessions/s1/scratchpad/attachments/invoice.pdf");
+    expect(new Uint8Array((await import("node:fs")).readFileSync(placed))).toEqual(
+      new Uint8Array([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]),
+    );
+    expect((await agent.sessions.get("s1"))?.variables?.invoice?.value).toBe("scratchpad/attachments/invoice.pdf");
+  });
+});

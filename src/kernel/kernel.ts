@@ -628,6 +628,22 @@ export function compileForbiddenMountRules(
 }
 
 /**
+ * One workflow's **workflow-wide** denials, as rules a descendant inherits:
+ * `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`,
+ * named with the workflow that declared them. A per-state `forbid` is not
+ * inherited — it governs that state's turns, not a child session — and neither
+ * is any grant. Compiled as rules, they bind the `lifecycle` origin too, which
+ * is how the runtime's own reads on a session's behalf are held to them.
+ */
+export function workflowDenials(machine: WorkflowMachine, source: string): GovernanceRule[] {
+  return [
+    ...compileForbidRules(machine.spec.tools?.forbid_always, { scope: "workflow", source }),
+    ...compileForbiddenSkillRules(machine.spec.skills?.forbid_always ?? [], source),
+    ...compileForbiddenMountRules(machine.spec.mounts?.forbid_always ?? [], source),
+  ];
+}
+
+/**
  * An **ancestor's** `skills.forbid_always`, as rules the descendant inherits. A
  * child machine resolves its own enabled set and cannot see a caller's denial,
  * so the denial travels as a rule: any path inside one of those bundles is

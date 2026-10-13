@@ -50,7 +50,7 @@ states:
           - { name: due, type: date, description: The day it is due. }  # typed: held at the boundary
         returns: [result_file]   #   variables the run guarantees on completion (a caller's result);
                                  #   short of them: a child returns what it set + a `note`; a top-level run is rejected
-                                 #   entry types: string integer number boolean date date-time object array
+                                 #   entry types: string integer number boolean date date-time object array file
     instructions: >-
       Record the decision in scratchpad/refund.json, then archmax_advance to
       review; never close the case yourself.

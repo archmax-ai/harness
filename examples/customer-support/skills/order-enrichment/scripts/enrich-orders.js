@@ -25,6 +25,9 @@ const enriched = await Promise.all(
     const answer = await tools.archmaxWorkflowEnrichOrder({ order_id: entry.order_id });
     // `enrich-order` declares `returns: [enrichment_file, delayed]`, so its
     // answer carries them under `returns`, beside its closing `message`.
+    // `enrichment_file` is a `file` return: the runtime has already copied the
+    // sub-run's file into this session's scratchpad/attachments/, and this is
+    // the path of that copy.
     const { returns } = JSON.parse(answer);
     return {
       order_id: entry.order_id,

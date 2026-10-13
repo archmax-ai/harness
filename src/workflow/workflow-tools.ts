@@ -60,6 +60,21 @@ export function delegationToolDescription(target: DelegationTarget): string {
           `of them returns the ones it set, with a 'note' under 'returns' naming the rest.`
       : `The result is the workflow's closing message.`,
   );
+  const fileIn = (target.requires ?? []).filter((entry) => entry.type === "file").map((entry) => entry.name);
+  const fileOut = (target.returns ?? []).filter((entry) => entry.type === "file").map((entry) => entry.name);
+  if (fileIn.length) {
+    parts.push(
+      `Pass ${quoteList(fileIn)} as the path of a file in your workspace; the workflow works on ` +
+        `its own copy, so your file is never changed.`,
+    );
+  }
+  if (fileOut.length) {
+    parts.push(
+      `${quoteList(fileOut)} ${fileOut.length === 1 ? "arrives" : "arrive"} as a copy in your ` +
+        `'scratchpad/attachments/', and the result names ${fileOut.length === 1 ? "its path" : "their paths"}; ` +
+        `a name already taken there gets a '-1', '-2', … suffix, so no file of yours is overwritten.`,
+    );
+  }
   parts.push(`One call runs it once; call it again (in the same turn) to run several at once.`);
   parts.push(
     `A call whose run fails answers with an error, and that failure fails your current state ` +

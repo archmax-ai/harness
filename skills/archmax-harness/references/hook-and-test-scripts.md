@@ -322,7 +322,8 @@ state fails that call closed with `parked`.
 Scripts still may not call `archmax_advance` (moving the state machine is the model's governed
 decision) or `archmax_set_variables`. Concurrent calls succeed or fail **independently**, so a script
 can act on what worked — `Promise.allSettled` is the honest shape when partial success is
-meaningful. Give each sub-run its own output path: they share one run zone.
+meaningful. Each sub-run is its own session with its own `scratchpad/`, so concurrent sub-runs
+never collide on a path; a `file` return comes back as a copy under a name no other file holds.
 
 ### Worked example: a `before` gate
 

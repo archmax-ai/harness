@@ -9,6 +9,53 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.5.0
+
+- **A `file` signature type.** A `requires` or `returns` entry may declare `type: file`. Its value
+  is a path from the workspace root, such as `scratchpad/attachments/invoice.pdf` or
+  `skills/billing/assets/template.pdf`. `signatureJsonSchema` maps it to
+  `{ type: "string", format: "file" }`, so a host can render a file picker, and
+  `signatureValueIssues` checks the path's shape. Wherever a `file` value crosses a boundary (the
+  start of a session, `archmax_set_variables`, completion, a delegation call), the runtime also
+  checks that a file is there and that the session may read it. See
+  [the signature](/reference/machine-spec/#the-signature-requires-and-returns).
+- **Files cross a sub-workflow boundary as copies.** A `file` argument is copied into the child's
+  own `scratchpad/attachments/`, and the child is seeded with that path. A `file` return is copied
+  back into the caller's `scratchpad/attachments/` under a name nothing there holds: a second
+  `report.pdf` becomes `report-1.pdf`, including when concurrent calls return at once. See
+  [passing files](/guides/sub-workflows/#passing-files).
+- **A child's file space is its own, and the docs now say so.** A child session has always
+  resolved its paths inside its own session, but the sub-workflows guide said a child's files came
+  back to the caller, and the authoring skill said a child shared its parent's session and run
+  zone. Both now describe the separate session, and a test pins it. See
+  [what crosses, and what does not](/guides/sub-workflows/#what-crosses-and-what-does-not).
+- **Hosts and the CLI hand a session files.** `TurnInput.files` maps a variable to
+  `{ name, content }`. The runtime places the bytes in the session's `scratchpad/attachments/` and
+  seeds the variable with the path. `archmax run` takes a repeatable
+  `--file <variable>=<path>` built on it. See
+  [sessions](/guides/sessions/#files-handed-to-a-session).
+
+- **No reset just to stay put.** The platform prompt told the agent when to call `archmax_reset`
+  but never when not to, so it reset on follow-ups the current state could serve. In a workflow
+  whose entry state is terminal, such as a one-state chat, "a terminal state never serves a
+  follow-up" sent it back to the state it was already in on every new message. The prompt now
+  says that a state that can serve the message answers it there, and that a reset never helps
+  while the session is still in the state the conversation began in. It also lists a terminal
+  entry state among the cases that take no reset, which is where the per-turn state block already
+  stayed silent. `archmax_reset`'s description says the same in one clause. See
+  [waiting is not finishing](/guides/sessions/#waiting-is-not-finishing).
+- **The title follows the conversation, not its latest message.** The agent renamed sessions on
+  follow-ups because the prompt asked for an update "when the task turns into something the old
+  title no longer describes", and the model judged that against the last message. The prompt now
+  asks for a rename only when the conversation as a whole has moved to a different subject. A
+  follow-up, a detail, a correction or a side question on the same subject keeps the title, and a
+  rename names what the whole conversation is about. The `title` sentence in
+  `archmax_set_variables`' description sets the same bar. A sub-workflow's child still reads
+  neither. See [two reserved names](/guides/workflow-machine/#two-reserved-names).
+- Prompt and description text only: the runtime accepts and refuses exactly what it did. A
+  workspace that overrides the platform prompt with `.platform/system/GRAPH_STATE.md` keeps its
+  own text.
+
 ## 0.4.2
 
 - **`grep`'s `max_count` reaches the store.** Deep Agents passes a search's cap to the backend as a

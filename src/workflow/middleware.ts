@@ -20,6 +20,9 @@ import { createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/e
 import { createControlTools } from "./control-tools.js";
 import type { VariableStore } from "../machine/variables.js";
 import { checkReturns } from "./returns-check.js";
+import { fileGovernance, fileValueCheck, type FileGovernance } from "./file-values.js";
+import { returnsFileIssues } from "./signature-checks.js";
+import { skillPrefixes } from "../core/skills.js";
 import {
   currentWorkflowState,
   isReplyOnly,
@@ -116,6 +119,12 @@ export interface WorkflowMiddlewareOptions {
   pricing?: PricingTable;
   /** The sessions are a sub-workflow's children: the control tools ask for no title. */
   child?: boolean;
+  /**
+   * What a path names in the bound session's workspace — the probe the `file`
+   * signature type's checks list through. Omitted, a `file` value is held to its
+   * shape alone.
+   */
+  entryKind?: (path: string) => Promise<"file" | "directory" | "missing">;
 }
 
 /**
@@ -177,6 +186,22 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
   const configOf = (runtime: unknown): RunnableConfig =>
     buildRunnableConfig((runtime ?? {}) as { configurable?: Record<string, unknown> });
 
+  // The `file` type's runtime checks: a listing of the bound session's workspace
+  // and the kernel's read verdict on runtime authority, per state.
+  const fileGov: FileGovernance | undefined = opts.entryKind
+    ? fileGovernance({
+        machine,
+        workflow: opts.workflowName ?? "this workflow",
+        policyRules: opts.policyRules ?? [],
+        mountPrefixes: opts.mountPrefixes ?? NO_MOUNTS,
+        skills: skillPrefixes(opts.skills ?? new Map()),
+        kind: opts.entryKind,
+      })
+    : undefined;
+  const files = fileGov
+    ? (state: string, variables: VariableStore) => fileValueCheck(fileGov, state, variables)
+    : undefined;
+
   const governance = createGovernance({
     machine,
     emit,
@@ -189,6 +214,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     ...(ptcGateway ? { ptcGateway } : {}),
     ...(subWorkflows ? { subWorkflows } : {}),
     child: opts.child === true,
+    ...(files ? { files } : {}),
     sessionIdOf,
   });
   const parkCtx: ParkContext = {
@@ -212,6 +238,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     ...(opts.workflowName ? { workflowName: opts.workflowName } : {}),
     ...(opts.trigger ? { defaultTrigger: opts.trigger } : {}),
     ...(opts.seededVariables ? { seededVariables: opts.seededVariables } : {}),
+    ...(files ? { files } : {}),
   };
 
   /**
@@ -404,11 +431,15 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         // The exit half of the trigger's signature, checked where a run completes —
         // never at a park, and never handed back: a child settles on what it set
         // (its caller gets a note naming the rest); anything else short of it is rejected.
+        const store = readVariables(state);
         const returns = checkReturns(machine, {
           trigger: fields.trigger?.id,
           state: workflowState,
-          store: readVariables(state),
+          store,
           child: opts.child === true,
+          fileIssues: files
+            ? await returnsFileIssues(machine, fields.trigger?.id, store, files(workflowState, store))
+            : [],
         });
         if (returns.verdict === "reject") {
           return asHookResult({ ...update, rejected: returns.reason, status: WORKFLOW_STATUSES.rejected });

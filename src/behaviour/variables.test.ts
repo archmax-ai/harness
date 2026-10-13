@@ -210,6 +210,13 @@ describe("requires on a trigger", () => {
     expect(statesEntered(events)).toEqual(["start", "done"]);
     expect((await agent.sessions.get("s1"))?.status).toBe("completed");
   });
+
+  it("starts on a turn's own variables, sent with the message", async () => {
+    const { agent } = await assemble(workspaceWith(spec), { turns: [advanceTo("done"), { reply: "ok" }] });
+    const outcome = await agent.workflow!.send("s1", { message: "go", variables: { order_id: "ORD-1" } });
+    expect(outcome.kind).toBe("completed");
+    expect((await agent.sessions.get("s1"))?.variables?.order_id).toEqual({ value: "ORD-1", locked: true });
+  });
 });
 
 describe("a typed trigger signature", () => {
