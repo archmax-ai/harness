@@ -43,6 +43,14 @@ as it is today; the guides themselves describe only the present. Every release a
   wrote a writable governed mount through bare grants alone adds
   `access: read_write` to one of them. An ungoverned mount is unchanged. See
   [read or read/write](/reference/machine-spec/#read-or-readwrite).
+- **XML and JSON read as text whatever the store labels them.** `read_file` refused a
+  file its backend reported as `application/xml`, as a `+xml` or `+json` type, or as
+  JSON with a `charset` parameter: it answered "is a binary file" and returned
+  nothing. An object store labels a file by its registered type, so an Office
+  document unpacked into the scratchpad could not be read, and so could not be edited
+  as text. These types now read as text, for the model's `read_file` and a script's
+  `tools.readFile`. Bytes and NUL-holding content are still refused. The defect dates
+  from 0.4.0. See [the workspace](/guides/workflow-machine/#mount-governance).
 
 ## 0.5.0
 

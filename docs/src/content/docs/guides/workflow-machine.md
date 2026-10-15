@@ -407,7 +407,10 @@ Reads are **text only**, wherever the file lives. `read_file`, and a script's
 `tools.readFile`, never return a binary file's content. That covers an image,
 audio, video, PDF or PowerPoint file, by its extension or by the type the backend
 reports, and any file whose content holds a NUL byte: an archive, an Office
-document, a database. The read is answered with a notice instead:
+document, a database. XML and JSON are text whatever the backend calls them, so a
+file it reports as `application/xml` or as any `+xml` or `+json` type, such as
+the `word/document.xml` of an Office document unpacked into the scratchpad, is
+read as text. A binary read is answered with a notice instead:
 
 ```text
 Error: 'scratchpad/chart.png' is a binary file (image/png, 24.1 KB) and was not read; read_file returns text files only.

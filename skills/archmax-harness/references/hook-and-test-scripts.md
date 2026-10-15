@@ -236,7 +236,9 @@ A **binary file** is not a refusal and does not throw: reads are text only, so
 file whose content holds a NUL byte (an archive, an Office document), resolves to
 the notice `Error: '<path>' is a binary file (<type>, <size>) and was not read;
 read_file returns text files only.` instead of content — an image too, even when
-the host turned on `images`, which shows images to the model only. A missing file reads as
+the host turned on `images`, which shows images to the model only. XML and JSON
+are text even when the store labels them `application/xml` or a `+xml`/`+json`
+type, so an Office document's unpacked `word/document.xml` reads as text. A missing file reads as
 an `Error: …` string the same way. A script that parses what it read checks
 first:
 

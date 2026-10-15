@@ -8,6 +8,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { READ_FILE_TEXT_ONLY_LINE } from "../core/binary-read.js";
+import { createMemorySessionStore, type SessionStore } from "../index.js";
 import {
   assemble,
   cleanupWorkspaces,
@@ -108,6 +109,67 @@ describe("a binary read", () => {
     expect(evalResult?.status).not.toBe("error");
     expect(evalResult?.content).toContain("'skills/media/assets/logo.png' is a binary file (image/png, 12 B)");
     expect(evalResult?.content).not.toContain(PNG_BASE64);
+  });
+
+  /**
+   * An object store labels a file by its registered type, so an Office
+   * document unpacked into the scratchpad comes back as `application/xml` and
+   * `+xml` text. It is text, and `read_file` hands it on as text, never as the
+   * binary notice or a base64 block.
+   */
+  it("reads the XML and JSON a store labels by its registered type as text", async () => {
+    const LABELS: Record<string, string> = {
+      ".xml": "application/xml",
+      ".rels": "application/vnd.openxmlformats-package.relationships+xml",
+      ".json": "application/json; charset=utf-8",
+    };
+    const memory = createMemorySessionStore();
+    const labelled = new Proxy(memory.backend, {
+      get(target, prop) {
+        if (prop === "read") {
+          return async (path: string, offset?: number, limit?: number) => {
+            const res = await target.read(path, offset, limit);
+            const label = LABELS[path.slice(path.lastIndexOf("."))];
+            return label && !res.error ? { ...res, mimeType: label } : res;
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const store: SessionStore = { ...memory, backend: labelled };
+    const sessionId = freshSessionId();
+    await memory.backend.write(`/${sessionId}/scratchpad/docx/word/document.xml`, "<w:document><w:body/></w:document>");
+    await memory.backend.write(`/${sessionId}/scratchpad/docx/word/_rels/document.xml.rels`, "<Relationships/>");
+    await memory.backend.write(`/${sessionId}/scratchpad/meta.json`, '{"pages":3}');
+    const { agent } = await assemble(mediaWorkspace(), {
+      store,
+      turns: [
+        {
+          batch: [
+            { tool: "read_file", args: { file_path: "scratchpad/docx/word/document.xml" } },
+            { tool: "read_file", args: { file_path: "scratchpad/docx/word/_rels/document.xml.rels" } },
+            { tool: "read_file", args: { file_path: "scratchpad/meta.json" } },
+          ],
+        },
+        {
+          tool: "archmax_eval",
+          args: { code: 'await tools.readFile({ file_path: "scratchpad/docx/word/document.xml" });' },
+        },
+        { reply: "done" },
+      ],
+    });
+    const { messages } = await turn(agent, sessionId, "edit the document");
+
+    const reads = toolResults(messages).filter((r) => r.name === "read_file");
+    expect(reads.map((r) => r.content)).toEqual([
+      expect.stringContaining("<w:document><w:body/></w:document>"),
+      expect.stringContaining("<Relationships/>"),
+      expect.stringContaining('{"pages":3}'),
+    ]);
+    expect(reads.some((r) => r.content.includes("is a binary file"))).toBe(false);
+    expect(blocksOf(messages).filter((b) => ["file", "image", "audio", "video"].includes(b.type))).toEqual([]);
+    expect(toolResults(messages).find((r) => r.name === "archmax_eval")?.content).toContain("<w:document>");
   });
 
   it("is announced by the read_file description the model is handed", async () => {
