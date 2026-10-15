@@ -327,6 +327,13 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         const messages: unknown[] = state.messages ?? [];
         const last = messages[messages.length - 1] as Record<string, unknown> | undefined;
         const update: WorkflowUpdate = {};
+        // A hook dispatches outside the tool node, so what it took is committed here:
+        // a `before` hook's during the model call, a terminal `after` hook's below.
+        const commitDispatches = () => {
+          const taken = governance.dispatchCount(sessionIdOf(runtime), state);
+          if (taken > (fields.dispatchCount ?? 0)) update.dispatchCount = taken;
+        };
+        commitDispatches();
 
         // 1. Report the message the model just produced and what it cost. Usage is
         //    committed as the new total: the channel is last-value and this hook is its one writer.
@@ -406,6 +413,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         if (machine.isTerminal(workflowState) && lifecycleHooks[workflowState]?.after?.length) {
           const ctx = governance.lifecycleCtx(sessionIdOf(runtime), state, messages);
           const reject = await lifecycle.runPhase(workflowState, "after", ctx, undefined, true);
+          commitDispatches();
           if (reject) {
             if (reject.terminal) {
               return asHookResult({

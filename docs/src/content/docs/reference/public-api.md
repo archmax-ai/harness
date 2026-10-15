@@ -112,7 +112,7 @@ here for the weight of the import.
   store honouring the convention decodes to the bytes; a host store implements it
   from this table rather than a copy.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
-- **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `subRunIdentity`.
+- **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `dispatchIdOf` `rootSessionIdOf`.
 - **Paths and scripts:** `DEFAULT_WORKFLOW` `HOOKS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveHookScript` `parseCodeDescription` `CodeDescription`.
 
 ### Using the spec subpath
@@ -155,9 +155,17 @@ scripts, sibling workflows, the skill registry, kernel probes.
 
 **Session ids and triggers.** Three groups of names cover a firing:
 
-- `sessionIdRejection` is the rule every ingress applies to an id.
+- `sessionIdRejection` is the rule every ingress applies to an id. Besides
+  traversal and reserved root names, it refuses an id holding `~` in any shape but
+  a child's: `~` separates a child's dispatch number from its parent's id, so a
+  host's own id is never read as a child of another session.
 - `isChildSessionOf`, `parentSessionIdOf` and `childSessionId` are the
-  `<parent>~<state>:<workflow>:<ordinal>` convention a child session's id follows.
+  `<parent>~<n>` convention a child session's id follows, `n` the dispatch's
+  number in its parent session, counted from 1 across the parent's turns.
+  `dispatchIdOf(childId)` is the child's id below the root session (`1`, `1~1`):
+  the `dispatchId` its `sub-workflow-*` events and a pending delegation carry.
+  `rootSessionIdOf(id)` is the top-level session an id belongs to. A child id
+  0.5 minted (`<parent>~<state>:<workflow>:<ordinal>`) still reads as a child.
 - `sessionIdForTrigger(spec, triggerId, variables)` is the question a host asks
   of a firing. It answers with the session id that trigger's `session:` path
   resolves to, or `undefined` when the runtime would mint one.
@@ -567,12 +575,17 @@ const agent = await createAgent({
   | Reader | Answers |
   | --- | --- |
   | `enabledMounts(state, governed)` | which governed mounts the state reaches |
-  | `mountWritable(state, name, prefixes)` | whether it may write there |
+  | `mountWritable(state, name, prefixes)` | whether it may write there: a governed mount only where a grant of this workflow asks `read_write` |
   | `forbiddenMounts(state)` | what is denied while that state is active, from either level |
   | `workflowForbiddenMounts()` | what `forbid_always` denies in every state |
 
-  `readOnly` is a **ceiling** the spec cannot lift. A grant may narrow a writable
-  mount to reads in one state; a read-only mount stays read-only everywhere. See
+  `readOnly` is a **ceiling** the spec cannot lift. A governed mount you serve
+  writable is written only by a workflow whose own grants ask
+  `access: read_write`; a bare grant reads it. Serving one table to a caller and
+  the children it dispatches is safe for that reason: a route you serve writable
+  because one workflow writes it stays read-only to every workflow that grants it
+  bare. A grant may also narrow a writable mount to reads in one state; a
+  read-only mount stays read-only everywhere. See
   [`mounts.allow_always` /
   `mounts.allow`](/reference/machine-spec/#mountsallow_always--mountsallow-which-states-reach-a-mount).
 - A mount is **searched** like any other unless the entry declares
@@ -697,6 +710,15 @@ Three factories ship from the package root:
 The `SessionStore` type is exported alongside them. Storage is always declared:
 supplying a custom authored `backend` **without** an explicit `sessionStore`
 throws `SessionStoreRequiredError` at assembly.
+
+**A session's files are stored under its id.** The agent's id-free path
+`scratchpad/x.txt`, in a turn of session `s1`, is the store path
+`s1/scratchpad/x.txt`, beneath a backend store's `prefix`. That address is a
+contract: a host may read or write a session's files through its own handle on
+the store (a ranged read, a recursive listing, a presigned URL) as
+`<sessionId>/<path>`. A sub-workflow's child is a session of its own,
+`<parent>~<n>`, so its files are under its own id. A host tool learns the id
+from `ToolContext.sessionId`; see [host tools](#tools-toolpaths-host-tools-on-the-governed-workspace).
 
 **Raw bytes and deletion are optional.** Deep Agents' backend protocol makes
 `downloadFiles`, `uploadFiles` and `delete` optional, and so does the workspace:
@@ -851,9 +873,16 @@ const agent = await createAgent({
   (`downloadFiles`, and `uploadFiles` when the session store has it) and
   `delete`, as described under the session store above. A read-only mount
   refuses a write, an upload (`permission_denied`) and a delete, naming the path
-  as the agent wrote it. Outside a turn the handler still runs, and reading
-  `context.workspace` throws, saying why. The property is non-enumerable there,
-  so a deep-equality check or a logger walking the context skips it.
+  as the agent wrote it.
+- **`context.sessionId`** is the id of the session the call is made in. Inside a
+  sub-workflow's child it is the child's own id, `<parent>~<n>`, never the
+  session you sent the turn to, and it is the same for the model's call and a
+  script's call through `tools.*`. A host that keeps session files in its own
+  store keys them by it: the session's files are under `<sessionId>/` in the
+  session store, the folder `context.workspace` resolves `scratchpad/…` into.
+- Outside a turn the handler still runs, and reading `context.workspace` or
+  `context.sessionId` throws, saying why. Both properties are non-enumerable
+  there, so a deep-equality check or a logger walking the context skips them.
 
 The governed and the plain (`workflow: false`) agent hand the same context.
 `copy_file`, `move_file` and `remove_file` are the runtime's own tools in every
@@ -1417,7 +1446,8 @@ human state. The calling session then parks with it and presents the child's
 decision as its own, so `Outcome.kind` is `parked` on the `decision` channel.
 
 `Outcome.delegation` says so and names the child. It is a `DelegatedPark`,
-carrying `workflow`, the child's `sessionId`, `identity`, `dispatchId`,
+carrying `workflow`, the child's `sessionId` (`<parent>~<identity>`), `identity`
+(the dispatch's number in the parent, as its park recorded it), `dispatchId`,
 `toolCallId` and the calling `state`. So a host reads one field where it would
 otherwise fold `sub-workflow-*` events or shape-test the child's interrupt. A
 decision on the parent is handed to that child, and the caller addresses the

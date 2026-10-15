@@ -2,10 +2,12 @@
  * The **session scope** — the unit every per-session resource is keyed by (the
  * sandbox REPL session, the middleware's per-session context, the PTC budget).
  * A sub-workflow's child is an ordinary session with its own id
- * (`<parent>~<dispatch identity>`); only the dispatch **chain** (cycle and depth
- * refusals) and the **dispatch id** (event attribution) ride the config.
+ * (`<parent>~<n>`, `n` the dispatch's number in its parent session); only the
+ * dispatch **chain** (cycle and depth refusals) and the **dispatch id** (event
+ * attribution) ride the config.
  */
 import type { RunnableConfig } from "@langchain/core/runnables";
+import { CHILD_SESSION_SEPARATOR, isChildSegment } from "../core/session-id.js";
 
 /** The session id assumed when a config carries no `thread_id`; every per-session map keys on this spelling. */
 export const DEFAULT_SESSION_ID = "__default__";
@@ -111,37 +113,33 @@ export function releaseScopes<V>(map: Map<string, V>, sessionId: string): string
 }
 
 /**
- * The child identity for one dispatch: `<state>:<workflow>:<ordinal>`. The
- * ordinal keeps a second visit to the same state (an `on_error` loop, a retried
- * turn) and concurrently dispatched children of one state apart.
- */
-export function subRunIdentity(state: string, workflow: string, ordinal: number): string {
-  return `${state}:${workflow}:${ordinal}`;
-}
-
-/**
- * Separator between a parent's session id and a child's dispatch identity. A
- * session id becomes a directory name in the filesystem store, so it must be
- * legal on every platform: `~` is, LangGraph's `|` is not.
- */
-const CHILD_SESSION_SEPARATOR = "~";
-
-/**
- * The session id one child gets: `<parent>~<state>:<workflow>:<ordinal>` — an
- * ordinary session with its own checkpoints and zone. Derived rather than minted
- * at random, so a re-dispatch of the same call resolves to the same child and a
+ * The session id one child gets: `<parent>~<n>`, where `n` is the dispatch's
+ * number in its parent session — counted from 1 across all the parent's turns,
+ * held in its checkpointed state, and recorded with the dispatch. A grandchild
+ * is `<parent>~<n>~<m>`. Derived rather than minted at random, so a node
+ * replayed from its checkpoint resolves each call to the same child, and a
  * resumed parent finds the child it parked on.
  */
-export function childSessionId(parentSessionId: string, identity: string): string {
+export function childSessionId(parentSessionId: string, identity: string | number): string {
   return `${parentSessionId}${CHILD_SESSION_SEPARATOR}${identity}`;
 }
 
+/** The top-level session `sessionId` belongs to: the part before the first `~`, or the id itself. */
+export function rootSessionIdOf(sessionId: string): string {
+  const at = sessionId.indexOf(CHILD_SESSION_SEPARATOR);
+  return at < 0 ? sessionId : sessionId.slice(0, at);
+}
+
 /**
- * The shape a dispatch identity takes: `<state>:<workflow>:<ordinal>`. Matched
- * rather than assumed, so a host id like `tenant~conversation` is not read as a
- * child of `tenant` (and disposed with it); only ids this module minted count.
+ * The dispatch id of a child session: its session id with the root session's
+ * id and separator taken off — `1`, `2`, and `1~1` for the first dispatch made
+ * inside `1`. Unique across a turn's whole tree, so one event log keys every
+ * dispatch in it, and the event stream, a pending delegation and the child's
+ * session id all name a child the same way.
  */
-const CHILD_IDENTITY = /^[^~:]+:[^~:]+:\d+$/;
+export function dispatchIdOf(childSessionId: string): string {
+  return childSessionId.slice(rootSessionIdOf(childSessionId).length + CHILD_SESSION_SEPARATOR.length);
+}
 
 /**
  * The session that dispatched `sessionId`, or `undefined` for a top-level
@@ -150,14 +148,14 @@ const CHILD_IDENTITY = /^[^~:]+:[^~:]+:\d+$/;
 export function parentSessionIdOf(sessionId: string): string | undefined {
   const at = sessionId.lastIndexOf(CHILD_SESSION_SEPARATOR);
   if (at <= 0) return undefined;
-  return CHILD_IDENTITY.test(sessionId.slice(at + 1)) ? sessionId.slice(0, at) : undefined;
+  return isChildSegment(sessionId.slice(at + 1)) ? sessionId.slice(0, at) : undefined;
 }
 
 /** Whether `sessionId` is a session dispatched by `parentSessionId`, at any depth. */
 export function isChildSessionOf(sessionId: string, parentSessionId: string): boolean {
   if (!sessionId.startsWith(`${parentSessionId}${CHILD_SESSION_SEPARATOR}`)) return false;
   const descent = sessionId.slice(parentSessionId.length + 1).split(CHILD_SESSION_SEPARATOR);
-  return descent.every((segment) => CHILD_IDENTITY.test(segment));
+  return descent.every(isChildSegment);
 }
 
 /**

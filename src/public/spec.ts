@@ -287,10 +287,12 @@ export {
   isChildSessionOf,
   /** The session that dispatched this one, or `undefined` at the top level. */
   parentSessionIdOf,
-  /** The id a child session gets: `<parent>~<identity>`. */
+  /** The id a child session gets: `<parent>~<n>`, `n` the dispatch's number in its parent. */
   childSessionId,
-  /** A dispatch identity: `<state>:<workflow>:<ordinal>`. */
-  subRunIdentity,
+  /** A child's dispatch id: its session id without the root session's id (`1`, `1~1`). */
+  dispatchIdOf,
+  /** The top-level session an id belongs to: the part before the first `~`. */
+  rootSessionIdOf,
 } from "../sessions/scope.js";
 
 // --- Paths -------------------------------------------------------------------------------

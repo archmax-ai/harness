@@ -196,7 +196,10 @@ mounts?:
                               # workflow reaches no governed mount; validate says so
                               # ONCE, naming them — write `allow_always: []` to mean it.
                               # An entry is a NAME, or `{ mount: <name>, access: read |
-                              # read_write }` to say what this level gives. The host's
+                              # read_write }` to say what this level gives. A bare NAME
+                              # asks for NO write: a governed mount is written only
+                              # where some grant of THIS workflow says `read_write`
+                              # (a child's or caller's grant never counts). The host's
                               # readOnly is a CEILING: `read_write` on a read-only mount
                               # opens nothing (validate warns); `read` NARROWS a
                               # writable one, and no narrower level widens it back.
@@ -368,7 +371,9 @@ states:
                                # warns about one that reads like it) — `forbid` is.
                                # An entry may name its access:
                                #   allow: [{ mount: shared, access: read }]
-                               # reads a writable mount without writing it here. The
+                               # reads a writable mount without writing it here, and
+                               #   allow: [{ mount: shared, access: read_write }]
+                               # asks to write it — which a bare name never does. The
                                # host's posture is the ceiling — `read_write` cannot
                                # open a read-only mount — and a `read` at either level
                                # holds, so a state never widens what the workflow
@@ -921,13 +926,13 @@ error.
 
 ### Read or read/write
 
-A grant entry is either a bare mount name — taking the posture the host wired — or
-a mapping naming the access this level gives:
+A grant entry is either a bare mount name, which asks for no write, or a mapping
+naming the access this level gives:
 
 ```yaml
 mounts:
   allow_always:
-    - reference                                  # the host's posture
+    - reference                                  # read; written only if a grant below asks
     - { mount: shared, access: read_write }      # writable where the host allows it
 
 states:
@@ -935,6 +940,17 @@ states:
     mounts:
       allow: [{ mount: shared, access: read }]   # reads it, cannot write it here
 ```
+
+**A workflow writes a governed mount only where its own grants ask to.** It is
+writable in a state when the host serves it writable, some grant of *this*
+workflow says `access: read_write` (in `allow_always` or any state's `allow`), and
+no grant applicable in the state says `access: read`. So a bare grant in one state
+and a `read_write` grant in another both write. One mount table serves a session
+and every child it dispatches, and the host serves a route writable when any
+workflow in that tree asks; a mount still belongs to the workflow that grants it,
+so a caller's `read_write` never lets its child write through a bare grant, nor the
+other way round. An ungoverned mount takes the host's posture: it has no grant to
+ask with.
 
 The host's `readOnly` is a **ceiling**, not a default to argue with:
 
@@ -949,7 +965,8 @@ The host's `readOnly` is a **ceiling**, not a default to argue with:
 
 Two refusals, because they are two different edits: a write into a mount the
 **host** serves read-only is `zone.read-only` (fix the wiring), and a write into
-one a **grant** narrowed is `mount.read-only` (fix the spec).
+one a **grant** narrowed, or one no grant of the workflow asks to write, is
+`mount.read-only` (fix the spec; the refusal says which).
 
 ### What the agent sees
 
@@ -985,7 +1002,8 @@ so `AGENTS.md.bak` is not captured.
   everywhere already — use `forbid` to take one away);
 - an `access: read_write` on a mount the host serves **read-only**;
 - a name in both `allow_always` and a state's `allow` (unless the state entry
-  narrows the access, which does real work);
+  narrows the access to `read`, or asks `read_write` of a mount the root grants
+  bare: both do real work);
 - a state's `allow: []` beside a non-empty `allow_always`;
 - a `forbid` naming a governed mount nothing would have enabled there;
 - a `forbid_always` name some `allow` list also grants;
@@ -1416,8 +1434,8 @@ enrich:
   in `<!-- top-level-only -->` … `<!-- /top-level-only -->` lines.
 - **Same agent, isolated context, own session.** Same model, backend, host
   tools; its **own** grading rubrics, from its own spec; a fresh transcript; the child's *own* per-state
-  `tools.allow`. It is a separate session (`<parent>~<state>:<workflow>:<n>`)
-  with its own checkpoints and its own `scratchpad/`: a path it reads or writes
+  `tools.allow`. It is a separate session (`<parent>~<n>`, `n` the dispatch's
+  number in the caller, counted across its turns) with its own checkpoints and its own `scratchpad/`: a path it reads or writes
   resolves inside its own session, so it can neither see nor overwrite a file of
   its caller's, and concurrent sub-runs cannot collide on a path.
 - **Nothing crosses implicitly.** Down: only the arguments the call passed —
@@ -1753,9 +1771,11 @@ single-segment one is, and a sibling under the same first segment (`catalogs/uk`
 is not.
 
 A mount the host mounted **writable** is not a read-only zone — its paths are
-governed like ordinary run paths — but a state may still be given it read-only,
-with `mounts: { allow: [{ mount: <name>, access: read }] }`. A write refused by
-that grant is `mount.read-only`; one refused by the wiring is `zone.read-only`.
+governed like ordinary run paths — but a governed one is written only where a grant
+of the workflow says `access: read_write`, and a state may still be given it
+read-only, with `mounts: { allow: [{ mount: <name>, access: read }] }`. A write
+refused by a grant is `mount.read-only`; one refused by the wiring is
+`zone.read-only`.
 See [Mount governance](#mount-governance).
 
 The run root is writable, and it has exactly one named working area:

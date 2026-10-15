@@ -78,7 +78,8 @@ tools:  { forbid_always: [archmax_reset] }  # denied in every state; deny beats 
 skills: { allow_always: [order-data] }    # enabled in every state; a state's own
                                           # `skills.allow` adds, `skills.forbid` subtracts
 mounts: { allow_always: [reference] }     # which STATES reach a host-governed mount;
-                                          # a grant may say `access: read` or `read_write`
+                                          # a grant may say `access: read` or `read_write`,
+                                          # and only `read_write` lets this workflow write it
 
 states:
   identify-case:
@@ -133,7 +134,10 @@ An entry typed `file` takes a path from the workspace root. A host hands one in 
 `--file invoice=./invoice.pdf`, and the file lands in the session's `scratchpad/attachments/`. A
 sub-workflow is its own session with its own files, so a `file` argument is copied into the child,
 and a `file` return is copied back under a name that never overwrites the caller's files. See
-[passing files](https://harness.archmax.ai/guides/sub-workflows/#passing-files).
+[passing files](https://harness.archmax.ai/guides/sub-workflows/#passing-files). The child's
+session id is `<parent>~<n>`, `n` the dispatch's number in its caller, and a host tool called in
+the child is handed that id as `ToolContext.sessionId`, so a host that stores session files itself
+keys them under the child's `<sessionId>/`, not its caller's.
 
 `examples/customer-support/` in this repository is a complete reference workspace.
 

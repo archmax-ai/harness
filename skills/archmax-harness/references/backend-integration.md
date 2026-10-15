@@ -96,7 +96,7 @@ All optional (`CreateAgentParams`, `src/assembly/index.ts`):
 | `model` | `BaseChatModel` | Defaults to the env-configured OpenAI-compatible model. Inject your own to bypass env. |
 | `backend` | `BackendProtocolV2` | Serves the authored workspace. Defaults to a `FilesystemBackend` over `rootDir`. |
 | `authoring` | `BackendProtocolV2` | Serves the **authoring plane** — `workflows/**` (machine specs including the rubrics their states declare, `WORKFLOW.md`, `hooks/`, `tests/`) — to the runtime only. Never a route in the agent's workspace, so no tool call or PTC call can reach it. Defaults to `backend` when you supply one, else a `FilesystemBackend` over the resolved root. Handing it to a **writable** mount throws `AuthoringBackendExposedError`; a read-only mount may share it. |
-| `mounts` | `Record<string, MountSpec>` | Authored mounts as a `CompositeBackend` route table: key → backend, or `{ backend, readOnly, governed, searchable }`. Trailing slash = directory mount; no slash = exact-path file mount (`"/AGENTS.md"`). Read-only unless declared otherwise. `governed: true` hands the spec's `mounts` block the decision of **which states** may reach it (closed by default, like a skill bundle) and whether each may write there; a mount not so declared is visible in every state exactly as today, so a table that marks nothing behaves unchanged. `readOnly` is a **ceiling** the spec cannot lift: a grant may narrow a writable mount to reads in a state, never open a read-only one. A key may be several segments deep (`"/catalogs/eu/"`); its **first** segment is what is reserved, so `/workflows/x/` fails as `/workflows/` does. Omitted on the default backend: `defaultMounts(rootDir)` (the conventional table — `/skills/`, `/.platform/`, `/AGENTS.md`, none governed — extend with `{ ...defaultMounts(root), "/templates/": … }`). Omitted with a custom `backend`: nothing authored is served; expose subtrees with `mountSubtree(backend, "skills")`. A key colliding with a run area — or naming the authoring-plane prefix (`/workflows/`) — throws `MountCollisionError`. `searchable: false` declares a mount the runtime never searches on its own initiative: a root-wide `grep`/`glob` fans out over the other mounts only, while a search the agent addresses at the mount (or a path inside it) still reaches its backend and returns the backend's own answer — matches or `{ error }` — verbatim. Use it for a backend that must refuse searches (a remote folder served live). Listing and reading are unchanged, the prompt marks it "browse only", names arrive as `MountPrefixes.unsearchable`, and it is ignored on a file mount. |
+| `mounts` | `Record<string, MountSpec>` | Authored mounts as a `CompositeBackend` route table: key → backend, or `{ backend, readOnly, governed, searchable }`. Trailing slash = directory mount; no slash = exact-path file mount (`"/AGENTS.md"`). Read-only unless declared otherwise. `governed: true` hands the spec's `mounts` block the decision of **which states** may reach it (closed by default, like a skill bundle) and whether each may write there; a mount not so declared is visible in every state exactly as today, so a table that marks nothing behaves unchanged. `readOnly` is a **ceiling** the spec cannot lift: a governed writable mount is written only by a workflow whose own grants ask `access: read_write` (a bare grant reads it, so serving one route writable for one workflow in a delegation tree opens it to no other), and a grant may narrow a writable mount to reads in a state, never open a read-only one. A key may be several segments deep (`"/catalogs/eu/"`); its **first** segment is what is reserved, so `/workflows/x/` fails as `/workflows/` does. Omitted on the default backend: `defaultMounts(rootDir)` (the conventional table — `/skills/`, `/.platform/`, `/AGENTS.md`, none governed — extend with `{ ...defaultMounts(root), "/templates/": … }`). Omitted with a custom `backend`: nothing authored is served; expose subtrees with `mountSubtree(backend, "skills")`. A key colliding with a run area — or naming the authoring-plane prefix (`/workflows/`) — throws `MountCollisionError`. `searchable: false` declares a mount the runtime never searches on its own initiative: a root-wide `grep`/`glob` fans out over the other mounts only, while a search the agent addresses at the mount (or a path inside it) still reaches its backend and returns the backend's own answer — matches or `{ error }` — verbatim. Use it for a backend that must refuse searches (a remote folder served live). Listing and reading are unchanged, the prompt marks it "browse only", names arrive as `MountPrefixes.unsearchable`, and it is ignored on a file mount. |
 | `sessionStore` | `SessionStore` | Physical storage for run state (checkpoints, artifacts, the per-session `scratchpad/`). Zero-config default: `createFilesystemSessionStore({ dir: "<rootDir>/sessions" })`. Required with a custom `backend` (else `SessionStoreRequiredError`). Build with `createBackendSessionStore({ backend, prefix? })` for S3-style storage or `createMemorySessionStore()` for ephemeral runs. |
 | `systemPrompt` | `string` | Appended after workspace `AGENTS.md`. |
 | `tools` | `StructuredTool[]` | Host tools, granted per state by `tools.allow`. Build them with `toolsFromMap` — see [host tools](#host-tools). A name starting `archmax_`, or naming a runtime file operation (`copy_file`, `move_file`, `remove_file`), throws `ReservedToolNameError`. |
@@ -616,6 +616,15 @@ A custom `backend` **requires** an explicit `sessionStore` — assembly throws
 Persisting the session zone off-box (an S3-backed session store) is how you share run
 state across a worker fleet and an API.
 
+A session's files are stored under `<sessionId>/` in the store (beneath its
+`prefix`): the agent's `scratchpad/x.txt` in session `s1` is `s1/scratchpad/x.txt`.
+That address is a contract, so a host may read or write a session's files through
+its own handle on the store (ranged reads, recursive listings, presigned URLs). A
+host tool keys them by `ToolContext.sessionId`, which inside a sub-workflow is the
+child's id, never the session the turn was sent to. `sessionIdRejection` refuses an
+id holding `~` in any shape but a child's (`<parent>~<n>`): mint top-level ids
+without it.
+
 `downloadFiles`, `uploadFiles` and `delete` are optional in the protocol and stay
 optional in the workspace: a store with only the required methods serves skills,
 reads and text copies. `downloadFiles` is always present and reads a store without
@@ -660,7 +669,8 @@ const agent = await createAgent({ tools, essentialTools: ["get_markdown"] });
 - `paths` declares the arguments that name workspace paths and how the call
   uses each. Every path rule binds them: the read-only zone, the runtime's own
   areas, the skills and mounts the state was given (`mount.not-allowed`,
-  `skill.not-allowed`), a mount's `access: read` (`mount.read-only` for a
+  `skill.not-allowed`), a mount's `access: read` or a governed mount no grant
+  of the workflow asks `read_write` for (`mount.read-only` for a
   `write` or `remove`), inherited denials and `paths:` guards. A refused call
   never runs the handler. No declaration, no path rules. An argument may hold a
   list of paths (`files: string[]`), each governed; any other shape is refused.
@@ -669,8 +679,13 @@ const agent = await createAgent({ tools, essentialTools: ["get_markdown"] });
 - `context.workspace` is the turn's workspace, bound to the session — the
   instance `read_file` uses — with `downloadFiles`, `uploadFiles` (when the
   session store has it) and `delete` besides the text methods. The plain agent
-  hands the same context. Outside a turn, reading it throws; the property is
-  non-enumerable there, so comparing or logging the context does not.
+  hands the same context.
+- `context.sessionId` is the session the call is made in: inside a sub-workflow,
+  the child's own id (`<parent>~<n>`), for the model's call and a script's alike.
+  Key any session file your host stores itself by it (`<sessionId>/<path>` in the
+  session store), never by the session you sent the turn to.
+- Outside a turn, reading either throws; both are non-enumerable there, so
+  comparing or logging the context does not.
 
 ## Cases against your agent
 
@@ -736,10 +751,15 @@ never delegated to is never loaded, and one delegated from many places is
 composed once. A child whose spec is broken surfaces as a *dispatch* failure, not
 an assembly failure — a parent still assembles.
 
-The child runs as a **separate session**, `<parent>~<state>:<workflow>:<n>`, in
-the same session store, with its own checkpoints, its own token accounting and its
-own file space: its `scratchpad/` is not its caller's, so it can neither read nor
-overwrite a file of its caller's. `sessions.list()` reports it beside its caller
+The child runs as a **separate session**, `<parent>~<n>`, in the same session
+store, with its own checkpoints, its own token accounting and its own file space:
+its `scratchpad/` is not its caller's, so it can neither read nor overwrite a file
+of its caller's. `n` is the dispatch's number in the calling session, counted from 1
+across all its turns in its checkpointed state, so an agent built per turn never
+reuses one; a grandchild is `<parent>~<n>~<m>`. The `sub-workflow-*` events and a
+pending delegation name it by its `dispatchId`, the id below the root session (`1`,
+`1~1`). A host tool called in the child gets the child's id as
+`ToolContext.sessionId`, and its file work belongs to the child. `sessions.list()` reports it beside its caller
 with `parentSessionId` naming the caller, and `sessions.delete` removes it by its
 own id. The only files that cross are the runtime's copies of declared `file` arguments and
 `file` returns. `capabilities.subWorkflows` is stamped `true` for a governed

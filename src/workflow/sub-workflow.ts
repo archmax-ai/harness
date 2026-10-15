@@ -50,10 +50,11 @@ import {
 import { baseName, type SessionFiles } from "../core/attachments.js";
 import {
   childRunConfig,
+  childSessionId,
+  dispatchIdOf,
   releaseScopes,
   sessionScopeFrom,
   SEED_VARIABLES_KEY,
-  subRunIdentity,
 } from "../sessions/scope.js";
 
 // --- Dispatch -------------------------------------------------------------------
@@ -198,6 +199,14 @@ export interface DispatchSubWorkflowInput {
   state: string;
   /** The tool call this dispatch answers. */
   toolCallId?: string;
+  /**
+   * The dispatch's number in the calling session, when the caller took it: a
+   * model's delegation call is numbered in tool-call order from the step's
+   * checkpointed count, so a node replayed from its checkpoint numbers it the
+   * same. Absent (a script's or a hook's call), the dispatcher takes the next
+   * number free in the session.
+   */
+  number?: number;
   signal?: AbortSignal;
 }
 
@@ -311,6 +320,15 @@ export interface SubWorkflowDispatcher {
    * because a script's dispatch reaches the PTC gateway, which cannot write graph state.
    */
   drainDispatches(sessionId: string): SubWorkflowDispatchRecord[];
+  /**
+   * Take every dispatch number up to `upTo` in `sessionId` as used: the count
+   * the session's checkpointed state holds, plus the delegation calls of the
+   * tool batch in progress, which are numbered in tool-call order. A dispatch
+   * made without a number (a script's, a hook's) takes the next one above.
+   */
+  reserve(sessionId: string, upTo: number): void;
+  /** The highest dispatch number taken or reserved in `sessionId`; `0` when none. */
+  dispatchCount(sessionId: string): number;
   /** Release a session's ledger, and every sub-run scope beneath it. */
   release(sessionId: string): void;
 }
@@ -347,8 +365,6 @@ function createSemaphore(limit: number) {
     }
   };
 }
-
-let dispatchSeq = 0;
 
 /**
  * The handlers LangGraph attaches to a run for its `messages` and `tools`
@@ -394,7 +410,29 @@ export function createSubWorkflowDispatcher(
   const maxDepth = opts.bounds?.maxDepth ?? DEFAULT_SUB_WORKFLOW_DEPTH;
   const maxConcurrent = opts.bounds?.maxConcurrent ?? DEFAULT_SUB_WORKFLOW_CONCURRENCY;
   const withSlot = createSemaphore(maxConcurrent);
-  let ordinal = 0;
+
+  /**
+   * The highest dispatch number taken in each session. A floor, never the
+   * count itself: the count is the session's checkpointed `dispatchCount`,
+   * which governance reserves here before anything can dispatch, so a fresh
+   * agent — one per turn, on any worker — continues where the session left off.
+   */
+  const taken = new Map<string, number>();
+  const reserve = (sessionId: string, upTo: number) => {
+    if (upTo > (taken.get(sessionId) ?? 0)) taken.set(sessionId, upTo);
+  };
+  /** The dispatch's number: the one its caller took, else the next free one. */
+  const numberFor = (sessionId: string, number: number | undefined): number => {
+    const n = number ?? (taken.get(sessionId) ?? 0) + 1;
+    reserve(sessionId, n);
+    return n;
+  };
+  /** A dispatch's names: its number, the child's session id, and its dispatch id. */
+  const nameDispatch = (input: DispatchSubWorkflowInput) => {
+    const callerId = sessionScopeFrom(input.config).sessionId;
+    const identity = String(numberFor(callerId, input.number));
+    return { identity, dispatchId: dispatchIdOf(childSessionId(callerId, identity)) };
+  };
 
   /** Sub-runs completed per session, awaiting a drain into the trail. */
   const dispatched = new Map<string, SubWorkflowDispatchRecord[]>();
@@ -563,7 +601,7 @@ export function createSubWorkflowDispatcher(
   /** Bracket a dispatch that never ran, so an attempted delegation that was stopped is visible. */
   function reportRefusal(input: DispatchSubWorkflowInput, err: SubWorkflowError): void {
     const scope = sessionScopeFrom(input.config);
-    const dispatchId = `subwf-${++dispatchSeq}`;
+    const { dispatchId } = nameDispatch(input);
     const common = {
       state: input.state,
       workflow: input.workflow,
@@ -582,8 +620,7 @@ export function createSubWorkflowDispatcher(
   async function dispatch(input: DispatchSubWorkflowInput): Promise<SubWorkflowResult> {
     const { workflow, state } = input;
     const scope = sessionScopeFrom(input.config);
-    const dispatchId = `subwf-${++dispatchSeq}`;
-    const identity = subRunIdentity(state, workflow, ordinal++);
+    const { identity, dispatchId } = nameDispatch(input);
 
     emit({
       type: "sub-workflow-start",
@@ -881,9 +918,12 @@ export function createSubWorkflowDispatcher(
       dispatched.delete(sessionId);
       return ledger;
     },
+    reserve,
+    dispatchCount: (sessionId) => taken.get(sessionId) ?? 0,
     release(sessionId) {
       releaseScopes(dispatched, sessionId);
       dispatched.delete(sessionId);
+      releaseScopes(taken, sessionId);
     },
   };
 }

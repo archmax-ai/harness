@@ -9,6 +9,41 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.6.0
+
+- **A host tool knows which session its call is made in.** `ToolContext` carries
+  `sessionId`: inside a sub-workflow's child it is the child's own id, for a model's
+  call and a script's alike. A session's files are stored under `<sessionId>/` in the
+  session store, and that address is now a documented contract, so a host that reads
+  or writes them through its own store handle keys them by `ToolContext.sessionId`.
+  Keyed by the session the host sent the turn to, a child's files landed in its
+  caller's folder, where the child's own `read_file` and `ls` never looked. The field
+  is new and optional to read. See
+  [host tools](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
+- **Breaking: a child session's id is its dispatch number.** A child is
+  `<parent>~<n>`, `n` counting the parent session's dispatches from 1 across all its
+  turns, and a grandchild is `<parent>~<n>~<m>`. The count is held in the parent's
+  checkpointed state. Before, the `<state>:<workflow>:<ordinal>` ordinal restarted
+  with every agent, so a host building an agent per turn could hand a second dispatch
+  the child an earlier one parked on, its thread and its folder. The model's
+  delegation calls in one batch are numbered in tool-call order, so a replayed node
+  reaches the same children. `dispatchId` is the child's id below the root session
+  (`1`, `1~1`) instead of a per-process `subwf-<n>`. `subRunIdentity` is gone;
+  `dispatchIdOf` and `rootSessionIdOf` join the `spec` subpath. `sessionIdRejection`
+  refuses a session id holding `~` in any shape but a child's. A session parked on a
+  child before the upgrade still resumes it, under the identity its park recorded. See
+  [what crosses, and what does not](/guides/sub-workflows/#what-crosses-and-what-does-not).
+- **Breaking: a workflow writes a governed mount only where its own grants ask
+  to.** A bare grant no longer takes the host's write posture: a governed mount is
+  writable in a state when the host serves it writable, some grant of the same
+  workflow says `access: read_write`, and no applicable grant says `access: read`.
+  A mount table serves a session and every child it dispatches, so a route served
+  writable for one workflow let every other workflow in the tree write it through a
+  bare grant. Now each workflow writes only what its own grants ask for. A spec that
+  wrote a writable governed mount through bare grants alone adds
+  `access: read_write` to one of them. An ungoverned mount is unchanged. See
+  [read or read/write](/reference/machine-spec/#read-or-readwrite).
+
 ## 0.5.0
 
 - **A `file` signature type.** A `requires` or `returns` entry may declare `type: file`. Its value

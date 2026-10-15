@@ -65,7 +65,12 @@ export const pendingDelegationSchema = z.object({
   workflow: z.string(),
   /** The tool call this sub-run answers. */
   toolCallId: z.string(),
-  /** The sub-run's identity (`<state>:<workflow>:<ordinal>`); the child's session id derives from it. */
+  /**
+   * The sub-run's identity: the dispatch's number in this session (`"2"`), the
+   * child's session id being `<session>~<identity>`. Resume reads it as
+   * recorded and never re-derives it, so a park from before 0.6.0 (identity
+   * `<state>:<workflow>:<ordinal>`) still reaches its child.
+   */
   identity: z.string(),
   dispatchId: z.string(),
   /**
@@ -248,6 +253,13 @@ const workflowStateFields = {
   pendingInput: pendingInputSchema.nullable().optional(),
   /** Sub-runs waiting on a person, in presentation order. */
   pendingDelegations: z.array(pendingDelegationSchema).nullable().optional(),
+  /**
+   * How many dispatch numbers this session has taken: its children are
+   * `<session>~1`, `<session>~2`, … across all its turns. Kept here rather than
+   * in process memory, so a fresh agent on any worker continues the count, and
+   * folded by `max`, so a hook's echo and sibling calls' writes agree.
+   */
+  dispatchCount: z.number().optional(),
   parkPhase: parkPhaseSchema.nullable().optional(),
   /**
    * This model call is a reply-only turn: one text reply, every tool call refused. Set by both
@@ -430,6 +442,12 @@ export const workflowStateSchema = z.object({
         update as FailedDelegationsUpdate | undefined,
       ),
     (): DelegationFailure[] => [],
+  ),
+  dispatchCount: reduced(
+    workflowStateFields.dispatchCount,
+    z.number(),
+    (acc, update) => Math.max((acc as number | undefined) ?? 0, (update as number | undefined) ?? 0),
+    () => 0,
   ),
   variables: reduced(
     workflowStateFields.variables,

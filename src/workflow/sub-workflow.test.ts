@@ -147,7 +147,58 @@ describe("a completed sub-run", () => {
     const { registry, invocations } = stubRegistry();
     await dispatch(dispatcherFor(registry));
     const configurable = invocations[0]?.config.configurable ?? {};
+    expect(configurable.thread_id).toBe("session-7~1");
+    expect(parentSessionIdOf(configurable.thread_id as string)).toBe("session-7");
+  });
+
+  /**
+   * The count lives in the session's checkpointed state; governance reserves
+   * it before anything dispatches, so a fresh dispatcher (one per turn)
+   * continues it rather than starting again at 1.
+   */
+  it("numbers a dispatch above what the session has reserved, or by the number its caller took", async () => {
+    const events: WorkflowLifecycleEvent[] = [];
+    const { registry, invocations } = stubRegistry();
+    const dispatcher = dispatcherFor(registry, { onEvent: (e) => events.push(e) });
+    dispatcher.reserve("session-7", 4);
+    await dispatch(dispatcher);
+    await dispatch(dispatcher, { number: 9 });
+    await dispatch(dispatcher);
+    expect(invocations.map((i) => i.config.configurable.thread_id)).toEqual([
+      "session-7~5",
+      "session-7~9",
+      "session-7~10",
+    ]);
+    expect(dispatcher.dispatchCount("session-7")).toBe(10);
+    expect(dispatcher.dispatchCount("session-8")).toBe(0);
+    expect(events.filter((e) => e.type === "sub-workflow-start").map((e) => e.dispatchId)).toEqual(["5", "9", "10"]);
+  });
+
+  it("names a child's own dispatch by its path below the root", async () => {
+    const { registry, invocations } = stubRegistry();
+    await dispatch(dispatcherFor(registry), {
+      config: { configurable: { thread_id: "session-7~2", archmax_sub_workflow_dispatch: "2" } },
+    });
+    const configurable = invocations[0]?.config.configurable ?? {};
+    expect(configurable.thread_id).toBe("session-7~2~1");
+    expect(configurable.archmax_sub_workflow_dispatch).toBe("2~1");
+  });
+
+  /** A park from before dispatch numbers recorded `<state>:<workflow>:<ordinal>`; resume takes it as it is. */
+  it("resumes a child under the identity its park recorded, whatever its shape", async () => {
+    const { registry, invocations } = stubRegistry();
+    const dispatcher = dispatcherFor(registry);
+    await dispatcher.resume({
+      workflow: "enrich-account",
+      identity: "enrich:enrich-account:0",
+      dispatchId: "subwf-3",
+      config: PARENT_CONFIG,
+      resume: { target: "approved" },
+      state: "enrich",
+    });
+    const configurable = invocations[0]?.config.configurable ?? {};
     expect(configurable.thread_id).toBe("session-7~enrich:enrich-account:0");
+    expect(configurable.archmax_sub_workflow_dispatch).toBe("subwf-3");
     expect(parentSessionIdOf(configurable.thread_id as string)).toBe("session-7");
   });
 

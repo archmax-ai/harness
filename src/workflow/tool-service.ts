@@ -230,6 +230,8 @@ export function createToolService(ctx: ToolServiceContext) {
     dispatcher: SubWorkflowDispatcher,
     call: ServicedCall,
     args: Record<string, unknown>,
+    /** The call's dispatch number, taken in tool-call order; absent, the dispatcher takes the next free one. */
+    number?: number,
   ): Promise<Command | ToolMessage> {
     const { sessionId, workflowState, toolName, callId, toolCallId } = call;
     const workflow = workflowSlugFromToolName(toolName)!;
@@ -240,6 +242,7 @@ export function createToolService(ctx: ToolServiceContext) {
       config: buildRunnableConfig(request.runtime ?? {}),
       state: workflowState,
       toolCallId: callId,
+      ...(number !== undefined ? { number } : {}),
     };
     const refused = await dispatcher.refusal(dispatchInput);
     if (refused) {

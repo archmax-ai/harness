@@ -144,6 +144,22 @@ describe("mount governance lints", () => {
     expect(at(findings, "states.triage.mounts.allow")).toEqual([]);
   });
 
+  /** A bare grant asks for no write, so the state's `read_write` is what lets the workflow write there. */
+  it("says nothing when the state entry asks to write a mount the workflow grants bare", () => {
+    const findings = withMounts({
+      mounts: { allow_always: ["shared"] },
+      states: {
+        triage: {
+          triggers: { manual: null },
+          mounts: { allow: [{ mount: "shared", access: "read_write" }] },
+          transitions: [{ to: "done", description: "Test edge to done." }],
+        },
+        done: {},
+      },
+    });
+    expect(at(findings, "states.triage.mounts.allow")).toEqual([]);
+  });
+
   it("warns when a state both enables and forbids one mount", () => {
     const findings = withMounts({
       states: {
