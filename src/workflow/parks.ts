@@ -558,7 +558,8 @@ async function resumeDelegated(
 
 /**
  * A firing delivered into a wait park: the firing's variables as locked host
- * seeds, the arrival in the transcript and on the trail, the delivered id as the
+ * seeds (`title` and the delivered trigger's returns unlocked), the arrival in
+ * the transcript and on the trail, the delivered id as the
  * run's current trigger — and the parked state continues in place. An id-less
  * firing is accepted: the delivery surface validated the park, and refusing a
  * resume the host committed to would leave the run parked forever.
@@ -579,6 +580,9 @@ function applyDelivery(
   // park/deliver cycle can re-establish the same name. Only this path and the
   // turn boundary set that marker, so no agent-reachable write bypasses a lock.
   const delivered: VariableStore = {};
+  // A return of the trigger delivered — the one in force from here — lands
+  // unlocked: the run still has to be able to write its result.
+  const returns = ctx.machine.returnsForTrigger(deliveredId) ?? [];
   for (const [name, value] of Object.entries(delivery.variables ?? {})) {
     // `title` is never locked. A malformed one is warned and skipped rather than
     // thrown: dropping a whole resume over a bad label is the worse failure.
@@ -591,7 +595,7 @@ function applyDelivery(
       delivered[name] = { value: normalizeTitle(value as string), locked: false, reseed: true };
       continue;
     }
-    delivered[name] = { value, locked: true, reseed: true };
+    delivered[name] = { value, locked: !returns.includes(name), reseed: true };
   }
   const names = Object.keys(delivered);
   if (names.length > 0) {

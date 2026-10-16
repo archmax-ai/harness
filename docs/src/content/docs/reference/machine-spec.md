@@ -879,8 +879,8 @@ agent must not end the session itself.
 A session that finishes **short of its trigger's
 [`returns`](/guides/triggers/#a-trigger-may-declare-its-signature)** does not
 see `on_error` either. A top-level session ends `rejected`, naming what it left
-unset. A sub-workflow child completes instead, and its caller gets the returns
-it set plus a `note` naming the rest.
+unset. A sub-workflow child completes instead, and its caller gets the unset
+ones empty (`null`) plus a `note` naming them.
 
 ## `disabled`: take a workflow out of service
 
@@ -988,14 +988,20 @@ with `archmax_set_variables` or by a script. The check runs once, as the session
 finishes, and hands nothing back:
 
 - a **sub-workflow child** with one of them unset **completes**, and its caller
-  gets the returns it set plus `note: "Not all return variables were set by the
-  sub-workflow: '<name>' was not set."`;
+  gets every declared return, the unset ones `null`, plus `note: "Not all return
+  variables were set by the sub-workflow: '<name>' was not set."`;
 - a **top-level session** with one of them unset is **rejected**;
 - a typed one holding a mistyped value **rejects** the session either way.
 
 A session that *parks* goes unchecked, because it has not finished, and so does
 one the agent ended with `archmax_raise`: a failed session owes no returns.
 `note` is reserved, so a `returns` list may not name it.
+
+Nothing reads the returns before then. `archmax_advance` checks a state's own
+`requires:`, not the trigger's `returns:`, and a later write of a return
+replaces an earlier one, until the agent locks it. A seed of one (a name in both
+lists) lands **unlocked**, so the session can still write its result. See
+[a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
 
 Each entry is a bare variable name, or an object `{ name, type?, description? }`
 naming one. The two spellings mix freely in one list. A bare name and an object

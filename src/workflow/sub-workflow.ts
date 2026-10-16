@@ -776,7 +776,8 @@ export function createSubWorkflowDispatcher(
   /**
    * The declared returns of a child that settled, held to the target's typed
    * signature. A child that left some unset completed anyway: its caller gets
-   * the ones it set and a `note` naming the rest. A value that does not conform
+   * every declared one, the unset ones empty (`null`), and a `note` naming
+   * them. A value that does not conform
    * fails the call `invalid-return` — the reason its own completion check
    * rejected it; any other rejection stays `rejected`. A child that raised owes
    * no returns: it fails as `raised`, carrying its agent's code and reason. A
@@ -957,7 +958,7 @@ async function applyMock(
   if (wanted.length === 0) return { result, workflow, state };
 
   // A mock stands in for the sub-run, so it is held to what a real one hands
-  // back: a mistyped value fails, and an unset one is named in the note.
+  // back: a mistyped value fails, and an unset one is handed on empty and named in the note.
   const supplied = (asObject?.returns ?? {}) as Record<string, unknown>;
   const issues = signatureValueIssues(wanted, supplied);
   if (invalidOf(issues).length > 0) throw returnsFailure(workflow, "(mocked)", issues);
@@ -970,9 +971,9 @@ async function applyMock(
 }
 
 /**
- * The returns a caller gets: every declared one the child set, and — when it
- * left any unset — a `note` naming them. Unset names are left out, never
- * handed on as `undefined`.
+ * The returns a caller gets: every declared one, in declaration order — one the
+ * child left unset handed on empty, as `null` (never dropped, never
+ * `undefined`) — and, when it left any unset, a `note` naming them.
  */
 function withMissingNote(
   returns: Record<string, unknown> | undefined,
@@ -981,8 +982,10 @@ function withMissingNote(
   if (!returns) return undefined;
   const unset = issues.filter((issue) => issue.kind === "missing").map((issue) => issue.name);
   if (unset.length === 0) return returns;
-  const set = Object.fromEntries(Object.entries(returns).filter(([name]) => !unset.includes(name)));
-  return { ...set, [RETURNS_NOTE_VARIABLE]: missingReturnsNote(unset) };
+  const handed = Object.fromEntries(
+    Object.entries(returns).map(([name, value]) => [name, unset.includes(name) ? null : value]),
+  );
+  return { ...handed, [RETURNS_NOTE_VARIABLE]: missingReturnsNote(unset) };
 }
 
 /** The invalid-value issues of a signature check, in declaration order. */

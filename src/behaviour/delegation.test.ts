@@ -173,6 +173,7 @@ describe("a delegation call", () => {
     expect(eventsOf(events, "sub-workflow-result")[0]?.status).toBe("ok");
     const result = toolResults(messages).find((r) => r.name === CHILD_TOOL);
     expect(JSON.parse(result!.content).returns).toEqual({
+      enrichment_file: null,
       note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set.",
     });
     expect(eventsOf(events, "state-error-routed")).toEqual([]);
@@ -329,6 +330,7 @@ describe("a typed call signature", () => {
     expect(settled?.status).toBe("ok");
     const result = toolResults(messages).find((r) => r.name === CHILD_TOOL);
     expect(JSON.parse(result!.content).returns).toEqual({
+      delayed: null,
       note: "Not all return variables were set by the sub-workflow: 'delayed' was not set.",
     });
   });
@@ -1175,6 +1177,7 @@ describe("files across a delegation", () => {
     // The child's write is refused; it completes without the return, so nothing is copied.
     const { parsed } = resultOf(messages);
     expect(parsed?.returns).toEqual({
+      report: null,
       note: "Not all return variables were set by the sub-workflow: 'report' was not set.",
     });
     expect(await storeFile(store, "/s1/scratchpad/attachments/salaries.md")).toBeUndefined();

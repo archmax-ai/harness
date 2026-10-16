@@ -547,12 +547,18 @@ states:
 - `requires:` / `returns:` are the run's **signature**, and both are enforced. A
   firing that does not supply every `requires` name does not start. `returns`
   is checked once as the run finishes, and **nothing is handed back**: a
-  sub-workflow child with a name unset **completes**, and its caller gets the
-  returns it set plus `note: "Not all return variables were set by the
-  sub-workflow: '<name>' was not set."`; a top-level run with a name unset is
-  **rejected**; a typed one mistyped rejects either way. A run that *parks* is
-  not checked — it has not finished. `note` is reserved: a `returns` list may
-  not declare it. Want the model to try again? Check the returns in a terminal
+  sub-workflow child with a name unset **completes**, and its caller gets
+  every declared return, the unset ones `null`, plus `note: "Not all return
+  variables were set by the sub-workflow: '<name>' was not set."`; a top-level
+  run with a name unset is **rejected**; a typed one mistyped rejects either
+  way. A run that *parks* is not checked — it has not finished. A return is
+  owed **only at the finish**: `archmax_advance` checks a state's own
+  `requires:`, never the returns, a later write replaces an unlocked earlier
+  one, and a seed of one (a name in both lists) lands **unlocked** and does not
+  overwrite a value the session already holds. So do not list a return in a
+  state's `requires:` unless that state must settle it, and do not tell the
+  agent to lock one before its value is final. `note` is reserved: a `returns`
+  list may not declare it. Want the model to try again? Check the returns in a terminal
   `after` hook, which can `correct`. Each entry is a bare
   run-variable name (**untyped**: any value, `null` included) or a strict object
   `{ name, type?, description? }` naming one; the spellings mix in one list and
@@ -1103,7 +1109,8 @@ scalar.
 **Authoring rules that matter:**
 
 - **Lock anything a guard reads.** Host seeds are locked automatically (`title`
-  excepted, which is never locked); for an agent-established fact pass `lock: true`. An unlocked variable can be
+  and a seed of a trigger's `returns` excepted, which land unlocked); for an
+  agent-established fact pass `lock: true` — on a return, only once it is final. An unlocked variable can be
   overwritten by any later state — that rewrite is permitted, being one writer
   twice, and the later value simply wins — so a guard bound to an unlocked name is
   a weak guard. A lock is the only thing that makes a fact settled.
@@ -1378,7 +1385,7 @@ enrich:
   (`unresolved-param`) and **disabled-target** refusals are blocked calls —
   nothing ran, so correct the call and retry. A child whose returns are
   mistyped (`invalid-return`) is a failure: it ran. One that left returns unset
-  is not: the call answers with what it set and a `note`.
+  is not: the call answers with them `null` and a `note`.
 - **A whole-argument reference keeps its type.** `{ quantity: "${{count}}" }`
   seeds the child with the number `count` holds, so it satisfies an `integer`
   parameter; `{ note: "order ${{order_id}}" }` is substituted as text.
@@ -1416,16 +1423,18 @@ enrich:
 
   A dispatch missing a `requires` name is **refused before the child is
   composed**; a child that completes without every `returns` name set
-  **completes anyway**, and the call answers with the returns it set plus a
-  `note` naming the rest — no second attempt is spent, and the caller decides
+  **completes anyway**, and the call answers with every declared return, the
+  unset ones `null`, plus a `note` naming them — no second attempt is spent, and
+  the caller decides
   (a child that *parks* is not checked — it has not finished; a child that
   raises fails the call `raised`). A typed entry is held to its type at both
   ends: a mistyped argument is refused `invalid-param` before the child runs, and
   a mistyped return fails the call `invalid-return`. What the child must *do* to
   produce a variable belongs in the state `instructions` that set it. The names,
   with type and description where declared, are rendered into the child's prompt
-  under its entry state, so it is told what to produce before it can be failed
-  for omitting it.
+  in every state, so it is told what to produce before it can be failed for
+  omitting it — and to set each once its final value is known, locking one only
+  when it is final.
 - **The call answers with the returns, by name.** A signed target answers
   `{ message, returns: { enrichment_file, delayed } }`; one declaring no
   `returns:` answers with the closing message alone. The message keeps its own
@@ -1436,7 +1445,7 @@ enrich:
 - **Mocks are held to the same contract.** An `archmax_workflow_<slug>` mock for a
   signed target supplies `returns:`. One that supplies a mistyped typed one
   (`invalid-return`) fails the mocked dispatch, and one that omits a declared
-  name answers like a real child that left it unset: what it supplied, plus a
+  name answers like a real child that left it unset: that name `null`, plus a
   `note` — a mock stands in for the sub-run, never for its agreement.
 - **No prose crosses the boundary.** A sub-run gets no instruction from its
   caller — it works from its own state `instructions` (system prompt) plus the

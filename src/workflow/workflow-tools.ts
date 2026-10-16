@@ -57,7 +57,7 @@ export function delegationToolDescription(target: DelegationTarget): string {
     returns.length
       ? `The result carries ${quoteList(returns)} under 'returns', alongside the ` +
           `workflow's closing message under 'message'. A run that finished without setting some ` +
-          `of them returns the ones it set, with a 'note' under 'returns' naming the rest.`
+          `of them returns those empty (null), with a 'note' under 'returns' naming them.`
       : `The result is the workflow's closing message.`,
   );
   const fileIn = (target.requires ?? []).filter((entry) => entry.type === "file").map((entry) => entry.name);

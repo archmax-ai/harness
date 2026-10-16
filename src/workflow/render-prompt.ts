@@ -70,6 +70,15 @@ function renderHooks(state: MachineState): string | null {
 }
 
 /**
+ * When a return is written. The returns are rendered in every state, so they
+ * must not read as "set these now": a value written before the work settles it
+ * is a guess, and locked it would be the caller's answer however the run went on.
+ */
+const RETURNS_TIMING =
+  "Set each once its final value is known — moving to another state does not need it — and " +
+  "lock one only when it is final: a locked return can no longer change.";
+
+/**
  * The signature of the trigger this run was started by — and only that one. The
  * triggers of states this run did not enter are not disclosed, and the id needs
  * no label: there is one trigger and it is this run's. An untyped signature
@@ -92,16 +101,17 @@ function renderSignature(machine: WorkflowMachine, trigger: string | undefined, 
   }
   if (returns.length > 0) {
     // What the completion check actually does (`returns-check.ts`): a child's
-    // caller gets what was set and a note naming the rest; any other run is rejected.
+    // caller gets every return, an unset one empty and named in a note; any
+    // other run is rejected.
     const how = child
       ? `with \`${SET_VARIABLES_TOOL}\` before it finishes — your caller gets the ones you set, ` +
-        `with a note naming any you did not`
+        `and any you leave unset as empty, with a note naming them`
       : `with \`${SET_VARIABLES_TOOL}\` before it finishes — finishing without every one set ` +
         `ends it rejected`;
     lines.push(
       isBare(returns)
-        ? `This run must set ${names(returns)} ${how}.`
-        : [`This run must set these ${how}:`, ...returns.map(renderEntry)].join("\n"),
+        ? `This run must set ${names(returns)} ${how}. ${RETURNS_TIMING}`
+        : [`This run must set these ${how}:`, ...returns.map(renderEntry), RETURNS_TIMING].join("\n"),
     );
   }
   return lines;

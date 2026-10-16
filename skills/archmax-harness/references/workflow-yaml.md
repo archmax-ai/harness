@@ -188,8 +188,11 @@ states:
   mistyped argument is refused `invalid-param`, and `"${{count}}"` alone
   passes the value with its own type), its `returns` the result
   (`{ message, returns }`; a child finishing with some unset completes, and
-  `returns` holds what it set plus a `note` naming the rest; a mistyped typed
-  return fails `invalid-return`). Each failed call is the
+  `returns` holds every declared one, the unset ones `null`, plus a `note`
+  naming them; a mistyped typed return fails `invalid-return`). Returns are
+  owed only at the finish: no state needs them to be left, a later write
+  replaces an unlocked earlier one, and a seed of one lands unlocked; lock one
+  only once it is final. Each failed call is the
   calling state's failure, recorded with its arguments and routed through
   `on_error` when the agent finishes unless a later successful call of the
   same workflow from the same state recovers it first. One success recovers

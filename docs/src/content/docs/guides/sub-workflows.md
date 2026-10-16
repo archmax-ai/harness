@@ -82,14 +82,15 @@ mixes text with references, such as `"order ${{order_id}}"`, is substituted as
 text. An unresolvable reference fails the call with `unresolved-param`.
 
 A child that finishes with some of its returns unset is not sent back to set
-them. It completes, and the call answers with the returns it did set plus a
-`note` naming the rest:
+them. It completes, and the call answers with every declared return, the unset
+ones empty (`null`), plus a `note` naming them:
 
 ```json
 {
   "message": "Invoice INV-159123 found.",
   "returns": {
     "corrected_invoice_number": "INV-159123",
+    "description": null,
     "note": "Not all return variables were set by the sub-workflow: 'description' was not set."
   }
 }
@@ -176,7 +177,7 @@ started the session:
 | Half | When it bites |
 | --- | --- |
 | `requires` | a call short of any declared name, or with a value that does not conform to a typed entry, is refused before this workflow is composed |
-| `returns` | a child that finishes with a declared name unset completes, and its caller gets what it set plus a `note`; a top-level session is rejected; a typed one mistyped rejects either way |
+| `returns` | a child that finishes with a declared name unset completes, and its caller gets that name empty (`null`) plus a `note`; a top-level session is rejected; a typed one mistyped rejects either way |
 
 `archmax validate` checks the caller against the same declaration, offline.
 
@@ -238,7 +239,7 @@ machine, starting with a fresh transcript.
 
 | Direction | Crosses |
 | --- | --- |
-| Down | the call's arguments, locked as session variables (except `title`, which stays unlocked) |
+| Down | the call's arguments, locked as session variables (except `title`, and any the target also returns, which stay unlocked) |
 | Up | the declared `returns` and the result message; a `file` return arrives as a copy (see [passing files](#passing-files)) |
 | Never | the child's other variables, its `title`, its transcript, its audit trail, or any other file it wrote |
 
@@ -271,7 +272,12 @@ own variables stay behind, so anything the child needs must be named as an
 argument. That keeps its inputs readable at the call site.
 
 When the child session finishes, the variables named in its trigger's `returns:`
-are read out of its settled store, and everything else it set is discarded.
+are read out of its settled store, and everything else it set is discarded. That
+is the only moment they are read. The child may leave any state without them and
+replace a value it set early. An argument that seeds one lands unlocked, and its
+agent locks one only when it chooses to. So the caller gets the value the child
+finished with. See
+[a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
 
 The child's **`title`** is among the things that stay behind. It is refused in
 `returns:` so it cannot be smuggled up. A child session's title names the child

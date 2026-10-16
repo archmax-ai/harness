@@ -111,32 +111,38 @@ export async function openTurn(
   // This turn's opening variables: the host's seeds, this invocation's seeds (a
   // sub-run's params), and the built-in `trigger`, locked. Marked `reseed`: a turn
   // boundary is a host seeding boundary exactly as a delivery is.
-  const openingVariables = reseedAll({
+  const seeded = reseedAll({
     ...(ctx.seededVariables ?? {}),
     ...buildSeededVariables(seedVariablesFrom(runtime?.configurable), "supplied to a sub-workflow"),
     [TRIGGER_VARIABLE]: { value: trigger.id, locked: true },
   });
+  const held = readVariables(state);
+  const openingVariables = { ...seeded };
   // A seeded `title` is an opening label: it loses to a title the session already
   // holds, so the agent's refinement survives the next turn.
-  if (
-    openingVariables[TITLE_VARIABLE] !== undefined &&
-    readVariables(state)[TITLE_VARIABLE] !== undefined
-  ) {
+  if (openingVariables[TITLE_VARIABLE] !== undefined && held[TITLE_VARIABLE] !== undefined) {
     delete openingVariables[TITLE_VARIABLE];
+  }
+  // A seed of one of the trigger's returns is where the result starts, not a
+  // settled fact: it lands unlocked, so the run can still write its result, and
+  // it loses to a value the session already holds, so a result written in an
+  // earlier turn survives the next one.
+  for (const name of machine.returnsForTrigger(trigger.id) ?? []) {
+    const entry = openingVariables[name];
+    if (entry === undefined) continue;
+    if (held[name] !== undefined) delete openingVariables[name];
+    else openingVariables[name] = { ...entry, locked: false };
   }
   const seededTitle = openingVariables[TITLE_VARIABLE]?.value;
   if (typeof seededTitle === "string") emit({ type: "title-set", title: seededTitle });
 
-  // The entry half of the trigger's signature: a run that cannot satisfy its own contract reaches no model.
+  // The entry half of the trigger's signature: a run that cannot satisfy its own
+  // contract reaches no model. Checked against every seed, the ones the session
+  // already holds included: those are supplied, just not written again.
   const fileIssues = ctx.files
-    ? await requiresFileIssues(
-        machine,
-        trigger.id,
-        openingVariables,
-        ctx.files(position, { ...readVariables(state), ...openingVariables }),
-      )
+    ? await requiresFileIssues(machine, trigger.id, seeded, ctx.files(position, { ...held, ...seeded }))
     : [];
-  const refusal = requiresRefusal(machine, trigger.id, openingVariables, fileIssues);
+  const refusal = requiresRefusal(machine, trigger.id, seeded, fileIssues);
   if (refusal) return refuse(refusal, { variables: openingVariables });
 
   emit({ type: "state-enter", state: position });

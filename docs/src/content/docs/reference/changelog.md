@@ -30,6 +30,26 @@ as it is today; the guides themselves describe only the present. Every release a
   and `skills.forbid_always` reached a hook only as a caller's inherited denial, so a
   top-level workflow's hooks could read what its own lists denied. They now refuse
   the call with `mount.forbidden` or `skill.forbidden`, as the docs already said.
+- **Breaking: a sub-workflow's unset returns reach its caller empty.** A child that
+  finishes without setting some of its declared returns still completes. Its
+  caller's `returns` now carries every declared name, each unset one as `null`,
+  beside the `note` naming them. Before, an unset name was left out. A caller that
+  tested for a key's presence now tests for `null`. See
+  [returns](/guides/sub-workflows/#delegation-is-a-tool-call).
+- **Breaking: a seed of a return lands unlocked.** A name in both `requires` and
+  `returns` arrived locked, so a child could never write its result. A seed of a
+  return now lands unlocked, whether it is a call argument, a host's `variables` or
+  a delivery naming one. A later turn's seed leaves a value the session already
+  holds in place. The agent may still lock a return with `lock: true` once it is
+  final. A guard that reads a seeded return now reads a value the session can
+  change until it is locked.
+- **The prompt no longer reads as asking for returns up front.** Every state shows
+  the trigger's returns. It now adds that each is set once its final value is
+  known, that moving to another state does not need it, and that one is locked
+  only when it is final.
+  `archmax_advance` never checked the returns. A state's own `requires:` is still
+  the only gate on leaving it. See
+  [a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
 
 ## 0.6.0
 

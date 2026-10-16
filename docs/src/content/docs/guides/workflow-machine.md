@@ -508,7 +508,10 @@ Four rules make this safe to rely on:
   the guard at all.
 - **Locking is monotonic.** A locked variable refuses every later write, loudly,
   and host seeds are locked automatically. Lock anything else a guard depends
-  on: that is what settles the fact. Without a lock, any later state can
+  on: that is what settles the fact. A seed of one of the trigger's
+  [returns](/guides/triggers/#a-return-is-owed-when-the-session-finishes) is
+  the exception: it lands unlocked, so a guard should not rest on one until the
+  agent locks it. Without a lock, any later state can
   overwrite it, and the later value simply wins, since execution is sequential
   and a rewrite is one writer twice.
 - **Paths read data.** Traversal is own-properties-only, so `${{tags.length}}`
@@ -575,7 +578,8 @@ every other `set_variables` rejection. The reason is one the agent can act on,
 because a title is presentation metadata and a mangled one is worse than none.
 
 A host may seed one at assembly (`variables: { title: "Inbound refund request" }`).
-It lands **unlocked**, the single exception to "every seed is locked".
+It lands **unlocked**, an exception to "every seed is locked". The other is a
+seed of one of the trigger's `returns`.
 
 The seed is an *opening* label the agent may refine, and it leaves a title an
 earlier turn already established in place. A delivery carrying a `title` replaces
@@ -710,8 +714,8 @@ the `archmax_advance` out of a state, or runs at completion for a terminal state
 Once a completion passes its `after` hooks, the trigger's
 [`returns`](/guides/triggers/#a-trigger-may-declare-its-signature) are checked
 once, without handing anything back: a sub-workflow child short of them
-completes and its caller gets what it set plus a `note`, and a top-level session
-short of them is rejected.
+completes and its caller gets the unset ones empty (`null`) plus a `note`, and a
+top-level session short of them is rejected.
 
 A refused entry is a **rejection**. The veto's reason is the turn's reply. The
 session routes through the state's `on_error` if it declares one, else settles

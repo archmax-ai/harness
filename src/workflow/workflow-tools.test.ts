@@ -136,7 +136,7 @@ describe("delegation tool description", () => {
         "governed machine with its own states and tools; your run stays where it is and continues when the call " +
         "answers. It requires 'order_id', which the call must supply. The result carries 'enrichment_file' and " +
         "'delayed' under 'returns', alongside the workflow's closing message under 'message'. A run that finished " +
-        "without setting some of them returns the ones it set, with a 'note' under 'returns' naming the rest. One " +
+        "without setting some of them returns those empty (null), with a 'note' under 'returns' naming them. One " +
         "call runs it once; call it again (in the same turn) to run several at once. A call whose run fails answers " +
         "with an error, and that failure fails your current state when you finish, unless a later call of this " +
         "workflow from the same state succeeds. Each success recovers one failed call: the one it repeats, else the oldest.",

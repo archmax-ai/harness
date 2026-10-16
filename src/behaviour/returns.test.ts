@@ -2,10 +2,12 @@
  * A trigger's `returns` at completion, and a caller's failed delegation.
  *
  * Nothing is handed back. A sub-workflow child that finishes without setting
- * every declared return completes at once, and its caller gets the returns it
- * did set plus a `note` naming the rest. A top-level session finishing short is
- * rejected with the check's own reason, and a mistyped return fails either way.
- * A child that raises fails the call at once.
+ * every declared return completes at once, and its caller gets every return —
+ * the unset ones empty (`null`) — plus a `note` naming them. A top-level session
+ * finishing short is rejected with the check's own reason, and a mistyped return
+ * fails either way. A child that raises fails the call at once. Returns are owed
+ * only at the finish: no state needs them to be left, and a caller's seed of
+ * one lands unlocked, so the run can still write its result.
  *
  * On the calling side, a failed child is the calling state's failure until a
  * later call of the same workflow from that state succeeds; a failure of
@@ -74,6 +76,26 @@ describe("a top-level session that finishes short of its returns", () => {
     expect((await agent.workflow.send("s1", { message: "go" })).kind).toBe("rejected");
     model.enqueue(setReturn, { reply: "set it" });
     expect((await agent.workflow.send("s1", { message: "please set the file" })).kind).toBe("completed");
+  });
+});
+
+describe("a host's seed of a return", () => {
+  const SPEC = {
+    runtime: RUNTIME,
+    states: { work: { triggers: { manual: { requires: ["summary"], returns: ["summary"] } } } },
+  };
+  const revise: ScriptedTurn = { tool: "archmax_set_variables", args: { variables: { summary: "polished" } } };
+
+  it("lands unlocked, and loses to the result an earlier turn wrote", async () => {
+    const { agent, model } = await assemble(workspaceWith(SPEC), { turns: [revise, { reply: "revised" }] });
+    const seeded = { message: "revise it", variables: { summary: "rough draft" } };
+    expect((await agent.workflow.send("s1", seeded)).kind).toBe("completed");
+    expect((await agent.sessions.get("s1"))?.variables?.summary).toEqual({ value: "polished", locked: false });
+
+    // The next turn carries the same seed, which still satisfies `requires` but writes nothing.
+    model.enqueue({ reply: "still polished" });
+    expect((await agent.workflow.send("s1", seeded)).kind).toBe("completed");
+    expect((await agent.sessions.get("s1"))?.variables?.summary).toEqual({ value: "polished", locked: false });
   });
 });
 
@@ -166,7 +188,7 @@ const callChild: ScriptedTurn = { tool: CHILD_TOOL, args: { order_id: "ORD-7" } 
 const RAISE: ScriptedTurn = { tool: "archmax_raise", args: { code: "orders-unavailable", reason: "The API is down." } };
 
 describe("a child that finishes short of its returns", () => {
-  it("completes at once: its caller gets the returns it set and a note naming the rest", async () => {
+  it("completes at once: its caller gets the returns it set, the rest empty, and a note naming them", async () => {
     const { agent, model, events } = await assemble(delegating({ enrichReturns: ["enrichment_file", "delayed"] }), {
       turns: [
         callChild,
@@ -180,13 +202,14 @@ describe("a child that finishes short of its returns", () => {
     const outcome = await agent.workflow.send("s1", { message: "enrich ORD-7" });
 
     expect(eventsOf(events, "sub-workflow-result")).toMatchObject([
-      { workflow: "enrich", status: "ok", returns: ["enrichment_file", "note"] },
+      { workflow: "enrich", status: "ok", returns: ["enrichment_file", "delayed", "note"] },
     ]);
     const answer = toolResults(outcome.messages).find((r) => r.name === CHILD_TOOL);
     expect(JSON.parse(answer!.content)).toEqual({
       message: "enriched",
       returns: {
         enrichment_file: "scratchpad/e.json",
+        delayed: null,
         note: "Not all return variables were set by the sub-workflow: 'delayed' was not set.",
       },
     });
@@ -198,7 +221,7 @@ describe("a child that finishes short of its returns", () => {
     expect(outcome).toMatchObject({ kind: "completed", state: "start" });
   });
 
-  it("hands back only the note when it set none", async () => {
+  it("hands back every return empty, and the note, when it set none", async () => {
     const { agent } = await assemble(delegating(), {
       turns: [callChild, { reply: "enriched" }, { reply: "parent finished" }],
     });
@@ -208,7 +231,10 @@ describe("a child that finishes short of its returns", () => {
     expect(answer?.status).not.toBe("error");
     expect(JSON.parse(answer!.content)).toEqual({
       message: "enriched",
-      returns: { note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set." },
+      returns: {
+        enrichment_file: null,
+        note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set.",
+      },
     });
     expect(outcome).toMatchObject({ kind: "completed", state: "start" });
   });
@@ -223,6 +249,105 @@ describe("a child that finishes short of its returns", () => {
     expect(answer?.content).toMatch(/raised 'orders-unavailable' in state 'work'/);
     // One call for the parent's dispatch, one for the child's raise, then the parent's and the handler's.
     expect(model.calls).toHaveLength(4);
+  });
+});
+
+/**
+ * A child's returns are its result, so they are owed when it finishes and no
+ * earlier: a state is left without them, a value set early is replaced by a
+ * later one, and a caller's seed of one lands unlocked. A lock is the agent's
+ * own call, made once the value is final.
+ */
+describe("a child's returns, written as its work settles them", () => {
+  const REVISE_TOOL = workflowToolName("revise");
+  const reviseWorkspace = (manual: Record<string, unknown>) =>
+    makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      "workflows/w/workflow.yaml": {
+        runtime: RUNTIME,
+        states: { start: { triggers: { manual: null }, tools: { allow: [REVISE_TOOL] } } },
+      },
+      "workflows/revise/workflow.yaml": {
+        runtime: RUNTIME,
+        states: {
+          draft: { triggers: { manual }, transitions: [{ to: "finish", description: "Drafted." }] },
+          finish: {},
+        },
+      },
+    });
+  const advance: ScriptedTurn = { tool: "archmax_advance", args: { to: "finish", reason: "Drafted." } };
+  const setSummary = (summary: string, lock?: boolean): ScriptedTurn => ({
+    tool: "archmax_set_variables",
+    args: { variables: { summary }, ...(lock !== undefined ? { lock } : {}) },
+  });
+  const handed = (messages: unknown[]) =>
+    JSON.parse(toolResults(messages).find((r) => r.name === REVISE_TOOL)!.content) as {
+      returns?: Record<string, unknown>;
+    };
+
+  it("leaves a state with none of its returns set, and hands back what it sets at the end", async () => {
+    const { agent, events } = await assemble(reviseWorkspace({ returns: ["summary"] }), {
+      turns: [
+        { tool: REVISE_TOOL, args: {} },
+        // — child: moves on before anything is settled —
+        advance,
+        setSummary("final"),
+        { reply: "revised" },
+        // — parent —
+        { reply: "parent finished" },
+      ],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "revise it" });
+
+    expect(eventsOf(events, "tool-blocked").filter((e) => e.tool === "archmax_advance")).toEqual([]);
+    expect(handed(outcome.messages).returns).toEqual({ summary: "final" });
+    expect((await agent.sessions.get("s1~1"))?.workflowState).toBe("finish");
+  });
+
+  it("replaces a return it set early, and locks it once it is final", async () => {
+    const { agent } = await assemble(reviseWorkspace({ returns: ["summary"] }), {
+      turns: [
+        { tool: REVISE_TOOL, args: {} },
+        // — child: writes an early guess, moves on, then settles and locks the final value —
+        setSummary("first guess"),
+        advance,
+        setSummary("final", true),
+        { reply: "revised" },
+        // — parent —
+        { reply: "parent finished" },
+      ],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "revise it" });
+
+    expect(handed(outcome.messages).returns).toEqual({ summary: "final" });
+    expect((await agent.sessions.get("s1~1"))?.variables?.summary).toEqual({ value: "final", locked: true });
+  });
+
+  it("rewrites a return its caller seeded, which lands unlocked", async () => {
+    const { agent } = await assemble(reviseWorkspace({ requires: ["summary"], returns: ["summary"] }), {
+      turns: [
+        { tool: REVISE_TOOL, args: { summary: "rough draft" } },
+        // — child —
+        advance,
+        setSummary("polished"),
+        { reply: "revised" },
+        // — parent —
+        { reply: "parent finished" },
+      ],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "revise it" });
+
+    expect(handed(outcome.messages).returns).toEqual({ summary: "polished" });
+  });
+
+  it("hands back a seeded return it never rewrote as the caller passed it", async () => {
+    const { agent } = await assemble(reviseWorkspace({ requires: ["summary"], returns: ["summary"] }), {
+      turns: [{ tool: REVISE_TOOL, args: { summary: "rough draft" } }, advance, { reply: "kept" }, { reply: "parent" }],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "revise it" });
+
+    expect(handed(outcome.messages).returns).toEqual({ summary: "rough draft" });
+    expect((await agent.sessions.get("s1~1"))?.variables?.summary).toEqual({ value: "rough draft", locked: false });
   });
 });
 

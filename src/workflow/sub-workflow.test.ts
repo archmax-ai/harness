@@ -682,16 +682,16 @@ describe("the target's declared signature", () => {
     await expect(dispatch(dispatcherFor(registry))).rejects.toMatchObject({ kind: "invalid-return" });
   });
 
-  it("hands the caller what a child set, and a note naming what it left unset", async () => {
+  it("hands the caller what a child set, what it left unset empty, and a note naming it", async () => {
     const registry = signedRegistry(
       { returns: [{ name: "delayed", type: "boolean" }, "enrichment_file"] },
       settledWith({ delayed: false }),
     );
-    await expect(dispatch(dispatcherFor(registry))).resolves.toMatchObject({
-      returns: {
-        delayed: false,
-        note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set.",
-      },
+    const settled = await dispatch(dispatcherFor(registry));
+    expect(settled.returns).toEqual({
+      delayed: false,
+      enrichment_file: null,
+      note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set.",
     });
   });
 
@@ -980,12 +980,15 @@ describe("a mock stands in for the sub-run, not for its contract", () => {
     expect(result.returns).toEqual({ enrichment_file: "e.json" });
   });
 
-  it("hands back a note for a declared return a mock omits, as a real child would", async () => {
+  it("hands back a declared return a mock omits empty, with a note, as a real child would", async () => {
     await expect(mocked({ message: "Enriched." }, { returns: ["enrichment_file"] })).resolves.toEqual({
       result: "Enriched.",
       workflow: "enrich-account",
       state: "(mocked)",
-      returns: { note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set." },
+      returns: {
+        enrichment_file: null,
+        note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set.",
+      },
     });
   });
 
