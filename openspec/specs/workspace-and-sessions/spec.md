@@ -56,7 +56,7 @@ The workspace router SHALL canonicalize every path before routing it: a leading 
 
 Authored content SHALL reach the agent only through the `workspace.mounts` route table the consumer composes — key to backend, or `{ backend, readOnly, governed, searchable }` — never through inspection of the workspace or a built-in list of directory names. A key ending in `/` SHALL be a **directory mount**, expressed as a composite route with its prefix stripped before delegation and re-applied to result paths; a key without a trailing slash (`/AGENTS.md`) SHALL be an **exact-path file mount**, routed by the workspace router so `AGENTS.md.bak` is not captured. Keys SHALL be normalized (one leading slash, collapsed separators) so equivalent spellings name one mount. A backend rooted at the mounted directory SHALL need no adaptation; the exported `mountSubtree(backend, prefix)` SHALL rebase one backend serving several mounts, mapping paths in both directions so results are never double-prefixed. Authored paths SHALL be addressed exactly as authors write them (`skills/order-data/assets/orders.json`).
 
-A mount declared `governed: true` SHALL be visible to a state only where the spec's `mounts` lists enable it (see `governance`); a mount not so declared SHALL be visible in every state, so a consumer that marks nothing composes exactly the workspace it composes today. The consumer owns which backend serves a mount, its write posture, whether it is governed and whether it is searchable; the spec owns which states enable it, and whether each of those states may write there. Neither SHALL be inferred from the other. `readOnly` SHALL be a **ceiling** rather than a default: a spec grant may narrow a writable mount to reads in a state (`access: read`) but SHALL NOT open one the consumer serves read-only.
+A mount declared `governed: true` SHALL be visible to a state only where the spec's `mounts` lists enable it (see `governance`); a mount not so declared SHALL be visible in every state, so a consumer that marks nothing composes exactly the workspace it composes today. The consumer owns which backend serves a mount, its write posture, whether it is governed and whether it is searchable; the spec owns which states enable it, and whether each of those states may write there. Neither SHALL be inferred from the other. `readOnly` SHALL be a **ceiling** rather than a default: a governed mount the consumer serves writable SHALL be written only by a workflow whose own grants ask `access: read_write` for it, a spec grant may narrow it to reads in a state (`access: read`), and no grant SHALL open one the consumer serves read-only.
 
 A directory mount declared `searchable: false` SHALL be a mount the runtime never searches on its own initiative (see "Search dispatch honours a mount's search posture"); a mount not so declared SHALL be searchable, which is what every table without the flag resolves to. The resolved mount SHALL carry the posture, and the names of unsearchable directory mounts SHALL arrive as `MountPrefixes.unsearchable`. On a file mount the flag SHALL be ignored — a file is never searched as a tree — and the name SHALL NOT appear in `MountPrefixes.unsearchable`. Search posture SHALL NOT be a governance concern: the kernel, the listing redaction and `archmax validate` SHALL neither read it nor report on it.
 
@@ -85,7 +85,7 @@ When `mounts` is omitted on the default filesystem backend, the exported `defaul
 #### Scenario: A governed writable mount the spec may narrow
 
 - **WHEN** a consumer mounts `"/shared/"` as `{ backend, readOnly: false, governed: true }`
-- **THEN** `shared` appears in both `MountPrefixes.writable` and `MountPrefixes.governed`, a state enabling it plainly may write there, and a state enabling it as `{ mount: shared, access: read }` may not
+- **THEN** `shared` appears in both `MountPrefixes.writable` and `MountPrefixes.governed`, a workflow granting it `{ mount: shared, access: read_write }` may write there, one granting it only by name may not, and a state enabling it as `{ mount: shared, access: read }` may not
 
 #### Scenario: An unsearchable mount is resolved
 
@@ -336,7 +336,7 @@ The SDK SHALL own the logical session namespace — the `<sessionId>/…` layout
 
 ### Requirement: Session ids are validated at every ingress
 
-A session id SHALL be rejected — via `sessionIdRejection` and `SessionStoreIdError`, both pure (`core/session-id.ts`) and exported from the root and from `@archmax-ai/harness/spec` so a host refuses a bad id with the same words before it reaches a store — when it is empty after stripping leading slashes, contains a `..` segment, or has a first segment equal to a reserved root name (a session area or, when the resolved mounts are supplied, a declared mount). The check SHALL run where an id becomes a store address: binding a turn (governed or plain), `sessions.seed`, `sessions.delete`, and the memory and filesystem stores' own deletion. A child session's id SHALL be `<parent>~<state>:<workflow>:<ordinal>`, derived rather than minted, and `parentSessionId` SHALL be derivable from it.
+A session id SHALL be rejected — via `sessionIdRejection` and `SessionStoreIdError`, both pure (`core/session-id.ts`) and exported from the root and from `@archmax-ai/harness/spec` so a host refuses a bad id with the same words before it reaches a store — when it is empty after stripping leading slashes, contains a `..` segment, has a first segment equal to a reserved root name (a session area or, when the resolved mounts are supplied, a declared mount), or holds `~` in any shape but a child's (`<root>~<n>` at any depth, `<root>` free of `~`). `~` separates a child's dispatch number from its parent's id, so anything that begins with a session's id followed by `~` is one of its child sessions, and a host's own id is never read as one. The check SHALL run where an id becomes a store address: binding a turn (governed or plain), `sessions.seed`, `sessions.delete`, and the memory and filesystem stores' own deletion. A child session's id SHALL be `<parent>~<n>` (see `delegation`), derived rather than minted, and `parentSessionId` SHALL be derivable from it.
 
 #### Scenario: Reserved id refused before any write
 
@@ -347,6 +347,12 @@ A session id SHALL be rejected — via `sessionIdRejection` and `SessionStoreIdE
 
 - **WHEN** `sessions.delete("../x")` is called
 - **THEN** it throws `SessionStoreIdError` and nothing outside the store is touched
+
+#### Scenario: A host's id holding the child separator is refused
+
+- **WHEN** a turn is bound to session id `tenant~conversation`
+- **THEN** it is refused with a message saying `~` is reserved for a child session's id, while
+  `s1~2`, `s1~2~1` and the 0.5 child shape `s1~start:enrich:0` all bind
 
 ### Requirement: Durable checkpointer
 
@@ -562,8 +568,11 @@ The workspace router SHALL serve `read` as text only. After routing a read (file
 as today), it SHALL refuse the result as **binary** when any of these holds:
 
 - the MIME type the route reports, or else the one Deep Agents' `read_file` derives from the path's
-  extension, is not a text type — exactly the set for which `read_file` would return a multimodal
-  content block (images other than SVG, audio, video, PDF, PPT/PPTX);
+  extension, is not a text type. The text types SHALL be Deep Agents' own (`text/*`,
+  `application/json`, `application/javascript`, `image/svg+xml`) plus `application/xml` and every
+  structured-syntax `+xml` or `+json` type, each compared without its parameters and case, so the
+  refused types are images other than SVG, audio, video, PDF, PPT/PPTX and every other non-text
+  type;
 - the content is bytes rather than a string;
 - the content is a string containing a NUL character (a binary file whose extension maps to text).
 
@@ -574,7 +583,9 @@ binary), and the size when the route returned the bytes, and SHALL say the file 
 that `read_file` returns text files only — for example:
 `'scratchpad/chart.png' is a binary file (image/png, 24.1 KB) and was not read; read_file returns text files only.`
 A route's own `{ error }` (a missing file, a directory, a refused symlink) SHALL be returned
-unchanged, and a text result SHALL be returned unchanged.
+unchanged, and a text result SHALL be returned with its content unchanged. A text result under a type
+Deep Agents' `read_file` would hand on as a base64 block (`application/xml`, a `+xml` type, JSON
+with a parameter) SHALL be relabelled `text/plain`, so `read_file` returns it as text.
 
 The refusal is the workspace's answer, not a governance verdict: no kernel rule fires and no
 `tool-blocked` event is emitted; the call settles as an ordinary tool result. It SHALL hold for every
@@ -640,6 +651,14 @@ the tool result. When those lines are not found, the description SHALL be left u
 
 - **WHEN** Deep Agents' `read_file` description no longer contains the lines the runtime replaces
 - **THEN** the description is passed through unchanged and one `warning` event names `read_file`
+
+#### Scenario: XML a store labels by its registered type is text
+
+- **WHEN** the session store reports `scratchpad/docx/word/document.xml` as `application/xml`,
+  `word/_rels/document.xml.rels` as `application/vnd.openxmlformats-package.relationships+xml`, and
+  `meta.json` as `application/json; charset=utf-8`, and the model calls `read_file` on each and a
+  script calls `tools.readFile` on the first
+- **THEN** each read returns the file's text, with no binary notice and no `file` block
 
 ### Requirement: The workspace carries raw bytes and deletion
 
@@ -797,3 +816,102 @@ PowerPoint, `.docx`, `.zip`) SHALL stay refused with the binary notice, option o
 
 - **WHEN** an agent with `images: true` reads a PDF
 - **THEN** the result is the binary notice and nothing is attached
+
+### Requirement: Files handed to a session land in its attachments folder
+
+The runtime SHALL place every file it hands a session in that session's `scratchpad/attachments/`,
+under the source's file name: a host's turn file, a copied delegation argument, and a copied
+`file` return. The bytes SHALL arrive exactly. A placement the session store can't carry exactly
+SHALL fail, naming the path, and write nothing: it is never written as text it is not. This
+applies, for example, to a non-text file in a store without raw-byte upload.
+
+#### Scenario: Bytes arrive exactly
+
+- **WHEN** the runtime places a PDF holding non-UTF-8 bytes into a session on the filesystem
+  store
+- **THEN** downloading `scratchpad/attachments/<name>.pdf` from that session yields the same bytes
+
+#### Scenario: A store that can't carry the bytes refuses the placement
+
+- **WHEN** the session store has no raw-byte upload and the file is not valid UTF-8 text
+- **THEN** the placement fails naming the path, and no file is written at it
+
+### Requirement: An attachment takes a name nothing holds
+
+When a placement's name is already taken in `scratchpad/attachments/`, or reserved by a placement
+in flight in the same session, the runtime SHALL insert `-1`, `-2`, … before the last extension,
+using the lowest free number. A name with no extension, or one whose only dot leads it, takes the
+suffix at its end. A placement SHALL never overwrite a file.
+
+#### Scenario: Suffixes count up
+
+- **WHEN** `report.pdf` and `report-1.pdf` are already in `scratchpad/attachments/` and a third
+  `report.pdf` is placed
+- **THEN** it lands at `scratchpad/attachments/report-2.pdf`
+
+#### Scenario: Names without an extension
+
+- **WHEN** `notes` and `.env` are each placed twice
+- **THEN** the second copies land at `notes-1` and `.env-1`
+
+#### Scenario: Only the last extension moves
+
+- **WHEN** `archive.tar.gz` is placed twice
+- **THEN** the second copy lands at `archive.tar-1.gz`
+
+#### Scenario: Concurrent placements in one session do not collide
+
+- **WHEN** two placements of `report.pdf` into one session start before either has finished
+- **THEN** one lands at `report.pdf` and the other at `report-1.pdf`, and both files are intact
+
+### Requirement: A host can hand a turn files
+
+`TurnInput.files` SHALL map a variable name to `{ name, content }`, where `content` is raw bytes.
+Before the turn boundary the runtime SHALL place each file by the attachment rules and seed the
+variable, locked, with the placed path, as a `variables` seed would be. A `name` that is not one
+plain file name, or a variable also given in `variables`, SHALL be refused before anything is
+written.
+
+#### Scenario: A host file satisfies a file input
+
+- **WHEN** a host sends a turn on `requires: [{ name: invoice, type: file }]` with
+  `files: { invoice: { name: "invoice.pdf", content } }`
+- **THEN** the session holds `scratchpad/attachments/invoice.pdf`, `invoice` is seeded locked with
+  that path, and the turn boundary accepts it
+
+#### Scenario: A later turn's file does not overwrite an earlier one
+
+- **WHEN** a second turn of the same session hands another `invoice.pdf`
+- **THEN** it lands at `scratchpad/attachments/invoice-1.pdf` and that turn's `invoice` names it
+
+#### Scenario: A name that is not a plain file name is refused
+
+- **WHEN** `files.invoice.name` is `../invoice.pdf`, `a/b.pdf`, `..` or empty
+- **THEN** the send is refused naming `invoice` and the name, and nothing is written
+
+#### Scenario: A variable given twice is refused
+
+- **WHEN** a send carries `invoice` in both `files` and `variables`
+- **THEN** it is refused naming `invoice`, and nothing is written
+
+### Requirement: A session's files are stored under its id
+
+A session's agent-visible files SHALL be stored in the session store under `<sessionId>/`, beneath
+a backend store's `prefix`: the id-free path `scratchpad/x.txt` in a turn of session `s1` SHALL be
+the store path `s1/scratchpad/x.txt`. A host MAY address a session's files through its own handle on
+the store as `<sessionId>/<path>`, keyed by `ToolContext.sessionId` for a host tool's work. A child
+session's files SHALL be under the child's own id, never its caller's.
+
+#### Scenario: A host writes where the agent reads
+
+- **WHEN** a host tool called in child session `s1~1` writes `s1~1/scratchpad/x.txt` through the
+  session store
+- **THEN** `read_file scratchpad/x.txt` in that child returns the content, and `s1` holds no
+  `scratchpad/x.txt`
+
+#### Scenario: A host reads past the workspace protocol
+
+- **WHEN** a host serves a ranged read, a recursive listing or a presigned URL for a session's file
+  through its own store handle
+- **THEN** it addresses `<sessionId>/<path>` beneath its store's prefix and reaches the file the
+  agent wrote at `<path>`

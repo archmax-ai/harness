@@ -294,7 +294,7 @@ variable.
 
 `session:` and `message:` are ordinary host-facing keys on `manual`, and a
 delegation ignores both. A delegated run is a separate session whose id derives
-from the caller's (`<caller>~<state>:<workflow>:<n>`), with its own `scratchpad/`,
+from the caller's (`<caller>~<n>`, `n` the dispatch's number in the caller), with its own `scratchpad/`,
 and it carries no message.
 
 :::caution[A delegated workflow needs a `manual` entry]

@@ -102,7 +102,7 @@ describe("createSessionFiles", () => {
   it("places into and reads from another session while the caller's turn is bound", () =>
     withSession(async (root, { backend, sessionZone }) => {
       const files = createSessionFiles(backend, (id, fn) => sessionZone.sessionScoped(id, fn));
-      const child = "s1~start:enrich:0";
+      const child = "s1~1";
       expect(await files.place(child, "invoice.pdf", PDF)).toEqual({ path: "scratchpad/attachments/invoice.pdf" });
       // Bound to the caller, yet the file landed in the child's folder, not the caller's.
       expect(readFileSync(join(root, "sessions", child, "scratchpad", "attachments", "invoice.pdf"))).toEqual(PDF);

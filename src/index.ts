@@ -190,7 +190,7 @@ export type { SessionStore } from "./core/session-store.js";
 export { isReservedRootName } from "./core/zones.js";
 /** Why a session id cannot own a session folder, or `null` when it can — the rule every ingress applies. */
 export { sessionIdRejection } from "./core/session-id.js";
-/** Whether one session was dispatched by another (`<parent>~<state>:<workflow>:<n>`), at any depth. */
+/** Whether one session was dispatched by another (`<parent>~<n>`), at any depth. */
 export { isChildSessionOf } from "./sessions/scope.js";
 /** Which zone a workspace path belongs to — the kernel's own classifier (a host maps evidence paths with it). */
 export { classifyWorkspacePath } from "./core/zones.js";

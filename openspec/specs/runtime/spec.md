@@ -188,10 +188,36 @@ It SHALL move the position to the recorded `entryState` (else the trigger's star
 reason, and re-enter through the entry state's `before` hook. It SHALL NOT touch messages, variables
 (locked seeds included), files or the recorded trail. `tools.forbid_always` MAY ban it.
 
+The platform prompt and the tool's description SHALL tell the model when to reset and when not to.
+A reset is for a new message the current state cannot serve (no transition reaches what was asked,
+or an earlier turn took a wrong path), and for a follow-up that lands on a terminal state the
+session moved into and finished in. When the current state can serve the new message, the model
+SHALL be told to answer there, because a new message alone is no reason to reset. While the
+session is in the state the conversation began in, the model SHALL be told never to reset, because
+a reset leads back to that same state. The platform prompt SHALL name a terminal state the
+conversation began in as an exception to its terminal-state rule, alongside a session parked with
+`archmax_wait` and a terminal state routed into in the same turn. This matches the volatile block,
+which gives the terminal-state reset instruction only for a terminal state other than the entry
+state.
+
 #### Scenario: Entry state is stable across deliveries
 
 - **WHEN** a session started by `email_received` was resumed by a delivery of `email_reply` and resets
 - **THEN** it returns to the `email_received` start state with its transcript and scratchpad untouched
+
+#### Scenario: A follow-up the state can serve needs no reset
+
+- **WHEN** a top-level session's system prompt and its `archmax_reset` description are rendered
+- **THEN** the prompt's "A conversation keeps its position" paragraph tells the model to stay and
+  answer when the current state can serve the new message and never to reset from the state the
+  conversation began in, and the description says a state that can serve the message needs no reset
+
+#### Scenario: A terminal entry state answers its follow-ups
+
+- **WHEN** the platform prompt lists the cases in which a message on a terminal state is answered
+  without a reset
+- **THEN** the terminal state the conversation began in is listed, beside a session parked with
+  `archmax_wait` and a terminal state routed into this turn
 
 ### Requirement: `archmax_wait` parks the session in place
 
@@ -857,6 +883,12 @@ error propagates. A landed `archmax_set_variables` SHALL emit `variables-set` (n
 `callId`, never values) and, for `title`, `title-set` with the trimmed value; a refused write emits
 nothing.
 
+A sub-workflow child's text SHALL reach the event stream only from the child's own turn runner,
+carrying the child's `sessionId` and the dispatch's `subWorkflowDispatchId`. A caller's turn runner
+SHALL NOT emit a child's text, neither as an `agent-text-delta` nor as a `partial` `agent-text`. A
+child SHALL be invoked without its caller's stream handlers; every other callback the caller hands
+down SHALL still observe the child's runs.
+
 #### Scenario: Deltas precede the completed text
 
 - **WHEN** the model generates text in state `S`
@@ -868,6 +900,24 @@ nothing.
 - **WHEN** a model call in state `S` returns usage without naming a model
 - **THEN** its `model-usage` event carries the id the runtime asked the endpoint to run, so the call
   is attributed to a model rather than to nothing
+
+#### Scenario: Concurrent children stream as their own
+
+- **WHEN** state `S` dispatches two children in one tool batch and both stream text at the same time
+- **THEN** each child's `agent-text-delta` events carry that child's `sessionId` and its dispatch's
+  `subWorkflowDispatchId`
+- **AND** the caller's deltas carry only the caller's own text, with `state: S` and the `messageId`
+  of the caller's own message
+
+#### Scenario: A failed turn finalizes only its own text
+
+- **WHEN** a caller's turn fails mid-stream after a child it dispatched streamed text
+- **THEN** the caller's `partial` `agent-text` holds only the text the caller's own model streamed
+
+#### Scenario: A host's tracer still sees the child
+
+- **WHEN** a host invokes a turn with its own callback handler and the turn dispatches a child
+- **THEN** the handler observes every model call the child makes
 
 ### Requirement: A failed tool call is answered, not thrown
 

@@ -6,7 +6,6 @@ import { Workspace } from "../core/workspace.js";
 import { sessionPaths } from "./paths.js";
 /** LangGraph's checkpoint-namespace separator. */
 const NAMESPACE_SEPARATOR = "|";
-import { subRunIdentity } from "../sessions/scope.js";
 import { listSessions, summarizeCheckpointedSession } from "../sessions/summary.js";
 import { BackendCheckpointSaver } from "./checkpointer.js";
 
@@ -443,7 +442,7 @@ describe("BackendCheckpointSaver — record names are storable at any namespace 
     Array.from({ length: depth }, (_, i) =>
       [
         `enrichment-fan-out-state-${i}`,
-        subRunIdentity(`delegating-state-${i}`, `enrich-order-workflow-${i}`, i),
+        `delegating-state-${i}:enrich-order-workflow-${i}:${i}`,
         `tasks:${"c".repeat(36)}`,
       ].join(NAMESPACE_SEPARATOR),
     ).join(NAMESPACE_SEPARATOR);

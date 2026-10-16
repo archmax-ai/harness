@@ -23,6 +23,8 @@ function stubDispatcher(result: Partial<SubWorkflowResult> = {}) {
     calls,
     refusal: vi.fn(async () => undefined),
     drainDispatches: vi.fn(() => []),
+    reserve: vi.fn(),
+    dispatchCount: vi.fn(() => 0),
     release: vi.fn(),
     signature: vi.fn(async () => ({})),
     resume: vi.fn(async () => ({ result: "resumed", workflow: "w", state: "done" })),

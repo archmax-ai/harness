@@ -46,7 +46,29 @@ describe("toolsFromMap", () => {
     expect(await readTool!.invoke({})).toBe("no workspace");
     expect(reached).toMatch(/ran outside a session turn/);
     const workspace = { marker: true };
-    expect(await runWithToolContext({ workspace: workspace as never }, () => readTool!.invoke({}))).toBe(workspace);
+    expect(
+      await runWithToolContext({ workspace: workspace as never, sessionId: "s1" }, () => readTool!.invoke({})),
+    ).toBe(workspace);
+  });
+
+  it("hands the handler the id of the session the call is made in, only inside a turn", async () => {
+    const [idTool] = toolsFromMap({
+      who: {
+        description: "Names the session.",
+        inputSchema: { type: "object", properties: {} },
+        handler: async (_input, context) => {
+          try {
+            return context.sessionId;
+          } catch (err) {
+            return (err as Error).message;
+          }
+        },
+      },
+    });
+    expect(await idTool!.invoke({})).toMatch(/ran outside a session turn; its session id exists only/);
+    expect(
+      await runWithToolContext({ workspace: {} as never, sessionId: "s1~2" }, () => idTool!.invoke({})),
+    ).toBe("s1~2");
   });
 
   it("hands an out-of-turn context a caller can compare and serialize", async () => {
@@ -65,6 +87,7 @@ describe("toolsFromMap", () => {
     expect(seen).toEqual({});
     expect(JSON.stringify(seen)).toBe("{}");
     expect("workspace" in (seen as object)).toBe(true);
+    expect("sessionId" in (seen as object)).toBe(true);
   });
 
   it("carries a descriptor's path declaration to assembly", () => {

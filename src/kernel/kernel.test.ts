@@ -820,7 +820,7 @@ describe("decide — mount governance", () => {
       unsearchable: [],
     };
     const machine = WorkflowMachine.fromSpec({
-      mounts: { allow_always: ["shared"] },
+      mounts: { allow_always: [{ mount: "shared", access: "read_write" }] },
       states: {
         writes: {},
         reads: { mounts: { allow: [{ mount: "shared", access: "read" }] } },
@@ -839,7 +839,29 @@ describe("decide — mount governance", () => {
     expect(v.decision).toBe("block");
     expect(v.ruleId).toBe("mount.read-only");
     expect(v.reason).toContain("'shared'");
-    expect(v.reason).toContain("may read but not write");
+    expect(v.reason).toContain("may read but not write ('access: read')");
+  });
+
+  it("refuses a write into a governed mount no grant of the workflow asks to write", () => {
+    const WRITABLE: MountPrefixes = {
+      dirs: ["shared"],
+      files: [],
+      writable: ["shared"],
+      governed: ["shared"],
+      unsearchable: [],
+    };
+    // The host serves `shared` writable because another workflow in the tree
+    // asks to write it; this one grants it bare, so it reads it only.
+    const machine = WorkflowMachine.fromSpec({
+      mounts: { allow_always: ["shared"] },
+      states: { work: {} },
+    });
+    const at = (tool: string) =>
+      decide(machine, { kind: "tool-call", state: "work", tool, args: { file_path: "shared/notes.md" } }, [], WRITABLE);
+    expect(at("read_file").decision).toBe("allow");
+    const v = at("write_file");
+    expect(v).toMatchObject({ decision: "block", ruleId: "mount.read-only" });
+    expect(v.reason).toContain("no grant of this workflow asks for 'access: read_write' on it");
   });
 
   it("says zone.read-only, not mount.read-only, for a host-read-only mount", () => {

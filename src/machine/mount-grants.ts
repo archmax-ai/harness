@@ -2,8 +2,9 @@ import type { MountAccess, MountGrantEntry } from "./types.js";
 
 /**
  * One mounts grant, in the one shape every reader consults: the mount's name and
- * the access this level asked for, `undefined` meaning "whatever posture the
- * host declared".
+ * the access this level asked for, `undefined` for a bare name, which asks for
+ * none: it reads a governed mount, and writes it only where another grant of
+ * the same workflow asks `read_write` (see `WorkflowMachine.mountWritable`).
  *
  * The two spellings a grant list accepts — a bare name and
  * `{ mount, access }` — normalize here rather than at each reader, the way

@@ -124,6 +124,12 @@ export interface Governance {
     request: WorkflowToolCallRequest,
     handler: WorkflowToolCallHandler,
   ): Promise<Command | ToolMessage>;
+  /**
+   * Reserve the session's checkpointed dispatch count and return how many
+   * dispatch numbers it has now taken: what a hook site outside the tool node
+   * commits, so a number a hook took is never taken again.
+   */
+  dispatchCount(sessionId: string, state: unknown): number;
   /** A hook context for one request, from the model context captured for the session. */
   lifecycleCtx(sessionId: string, state: unknown, messages: unknown[]): LifecycleContext;
   reportMove(sessionId: string, moved: { from: string; to: string; park?: PendingDecision }): void;
@@ -156,6 +162,19 @@ export function resolveToolName(called: string, registered: string[]): string | 
   if (registered.includes(called)) return called;
   const matches = registered.filter((name) => name.endsWith(`__${called}`));
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** A tool call's result, carrying the session's dispatch count into the step's update. */
+function withDispatchCount(result: Command | ToolMessage, dispatchCount: number): Command | ToolMessage {
+  if (result instanceof ToolMessage) return new Command({ update: { messages: [result], dispatchCount } });
+  const update = result.update;
+  if (update !== undefined && (typeof update !== "object" || Array.isArray(update))) return result;
+  const { goto, graph } = result;
+  return new Command({
+    ...(Array.isArray(goto) ? (goto.length > 0 ? { goto } : {}) : goto ? { goto } : {}),
+    ...(graph ? { graph } : {}),
+    update: { ...(update ?? {}), dispatchCount },
+  });
 }
 
 function unknownToolMessage(called: string, registered: string[]): string {
@@ -477,6 +496,8 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     const workflowState = currentWorkflowState(request.state, machine.entry);
     const config = buildRunnableConfig(request.runtime ?? {});
     const replyOnly = isReplyOnly(request.state);
+    // A `before` hook below may dispatch: it numbers above what the session has taken.
+    subWorkflows?.reserve(sessionId, readWorkflowState(request.state).dispatchCount ?? 0);
 
     // Point every wrapped PTC tool at the state, config and variables in force
     // now; the state rides on the config so a script's delegation names it, and
@@ -585,9 +606,58 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     }
   }
 
+  /**
+   * The ids of the delegation calls in the assistant message that made this
+   * call, in tool-call order: the batch whose dispatches are numbered together.
+   */
+  function delegationCallsOf(request: WorkflowToolCallRequest, sessionId: string): string[] {
+    const id = request.toolCall?.id;
+    if (!id) return [];
+    const registered = modelContexts.get(sessionId)?.toolNames;
+    const messages: unknown[] = request.state?.messages ?? [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const calls = (messages[i] as { tool_calls?: Array<{ id?: string; name?: string }> } | undefined)?.tool_calls;
+      if (!Array.isArray(calls) || !calls.some((c) => c.id === id)) continue;
+      return calls
+        .filter((c) => {
+          const name = c.name ?? "";
+          return isWorkflowToolName(registered ? (resolveToolName(name, registered) ?? name) : name);
+        })
+        .map((c) => c.id ?? "");
+    }
+    return [];
+  }
+
+  /**
+   * Every tool call, numbered for the dispatches it may make. A child session
+   * is `<session>~<n>`, `n` counted across the session's turns in its
+   * checkpointed `dispatchCount`. The model's delegation calls in one batch are
+   * numbered in tool-call order from the count the step read, so a node
+   * replayed from its checkpoint gives each call the same number — the same
+   * child. That count plus the batch is reserved first, so a script or hook
+   * dispatching in the same step numbers above every one of them. The call's
+   * result carries the count it leaves, so the next step, and the next turn on
+   * a fresh agent, continue from it.
+   */
   async function wrapToolCall(
     request: WorkflowToolCallRequest,
     handler: WorkflowToolCallHandler,
+  ): Promise<Command | ToolMessage> {
+    if (!subWorkflows) return governToolCall(request, handler);
+    const sessionId = ctx.sessionIdOf(request.runtime);
+    const counted = readWorkflowState(request.state).dispatchCount ?? 0;
+    const batch = delegationCallsOf(request, sessionId);
+    subWorkflows.reserve(sessionId, counted + batch.length);
+    const at = batch.indexOf(request.toolCall?.id ?? "");
+    const result = await governToolCall(request, handler, at < 0 ? undefined : counted + 1 + at);
+    const taken = subWorkflows.dispatchCount(sessionId);
+    return taken > counted ? withDispatchCount(result, taken) : result;
+  }
+
+  async function governToolCall(
+    request: WorkflowToolCallRequest,
+    handler: WorkflowToolCallHandler,
+    dispatchNumber?: number,
   ): Promise<Command | ToolMessage> {
     const called: string = request.toolCall?.name ?? "";
     const sessionId = ctx.sessionIdOf(request.runtime);
@@ -661,7 +731,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     }
 
     if (subWorkflows && isWorkflowToolName(toolName)) {
-      return service.serviceDelegation(request, subWorkflows, call, args);
+      return service.serviceDelegation(request, subWorkflows, call, args, dispatchNumber);
     }
     const serviced = await service.serviceControlTool(request, call, args);
     if (serviced) return serviced;
@@ -711,6 +781,11 @@ export function createGovernance(ctx: GovernanceContext): Governance {
   return {
     wrapModelCall,
     wrapToolCall,
+    dispatchCount(sessionId: string, state: unknown): number {
+      if (!subWorkflows) return 0;
+      subWorkflows.reserve(sessionId, readWorkflowState(state).dispatchCount ?? 0);
+      return subWorkflows.dispatchCount(sessionId);
+    },
     lifecycleCtx,
     reportMove: service.reportMove,
     endTurn(sessionId) {

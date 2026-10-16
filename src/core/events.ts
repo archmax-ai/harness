@@ -271,6 +271,12 @@ export type WorkflowEventPayload =
       state: string;
       /** The child workflow slug. */
       workflow: string;
+      /**
+       * The child's session id below the root session (`1`, `2`, `1~1` for the
+       * first dispatch made inside `1`): unique across the turn's whole tree,
+       * and the same name a pending delegation and the child's session id use.
+       * A refused dispatch takes its number too.
+       */
       dispatchId: string;
       /**
        * The tool call that started it, when one did. Concurrent sub-runs differ

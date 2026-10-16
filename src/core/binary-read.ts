@@ -11,9 +11,10 @@ import { binaryMimeTypeOf } from "./binary-types.js";
  * description the model is handed says so.
  *
  * The classification is `read_file`'s own — the route's `mimeType`, else the
- * extension's, through `isTextMimeType` — plus two content checks: bytes, and a
- * NUL character (git's and ripgrep's rule), which survives the backend's UTF-8
- * decoding of an unknown extension.
+ * extension's — through `isTextMimeType`, which also reads the XML and JSON
+ * types a store labels by registration as text, plus two content checks: bytes,
+ * and a NUL character (git's and ripgrep's rule), which survives the backend's
+ * UTF-8 decoding of an unknown extension.
  */
 
 export { BINARY_MIME_TYPES, binaryMimeTypeOf } from "./binary-types.js";
@@ -31,14 +32,49 @@ export function shownImageMimeTypeOf(path: string): string | undefined {
   return mime !== undefined && SHOWN_IMAGE_MIME_TYPES.has(mime) ? mime : undefined;
 }
 
-/** Deep Agents' `isTextMimeType`: the types `read_file` renders as text. */
-export function isTextMimeType(mimeType: string): boolean {
+/** Deep Agents' own `isTextMimeType`, which its `read_file` branches on: anything else it hands on as a base64 block. */
+function deepAgentsReadsAsText(mimeType: string): boolean {
   return (
     mimeType.startsWith("text/") ||
     mimeType === "application/json" ||
     mimeType === "application/javascript" ||
     mimeType === "image/svg+xml"
   );
+}
+
+/** A MIME type's essence: lowercased, its parameters (`; charset=utf-8`) dropped. */
+function essenceOf(mimeType: string): string {
+  return (mimeType.split(";")[0] ?? "").trim().toLowerCase();
+}
+
+/**
+ * The types `read_file` renders as text: Deep Agents' own (`text/*`,
+ * `application/json`, `application/javascript`, `image/svg+xml`), plus
+ * `application/xml` and every structured-syntax `+xml` or `+json` type, each
+ * compared without its parameters. An object store labels a file by its
+ * registered type, so `word/document.xml` arrives as `application/xml`, and an
+ * Office document unpacked into the scratchpad is edited as text.
+ */
+export function isTextMimeType(mimeType: string): boolean {
+  const essence = essenceOf(mimeType);
+  return (
+    deepAgentsReadsAsText(essence) ||
+    essence === "application/xml" ||
+    essence.endsWith("+xml") ||
+    essence.endsWith("+json")
+  );
+}
+
+/**
+ * A text read as Deep Agents' `read_file` must be handed it. Its own rule is
+ * narrower than {@link isTextMimeType}: handed `application/xml` text it answers
+ * with a base64 `file` block. A result under a type it would not read as text is
+ * relabelled `text/plain`, the type it reads line by line; any other is unchanged.
+ * Only for a result {@link binaryReadError} found to be text.
+ */
+export function asTextRead(result: ReadResult): ReadResult {
+  const { mimeType } = result;
+  return mimeType === undefined || deepAgentsReadsAsText(mimeType) ? result : { ...result, mimeType: "text/plain" };
 }
 
 /** Byte length of non-string content: bytes, or the numeric-key object they become once serialized. */

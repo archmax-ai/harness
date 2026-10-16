@@ -265,8 +265,9 @@ arguments** and how a call uses each one: `read`, `list`, `search`, `write`,
 `file_path`. Every path rule reads those declarations, for the built-ins and for
 host tools (see [`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace)):
 
-- the read-only authored zone, the offload areas and a mount narrowed to
-  `access: read` refuse a `write` and a `remove` alike;
+- the read-only authored zone, the offload areas, a mount narrowed to
+  `access: read` and a governed mount no grant of the workflow asks to write
+  refuse a `write` and a `remove` alike;
 - the runtime-internal areas, a skill the state does not enable and a mount it
   was not given refuse every access;
 - `scratchpad/` is open to `read`, `list`, `write` and `remove` in every state,
@@ -495,13 +496,13 @@ a missing path.
 
 #### Read or read/write
 
-A grant entry is either a bare name, taking the posture the host wired, or a
-mapping naming the access this level gives:
+A grant entry is either a bare name, which asks for no write, or a mapping
+naming the access this level gives:
 
 ```yaml
 mounts:
   allow_always:
-    - reference                                  # the host's posture
+    - reference                                  # read; written only if a grant asks
     - { mount: shared, access: read_write }      # writable, where the host allows it
 
 states:
@@ -509,6 +510,20 @@ states:
     mounts:
       allow: [{ mount: shared, access: read }]   # reads it, cannot write it here
 ```
+
+A governed mount is writable in a state only when all three hold:
+
+- the host serves it writable;
+- some grant of **this** workflow asks `access: read_write` for it, in
+  `allow_always` or in any state's `allow`;
+- no grant applicable in the state says `access: read`.
+
+So a bare grant in one state and a `read_write` grant in another both write. A
+mount belongs to the workflow that grants it. One table serves a session and
+every child it dispatches, and a route is served writable when any workflow in
+that tree asks, but another workflow's `read_write` never lets this one write
+through a bare grant. An ungoverned mount takes the host's posture: it has no
+grant to ask with, and only an `access: read` narrows it.
 
 The host's `readOnly` is a **ceiling**:
 
@@ -521,7 +536,8 @@ The host's `readOnly` is a **ceiling**:
 
 There are two rule ids, because they are two different edits. A write into a
 mount the **host** serves read-only is `zone.read-only`: fix the wiring. A write
-into one a **grant** narrowed is `mount.read-only`: fix the spec.
+into one a **grant** narrowed, or one no grant of the workflow asks to write, is
+`mount.read-only`: fix the spec. The refusal says which.
 
 #### Unreachable also means unseen
 
@@ -555,7 +571,8 @@ declared it.
 - an **error** for a name the table does not mount, naming the mounts it does;
 - a warning for a grant on an ungoverned mount;
 - a warning for an `access: read_write` on a read-only one;
-- a warning for a name at both levels;
+- a warning for a name at both levels, unless the state entry narrows it to
+  `access: read` or asks `access: read_write` of a mount the root grants bare;
 - a warning for a state `allow: []` beside a non-empty `allow_always`;
 - a warning for a `forbid` governing nothing;
 - a warning for a `forbid_always` name some list also grants;

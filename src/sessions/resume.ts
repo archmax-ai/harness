@@ -187,7 +187,11 @@ export interface DelegatedPark {
   workflow: string;
   /** The child's own session id (`<parent>~<identity>`), when the parent's id was known to the reader. */
   sessionId?: string;
-  /** The dispatch identity the child's session id derives from: `<state>:<workflow>:<ordinal>`. */
+  /**
+   * The dispatch's number in the parent session (`"2"`), which the child's
+   * session id derives from; as recorded, so a park from before 0.6.0 carries
+   * `<state>:<workflow>:<ordinal>`.
+   */
   identity: string;
   /** The dispatch this park belongs to, as the `sub-workflow-*` events name it. */
   dispatchId: string;

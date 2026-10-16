@@ -299,9 +299,12 @@ export function sessionBinder(ctx: AssemblyContext): <T>(sessionId: string, fn: 
     const rejection = sessionIdRejection(sessionId, ctx.mountPrefixes);
     if (rejection) throw new SessionStoreIdError(sessionId, rejection);
     // A host tool's handler gets the same workspace the built-in file tools
-    // resolve through, bound to this session for the turn.
+    // resolve through, bound to this session for the turn, and the session's
+    // id: a child's own when the binding is a dispatch's.
     return withEventContext({ sessionId }, () =>
-      ctx.sessionZone.sessionScoped(sessionId, () => runWithToolContext({ workspace: ctx.backend }, fn)),
+      ctx.sessionZone.sessionScoped(sessionId, () =>
+        runWithToolContext({ workspace: ctx.backend, sessionId }, fn),
+      ),
     );
   };
 }

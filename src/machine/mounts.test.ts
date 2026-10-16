@@ -239,10 +239,11 @@ states:
 /**
  * A grant's second half: which states see a mount, and what they may do there.
  * The host's `readOnly` posture is the ceiling — `read_write` cannot open a
- * read-only mount — so this key's work is narrowing a writable one.
+ * read-only mount — and a governed mount is written only where a grant of the
+ * workflow's own spec asks to write it.
  */
 describe("mount access", () => {
-  it("takes the host's posture when a grant names no access", async () => {
+  it("reads a writable mount a bare grant names, when no grant of the workflow asks to write it", async () => {
     const machine = await machineFor(`
 mounts:
   allow_always: [shared, reference]
@@ -250,8 +251,51 @@ states:
   work:
     triggers: { manual: }
 `);
-    expect(machine.mountWritable("work", "shared", PREFIXES)).toBe(true);
+    expect(machine.mountWriteRequested("shared")).toBe(false);
+    expect(machine.mountWritable("work", "shared", PREFIXES)).toBe(false);
     expect(machine.mountWritable("work", "reference", PREFIXES)).toBe(false);
+  });
+
+  it("writes through a bare grant where another grant of the same workflow asks to write", async () => {
+    const machine = await machineFor(`
+states:
+  draft:
+    triggers: { manual: }
+    mounts:
+      allow: [shared]
+    transitions: [{ to: publish, description: Once the draft is ready. }]
+  publish:
+    mounts:
+      allow: [{ mount: shared, access: read_write }]
+`);
+    expect(machine.mountWritable("draft", "shared", PREFIXES)).toBe(true);
+    expect(machine.mountWritable("publish", "shared", PREFIXES)).toBe(true);
+  });
+
+  /**
+   * One table serves a caller and every child it dispatches, so a route is
+   * writable when any workflow in the tree asks. Each machine answers for its
+   * own spec: one workflow's `read_write` never widens another's bare grant.
+   */
+  it("never writes for another workflow's grant: a caller and its child each answer for their own", async () => {
+    const caller = await machineFor(`
+mounts:
+  allow_always: [{ mount: shared, access: read_write }]
+states:
+  work:
+    triggers: { manual: }
+`);
+    const child = await machineFor(`
+mounts:
+  allow_always: [shared]
+states:
+  work:
+    triggers: { manual: }
+`);
+    expect(caller.mountWritable("work", "shared", PREFIXES)).toBe(true);
+    expect(child.mountWritable("work", "shared", PREFIXES)).toBe(false);
+    // Visibility is unchanged: the child still reaches the mount, to read it.
+    expect(child.enabledMounts("work", PREFIXES.governed)).toEqual(["shared"]);
   });
 
   it("narrows a writable mount to reads where a grant says so", async () => {

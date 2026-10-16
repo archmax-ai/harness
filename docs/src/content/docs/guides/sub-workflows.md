@@ -242,13 +242,29 @@ machine, starting with a fresh transcript.
 | Up | the declared `returns` and the result message; a `file` return arrives as a copy (see [passing files](#passing-files)) |
 | Never | the child's other variables, its `title`, its transcript, its audit trail, or any other file it wrote |
 
-The child is its own **session**, `<parent>~<state>:<workflow>:<n>`, with its own
-checkpoints and its own file space. `archmax sessions` lists it with
+The child is its own **session**, `<parent>~<n>`, with its own checkpoints and its
+own file space. `n` is the dispatch's number in the calling session: the first call
+the session ever makes is `~1`, the next `~2`, counted across all its turns, and a
+grandchild is `<parent>~<n>~<m>`. `archmax sessions` lists it with
 `parentSessionId` naming the caller. Its `scratchpad/` is not its caller's: a path
 it reads or writes resolves inside its own session, so it can neither see nor
 overwrite a file of its caller's. What the caller reads back is the tool result.
 The only files that cross are copies the runtime makes of declared `file`
 arguments (down) and `file` returns (up).
+
+The count is part of the calling session's checkpointed state, so it continues
+whichever agent or worker runs the next turn: a host that builds an agent per turn
+never hands two dispatches one child. The model's delegation calls in one batch are
+numbered in the order it made them, and a script's or a hook's dispatch takes the
+next number free.
+
+**A host tool's file work inside a child belongs to the child.** A host tool called
+in a child session is handed the child's workspace and, as `ToolContext.sessionId`,
+the child's id. A session's files live under `<sessionId>/` in the session store, so
+a host that reads or writes them through its own store handle keys them by
+`ToolContext.sessionId`. Keyed by the session the host sent the turn to, a child's
+writes would land in its caller's folder, where the child's own `read_file` and
+`ls` never look. See [host tools](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
 
 A child session sees **only** what its caller declared. The delegating session's
 own variables stay behind, so anything the child needs must be named as an
@@ -542,9 +558,12 @@ and `agent-text` events are the child's, never its caller's, so two children
 answering at once stream as two attributable messages rather than as the calling
 state's text.
 
-Each dispatch emits `sub-workflow-start` / `sub-workflow-result`. The result
-carries the returned variables' **names**, never their values: the event stream is
-a diagnostic channel. It also carries the id of the tool call that started it, so
+Each dispatch emits `sub-workflow-start` / `sub-workflow-result`, paired by
+`dispatchId`: the child's session id below the root session, so `1`, `2`, and
+`1~1` for the first dispatch made inside `1`. One turn's whole tree of dispatches
+shares one event log, and no two of them share an id. The result carries the
+returned variables' **names**, never their values: the event stream is a
+diagnostic channel. It also carries the id of the tool call that started it, so
 concurrent child sessions stay individually attributable.
 
 The audit trail records one `sub-workflow` step per child session, naming the

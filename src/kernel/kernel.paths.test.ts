@@ -38,7 +38,8 @@ const SPEC: MachineSpec = {
   states: {
     intake: {
       triggers: { manual: null },
-      mounts: { allow: ["contracts", "shared"] },
+      // The workflow asks to write `contracts`, so a write there reaches the inherited denial.
+      mounts: { allow: [{ mount: "contracts", access: "read_write" }, "shared"] },
       transitions: edge("reply"),
     },
     reply: { mounts: { allow: [{ mount: "shared", access: "read" }] }, transitions: edge("done") },

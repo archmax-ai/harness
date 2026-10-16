@@ -1288,6 +1288,8 @@ states:
       subWorkflows: {
         refusal: async () => undefined,
         signature: async () => ({}),
+        reserve: () => {},
+        dispatchCount: () => 0,
         drainDispatches: () => ledger.splice(0),
         dispatch: async (input) => {
           ledger.push({ workflow: input.workflow, status: "ok" });
@@ -1326,6 +1328,88 @@ states:
   });
 
   /**
+   * A child session is `<session>~<n>`. The model's delegation calls in one
+   * batch are numbered in tool-call order from the count the step read, so the
+   * number depends on the call's place in the message, never on which call the
+   * tool node happens to service first — and a node replayed from its
+   * checkpoint, on a fresh agent, numbers every call the same.
+   */
+  it("numbers a batch's delegation calls in tool-call order, the same on replay", async () => {
+    const delegatingYaml = `
+states:
+  g:
+    triggers: { manual: }
+    tools:
+      allow:
+        - { tool: archmax_workflow_enrich }
+        - { tool: archmax_workflow_audit }
+`;
+    const machine = await WorkflowMachine.load(machineWorkspace(delegatingYaml), SPEC_PATHS);
+    if (!machine) throw new Error("failed to load delegating machine");
+    const batch = new AIMessage({
+      content: "",
+      tool_calls: [
+        { id: "a", name: "archmax_workflow_enrich", args: {} },
+        { id: "b", name: "read_file", args: { file_path: "scratchpad/x" } },
+        { id: "c", name: "archmax_workflow_audit", args: {} },
+      ],
+    });
+    const state = { messages: [batch], workflowState: "g", dispatchCount: 4 };
+
+    /** One agent: a dispatcher keeping its own floor, as the real one does, recording each call's number. */
+    function freshAgent() {
+      const numbers: Record<string, number | undefined> = {};
+      let taken = 0;
+      const instrumentation = createWorkflowInstrumentation({
+        machine: machine!,
+        executor: trackingExecutor(passOutcome).executor,
+        ptcNames: [],
+        onEvent: () => {},
+        subWorkflows: {
+          refusal: async () => undefined,
+          signature: async () => ({}),
+          reserve: (_sessionId, upTo) => {
+            taken = Math.max(taken, upTo);
+          },
+          dispatchCount: () => taken,
+          drainDispatches: () => [],
+          dispatch: async (input) => {
+            numbers[input.toolCallId ?? ""] = input.number;
+            return { result: "ok", workflow: input.workflow, state: "done" };
+          },
+          resume: async () => ({ result: "ok", workflow: "enrich", state: "done" }),
+          release: () => {},
+        },
+      });
+      const wrapToolCall = (
+        instrumentation.middleware as unknown as {
+          wrapToolCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
+        }
+      ).wrapToolCall;
+      const call = (id: string, name: string) =>
+        wrapToolCall(
+          { toolCall: { name, args: {}, id }, runtime: { configurable: { thread_id: "t1" } }, state },
+          () => new ToolMessage({ content: "done", tool_call_id: id, name }),
+        ) as Promise<{ update?: { dispatchCount?: number } }>;
+      return { numbers, call };
+    }
+
+    const first = freshAgent();
+    // Serviced in the opposite order to the message's.
+    const audit = await first.call("c", "archmax_workflow_audit");
+    const enrich = await first.call("a", "archmax_workflow_enrich");
+    expect(first.numbers).toEqual({ a: 5, c: 6 });
+    // Each result carries the count the batch leaves, so the next step continues from it.
+    expect(audit.update?.dispatchCount).toBe(6);
+    expect(enrich.update?.dispatchCount).toBe(6);
+
+    const replayed = freshAgent();
+    await replayed.call("a", "archmax_workflow_enrich");
+    await replayed.call("c", "archmax_workflow_audit");
+    expect(replayed.numbers).toEqual({ a: 5, c: 6 });
+  });
+
+  /**
    * A failed child is recorded as the calling state's outstanding failure, one
    * record per call with the call's input, and a later successful call of that
    * same workflow from that same state recovers at most one of them: the one
@@ -1357,6 +1441,8 @@ states:
         subWorkflows: {
           refusal: async () => undefined,
           signature: async () => ({}),
+          reserve: () => {},
+          dispatchCount: () => 0,
           drainDispatches: () => [],
           dispatch: async (input) => {
             if (fails(input)) throw new Error(`Sub-workflow '${input.workflow}' failed: no answer`);

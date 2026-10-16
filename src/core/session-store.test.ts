@@ -79,6 +79,23 @@ describe("createFilesystemSessionStore", () => {
     }
     expect(sessionIdRejection("session-1", mounts)).toBeNull();
   });
+
+  /**
+   * `~` separates a child's dispatch number from its parent's id, and anything
+   * that begins with a session's id and `~` is one of its children. A host's
+   * own id holding it in any other shape is refused, so it is never read as a
+   * child of another session.
+   */
+  it("reserves '~' for a child session's id", () => {
+    for (const id of ["tenant~conversation", "s~0", "s~", "~1", "s~1~x", "s~1.5"]) {
+      expect(sessionIdRejection(id), id).toContain("'~' is reserved");
+    }
+    for (const id of ["s~1", "s~12~3", "tenant/conv~2"]) {
+      expect(sessionIdRejection(id), id).toBeNull();
+    }
+    // The shape a child got before dispatch numbers still binds, so a park from then resumes.
+    expect(sessionIdRejection("s~start:enrich:0")).toBeNull();
+  });
 });
 
 describe("createBackendSessionStore", () => {

@@ -24,7 +24,8 @@ export const MOUNTS_SECTION_HEADING = "Mounts available in this state";
  * no reason. Each name is printed as the agent addresses it: a directory mount
  * with a trailing slash, a file mount by its exact path, read-only or read/write
  * per `writable` — the state's own posture (`WorkflowMachine.mountWritable`),
- * which a grant's `access: read` may have narrowed below the host's. A mount the
+ * which a grant's `access: read` may have narrowed below the host's, and which
+ * stays read-only where no grant of the workflow asks to write. A mount the
  * host declared unsearchable gets a browse-only note, so the model lists and
  * reads it rather than searching it; every other line is unchanged.
  */
@@ -37,7 +38,8 @@ export function renderMountsSection(
   const bullets = [...enabled].sort().map((name) => {
     const address = files.has(name) ? name : `${name}/`;
     // The state's own posture, not the table's: a grant may narrow a writable
-    // mount to reads here, and the prompt has to say what this state can do.
+    // mount to reads here, a workflow that asks no write reads it only, and the
+    // prompt has to say what this state can do.
     const posture = writable(name)
       ? "read/write — write there directly when the work belongs there, no less " +
         "freely than in your own working area; the write is checked against this " +

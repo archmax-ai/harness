@@ -7,7 +7,7 @@ import {
   type FileInfo,
   type FileUploadResponse,
 } from "deepagents";
-import { binaryReadError } from "./binary-read.js";
+import { asTextRead, binaryReadError } from "./binary-read.js";
 import { downloadViaReadRaw } from "./raw-download.js";
 import { canonicalizeRelPath } from "./workspace.js";
 import { SESSION_INTERNAL_DIRS, classifyWorkspacePath, mountNameOf } from "./zones.js";
@@ -143,13 +143,14 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     return { backend, name, routePath: target.slice(name.length + 1) || "/" };
   };
 
-  /** A routed read's result, or the binary notice in its place. */
+  /** A routed read's result, labelled so `read_file` renders it as text, or the binary notice in its place. */
   const textOnly = async (target: string, pending: ReturnType<BackendProtocolV2["read"]>) => {
     const res = await pending;
     // A v1 file mount answers a bare string; read it as Deep Agents' adapter wraps it.
     const raw: unknown = res;
     const binary = binaryReadError(target, typeof raw === "string" ? { content: raw } : res);
-    return binary === null ? res : { error: binary };
+    if (binary !== null) return { error: binary };
+    return typeof raw === "string" ? res : asTextRead(res);
   };
 
   /** One file's bytes from a store: its raw channel, else `readRaw`. */

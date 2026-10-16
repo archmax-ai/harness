@@ -91,6 +91,8 @@ export class WorkflowMachine {
 
   private bindingsCache?: Map<string, TriggerBinding>;
   private readonly signatureCache = new Map<string, TriggerSignature | undefined>();
+  /** The mounts some grant of this spec asks `read_write` for; the spec is frozen, so computed once. */
+  private writeRequestedMounts: ReadonlySet<string> | undefined;
 
   private constructor(
     readonly spec: MachineSpec,
@@ -363,23 +365,55 @@ export class WorkflowMachine {
    * Whether writes to `name` are permitted while `state` is active — the second
    * half of a mount grant, beside which states may see it at all.
    *
-   * A mount is writable here only when the host declared it writable **and** no
-   * applicable grant narrowed it to `read`. Read-only is a restriction, so it
-   * behaves like every other restriction in this schema: whichever level asks
-   * for it gets it, and no narrower level widens it back. `read_write` on a
-   * mount the host serves read-only is therefore inert (reported by `validate`)
-   * — the host's posture is the ceiling, not a default to argue with.
+   * A governed mount is writable here only when all three hold: the host
+   * serves it writable, some grant of **this** spec asks `access: read_write`
+   * for it (see {@link mountWriteRequested}), and no grant applicable in the
+   * state narrowed it to `read`. A bare grant asks for no write: it reaches one
+   * only where a grant of the same workflow asks. One assembly serves one mount
+   * table to a session and every child it dispatches, so a route is writable
+   * when any workflow in the tree asks — and a mount belongs to the workflow
+   * that grants it: another spec's `read_write` never widens this one's.
+   *
+   * Read-only is a restriction, so it behaves like every other restriction in
+   * this schema: whichever level asks for it gets it, and no narrower level
+   * widens it back. `read_write` on a mount the host serves read-only is
+   * therefore inert (reported by `validate`) — the host's posture is the
+   * ceiling, not a default to argue with.
    *
    * An ungoverned mount takes the host's posture in every state: it carries no
-   * grant to qualify.
+   * grant to ask for a write, and only an `access: read` narrows it.
    */
   mountWritable(state: string, name: string, mounts: MountPrefixes): boolean {
     if (!mounts.writable.includes(name)) return false;
-    const applicable = [
+    if (this.mountNarrowedToRead(state, name)) return false;
+    return !mounts.governed.includes(name) || this.mountWriteRequested(name);
+  }
+
+  /** Whether a grant applicable in `state` (its own `mounts.allow`, or `allow_always`) says `access: read` for `name`. */
+  mountNarrowedToRead(state: string, name: string): boolean {
+    return [
       ...normalizeMountGrants(this.spec.states[state]?.mounts?.allow),
       ...normalizeMountGrants(this.spec.mounts?.allow_always),
-    ].filter((grant) => grant.mount === name);
-    return !applicable.some((grant) => grant.access === "read");
+    ].some((grant) => grant.mount === name && grant.access === "read");
+  }
+
+  /**
+   * Whether some grant of this spec asks `access: read_write` for `name`, in
+   * `mounts.allow_always` or in any state's `mounts.allow`. Asked of the
+   * workflow, not of one state: a bare grant in one state and a `read_write`
+   * grant in another both write.
+   */
+  mountWriteRequested(name: string): boolean {
+    if (!this.writeRequestedMounts) {
+      const grants = [
+        ...normalizeMountGrants(this.spec.mounts?.allow_always),
+        ...Object.values(this.spec.states).flatMap((state) => normalizeMountGrants(state?.mounts?.allow)),
+      ];
+      this.writeRequestedMounts = new Set(
+        grants.filter((grant) => grant.access === "read_write").map((grant) => grant.mount),
+      );
+    }
+    return this.writeRequestedMounts.has(name);
   }
 
   // --- Graph ----------------------------------------------------------------------

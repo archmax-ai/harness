@@ -365,11 +365,13 @@ reachable in every state unless a `forbid` names it. One resolution
 consults: the kernel's mount rule, the middleware's listing redaction, prompt disclosure and
 `validate`.
 
-A grant SHALL also decide **what** the state may do there: a mount is writable in a state only when
-the host declared it writable and no applicable grant narrowed it to `access: read`
+A grant SHALL also decide **what** the state may do there: a governed mount is writable in a state
+only when the host declared it writable, some grant of the machine's own spec asks
+`access: read_write` for it, and no applicable grant narrowed it to `access: read`
 (`WorkflowMachine.mountWritable(state, name, prefixes)`, the second reader beside the enabled set).
-The host's posture is the ceiling — `access: read_write` opens nothing the wiring serves read-only —
-and a narrowing at either level holds, so no narrower level widens it back.
+The host's posture is the ceiling: `access: read_write` opens nothing the wiring serves read-only.
+A narrowing at either level holds, so no narrower level widens it back. One workflow's `read_write`
+never widens another's bare grant of the same route, though one table serves both.
 
 The kernel SHALL block a file tool call — `read_file`, `ls`, `glob`, `grep`, `write_file`, `edit_file`
 and every sandbox tool call on the same origins the skill rule governs — whose canonical path falls
@@ -378,7 +380,7 @@ safety rules after the zone rules so a write into a hidden read-only mount is st
 read-only, the more useful reason. A refusal SHALL distinguish its cause — `mount.forbidden` when a
 list denies the name (naming the workflow that denied it when the denial is inherited),
 `mount.not-allowed` when nothing enabled it, and `mount.read-only` when the state has the mount
-but a grant narrowed it to reads — and SHALL name the mount and say the state does not have it,
+but a grant narrowed it to reads or no grant of the workflow asks to write it, saying which — and SHALL name the mount and say the state does not have it,
 never that the path is missing. A write into a mount the **host** serves read-only SHALL stay
 `zone.read-only`, so a refusal names the level an author would fix: the wiring or the grant. A rubric grader and a lifecycle hook SHALL be bound by
 `mounts.forbid_always` and not by a state's `forbid`, as they are for tools.
@@ -403,8 +405,9 @@ decided by the kernel whether or not the mount was listed.
 
 #### Scenario: A grant narrows a writable mount to reads
 
-- **WHEN** the table mounts `shared` writable and governed, state `edit` enables it plainly and
-  state `review` enables it as `{ mount: shared, access: read }`
+- **WHEN** the table mounts `shared` writable and governed, state `edit` enables it as
+  `{ mount: shared, access: read_write }` and state `review` enables it as
+  `{ mount: shared, access: read }`
 - **THEN** a write in `edit` succeeds, the same write in `review` is blocked with
   `mount.read-only` naming the mount, and `review` still reads and lists it in full
 
@@ -424,6 +427,12 @@ decided by the kernel whether or not the mount was listed.
 - **WHEN** the model calls `read_file` on a path under a governed mount that was redacted from its
   listing
 - **THEN** the kernel blocks it with the mount rule's message, whether or not the listing showed it
+
+#### Scenario: A write no grant of the workflow asks for is refused
+
+- **WHEN** the table mounts `exports` writable and governed, and the workflow grants it only bare
+- **THEN** a write under `exports/` is blocked with `mount.read-only`, naming the mount and saying
+  no grant of this workflow asks for `access: read_write`
 
 ### Requirement: Session areas
 
@@ -909,7 +918,8 @@ refused before every other rule (`tool.path-argument`), so no path inside it pas
 Every path rule SHALL evaluate every declared path a call names, with its access: the read-only zone
 and the runtime-managed areas refuse `write` and `remove`; the runtime-internal areas, a skill bundle
 the state does not enable, and a governed mount the state was not given refuse every access; a mount
-narrowed to `access: read` refuses `write` and `remove` (`mount.read-only`); an inherited mount or
+narrowed to `access: read`, or a governed one no grant of the workflow asks to write, refuses `write`
+and `remove` (`mount.read-only`); an inherited mount or
 skill denial refuses every access; `script.skill-only` confines `execute`; and the authoring-plane
 rule reads them for scripts and hooks. A call SHALL be refused when any one of its paths is, and for a
 tool declaring several, the refusal SHALL name the argument (`'copy_file' on 'x' (destination)`). A

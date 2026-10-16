@@ -6,8 +6,10 @@ import { FilesystemBackend } from "deepagents";
 import {
   BINARY_MIME_TYPES,
   READ_FILE_TEXT_ONLY_LINE,
+  asTextRead,
   binaryMimeTypeOf,
   binaryReadError,
+  isTextMimeType,
   textOnlyReadFileDescription,
 } from "./binary-read.js";
 
@@ -84,6 +86,56 @@ describe("binaryReadError", () => {
 
   it("never classifies a route's error", () => {
     expect(binaryReadError("missing.png", { error: "File '/missing.png' not found" })).toBeNull();
+  });
+
+  /** An object store labels a file by its registered type: `word/document.xml` arrives as `application/xml`. */
+  it("keeps text a store labels as XML or JSON", () => {
+    for (const mimeType of [
+      "application/xml",
+      "application/vnd.openxmlformats-package.relationships+xml",
+      "application/ld+json",
+      "application/json; charset=utf-8",
+      "Application/XML",
+    ]) {
+      expect(binaryReadError("word/document.xml", { content: "<w:document/>", mimeType }), mimeType).toBeNull();
+    }
+    // Bytes stay binary under any type.
+    expect(binaryReadError("word/document.xml", { content: new Uint8Array(4), mimeType: "application/xml" })).toContain(
+      "(application/octet-stream, 4 B)",
+    );
+  });
+});
+
+describe("isTextMimeType", () => {
+  it("reads Deep Agents' text types, XML and the structured-syntax suffixes as text", () => {
+    for (const text of ["text/plain", "text/xml", "application/json", "application/javascript", "image/svg+xml"]) {
+      expect(isTextMimeType(text), text).toBe(true);
+    }
+    for (const text of ["application/xml", "application/atom+xml", "application/problem+json", "text/csv; charset=utf-8"]) {
+      expect(isTextMimeType(text), text).toBe(true);
+    }
+    for (const binary of ["application/pdf", "application/zip", "image/png", "application/octet-stream", "application/xml-dtd"]) {
+      expect(isTextMimeType(binary), binary).toBe(false);
+    }
+  });
+});
+
+/**
+ * Deep Agents' `read_file` branches on the result's own `mimeType`, by its
+ * narrower rule: handed `application/xml` text, it answers with a base64 `file`
+ * block. A text read is relabelled where that rule would refuse it.
+ */
+describe("asTextRead", () => {
+  it("relabels text under a type Deep Agents would hand on as a block", () => {
+    expect(asTextRead({ content: "<a/>", mimeType: "application/xml" })).toEqual({ content: "<a/>", mimeType: "text/plain" });
+    expect(asTextRead({ content: "{}", mimeType: "application/json; charset=utf-8" }).mimeType).toBe("text/plain");
+  });
+
+  it("leaves a type Deep Agents reads as text, or no type, as it is", () => {
+    const json = { content: "{}", mimeType: "application/json" };
+    expect(asTextRead(json)).toBe(json);
+    const bare = { content: "x" };
+    expect(asTextRead(bare)).toBe(bare);
   });
 });
 

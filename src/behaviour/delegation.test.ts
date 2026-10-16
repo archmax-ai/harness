@@ -601,9 +601,9 @@ describe("a child that parks", () => {
     expect(outcome.delegation).toMatchObject({
       workflow: "enrich",
       state: "start",
-      sessionId: expect.stringMatching(/^s1~start:enrich:\d+$/),
-      identity: expect.stringMatching(/^start:enrich:\d+$/),
-      dispatchId: expect.stringMatching(/^subwf-\d+$/),
+      sessionId: "s1~1",
+      identity: "1",
+      dispatchId: "1",
     });
     expect(typeof outcome.delegation?.toolCallId).toBe("string");
     // The child's session is the one the outcome names.
@@ -817,7 +817,9 @@ describe("workflow denials down a delegation chain", () => {
     expect(blockedTools(events)).toEqual(["write_file"]);
     const blocked = eventsOf(events, "tool-blocked")[0];
     expect(blocked?.reason).toMatch(/inherited from workflow 'mid'/);
-    const leaf = (await agent.sessions.list()).find((s) => s.sessionId.includes("leaf"));
+    // The leaf is the first dispatch made inside the root's first child.
+    const leaf = (await agent.sessions.list()).find((s) => s.sessionId === "chain-1~1~1");
+    expect(leaf).toBeDefined();
     expect(blocked?.sessionId).toBe(leaf?.sessionId);
   });
 

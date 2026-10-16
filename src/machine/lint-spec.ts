@@ -161,7 +161,8 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
 
     // The same three shapes for mounts. `access` is why the both-levels case is
     // not simply redundant: a state entry that narrows the workflow's grant to
-    // reads is doing real work, so only one repeating it unchanged is warned.
+    // reads, or that asks to write a mount the workflow grants bare, is doing
+    // real work, so only one repeating it unchanged is warned.
     const stateMounts = normalizeMountGrants(state.mounts?.allow);
     if (alwaysMountNames.length > 0) {
       if (Array.isArray(state.mounts?.allow) && stateMounts.length === 0) {
@@ -175,10 +176,12 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
       }
       for (const grant of stateMounts) {
         if (!alwaysMountNames.includes(grant.mount)) continue;
-        const narrows =
-          grant.access === "read" &&
-          alwaysMounts.some((a) => a.mount === grant.mount && a.access !== "read");
-        if (narrows) continue;
+        const always = alwaysMounts.filter((a) => a.mount === grant.mount);
+        const narrows = grant.access === "read" && always.some((a) => a.access !== "read");
+        // A bare grant asks for no write, so a state's `read_write` beside one is
+        // what lets the workflow write the mount at all.
+        const asksToWrite = grant.access === "read_write" && always.some((a) => a.access === undefined);
+        if (narrows || asksToWrite) continue;
         warn(
           `${at}.mounts.allow`,
           `State '${slug}' enables mount '${grant.mount}', which 'mounts.allow_always' already ` +

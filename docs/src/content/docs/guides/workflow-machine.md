@@ -360,9 +360,17 @@ a state may *do* there, and the host's `readOnly` is a ceiling the spec cannot
 lift. So `read_write` opens nothing the wiring serves read-only, and
 `access: read` is a restriction that no narrower level widens back.
 
+A bare name asks for no write. A governed mount is written only where some grant
+of the same workflow says `access: read_write`, in `allow_always` or in any state's
+`allow`, so a bare grant in one state and a `read_write` grant in another both
+write. A grant of another workflow never counts. One mount table serves a session
+and every child it dispatches, so the host serves a route writable when any
+workflow in that tree writes it, and each workflow still writes only what its own
+grants ask for.
+
 A governed mount the state does not have is refused, and also **unseen**. The
 refusal is `mount.not-allowed`, `mount.forbidden`, or `mount.read-only` for a
-write into one a grant narrowed. Unseen means `ls`, `glob` and `grep` results
+write into one a grant narrowed or no grant of the workflow asks to write. Unseen means `ls`, `glob` and `grep` results
 lose every entry under it, the workspace root listing included.
 
 The prompt names the mounts of *this* state, in the volatile block, so the
@@ -399,7 +407,10 @@ Reads are **text only**, wherever the file lives. `read_file`, and a script's
 `tools.readFile`, never return a binary file's content. That covers an image,
 audio, video, PDF or PowerPoint file, by its extension or by the type the backend
 reports, and any file whose content holds a NUL byte: an archive, an Office
-document, a database. The read is answered with a notice instead:
+document, a database. XML and JSON are text whatever the backend calls them, so a
+file it reports as `application/xml` or as any `+xml` or `+json` type, such as
+the `word/document.xml` of an Office document unpacked into the scratchpad, is
+read as text. A binary read is answered with a notice instead:
 
 ```text
 Error: 'scratchpad/chart.png' is a binary file (image/png, 24.1 KB) and was not read; read_file returns text files only.

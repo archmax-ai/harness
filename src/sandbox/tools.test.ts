@@ -161,10 +161,10 @@ describe("createInterpreter run-scope isolation", () => {
     const interpreter = createInterpreter({ executor, ptcNames: [] });
 
     // Two sub-runs of one caller: separate sessions, so separate scopes.
-    await capture(interpreter, configFor("s1~n:w:0"), [fakeTool("read_file")]);
-    await capture(interpreter, configFor("s1~n:w:1"), [fakeTool("ls")]);
+    await capture(interpreter, configFor("s1~1"), [fakeTool("read_file")]);
+    await capture(interpreter, configFor("s1~2"), [fakeTool("ls")]);
 
-    expect(runs.map((r) => r.sessionId)).toEqual(["s1~n:w:0", "s1~n:w:1"]);
+    expect(runs.map((r) => r.sessionId)).toEqual(["s1~1", "s1~2"]);
     // Neither sub-run sees the other's captured tool set.
     expect(runs[0]?.tools).toEqual(["read_file"]);
     expect(runs[1]?.tools).toEqual(["ls"]);
@@ -173,7 +173,7 @@ describe("createInterpreter run-scope isolation", () => {
   it("runs inline code on the same scope and PTC surface as a script file", async () => {
     const { executor, runs } = recordingExecutor();
     const interpreter = createInterpreter({ executor, ptcNames: [] });
-    const config = configFor("s1~n:w:0");
+    const config = configFor("s1~1");
 
     await (interpreter.middleware as unknown as {
       wrapModelCall(req: unknown, handler: (r: unknown) => unknown): Promise<unknown>;
@@ -182,20 +182,20 @@ describe("createInterpreter run-scope isolation", () => {
     );
     await toolNamed(interpreter, EVAL_TOOL).invoke({ code: "1 + 1" }, config);
 
-    expect(runs[0]).toEqual({ sessionId: "s1~n:w:0", tools: ["read_file"] });
+    expect(runs[0]).toEqual({ sessionId: "s1~1", tools: ["read_file"] });
   });
 
   it("releases nested sub-run scopes when the session is disposed", async () => {
     const { executor, disposals } = recordingExecutor();
     const interpreter = createInterpreter({ executor, ptcNames: [] });
 
-    await capture(interpreter, configFor("s1~n:w:0"), [fakeTool("read_file")]);
-    await capture(interpreter, configFor("s1~n:w:1"), [fakeTool("ls")]);
+    await capture(interpreter, configFor("s1~1"), [fakeTool("read_file")]);
+    await capture(interpreter, configFor("s1~2"), [fakeTool("ls")]);
     disposals.length = 0;
 
     interpreter.dispose("s1");
 
-    expect(disposals.map(([scope]) => scope).sort()).toEqual(["s1", "s1~n:w:0", "s1~n:w:1"]);
+    expect(disposals.map(([scope]) => scope).sort()).toEqual(["s1", "s1~1", "s1~2"]);
   });
 });
 

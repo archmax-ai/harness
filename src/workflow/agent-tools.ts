@@ -19,7 +19,8 @@ export interface AgentToolDescriptor {
   paths?: ToolPaths;
   /**
    * Runs the tool. `context.workspace` is the turn's workspace, bound to the
-   * session — the same one `read_file` resolves through.
+   * session — the same one `read_file` resolves through — and
+   * `context.sessionId` is that session's id: a child's own inside a dispatch.
    */
   handler: (input: Record<string, unknown>, context: ToolContext) => Promise<unknown>;
 }
@@ -42,22 +43,23 @@ export function toolsFromMap(entries: Record<string, AgentToolDescriptor>): Stru
 
 /**
  * The context of a call made outside any turn (a host invoking the tool
- * directly): the handler still runs, and only reaching for the workspace — which
- * exists per session, per turn — fails, saying why. The property is
- * non-enumerable, so a deep-equality check or a logger that walks the context
- * skips it instead of throwing; `"workspace" in context` still tells a caller
- * whether one may be read.
+ * directly): the handler still runs, and only reaching for the workspace or the
+ * session id — which exist per session, per turn — fails, saying why. The
+ * properties are non-enumerable, so a deep-equality check or a logger that
+ * walks the context skips them instead of throwing; `"workspace" in context`
+ * still tells a caller whether one may be read.
  */
 function outsideTurn(id: string): ToolContext {
-  return Object.defineProperty({}, "workspace", {
+  const absent = (what: string) => ({
     enumerable: false,
     get(): never {
       throw new Error(
-        `Tool '${id}' ran outside a session turn; its workspace exists only while an agent turn ` +
+        `Tool '${id}' ran outside a session turn; its ${what} exists only while an agent turn ` +
           `is running.`,
       );
     },
-  }) as ToolContext;
+  });
+  return Object.defineProperties({}, { workspace: absent("workspace"), sessionId: absent("session id") }) as ToolContext;
 }
 
 /**

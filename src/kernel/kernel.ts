@@ -548,16 +548,20 @@ function mountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi):
   const reachable = !denial && (!governed || enabled.includes(name));
   if (reachable) {
     // Reachable, but perhaps read-only *here*: a grant may narrow a writable
-    // mount to reads without hiding it. The zone rule has already refused a
-    // write into a mount the host serves read-only, so this only ever fires on
-    // one the host declared writable.
+    // mount to reads without hiding it, and a governed mount is written only
+    // where a grant of this workflow asks to write it. The zone rule has
+    // already refused a write into a mount the host serves read-only, so this
+    // only ever fires on one the host declared writable.
     if (!MUTATING_ACCESSES.has(path.access) || api.machine.mountWritable(state, name, mounts)) return null;
+    const why = api.machine.mountNarrowedToRead(state, name)
+      ? "('access: read')"
+      : "(no grant of this workflow asks for 'access: read_write' on it)";
     return {
       decision: "block",
       ruleId: "mount.read-only",
       reason:
         `[workflow] BLOCKED: ${on} targets the mount '${name}', which state ` +
-        `'${state}' may read but not write ('access: read'). Write your files under ` +
+        `'${state}' may read but not write ${why}. Write your files under ` +
         `'${SESSION_OPEN_DIR}/…' instead.`,
       warn: true,
     };

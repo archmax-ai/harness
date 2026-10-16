@@ -305,8 +305,8 @@ describe("delegation through the sandbox", () => {
         Object.defineProperty(err, SUB_WORKFLOW_PARK, {
           value: {
             workflow: "enrich-order",
-            identity: "s:enrich-order:0",
-            dispatchId: "subwf-1",
+            identity: "1",
+            dispatchId: "1",
             decision: { state: "review" },
           },
           enumerable: false,
