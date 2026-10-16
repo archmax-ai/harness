@@ -198,7 +198,7 @@ Every `tools.*` call is checked by the decision kernel at the moment it runs —
 the same kernel, with the same rules, that governs a tool call the model makes
 directly. What differs is only _whose authority_ the script runs on:
 
-| Script kind                                     | The state's own governance (`tools.allow`, `tools.forbid`, `skills.*`) | Safety rules, workflow-wide `forbid_always`, consumer rules |
+| Script kind                                     | The state's own governance (`tools.allow`, `tools.forbid`, `skills.*`, `mounts.*`) | Safety rules, workflow-wide `forbid_always`, the workflow's mount grants, consumer rules |
 | ----------------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
 | Lifecycle hook (`before:`/`after:`)             | **Not applied** — a gate must read evidence the state never grants, and a state's denial does not reach it either | Applied |
 | `archmax_run` script (the model chose to run it) | **Applied** — it runs on the model's authority                          | Applied |
@@ -208,9 +208,22 @@ A hook runs on **runtime authority**: outside the active state's tool surface in
 `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })`
 even in a state whose `allow` list never mentions `read_file`, one that enables
 no skill at all, and one whose `tools.forbid` names the very tool it calls — while
-the workflow's `tools.forbid_always` and `skills.forbid_always` bind it like
-anything else, and no script of either kind may write into the read-only authored
-zone.
+the workflow's `tools.forbid_always`, `skills.forbid_always` and
+`mounts.forbid_always` bind it like anything else, and no script of either kind
+may write into the read-only authored zone.
+
+Mounts are held to the **workflow's** grants, taken across every state. A hook
+reads a governed mount that `mounts.allow_always` or any state's `mounts.allow`
+names, even in a state that enables none, and writes one only where a grant of
+the workflow asks `access: read_write`. A governed mount no grant of the workflow
+names is refused (`mount.not-allowed`). That includes a mount in the table only
+because a child workflow grants it. So grant a mount the hook needs:
+
+```js
+// workflow.yaml: states.review.mounts.allow: [contracts]
+// A before hook on any state of this workflow may then read it:
+const policy = await tools.readFile({ file_path: "contracts/policy.md" });
+```
 
 Neither kind may **read** the authoring plane at all. A `tools.*` call naming
 `workflows/**` is blocked (`zone.governance-plane`) with a

@@ -170,9 +170,9 @@ states:
   the agent back with the reason, bounded per hook by `max_iterations`
   (default 0 → a correct is a hard veto). A list runs in order and stops at
   the first non-ok. Errors and missing files veto (fail-closed). Hooks run
-  on runtime authority: the state's `allow`/`forbid`/`skills` do not bind
-  them; `forbid_always` and safety rules do. Human states may not declare
-  hooks.
+  on runtime authority: the state's `allow`/`forbid`/`skills`/`mounts` do not
+  bind them; `forbid_always`, safety rules and the workflow's mount grants
+  (any state's) do. Human states may not declare hooks.
 - **Budgets and `on_error`.** `budget.maxTurns`/`timeoutMs`/`maxParks` bound
   a state's segment. A terminal failure (hook execution error, exhausted
   corrections, exhausted budget, exhausted parks) routes to `on_error`
@@ -276,5 +276,6 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   A state enabling no skill can run no script at all.
 - **Scripts' `tools.*` calls** are governed per call: an `archmax_run` script
   is bound like the model (grant every tool it calls); a hook is exempt from
-  the state's lists. Neither may read `workflows/**` or write a mount. A
-  refused call throws inside the script.
+  the state's lists but held to its workflow's mount grants. Neither may read
+  `workflows/**` or write a read-only mount. A refused call throws inside the
+  script.

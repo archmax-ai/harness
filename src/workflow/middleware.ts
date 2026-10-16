@@ -191,7 +191,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
   const fileGov: FileGovernance | undefined = opts.entryKind
     ? fileGovernance({
         machine,
-        workflow: opts.workflowName ?? "this workflow",
         policyRules: opts.policyRules ?? [],
         mountPrefixes: opts.mountPrefixes ?? NO_MOUNTS,
         skills: skillPrefixes(opts.skills ?? new Map()),

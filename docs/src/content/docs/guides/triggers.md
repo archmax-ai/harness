@@ -205,8 +205,9 @@ A `file` entry's value is a path from the workspace root:
 `skills/billing/assets/template.pdf` for an authored one. The shape check is the
 same pure rule a host runs. In the same three places the runtime also checks that
 a file is at the path and that the session may read it on runtime authority, the
-rules a hook is bound by. So a seed naming a file that is not there is refused
-before any model call, and `archmax_set_variables({ variables: { report:
+rules a hook is bound by. Those rules include the workflow's mount grants, so a
+path under a governed mount no state of the workflow is granted is refused too. A
+seed naming a file that is not there is refused before any model call, and `archmax_set_variables({ variables: { report:
 "scratchpad/report.md" } })` is refused until the agent has written that file. A
 host hands a session a file with [`TurnInput.files`](/guides/sessions/#files-handed-to-a-session),
 which places it and seeds the path for you.

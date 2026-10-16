@@ -2,15 +2,16 @@
  * The governance half of the `file` signature type: whether a session may read
  * the file a `file` value names. Decided by the kernel as a `read_file` of the
  * path on **runtime authority** (`origin: "lifecycle"`) — the authority a hook
- * runs on: the state's allow list and the mount and skill grants do not bind it,
- * but the zone rules and every workflow-wide denial do, a child's inherited ones
- * included. So a host cannot hand a session a path the session could never read,
- * and a child cannot return a file one of its ancestors denied: the runtime
- * copies nothing a caller's own denials put out of reach.
+ * runs on: the state's surface (its allow list, its skill and mount grants) does
+ * not bind it, but the zone rules, the workflow's own mount grants (in any state)
+ * and every workflow-wide denial do, a child's inherited ones included. So a host
+ * cannot hand a session a path the session could never read, and a child cannot
+ * return a file one of its ancestors denied: the runtime copies nothing a
+ * caller's own denials put out of reach.
  */
 import type { MountPrefixes } from "../core/mounts.js";
 import type { SkillPrefixes } from "../core/skills.js";
-import { decide, workflowDenials, type GovernanceRule } from "../kernel/kernel.js";
+import { decide, type GovernanceRule } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { VariableStore } from "../machine/variables.js";
 import type { FileValueCheck } from "./signature-checks.js";
@@ -27,14 +28,11 @@ export interface FileGovernance {
 
 /**
  * The {@link FileGovernance} of one machine: the rules it is governed by (an
- * ancestor's denials among them) plus its **own** workflow-wide denials as
- * rules, which is what binds them on runtime authority — the kernel applies a
- * machine's own `forbid_always` lists to a hook only through a descendant.
+ * ancestor's denials among them). The kernel holds a runtime-authority call to
+ * the machine's own grants and `forbid_always` lists itself.
  */
 export function fileGovernance(opts: {
   machine: WorkflowMachine;
-  /** The machine's slug, named by a denial. */
-  workflow: string;
   policyRules: GovernanceRule[];
   mountPrefixes: MountPrefixes;
   skills: SkillPrefixes;
@@ -42,7 +40,7 @@ export function fileGovernance(opts: {
 }): FileGovernance {
   return {
     machine: opts.machine,
-    policyRules: [...opts.policyRules, ...workflowDenials(opts.machine, opts.workflow)],
+    policyRules: opts.policyRules,
     mountPrefixes: opts.mountPrefixes,
     skills: opts.skills,
     kind: opts.kind,

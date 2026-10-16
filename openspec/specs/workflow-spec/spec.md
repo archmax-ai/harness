@@ -1409,7 +1409,8 @@ by it.
 
 Where a `file` value crosses a boundary, the runtime SHALL refuse it unless it names a file (not
 a folder) in that session's workspace that the session may read on runtime authority: the zone
-rules and every workflow-wide denial, inherited ones included. The refusal names the variable,
+rules, the workflow's mount grants on workflow scope (a governed mount no grant of the workflow
+names is out of reach), and every workflow-wide denial, its own and inherited ones. The refusal names the variable,
 `file` and the cause. The boundaries are the turn boundary, `archmax_set_variables` for a typed
 return, the completion check, and a delegation call.
 
@@ -1451,3 +1452,10 @@ return, the completion check, and a delegation call.
   `reference/salaries.pdf`, or a value names `checkpoints/cp-1.json`
 - **THEN** it is refused naming the variable, `file` and the rule that denies the read, at
   whichever boundary it crosses
+
+#### Scenario: A path under a mount the workflow grants nowhere is refused
+
+- **WHEN** the table governs `invoices` because another workflow in the tree grants it, the
+  session's workflow grants it in no state, and a `file` value names `invoices/a.xml`
+- **THEN** it is refused naming the variable, `file` and `mount.not-allowed`, at whichever boundary
+  it crosses

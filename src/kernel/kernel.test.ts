@@ -676,6 +676,19 @@ describe("decide — skill governance", () => {
     expect(v.decision).toBe("allow");
   });
 
+  it("holds a lifecycle hook to its workflow's own skills.forbid_always, not a state's forbid", () => {
+    const machine = WorkflowMachine.fromSpec({
+      skills: { forbid_always: ["refund-policy"] },
+      states: { work: { triggers: { manual: null }, skills: { forbid: ["order-data"] } } },
+    });
+    const hook = (file_path: string) =>
+      decide(machine, { kind: "tool-call", state: "work", tool: "read_file", args: { file_path }, origin: "lifecycle" }, [], MOUNTS, {}, SKILLS);
+    const v = hook("skills/refund-policy/SKILL.md");
+    expect(v).toMatchObject({ decision: "block", ruleId: "skill.forbidden" });
+    expect(v.reason).toContain("'skills.forbid_always' denies in every state");
+    expect(hook("skills/order-data/assets/orders.json").decision).toBe("allow");
+  });
+
   it("fires for no call when the workspace serves no skills", () => {
     const v = decide(
       skillMachine(),
@@ -1011,6 +1024,95 @@ describe("compileForbiddenMountRules", () => {
       MOUNTS,
     );
     expect(v.decision).toBe("allow");
+  });
+});
+
+/**
+ * Runtime authority — a hook script, the runtime's own `file` value check — is
+ * decided on the workflow's grants, not the active state's: outside the state's
+ * surface, never outside the workflow's. One table serves a caller and every
+ * child, so it holds mounts other workflows grant.
+ */
+describe("decide — mounts on runtime authority", () => {
+  /** `invoices` is in the table because another workflow in the tree grants it. */
+  const MOUNTS: MountPrefixes = {
+    dirs: ["skills", "reference", "exports", "invoices"],
+    files: [],
+    writable: ["skills", "exports", "invoices"],
+    governed: ["reference", "exports", "invoices"],
+    unsearchable: [],
+  };
+  const SPEC: MachineSpec = {
+    mounts: { allow_always: ["exports"], forbid_always: [] },
+    states: {
+      intake: {
+        triggers: { manual: null },
+        mounts: { forbid: ["reference"] },
+        transitions: [{ to: "triage", description: "Test edge to triage." }],
+      },
+      triage: { mounts: { allow: ["reference"] }, transitions: [{ to: "publish", description: "Test edge." }] },
+      publish: { mounts: { allow: [{ mount: "exports", access: "read" }] } },
+    },
+  };
+  const hook = (spec: MachineSpec, tool: string, file_path: string, state = "intake") =>
+    decide(
+      WorkflowMachine.fromSpec(spec),
+      { kind: "tool-call", state, tool, args: { file_path }, origin: "lifecycle" },
+      [],
+      MOUNTS,
+    );
+
+  it("reaches a mount another state grants, whatever the active state forbids", () => {
+    expect(hook(SPEC, "read_file", "reference/rates.csv").decision).toBe("allow");
+    // The model in the same state is still refused.
+    const agent = decide(
+      WorkflowMachine.fromSpec(SPEC),
+      { kind: "tool-call", state: "intake", tool: "read_file", args: { file_path: "reference/rates.csv" } },
+      [],
+      MOUNTS,
+    );
+    expect(agent.ruleId).toBe("mount.forbidden");
+  });
+
+  it("refuses a governed mount no grant of the workflow names, to read and to write", () => {
+    for (const tool of ["read_file", "write_file"]) {
+      const v = hook(SPEC, tool, "invoices/a.xml");
+      expect(v, tool).toMatchObject({ decision: "block", ruleId: "mount.not-allowed", warn: true });
+      expect(v.reason, tool).toContain("'invoices'");
+      expect(v.reason, tool).toContain("no grant of this workflow names");
+    }
+  });
+
+  it("refuses a write the workflow does not ask for, and allows one it asks for in any state", () => {
+    const v = hook(SPEC, "write_file", "exports/out.csv");
+    expect(v).toMatchObject({ decision: "block", ruleId: "mount.read-only" });
+    expect(v.reason).toContain("may read but not write");
+    const writes: MachineSpec = {
+      ...SPEC,
+      states: { ...SPEC.states, publish: { mounts: { allow: [{ mount: "exports", access: "read_write" }] } } },
+    };
+    expect(hook(writes, "write_file", "exports/out.csv").decision).toBe("allow");
+  });
+
+  it("holds the workflow's own forbid_always, and names it", () => {
+    const denied: MachineSpec = { ...SPEC, mounts: { allow_always: ["exports"], forbid_always: ["reference"] } };
+    const v = hook(denied, "read_file", "reference/rates.csv", "triage");
+    expect(v).toMatchObject({ decision: "block", ruleId: "mount.forbidden" });
+    expect(v.reason).toContain("'mounts.forbid_always' denies in every state");
+  });
+
+  it("holds a workflow-wide narrowing to reads on an ungoverned mount", () => {
+    const narrowed: MachineSpec = {
+      ...SPEC,
+      mounts: { allow_always: ["exports", { mount: "skills", access: "read" }] },
+    };
+    expect(hook(SPEC, "write_file", "skills/notes.md").decision).toBe("allow");
+    expect(hook(narrowed, "write_file", "skills/notes.md").ruleId).toBe("mount.read-only");
+    expect(hook(narrowed, "read_file", "skills/notes.md").decision).toBe("allow");
+  });
+
+  it("leaves a path under no mount to the other rules", () => {
+    expect(hook(SPEC, "write_file", "scratchpad/notes.md").decision).toBe("allow");
   });
 });
 

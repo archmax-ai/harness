@@ -97,8 +97,10 @@ export interface HookFact extends LifecycleDecision {
  * Who initiated a tool call. `agent` (the default) is a call the model made
  * directly; `script` is a programmatic call from a sandbox script, governed
  * identically to an agent call in the same state; `lifecycle` is a programmatic
- * call from a lifecycle hook, which runs on harness authority and skips the
- * per-state allow list and nothing else.
+ * call from a lifecycle hook (and the runtime's own `file` value check), which
+ * runs on runtime authority: outside the active state's surface — its allow and
+ * forbid lists, its skill and mount grants — but held to its workflow's mount
+ * grants, its workflow-wide denials and every safety rule.
  */
 export type ToolCallOrigin = "agent" | "script" | "lifecycle";
 
@@ -440,19 +442,45 @@ const runtimeManagedRule: GovernanceRule = (action, api) => {
  * Non-overridable: evaluated with the safety rules, ahead of `policy`, consumer
  * rules, and the per-state `allow` default, so no declaration can reach into a
  * capability the state was not given; a `tools.allow` entry may only narrow
- * *within* the enabled set. `lifecycle` origin is exempt (harness authority, as
- * for the state allow list); `script` origin is not (model authority).
+ * *within* the enabled set. `script` origin is bound (model authority); a
+ * `lifecycle`-origin call runs on runtime authority, outside the enabled set,
+ * and is held only to its workflow's own `skills.forbid_always`
+ * ({@link runtimeSkillVerdict}).
  */
 const skillRule: GovernanceRule = (action, api) => {
-  if (action.kind !== "tool-call" || action.origin === "lifecycle") return null;
+  if (action.kind !== "tool-call") return null;
   const skills = api.skills ?? NO_SKILLS;
   if (skills.length === 0) return null;
+  const verdictOf = action.origin === "lifecycle" ? runtimeSkillVerdict : skillVerdict;
   for (const path of pathsOf(action, api)) {
-    const verdict = skillVerdict(action, path, api, skills);
+    const verdict = verdictOf(action, path, api, skills);
     if (verdict) return verdict;
   }
   return null;
 };
+
+/**
+ * {@link skillRule} for one path of a call on runtime authority: a hook reads any
+ * bundle whatever the enabled set, except one its workflow's `skills.forbid_always`
+ * denies. A state's `skills.forbid` does not bind it.
+ */
+function runtimeSkillVerdict(
+  action: ToolCallAction,
+  path: DeclaredPath,
+  api: RuleApi,
+  skills: SkillPrefixes,
+): Verdict | null {
+  const slug = skillOfPath(path.path, skills);
+  if (slug == null || !api.machine.workflowForbiddenSkills().includes(slug)) return null;
+  return {
+    decision: "block",
+    ruleId: "skill.forbidden",
+    reason:
+      `[workflow] BLOCKED: ${subject(action, path, api)} belongs to the skill '${slug}', which ` +
+      `'skills.forbid_always' denies in every state. A denial beats every grant.`,
+    warn: true,
+  };
+}
 
 /** {@link skillRule} for one of a call's paths. */
 function skillVerdict(
@@ -521,19 +549,66 @@ function skillVerdict(
  *
  * Evaluated after the zone rules, so a *write* into a hidden read-only mount is
  * refused as read-only — the more useful reason — whether or not the state has
- * the mount. Non-overridable, and `lifecycle` origin is exempt: a hook and a
- * rubric grader run on runtime authority, bound by `mounts.forbid_always` (which
- * travels as an inherited rule, see {@link compileForbiddenMountRules}) and not
- * by the state's own surface.
+ * the mount. Non-overridable. A `lifecycle`-origin call runs on runtime
+ * authority, so it is decided on its **workflow**'s grants instead of the
+ * state's ({@link runtimeMountVerdict}): outside the state's surface, never
+ * outside the workflow's.
  */
 const mountRule: GovernanceRule = (action, api) => {
-  if (action.kind !== "tool-call" || action.origin === "lifecycle") return null;
+  if (action.kind !== "tool-call") return null;
+  const verdictOf = action.origin === "lifecycle" ? runtimeMountVerdict : mountVerdict;
   for (const path of pathsOf(action, api)) {
-    const verdict = mountVerdict(action, path, api);
+    const verdict = verdictOf(action, path, api);
     if (verdict) return verdict;
   }
   return null;
 };
+
+/**
+ * {@link mountRule} for one path of a call on runtime authority. One table serves
+ * a session and every child it dispatches, so it holds mounts other workflows in
+ * the tree grant: a hook reaches a governed mount only where some grant of its
+ * own workflow names it, in any state, and writes it only where the workflow
+ * asks to. The workflow's own `mounts.forbid_always` binds it; a state's
+ * `mounts.allow`, `mounts.forbid` and `access: read` do not.
+ */
+function runtimeMountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi): Verdict | null {
+  const mounts = api.mountPrefixes ?? NO_MOUNTS;
+  const on = subject(action, path, api);
+  const name = mountNameOf(normalizeZonePath(path.path), mounts);
+  if (name == null) return null;
+  if (api.machine.workflowForbiddenMounts().includes(name)) {
+    return {
+      decision: "block",
+      ruleId: "mount.forbidden",
+      reason:
+        `[workflow] BLOCKED: ${on} is under the mount '${name}', which ` +
+        `'mounts.forbid_always' denies in every state. A denial beats every grant.`,
+      warn: true,
+    };
+  }
+  if (mounts.governed.includes(name) && !api.machine.workflowGrantedMounts(mounts.governed).includes(name)) {
+    return {
+      decision: "block",
+      ruleId: "mount.not-allowed",
+      reason:
+        `[workflow] BLOCKED: ${on} is under the mount '${name}', which no grant of this ` +
+        `workflow names. A hook reaches a governed mount only where its workflow grants it, ` +
+        `in 'mounts.allow_always' or a state's 'mounts.allow'.`,
+      warn: true,
+    };
+  }
+  if (!MUTATING_ACCESSES.has(path.access) || api.machine.workflowMountWritable(name, mounts)) return null;
+  return {
+    decision: "block",
+    ruleId: "mount.read-only",
+    reason:
+      `[workflow] BLOCKED: ${on} targets the mount '${name}', which this workflow may read ` +
+      `but not write (no grant of it asks for 'access: read_write', or 'mounts.allow_always' ` +
+      `narrows it to 'access: read').`,
+    warn: true,
+  };
+}
 
 /** {@link mountRule} for one of a call's paths. */
 function mountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi): Verdict | null {
@@ -599,8 +674,8 @@ function mountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi):
  * a rule — any path under one of those mounts is refused, whatever the child
  * granted itself, and the refusal names the workflow that denied it.
  *
- * A workflow-wide denial binds a hook and a rubric grader too, so this rule —
- * unlike {@link mountRule} — does not exempt the `lifecycle` origin.
+ * A workflow-wide denial binds a hook and a rubric grader too, so this rule
+ * binds the `lifecycle` origin as well.
  */
 export function compileForbiddenMountRules(
   names: readonly string[],
@@ -636,8 +711,9 @@ export function compileForbiddenMountRules(
  * `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`,
  * named with the workflow that declared them. A per-state `forbid` is not
  * inherited — it governs that state's turns, not a child session — and neither
- * is any grant. Compiled as rules, they bind the `lifecycle` origin too, which
- * is how the runtime's own reads on a session's behalf are held to them.
+ * is any grant. Compiled as rules, they bind the `lifecycle` origin too, so a
+ * descendant's hooks and the runtime's reads on a child's behalf are held to
+ * them. A workflow's own lists bind its own hooks through the kernel's rules.
  */
 export function workflowDenials(machine: WorkflowMachine, source: string): GovernanceRule[] {
   return [

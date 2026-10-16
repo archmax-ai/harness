@@ -349,7 +349,7 @@ child's original stays in the child's session.
 
 A child can hand back only what its caller could read on runtime authority. Every
 `forbid_always` list of every ancestor binds the child, and a `file` value must name a
-file the session may read under those rules. So a child cannot return a file its
+file the session may read under those rules and its own workflow's mount grants. So a child cannot return a file its
 caller's workflow denies: the agent's write of such a return is refused, and a
 value a script wrote is rejected when the child completes. A return whose file is
 gone when the child completes, or that cannot be copied, fails the call

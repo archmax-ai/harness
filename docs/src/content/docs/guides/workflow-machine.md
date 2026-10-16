@@ -270,8 +270,10 @@ Disclosure follows the state machine deterministically, and enforcement sits
 underneath it: a call to an undisclosed tool is still blocked by the kernel. A
 script's `tools.*` bridge reaches past that per-state disclosure, but its calls
 are governed by the active state exactly as the model's own calls are. Lifecycle
-hooks are the exception, because they run on runtime authority, which waives the
-state's allow list and nothing else.
+hooks are the exception, because they run on runtime authority. That waives the
+state's own surface: its allow and forbid lists, and its skill and mount grants.
+The workflow's mount grants, taken across every state, still bind a hook, and so
+do the workflow-wide denials and every safety rule.
 
 A blocked call is answered with an error-status tool message giving the reason,
 so the agent reads the refusal and carries on. A permitted call whose tool
@@ -372,6 +374,11 @@ A governed mount the state does not have is refused, and also **unseen**. The
 refusal is `mount.not-allowed`, `mount.forbidden`, or `mount.read-only` for a
 write into one a grant narrowed or no grant of the workflow asks to write. Unseen means `ls`, `glob` and `grep` results
 lose every entry under it, the workspace root listing included.
+
+A lifecycle hook answers to the **workflow's** grants rather than the state's. It
+reads a governed mount any state of its workflow grants, and writes one only where
+a grant of the workflow asks `read_write`. A mount no grant of the workflow names,
+such as one only a child grants, is refused to it like any other.
 
 The prompt names the mounts of *this* state, in the volatile block, so the
 cacheable prefix stays identical across states. Full reference:

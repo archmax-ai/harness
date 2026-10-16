@@ -421,6 +421,7 @@ alone". `archmax_run` is otherwise always on, so a script the agent wrote into
 Lifecycle **hooks are exempt**, as they are from a state's `tools.allow`,
 because a hook runs on runtime authority. So a routing state can enable nothing
 while the `before` hook that enforces tenancy still reads the order records.
+The workflow's `skills.forbid_always` still binds its hooks.
 
 [`archmax_run`](#toolsallow-closed-by-default-governance) executes scripts inside
 a bundle and nowhere else (`script.skill-only`). A state that enables no skill
@@ -559,9 +560,24 @@ exactly as a single-segment one is, and a sibling under the same first segment
 (`catalogs/uk`) matches neither. A file mount matches its exact path, so
 `AGENTS.md.bak` falls outside `AGENTS.md`.
 
-Lifecycle **hooks and rubric graders are exempt** from a state's `forbid` and
-its reachable set, as they are from `tools.allow`, because they run on runtime
-authority. `mounts.forbid_always` **binds them too**, along with the whole
+Lifecycle **hooks answer to the workflow's grants, not the state's.** A hook
+runs on runtime authority, so a state's `allow`, `forbid` and `access: read` do
+not bind it, just as `tools.allow` does not. Instead the grants of every state
+of its workflow, taken together, bind it:
+
+- A hook reads a governed mount that `allow_always` or **any** state's `allow`
+  grants. So a routing state that enables nothing can still run a hook that
+  reads a mount a later state uses.
+- A governed mount no grant of the workflow names is refused with
+  `mount.not-allowed`. One table serves a session and every child it dispatches,
+  so it can hold a mount only a child grants. The caller's hooks cannot reach
+  it.
+- A hook writes a governed mount only where some grant of the workflow asks
+  `access: read_write`. An `access: read` in `allow_always` narrows any mount
+  for hooks, governed or not. The refusal is `mount.read-only`.
+
+Rubric graders are exempt from a state's `forbid` and its reachable set.
+`mounts.forbid_always` **binds hooks and graders too**, along with the whole
 workflow and every child session it delegates to, naming the workflow that
 declared it.
 
@@ -1028,9 +1044,15 @@ path alone, so a host can run it anywhere, but at each of those three places, an
 at a [delegation call](/guides/sub-workflows/#passing-files), the runtime also
 requires the path to name a **file** (not a folder) that the session **may read
 on runtime authority**. Runtime authority is the authority a hook runs on: the
-state's allow list and the mount and skill grants do not bind it, but the zone
-rules (`checkpoints/`, `artifacts/` and `_specs/` are never readable) and every
-workflow-wide denial do, `forbid_always` lists inherited from a caller included.
+state's allow list and its skill and mount grants do not bind it. What does bind
+it:
+
+- the zone rules (`checkpoints/`, `artifacts/` and `_specs/` are never readable);
+- the workflow's mount grants, taken across every state, so a governed mount no
+  grant of the workflow names is out of reach;
+- every workflow-wide denial, `forbid_always` lists inherited from a caller
+  included.
+
 A value naming a path with nothing there, a folder, or a path those rules deny is
 refused like a non-conforming one, naming the variable and the cause.
 
@@ -1141,7 +1163,8 @@ The governed mounts the workflow reaches in **every** state, and the ones it
 reaches nowhere: the mounts half of `tools.allow_always` /
 `tools.forbid_always`. A state's `mounts.allow` adds to the grant, and its
 `mounts.forbid` subtracts from it. `forbid_always` beats every grant anywhere,
-and binds every child session this workflow delegates to.
+binds the workflow's own hooks, and binds every child session this workflow
+delegates to.
 
 An absent block leaves the workflow reaching no governed mount, and `validate`
 says so once, naming them. `allow_always: []` says so deliberately. Both keys

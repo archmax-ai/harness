@@ -154,8 +154,8 @@ and bare `eval` SHALL be absent from the bridge. Every PTC call SHALL pass throu
 call time against the workflow state active at that moment — an `archmax_run` or `archmax_eval`
 script on the model's authority (the state's `tools.allow` and `tools.forbid` bind it), a hook on
 runtime authority (the state's own governance does not bind it in either direction; the safety
-rules, the workflow's `tools.forbid_always` and `skills.forbid_always`, consumer rules and the
-reply-only rule do) — and SHALL emit the same tool events as an agent-initiated call. A script
+rules, the workflow's `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`, the
+workflow's mount grants on workflow scope, consumer rules and the reply-only rule do) — and SHALL emit the same tool events as an agent-initiated call. A script
 call's `${{name}}` guards SHALL resolve against the run's variables; no `${{…}}` substitution is
 applied to a script's arguments, which reach the kernel and the tool verbatim. A blocked call SHALL not execute the
 tool and SHALL reject inside the script with the rule id and reason. The bridge SHALL forward
@@ -183,6 +183,13 @@ hook's `tools` SHALL keep every tool on the bridge.
 
 - **WHEN** a `before` hook in a state that enables no skill calls `tools.readFile` on a skill asset
 - **THEN** the read is permitted, while a write into the read-only authored zone is still refused
+
+#### Scenario: Hook reads a mount only its workflow grants
+
+- **WHEN** a `before` hook in a state that enables no mount calls `tools.readFile` on a governed
+  mount that another state of the same workflow enables, and then on a governed mount no grant of
+  the workflow names
+- **THEN** the first read is permitted and the second is refused with `mount.not-allowed`
 
 #### Scenario: Governance tracks the active state
 

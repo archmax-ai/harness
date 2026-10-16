@@ -9,6 +9,28 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.7.0
+
+- **Breaking: a hook reaches a governed mount only where its workflow grants it.**
+  A hook runs on runtime authority, and the mount rule used to skip that authority
+  entirely. One mount table serves a session and every child it dispatches, so a
+  caller's `before` or `after` script could read a mount only a child grants, and
+  write it where the host served it writable. A hook is now held to its workflow's
+  grants, taken across every state rather than the active one. It reads a governed
+  mount that `allow_always` or any state's `allow` names, and is otherwise refused
+  with `mount.not-allowed`. It writes one only where a grant of the workflow asks
+  `access: read_write`, and an `access: read` in `allow_always` narrows any mount for
+  it, so the refusal is `mount.read-only`. A state's own `allow`, `forbid` and
+  `access: read` still do not bind a hook. A `file` value is checked on the same
+  authority, so a seed or return naming such a path is refused too. **Migrate** by
+  granting the mount in the workflow: `mounts.allow_always: [name]`, or
+  `{ mount: name, access: read_write }` where a hook writes. See
+  [mount governance](/reference/machine-spec/#mountsallow_always--mountsallow-which-states-reach-a-mount).
+- **A workflow's own `forbid_always` binds its own hooks.** `mounts.forbid_always`
+  and `skills.forbid_always` reached a hook only as a caller's inherited denial, so a
+  top-level workflow's hooks could read what its own lists denied. They now refuse
+  the call with `mount.forbidden` or `skill.forbidden`, as the docs already said.
+
 ## 0.6.0
 
 - **A host tool knows which session its call is made in.** `ToolContext` carries
