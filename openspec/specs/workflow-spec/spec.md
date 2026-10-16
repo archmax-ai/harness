@@ -550,14 +550,20 @@ that order. A governed mount no list names SHALL be enabled nowhere. An ungovern
 be enabled in every state without being named, exactly as today, so a spec with no `mounts`
 block loads and runs unchanged over any table.
 
-A mount SHALL be readable wherever it is enabled, and writable there only when the host
-declared it writable **and** no applicable grant narrowed it to `access: read`. A grant naming
-no access SHALL take the host's posture. The host's `readOnly` posture SHALL be a **ceiling**:
+A mount SHALL be readable wherever it is enabled. A governed mount SHALL be writable there
+only when all three hold: the host declared it writable, some grant of the workflow's **own**
+spec asks `access: read_write` for it (in `mounts.allow_always` or in any state's
+`mounts.allow`), and no grant applicable in the state narrowed it to `access: read`. A grant
+naming no access SHALL ask for no write: it reaches a write only where a grant of the same
+workflow asks for one, so a bare grant in one state and a `read_write` grant in another both
+write. A mount belongs to the workflow that grants it. One assembly serves one table to a
+session and every child it dispatches, and a route is served writable when any workflow in
+that tree asks, so another workflow's `read_write` SHALL NOT widen this one's bare grant. The host's `readOnly` posture SHALL be a **ceiling**:
 `access: read_write` on a mount the workspace serves read-only SHALL open nothing and SHALL be
 a `validate` warning. `access: read` SHALL be a restriction like every other in this schema —
 whichever level asks for it gets it, and no narrower level SHALL widen it back — so a state
 cannot re-open a mount the workflow narrowed. An ungoverned mount SHALL take the host's posture
-in every state, carrying no grant to qualify.
+in every state, carrying no grant to ask for a write; only an `access: read` narrows it.
 
 Denial mirrors the grant, and beats it. `mounts.forbid_always` SHALL put its names out of reach
 of the whole workflow, governed or not. A state's `mounts.forbid` SHALL remove its names from
@@ -573,7 +579,9 @@ the table declares) under every key, and:
 - a name in a grant list that is not governed SHALL be a warning that the entry grants nothing
   (an ungoverned mount is visible everywhere already);
 - a name both in the root's `allow_always` and in a state's `allow` SHALL be a warning that the
-  state entry grants nothing the workflow had not already given;
+  state entry grants nothing the workflow had not already given, unless the state entry narrows
+  the root's grant to `access: read` or asks `access: read_write` of a mount the root grants
+  bare;
 - a state's `allow: []` beside a non-empty `allow_always` SHALL be a warning that an empty state
   list subtracts nothing and that `mounts.forbid` is what subtracts;
 - a `forbid` entry for a name nothing would have enabled where it applies SHALL be a warning
@@ -634,7 +642,7 @@ the table declares) under every key, and:
 #### Scenario: A state may read a mount it may not write
 
 - **WHEN** the table mounts `shared` writable and governed, the root declares
-  `mounts: { allow_always: [shared] }` and state `review` declares
+  `mounts: { allow_always: [{ mount: shared, access: read_write }] }` and state `review` declares
   `mounts: { allow: [{ mount: shared, access: read }] }`
 - **THEN** `review` reads `shared/**` and its listing there is complete, a write there is
   refused naming the mount and the access, and every other state still writes it
@@ -698,6 +706,27 @@ the table declares) under every key, and:
 - **THEN** `archmax validate` reports one warning naming both as unreachable from this workflow and
   naming `mounts.allow_always` as the key to add — and reports none at all when the spec declares
   any root `mounts` block, `allow_always: []` included
+
+#### Scenario: A bare grant reads a mount no grant of the workflow asks to write
+
+- **WHEN** the table mounts `exports` writable and governed, and the workflow grants it only as a
+  bare name
+- **THEN** every state reads `exports/**`, a write there is refused `mount.read-only` saying no
+  grant of this workflow asks for `access: read_write`, and the prompt lists `exports/` as
+  read-only
+
+#### Scenario: A caller and its child each answer for their own grants
+
+- **WHEN** workflow A grants `exports` as `{ mount: exports, access: read_write }`, and workflow B,
+  which A dispatches, grants it bare
+- **THEN** A writes `exports/**` and B is refused `mount.read-only`, its prompt listing `exports/`
+  as read-only; and with the grants swapped, B writes and A is refused
+
+#### Scenario: One workflow's grants write together
+
+- **WHEN** state `draft` grants `exports` bare and state `publish` grants it
+  `{ mount: exports, access: read_write }`
+- **THEN** both states write `exports/**`
 
 ### Requirement: Governance diagnostics for denial
 
@@ -939,8 +968,8 @@ A trigger declaration's `requires` and `returns` SHALL each be a list of distinc
 names, declared on the state the trigger enters, where each entry is either a bare variable
 name or an object `{ name, type?, description? }` naming one: `name` a variable name, `type`
 one of the **signature types** `string`, `integer`, `number`, `boolean`, `date`, `date-time`,
-`object` and `array`, and `description` a non-empty string saying what the variable holds for
-whoever supplies or reads it. A bare name and an object with only `name` SHALL mean the same
+`object`, `array` and `file`, and `description` a non-empty string saying what the variable holds
+for whoever supplies or reads it. A bare name and an object with only `name` SHALL mean the same
 untyped entry, and one list MAY mix the two spellings. An object entry carrying any other key
 SHALL be an error naming the trigger, the entry and the key. Distinctness SHALL be by name
 across both spellings. `returns` SHALL NOT name `trigger` (runtime-set and locked) or `title`
@@ -969,10 +998,16 @@ for the purpose of guard-reference advisories.
   `signatureForTrigger("manual").requires` is `[{ name: order_id }, { name: due, type: date,
   description: "The day the refund is due." }]`
 
+#### Scenario: A file entry is accepted
+
+- **WHEN** a `manual` declaration has `requires: [{ name: invoice, type: file }]` and
+  `returns: [{ name: report, type: file, description: "The reconciliation report." }]`
+- **THEN** the spec loads and `signatureForTrigger("manual")` carries both entries with type `file`
+
 #### Scenario: An unknown type is refused
 
 - **WHEN** an entry declares `{ name: amount, type: float }`
-- **THEN** loading fails naming the trigger, the entry and the accepted types
+- **THEN** loading fails naming the trigger, the entry and the accepted types, `file` among them
 
 #### Scenario: One name in both spellings is a duplicate
 
@@ -1003,7 +1038,12 @@ Conformance SHALL be decided by one rule, the same one every other check in this
 `number` a finite JSON number; `boolean` `true` or `false`; `date` a string that is an RFC 3339
 full-date (`YYYY-MM-DD`) naming a real calendar day; `date-time` a string that is an RFC 3339
 date-time carrying an offset (`Z` or `±hh:mm`); `object` a JSON object that is not an array;
-`array` a JSON array. No value SHALL be coerced: the string `"4"` does not conform to `integer`.
+`array` a JSON array; `file` a string naming a path from the workspace root — after at most one
+leading `/`, one or more segments with no empty, `.` or `..` segment, no backslash, no NUL and no
+trailing `/`. No value SHALL be coerced: the string `"4"` does not conform to `integer`. The rule
+judges a `file` value's shape only; whether a file is there, and whether the session may read
+it, is checked where the value crosses a boundary (see "A file value names a file the session
+may read").
 
 #### Scenario: Missing required input
 
@@ -1044,6 +1084,19 @@ date-time carrying an offset (`Z` or `±hh:mm`); `object` a JSON object that is 
 - **WHEN** a session on a trigger declaring `returns: [{ name: total, type: number }]` finishes
   with `total` holding the string `"12.50"`
 - **THEN** the session is rejected naming the terminal state, `total` and `number`
+
+#### Scenario: A malformed file path does not conform
+
+- **WHEN** a trigger declares `{ name: invoice, type: file }` and the seed is
+  `scratchpad/../checkpoints/cp-1.json`, `scratchpad/`, `scratchpad//invoice.pdf`,
+  `scratchpad\invoice.pdf` or the empty string
+- **THEN** the session is refused naming `invoice` and `file`
+
+#### Scenario: Any root path conforms
+
+- **WHEN** the seed is `skills/billing/assets/invoice.pdf` or `/scratchpad/attachments/invoice.pdf`
+- **THEN** the value conforms; whether the session starts depends on the file being there and
+  readable
 
 ### Requirement: The signature crosses a sub-workflow boundary
 
@@ -1106,6 +1159,14 @@ trimmed; a bad seed throws `InvalidTitleError` at the seeding boundary), treated
 label when seeded (it does not overwrite a title the session already holds), and replaced by
 a delivery that carries one.
 
+The platform prompt SHALL ask a top-level session to set `title` in its first turn. After that,
+it SHALL ask for a rename only when the conversation as a whole has moved to a subject the title
+no longer describes. The model SHALL be told to judge this against the whole conversation, not
+its latest message: a follow-up, a detail, a correction or a side question on the same subject
+keeps the title, and a rename names what the whole conversation is about. The `title` sentence
+in a top-level session's `archmax_set_variables` description SHALL set the same bar. A
+sub-workflow's child SHALL read neither.
+
 #### Scenario: Invalid name refused at the door
 
 - **WHEN** a seed, a delivery, or a write uses the name `Customer.Id`
@@ -1117,6 +1178,14 @@ a delivery that carries one.
 - **WHEN** a host seeds `title: "Inbound refund request"`, the first turn sets `title` to
   `"Refund for order A-1042"`, and a second turn starts with the same seed
 - **THEN** `title` still reads `Refund for order A-1042`
+
+#### Scenario: A follow-up keeps the title
+
+- **WHEN** a top-level session's platform prompt and `archmax_set_variables` description are
+  rendered
+- **THEN** both ask for a rename only when the subject of the whole conversation has changed, and
+  the prompt says to judge that against the whole conversation rather than the latest message and
+  that a follow-up on the same subject keeps the title
 
 ### Requirement: Seeds are locked; locking is monotonic
 
@@ -1299,10 +1368,11 @@ signature (an MCP tool, a form, an API) describes exactly what the runtime enfor
 SHALL produce `{ type: "object", properties, required }`, with one property per entry in
 declaration order: `string`, `integer`, `number`, `boolean`, `object` and `array` as the JSON
 Schema `type` of the same name; `date` as `{ type: "string", format: "date" }`; `date-time` as
-`{ type: "string", format: "date-time" }`; an untyped entry as a schema with no `type`; and an
-entry's `description` as the property's `description`. `required` SHALL name every entry of a
-`requires` list, since each is mandatory. For a `returns` list it SHALL name every entry, since
-the completion check guarantees each is set.
+`{ type: "string", format: "date-time" }`; `file` as `{ type: "string", format: "file" }`; an
+untyped entry as a schema with no `type`; and an entry's `description` as the property's
+`description`. `required` SHALL name every entry of a `requires` list, since each is mandatory.
+For a `returns` list it SHALL name every entry, since the completion check guarantees each is
+set.
 
 The runtime SHALL also publish the conformance rule as a pure function: given signature entries
 and a value map, it returns one issue per missing name and per non-conforming value — the
@@ -1317,6 +1387,11 @@ by it.
 - **THEN** it yields `properties` `order_id: { type: string, description: "The order." }`,
   `due: { type: string, format: date }` and `note: {}`, with `required: [order_id, due, note]`
 
+#### Scenario: A file entry becomes a string with format file
+
+- **WHEN** the mapping is given `[{ name: invoice, type: file, description: "The invoice." }]`
+- **THEN** it yields `invoice: { type: string, format: file, description: "The invoice." }`
+
 #### Scenario: The conformance rule names every problem
 
 - **WHEN** the rule is given `[{ name: quantity, type: integer }, { name: due, type: date }]`
@@ -1327,4 +1402,52 @@ by it.
 #### Scenario: One rule decides everywhere
 
 - **WHEN** a host validates a value map with the published rule and it reports no issue
-- **THEN** a session seeded with that map is not refused at the turn boundary for its signature
+- **THEN** a session seeded with that map is not refused at the turn boundary for its signature,
+  unless a `file` value names no file the session may read
+
+### Requirement: A file value names a file the session may read
+
+Where a `file` value crosses a boundary, the runtime SHALL refuse it unless it names a file (not
+a folder) in that session's workspace that the session may read on runtime authority: the zone
+rules and every workflow-wide denial, inherited ones included. The refusal names the variable,
+`file` and the cause. The boundaries are the turn boundary, `archmax_set_variables` for a typed
+return, the completion check, and a delegation call.
+
+#### Scenario: A host seed naming no file is refused
+
+- **WHEN** a session starts on `requires: [{ name: invoice, type: file }]` seeded with
+  `scratchpad/attachments/invoice.pdf` and the session holds no such file
+- **THEN** no model call is made and the session is refused naming `invoice`, `file` and that
+  nothing is at that path
+
+#### Scenario: A return written before its file is refused at the write
+
+- **WHEN** the current turn's trigger declares `returns: [{ name: report, type: file }]` and the
+  agent calls `archmax_set_variables({ variables: { report: "scratchpad/report.pdf" } })`
+  before writing that file
+- **THEN** the call is refused as a correctable tool refusal naming `report` and `file`, nothing
+  is written, and the same call succeeds once the file exists
+
+#### Scenario: A return whose file is gone at completion
+
+- **WHEN** `report` was set while the file existed, the agent removes the file, and the session
+  finishes in a terminal state
+- **THEN** the session is rejected naming the terminal state, `report` and `file`
+
+#### Scenario: A folder is not a file
+
+- **WHEN** a `file` value names `scratchpad/attachments`, which is a folder in the session
+- **THEN** it is refused at whichever boundary it crosses
+
+#### Scenario: An authored file is a file value
+
+- **WHEN** a session starts on `requires: [{ name: template, type: file }]` seeded with
+  `skills/billing/assets/template.pdf`, a file the workspace mounts
+- **THEN** the session starts and `template` reads that path
+
+#### Scenario: A denied path is refused
+
+- **WHEN** the workflow declares `mounts: { forbid_always: [reference] }` and a `file` value names
+  `reference/salaries.pdf`, or a value names `checkpoints/cp-1.json`
+- **THEN** it is refused naming the variable, `file` and the rule that denies the read, at
+  whichever boundary it crosses
