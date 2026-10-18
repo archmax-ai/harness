@@ -27,6 +27,8 @@ import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseChatModelCallOptions } from "@langchain/core/language_models/chat_models";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
+import { ReplSession } from "@langchain/quickjs";
+import { vi } from "vitest";
 import {
   contentToString,
   createAgent,
@@ -568,4 +570,50 @@ let sessionSeq = 0;
  */
 export function freshSessionId(prefix = "s"): string {
   return `${prefix}-${process.pid}-${++sessionSeq}`;
+}
+
+// --- Process health -------------------------------------------------------------
+
+/**
+ * Watch every sandbox REPL freed from now on, by namespace, and the assertion
+ * QuickJS aborted on if it refused the free. `ReplSession.dispose` swallows
+ * whatever the runtime's free throws, so the spy wraps that free to see it.
+ * Every free in this version also throws a benign `HostRef` error; only an
+ * `Aborted(…)` is the assertion a promise still alive in the REPL trips. Undone
+ * by `vi.restoreAllMocks()`.
+ */
+export function watchReplFrees(): { freed(namespace: string): { assertion?: string } | undefined } {
+  const frees: Array<{ id: string; assertion?: string }> = [];
+  const original = ReplSession.prototype.dispose;
+  vi.spyOn(ReplSession.prototype, "dispose").mockImplementation(function (this: ReplSession) {
+    const internals = this as unknown as { id: string; runtime: { dispose(): void } | null };
+    const record: { id: string; assertion?: string } = { id: internals.id };
+    const runtime = internals.runtime;
+    if (runtime) {
+      const freeRuntime = runtime.dispose.bind(runtime);
+      runtime.dispose = () => {
+        try {
+          freeRuntime();
+        } catch (err) {
+          const message = (err as Error)?.message ?? "";
+          if (message.startsWith("Aborted(")) record.assertion = message;
+          throw err;
+        }
+      };
+    }
+    frees.push(record);
+    original.call(this);
+  });
+  return { freed: (namespace) => frees.find((record) => record.id === namespace) };
+}
+
+/**
+ * Collect the promise rejections no handler takes until `stop()` — what ends a
+ * host's process.
+ */
+export function watchUnhandledRejections(): { seen: unknown[]; stop(): void } {
+  const seen: unknown[] = [];
+  const onRejection = (reason: unknown) => seen.push(reason);
+  process.on("unhandledRejection", onRejection);
+  return { seen, stop: () => process.off("unhandledRejection", onRejection) };
 }

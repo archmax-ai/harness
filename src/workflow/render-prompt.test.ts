@@ -244,13 +244,23 @@ describe("renderStateGraph — the volatile half", () => {
       expect(text).toContain("before it finishes — finishing without every one set ends it rejected.");
     });
 
-    it("tells a sub-workflow child its caller gets what it set, with a note for the rest", () => {
+    it("tells a sub-workflow child its caller gets what it set, and the rest empty with a note", () => {
       const text = graph(signed, "enrich", "sub-workflow", true);
       expect(text).toContain(
         "This run must set enrichment_file, delayed with `archmax_set_variables` before it finishes — " +
-          "your caller gets the ones you set, with a note naming any you did not.",
+          "your caller gets the ones you set, and any you leave unset as empty, with a note naming them.",
       );
       expect(text).not.toContain("rejected");
+    });
+
+    // Rendered in every state, so it must not read as "set these now": a return
+    // written, let alone locked, before the work settles it is a guess the caller gets.
+    it("says a return is set once final, is not needed to move, and is locked only when final", () => {
+      const timing =
+        "Set each once its final value is known — moving to another state does not need it — and " +
+        "lock one only when it is final: a locked return can no longer change.";
+      expect(graph(signed, "enrich", "sub-workflow", true)).toContain(`naming them. ${timing}`);
+      expect(graph(signed, "enrich", "sub-workflow")).toContain(`ends it rejected. ${timing}`);
     });
 
     /**
@@ -295,6 +305,8 @@ describe("renderStateGraph — the volatile half", () => {
             "This run must set these with `archmax_set_variables` before it finishes — finishing without every one set ends it rejected:",
             "- total (number) — Refunded amount in EUR.",
             "- remark",
+            "Set each once its final value is known — moving to another state does not need it — and " +
+              "lock one only when it is final: a locked return can no longer change.",
           ].join("\n"),
         );
       });

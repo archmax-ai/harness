@@ -270,8 +270,10 @@ Disclosure follows the state machine deterministically, and enforcement sits
 underneath it: a call to an undisclosed tool is still blocked by the kernel. A
 script's `tools.*` bridge reaches past that per-state disclosure, but its calls
 are governed by the active state exactly as the model's own calls are. Lifecycle
-hooks are the exception, because they run on runtime authority, which waives the
-state's allow list and nothing else.
+hooks are the exception, because they run on runtime authority. That waives the
+state's own surface: its allow and forbid lists, and its skill and mount grants.
+The workflow's mount grants, taken across every state, still bind a hook, and so
+do the workflow-wide denials and every safety rule.
 
 A blocked call is answered with an error-status tool message giving the reason,
 so the agent reads the refusal and carries on. A permitted call whose tool
@@ -372,6 +374,11 @@ A governed mount the state does not have is refused, and also **unseen**. The
 refusal is `mount.not-allowed`, `mount.forbidden`, or `mount.read-only` for a
 write into one a grant narrowed or no grant of the workflow asks to write. Unseen means `ls`, `glob` and `grep` results
 lose every entry under it, the workspace root listing included.
+
+A lifecycle hook answers to the **workflow's** grants rather than the state's. It
+reads a governed mount any state of its workflow grants, and writes one only where
+a grant of the workflow asks `read_write`. A mount no grant of the workflow names,
+such as one only a child grants, is refused to it like any other.
 
 The prompt names the mounts of *this* state, in the volatile block, so the
 cacheable prefix stays identical across states. Full reference:
@@ -501,7 +508,10 @@ Four rules make this safe to rely on:
   the guard at all.
 - **Locking is monotonic.** A locked variable refuses every later write, loudly,
   and host seeds are locked automatically. Lock anything else a guard depends
-  on: that is what settles the fact. Without a lock, any later state can
+  on: that is what settles the fact. A seed of one of the trigger's
+  [returns](/guides/triggers/#a-return-is-owed-when-the-session-finishes) is
+  the exception: it lands unlocked, so a guard should not rest on one until the
+  agent locks it. Without a lock, any later state can
   overwrite it, and the later value simply wins, since execution is sequential
   and a rewrite is one writer twice.
 - **Paths read data.** Traversal is own-properties-only, so `${{tags.length}}`
@@ -568,7 +578,8 @@ every other `set_variables` rejection. The reason is one the agent can act on,
 because a title is presentation metadata and a mangled one is worse than none.
 
 A host may seed one at assembly (`variables: { title: "Inbound refund request" }`).
-It lands **unlocked**, the single exception to "every seed is locked".
+It lands **unlocked**, an exception to "every seed is locked". The other is a
+seed of one of the trigger's `returns`.
 
 The seed is an *opening* label the agent may refine, and it leaves a title an
 earlier turn already established in place. A delivery carrying a `title` replaces
@@ -703,8 +714,8 @@ the `archmax_advance` out of a state, or runs at completion for a terminal state
 Once a completion passes its `after` hooks, the trigger's
 [`returns`](/guides/triggers/#a-trigger-may-declare-its-signature) are checked
 once, without handing anything back: a sub-workflow child short of them
-completes and its caller gets what it set plus a `note`, and a top-level session
-short of them is rejected.
+completes and its caller gets the unset ones empty (`null`) plus a `note`, and a
+top-level session short of them is rejected.
 
 A refused entry is a **rejection**. The veto's reason is the turn's reply. The
 session routes through the state's `on_error` if it declares one, else settles

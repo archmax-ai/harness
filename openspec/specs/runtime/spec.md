@@ -528,8 +528,9 @@ defineHook } from "@archmax-ai/harness/sandbox"` SHALL be stripped in the sandbo
 SHALL run in the same QuickJS sandbox as the sandbox tools, on runtime authority: the active state's
 own governance does not bind their `tools.*` calls — neither its allow lists nor its `forbid` lists,
 since a hook sits outside that surface in both directions — but the safety rules, the workflow's
-`tools.forbid_always` and `skills.forbid_always`, and consumer rules do, and
-each call emits tool telemetry with `origin: "lifecycle"`. `task()` SHALL be available to hook
+`tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`, the workflow's mount grants
+(read on workflow scope: a governed mount some state or `allow_always` grants), and consumer rules
+do, and each call emits tool telemetry with `origin: "lifecycle"`. `task()` SHALL be available to hook
 scripts and never to `archmax_eval`/`archmax_run`.
 
 #### Scenario: Hook reads the transcript and vetoes
@@ -554,6 +555,12 @@ scripts and never to `archmax_eval`/`archmax_run`.
   `tools: { forbid_always: [write_file] }`, and a hook calls both
 - **THEN** the `read_file` call runs and the `write_file` call throws a governance error naming the
   workflow-wide denial
+
+#### Scenario: A hook reaches only the mounts its workflow grants
+
+- **WHEN** the table governs `ledger`, no grant of the workflow names it, and a hook calls
+  `tools.readFile("ledger/2026.csv")`
+- **THEN** the call throws a governance error with `mount.not-allowed`, and the hook can catch it
 
 ### Requirement: Hook sequencing and phases
 
@@ -1052,8 +1059,8 @@ state's `after` hooks have passed, the runtime SHALL check the `returns` of the 
 the turn, once, and hand nothing back: no runtime note, no further model call.
 
 - A session that set every declared return, each conforming to its type, SHALL complete.
-- A **sub-workflow child** that left declared returns unset SHALL complete; its caller gets the
-  returns it set plus a `note` naming the rest (see `delegation`).
+- A **sub-workflow child** that left declared returns unset SHALL complete; its caller gets every
+  declared return, the unset ones `null`, plus a `note` naming them (see `delegation`).
 - A **top-level session** that left declared returns unset SHALL end with `status: rejected` and a
   reason naming the state, the unset names and the trigger, without consulting `on_error`.
 - A session holding a declared return whose value does not conform to its type SHALL be rejected
@@ -1062,7 +1069,9 @@ the turn, once, and hand nothing back: no runtime note, no further model call.
 The check SHALL NOT run at a park, on a reply-only turn, or after `archmax_raise`. The rendered
 trigger signature SHALL tell the agent that the returns are set with `archmax_set_variables` before
 it finishes, and what finishing without every one does: for a child, that its caller gets the ones
-it set with a note naming the rest; otherwise, that the session ends rejected.
+it set, and any left unset as empty, with a note naming them; otherwise, that the session ends
+rejected. It SHALL also tell the agent to set each once its final value is known, that moving to
+another state does not need it, and to lock one only when it is final.
 
 #### Scenario: A top-level session short of its returns is rejected at once
 
@@ -1102,4 +1111,46 @@ it set with a note naming the rest; otherwise, that the session ends rejected.
   state, once as a top-level session and once as a sub-workflow child
 - **THEN** the rendered signature says it must set `delayed` with `archmax_set_variables` before it
   finishes, and says the top-level run ends rejected without it, while the child's caller gets what
-  it set with a note naming the rest
+  it set and the rest empty, with a note naming them
+- **AND** both say to set it once its final value is known, that moving to another state does not
+  need it, and to lock it only when it is final
+
+### Requirement: A return is owed at the finish and seeded unlocked
+
+A trigger's `returns` SHALL be read only by the completion check. `archmax_advance` SHALL check the
+state's own `requires:` and never the current trigger's `returns`, so a state is left with them
+unset unless that state's `requires:` lists them. A write of a return SHALL replace an earlier
+unlocked one. `archmax_set_variables` SHALL lock a return with `lock: true` as it locks any other
+name.
+
+A seed of a return of the trigger in force SHALL land unlocked:
+
+- A turn boundary's seed of one (a host's `variables`, a firing's, or a delegation's arguments) SHALL
+  land unlocked. When the session already holds a value for that name, the seed SHALL write nothing,
+  as a seeded `title` does, and it SHALL still satisfy the trigger's `requires`.
+- A delivery's seed of a return of the delivered trigger SHALL land unlocked, replacing the held
+  value as every delivered value does.
+
+#### Scenario: A child leaves a state before its returns are set
+
+- **WHEN** a child whose `draft` state has no `requires:` and whose trigger declares
+  `returns: [summary]` advances to `finish` with `summary` unset, then sets it and finishes
+- **THEN** the advance is not blocked, and the caller gets `summary` as set in `finish`
+
+#### Scenario: A return locks once it is final
+
+- **WHEN** a child whose trigger declares `returns: [summary]` sets `summary` to `"first guess"`,
+  advances, then sets it to `"final"` with `lock: true`
+- **THEN** both writes succeed, `summary` is held locked, and the caller gets `"final"`
+
+#### Scenario: A seeded return is rewritable
+
+- **WHEN** a child whose trigger declares `requires: [summary]` and `returns: [summary]` is called
+  with `summary: "rough draft"` and sets `summary` to `"polished"`
+- **THEN** the write succeeds and the caller gets `"polished"`
+
+#### Scenario: A later turn's seed leaves the result in place
+
+- **WHEN** a top-level session seeded `summary: "rough draft"`, whose trigger requires and returns
+  `summary`, set it to `"polished"`, and the next turn carries the same seed
+- **THEN** that turn starts, and `summary` still holds `"polished"`, unlocked

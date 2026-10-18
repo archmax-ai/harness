@@ -124,8 +124,8 @@ states:
 
 A start whose `due` is not a real `YYYY-MM-DD` day is refused before any model call, and a session
 that finishes with `total` not a number is rejected. One that finishes with `total` unset is
-rejected too, unless it runs as a sub-workflow: then its caller gets the returns it did set, plus a
-`note` naming the rest. `signatureJsonSchema` on
+rejected too, unless it runs as a sub-workflow: then its caller gets `total` empty (`null`), plus a
+`note` naming it. A return is owed only when the session finishes, and a seed of one lands unlocked. `signatureJsonSchema` on
 `@archmax-ai/harness/spec` turns the same signature into a JSON Schema. See
 [triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature).
 

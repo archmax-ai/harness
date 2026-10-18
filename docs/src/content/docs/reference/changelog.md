@@ -9,6 +9,68 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.7.0
+
+- **Breaking: a hook reaches a governed mount only where its workflow grants it.**
+  A hook runs on runtime authority, and the mount rule used to skip that authority
+  entirely. One mount table serves a session and every child it dispatches, so a
+  caller's `before` or `after` script could read a mount only a child grants, and
+  write it where the host served it writable. A hook is now held to its workflow's
+  grants, taken across every state rather than the active one. It reads a governed
+  mount that `allow_always` or any state's `allow` names, and is otherwise refused
+  with `mount.not-allowed`. It writes one only where a grant of the workflow asks
+  `access: read_write`, and an `access: read` in `allow_always` narrows any mount for
+  it, so the refusal is `mount.read-only`. A state's own `allow`, `forbid` and
+  `access: read` still do not bind a hook. A `file` value is checked on the same
+  authority, so a seed or return naming such a path is refused too. **Migrate** by
+  granting the mount in the workflow: `mounts.allow_always: [name]`, or
+  `{ mount: name, access: read_write }` where a hook writes. See
+  [mount governance](/reference/machine-spec/#mountsallow_always--mountsallow-which-states-reach-a-mount).
+- **A workflow's own `forbid_always` binds its own hooks.** `mounts.forbid_always`
+  and `skills.forbid_always` reached a hook only as a caller's inherited denial, so a
+  top-level workflow's hooks could read what its own lists denied. They now refuse
+  the call with `mount.forbidden` or `skill.forbidden`, as the docs already said.
+- **Breaking: a sub-workflow's unset returns reach its caller empty.** A child that
+  finishes without setting some of its declared returns still completes. Its
+  caller's `returns` now carries every declared name, each unset one as `null`,
+  beside the `note` naming them. Before, an unset name was left out. A caller that
+  tested for a key's presence now tests for `null`. See
+  [returns](/guides/sub-workflows/#delegation-is-a-tool-call).
+- **Breaking: a seed of a return lands unlocked.** A name in both `requires` and
+  `returns` arrived locked, so a child could never write its result. A seed of a
+  return now lands unlocked, whether it is a call argument, a host's `variables` or
+  a delivery naming one. A later turn's seed leaves a value the session already
+  holds in place. The agent may still lock a return with `lock: true` once it is
+  final. A guard that reads a seeded return now reads a value the session can
+  change until it is locked.
+- **The prompt no longer reads as asking for returns up front.** Every state shows
+  the trigger's returns. It now adds that each is set once its final value is
+  known, that moving to another state does not need it, and that one is locked
+  only when it is final.
+  `archmax_advance` never checked the returns. A state's own `requires:` is still
+  the only gate on leaving it. See
+  [a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
+- **Disposing a session can no longer end the host's process.** A host that called
+  `agent.dispose(sessionId)` while a script's `tools.*` call was still pending freed
+  the script's QuickJS context under the call. A host does exactly that in a `finally`
+  around a cancelled `send`. When the call settled, `@langchain/quickjs` wrote its
+  result into the freed context and threw where nothing could catch it. The
+  unhandled rejection ended the Node process, and every turn running in it. A turn
+  that ended while a timed-out script still awaited a call did the same. Disposal
+  now abandons the calls still pending and frees the context once every call made
+  from it has settled. `dispose` stays synchronous. See
+  [cancelling a turn](/reference/public-api/#cancelling-a-turn).
+- **A cancelled turn stops its scripts.** The `signal` a host passes to `send`
+  reached a script's tools but not the script, so a cancelled script ran on until
+  `timeoutMs`, and a retry in its `catch` could start a sub-workflow under the
+  cancelled turn. The signal now reaches every `archmax_eval`, `archmax_run` and
+  hook script of the turn, in the session and in its child sessions. The
+  evaluation ends with an error at once. A `tools.*` call still pending fails with
+  `the turn was aborted`, and any call the script makes after that is refused
+  before it reaches the tool. A custom `sandboxRuntime` receives the signal as the
+  third argument of `eval`. See
+  [the code interpreter](/guides/code-interpreter/#a-script-lives-as-long-as-its-turn).
+
 ## 0.6.0
 
 - **A host tool knows which session its call is made in.** `ToolContext` carries

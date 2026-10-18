@@ -4,8 +4,11 @@
  * `veto()`/`ok()`; a judge subagent may ask for a correction; errors fail closed; a
  * failed segment routes to `on_error`; `budget.maxTurns` bounds a segment.
  */
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { FilesystemBackend } from "deepagents";
 import { afterEach, describe, expect, it } from "vitest";
-import { isRuntimeNote, runtimeNoteKind } from "../index.js";
+import { createMemorySessionStore, defaultMounts, isRuntimeNote, runtimeNoteKind } from "../index.js";
 import { computeSpecHash } from "../workflow/snapshot.js";
 import {
   advanceTo,
@@ -826,6 +829,67 @@ describe("which denials bind a hook", () => {
     expect(lines).toContain("read: ran");
     // The workflow's denial is absolute — it binds the hook too.
     expect(lines.join("\n")).toMatch(/write: .*forbidden by the workflow/);
+  });
+});
+
+describe("which mounts a hook reaches", () => {
+  // One table serves a session and every child it dispatches, so it holds
+  // mounts other workflows grant. A hook reaches a governed mount wherever its
+  // own workflow grants it — in any state, not only the active one — and no
+  // further.
+  const spec = {
+    runtime: RUNTIME,
+    states: {
+      start: { triggers: { manual: null }, transitions: [{ to: "gated", description: "Test edge to gated." }] },
+      gated: {
+        before: { script: "hooks/probe.js" },
+        transitions: [{ to: "review", description: "Test edge to review." }],
+      },
+      review: { mounts: { allow: ["contracts"] } },
+    },
+  };
+
+  /** Reads a mount another state grants, then one no grant of the workflow names. */
+  const probe = [
+    "/** Probes two governed mounts from runtime authority. */",
+    "export default async ({ tools }) => {",
+    "  for (const file_path of [\"contracts/policy.md\", \"invoices/a.xml\"]) {",
+    "    const line = await tools",
+    "      .readFile({ file_path })",
+    "      .then(() => `${file_path}: ran`)",
+    "      .catch((e) => `${file_path}: ${e.message}`);",
+    "    console.log(line);",
+    "  }",
+    "  return ok();",
+    "};",
+    "",
+  ].join("\n");
+
+  it("reads a mount another state grants, and is refused one its workflow grants nowhere", async () => {
+    const sid = freshSessionId();
+    const root = workspaceWith(spec, { "workflows/w/hooks/probe.js": probe });
+    for (const [dir, file, content] of [
+      ["contracts", "policy.md", "# Policy\n"],
+      ["invoices", "a.xml", "<invoice/>\n"],
+    ] as const) {
+      mkdirSync(join(root, dir), { recursive: true });
+      writeFileSync(join(root, dir, file), content);
+    }
+    const governed = (dir: string) => ({
+      backend: new FilesystemBackend({ rootDir: join(root, dir), virtualMode: true }),
+      governed: true,
+    });
+    const mounts = { ...defaultMounts(root), "/contracts/": governed("contracts"), "/invoices/": governed("invoices") };
+    const { agent, events } = await assemble(root, {
+      turns: [advanceTo("gated"), { reply: "in" }],
+      params: { workspace: { rootDir: root, sessionStore: createMemorySessionStore(), mounts } },
+    });
+    await turn(agent, sid, "go");
+
+    expect(statesEntered(events)).toEqual(["start", "gated"]);
+    const lines = eventsOf(events, "hook-output").map((e) => e.line);
+    expect(lines).toContain("contracts/policy.md: ran");
+    expect(lines.join("\n")).toMatch(/invoices\/a\.xml: .*BLOCKED.*the mount 'invoices', which no grant of this workflow names/);
   });
 });
 

@@ -128,7 +128,8 @@ Lifecycle **hooks are exempt**, exactly as they are exempt from a state's
 `tools.allow`, because a `before` hook runs on runtime authority. So a routing
 state can enable nothing while the hook that enforces tenancy still reads the
 order records. That is how the bundled example's `identify-case` state is
-written.
+written. A bundle the workflow's `skills.forbid_always` denies is still refused
+to its hooks.
 
 `archmax validate` reports these as errors:
 

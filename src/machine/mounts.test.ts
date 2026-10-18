@@ -368,3 +368,108 @@ states:
     expect(machine.mountWritable("work", "skills", ungoverned)).toBe(false);
   });
 });
+
+/**
+ * Runtime authority — a hook script, the runtime's own `file` value check —
+ * runs outside every state's surface but never outside its own workflow's
+ * grants: one table serves a caller and every child, so a mount only another
+ * workflow grants must stay out of reach.
+ */
+describe("mount reach on runtime authority", () => {
+  it("reaches a mount any state of the workflow grants, whatever the state", async () => {
+    const machine = await machineFor(`
+mounts:
+  allow_always: [reference]
+states:
+  intake:
+    triggers: { manual: }
+    mounts:
+      forbid: [catalogs/eu]
+    transitions: [{ to: triage, description: Once the request is read. }]
+  triage:
+    mounts:
+      allow: [catalogs/eu]
+`);
+    expect(machine.workflowGrantedMounts(GOVERNED)).toEqual(["reference", "catalogs/eu"]);
+    // The state's own resolution is unchanged.
+    expect(machine.enabledMounts("intake", GOVERNED)).toEqual(["reference"]);
+  });
+
+  it("reaches no governed mount the workflow grants nowhere", async () => {
+    const machine = await machineFor(`
+states:
+  work:
+    triggers: { manual: }
+`);
+    expect(machine.workflowGrantedMounts(GOVERNED)).toEqual([]);
+  });
+
+  it("subtracts forbid_always, and drops a name the table does not govern", async () => {
+    const machine = await machineFor(`
+mounts:
+  allow_always: [reference, skills]
+  forbid_always: [catalogs/uk]
+states:
+  work:
+    triggers: { manual: }
+    mounts:
+      allow: [catalogs/uk]
+`);
+    expect(machine.workflowGrantedMounts(GOVERNED)).toEqual(["reference"]);
+  });
+
+  it("writes where any grant of the workflow asks, whatever the state narrows", async () => {
+    const machine = await machineFor(`
+states:
+  review:
+    triggers: { manual: }
+    mounts:
+      allow: [{ mount: shared, access: read }]
+    transitions: [{ to: publish, description: Once reviewed. }]
+  publish:
+    mounts:
+      allow: [{ mount: shared, access: read_write }]
+`);
+    expect(machine.mountWritable("review", "shared", PREFIXES)).toBe(false);
+    expect(machine.workflowMountWritable("shared", PREFIXES)).toBe(true);
+  });
+
+  it("writes no governed mount the workflow grants only bare", async () => {
+    const machine = await machineFor(`
+mounts:
+  allow_always: [shared]
+states:
+  work:
+    triggers: { manual: }
+`);
+    expect(machine.workflowMountWritable("shared", PREFIXES)).toBe(false);
+  });
+
+  it("holds a workflow-wide narrowing, for an ungoverned mount too", async () => {
+    const machine = await machineFor(`
+mounts:
+  allow_always: [{ mount: shared, access: read }]
+states:
+  work:
+    triggers: { manual: }
+    mounts:
+      allow: [{ mount: shared, access: read_write }]
+`);
+    expect(machine.workflowMountWritable("shared", PREFIXES)).toBe(false);
+    expect(machine.workflowMountWritable("shared", { ...PREFIXES, governed: [] })).toBe(false);
+  });
+
+  it("cannot open a mount the host serves read-only, and gives an ungoverned one the host's posture", async () => {
+    const machine = await machineFor(`
+mounts:
+  allow_always: [{ mount: reference, access: read_write }]
+states:
+  work:
+    triggers: { manual: }
+`);
+    expect(machine.workflowMountWritable("reference", PREFIXES)).toBe(false);
+    const ungoverned = { ...PREFIXES, governed: [] };
+    expect(machine.workflowMountWritable("shared", ungoverned)).toBe(true);
+    expect(machine.workflowMountWritable("skills", ungoverned)).toBe(false);
+  });
+});

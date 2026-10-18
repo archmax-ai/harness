@@ -157,6 +157,12 @@ try {
 }
 ```
 
+To cancel a turn, pass an `AbortSignal` as `signal` in the same config (or in
+`agent.workflow.send(sessionId, input, { signal })`) and abort it. The turn's
+scripts stop with it, in the session and its child sessions: a pending `tools.*`
+call fails and later ones are refused. The `dispose` in the `finally` is safe even
+while a cancelled script's call is still pending.
+
 Use `agent.stream(...)` instead of `invoke` when you want to record a
 trajectory or push incremental updates.
 

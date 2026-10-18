@@ -549,6 +549,32 @@ describe("a delivery's variables", () => {
     expect(eventsOf(events, "warning").some((w) => /Delivered title ignored/.test(w.message))).toBe(true);
   });
 
+  it("seeds a return of the delivered trigger unlocked, so the run can still write its result", async () => {
+    const clarify = CLARIFY.states.clarify;
+    const spec = {
+      ...CLARIFY,
+      states: {
+        ...CLARIFY.states,
+        clarify: {
+          ...clarify,
+          triggers: { ...clarify.triggers, email_reply: { session: "conversation_id", returns: ["summary"] } },
+        },
+      },
+    };
+    const { agent, model } = await assemble(workspaceWith(spec), {
+      turns: [{ tool: "archmax_wait", args: { reason: "waiting for the reply" } }],
+    });
+    await turn(agent, "conv-1", "help with my order");
+    model.enqueue({ tool: "archmax_set_variables", args: { variables: { summary: "final" } } }, { reply: "noted" });
+    const outcome = await agent.workflow.deliver("conv-1", {
+      trigger: { id: "email_reply" },
+      variables: { summary: "draft", note: "x" },
+    });
+    expect(outcome.status).toBe("completed");
+    expect(outcome.variables.summary).toEqual({ value: "final", locked: false });
+    expect(outcome.variables.note).toEqual({ value: "x", locked: true });
+  });
+
   it("refuses a delivered variable name the run could not address", async () => {
     const { agent } = await parkWithWait();
     await expect(

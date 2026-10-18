@@ -353,6 +353,28 @@ error rather than a runtime throw. Session-level members stay on the agent eithe
 way: `sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `toolMocks` and
 `dispose`.
 
+### Cancelling a turn
+
+Pass an `AbortSignal` as `config.signal` and abort it to cancel the turn. `send`
+rejects with the abort, and every script of the turn stops with it, in the
+session and in its child sessions. A script's pending `tools.*` call fails, and a
+call it makes afterwards is refused before it reaches the tool. See
+[a script lives as long as its turn](/guides/code-interpreter/#a-script-lives-as-long-as-its-turn).
+
+`agent.dispose(sessionId)` is safe at any moment once `send` settles, including
+in a `finally` while a cancelled script's call is still pending. Disposal
+abandons that call, and the sandbox frees the script's context only once every
+call made from it has settled, so a call that settles late reaches nothing.
+
+```ts
+const cancel = new AbortController(); // cancel.abort() when the person stops the turn
+try {
+  await agent.workflow.send(sessionId, { message }, { signal: cancel.signal });
+} finally {
+  agent.dispose(sessionId);
+}
+```
+
 ### Multi-turn conversations (chat history)
 
 `agent.invoke` accepts an **array of role-tagged messages** as well as a
@@ -1023,6 +1045,9 @@ reading it as `ok` would silently permit what the hook meant to block.
 Return `{ ok: true, value: { verdict: "veto", reason } }` to block, and an
 `{ ok: false, error }` outcome for a call that could not be made at all.
 
+`ctx.signal` is the abort signal of the turn the hook runs in. An executor that
+does slow work should stop when it aborts, as a script hook does.
+
 ### `policyRules`: programmatic governance rules
 
 Custom pure governance rules, inserted into the kernel pipeline. They run
@@ -1059,6 +1084,17 @@ await createAgent({ workflow: "…", sandboxRuntime: myWorkerSandbox });
 
 Sandbox quotas (`timeoutMs`, `memoryLimitBytes`, `maxPtcCalls`, `maxResultChars`)
 are expressed against the interface, so any implementation receives them.
+
+Two more obligations come with the interface:
+
+- **The turn's signal.** `eval(code, timeoutMs, signal)` receives the turn's abort
+  signal. Once it aborts, settle the evaluation with an error and refuse the
+  script's further host calls.
+- **Disposal under a pending call.** `dispose(namespace)` may be called while a
+  script's host call is still pending. A call that settles after that must not
+  reach freed state. The bundled runtime abandons the pending call and frees the
+  context once every call made from it has settled. The next `session` for the
+  namespace starts afresh.
 
 ### `parseCodeDescription`: code description frontmatter
 

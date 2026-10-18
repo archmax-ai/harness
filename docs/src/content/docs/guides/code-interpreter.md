@@ -94,6 +94,19 @@ settings:
   timeoutMs: 15000
 ```
 
+### A script lives as long as its turn
+
+When a host cancels a turn by aborting the `signal` it passed to `send`, every
+script of that turn stops. That covers `archmax_eval`, `archmax_run` and hook
+scripts, in the session and in the child sessions it dispatched:
+
+- The evaluation ends with an error at once, not at `timeoutMs`.
+- A `tools.*` call still pending fails with
+  `Tool '<name>' failed: the turn was aborted`.
+- A call the script makes after that is refused the same way, before it reaches
+  the tool. A retry in a `catch` therefore starts nothing, and no sub-workflow is
+  dispatched under a cancelled turn.
+
 ## Governance
 
 `archmax_eval` is **always on**: every state has it without declaring it. That is

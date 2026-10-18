@@ -125,7 +125,10 @@ one REPL session per session scope (`src/sessions/scope.ts`). Scripts get `args`
 `args.variables` for `archmax_run`) and `tools.*`, the governed privileged tool-call bridge.
 `src/sandbox/`: `prelude.ts` + `assets/parts/*.js`, `executor.ts` (reads sources through the
 authoring backend), `tools.ts`, `bridge.ts` (`task()` ↔ subagents), `ptc-gateway.ts`. Cases do
-not run in the sandbox.
+not run in the sandbox. `runtime.ts` holds each REPL as a lease: an eval takes the turn's abort
+signal (a cancelled turn's eval settles at once and its `tools.*` calls are refused), and `dispose`
+frees a REPL only once every host call made from it has settled. `@langchain/quickjs` cannot
+survive a call settling into a freed context.
 
 ### Sessions and the workspace
 

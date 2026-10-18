@@ -191,7 +191,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
   const fileGov: FileGovernance | undefined = opts.entryKind
     ? fileGovernance({
         machine,
-        workflow: opts.workflowName ?? "this workflow",
         policyRules: opts.policyRules ?? [],
         mountPrefixes: opts.mountPrefixes ?? NO_MOUNTS,
         skills: skillPrefixes(opts.skills ?? new Map()),
@@ -411,7 +410,12 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         // runs at completion: `correct` hands the state back with a note, a
         // terminal failure routes through `on_error`.
         if (machine.isTerminal(workflowState) && lifecycleHooks[workflowState]?.after?.length) {
-          const ctx = governance.lifecycleCtx(sessionIdOf(runtime), state, messages);
+          const ctx = governance.lifecycleCtx(
+            sessionIdOf(runtime),
+            state,
+            messages,
+            runtime.signal,
+          );
           const reject = await lifecycle.runPhase(workflowState, "after", ctx, undefined, true);
           commitDispatches();
           if (reject) {

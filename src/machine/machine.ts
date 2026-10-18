@@ -405,15 +405,55 @@ export class WorkflowMachine {
    */
   mountWriteRequested(name: string): boolean {
     if (!this.writeRequestedMounts) {
-      const grants = [
-        ...normalizeMountGrants(this.spec.mounts?.allow_always),
-        ...Object.values(this.spec.states).flatMap((state) => normalizeMountGrants(state?.mounts?.allow)),
-      ];
       this.writeRequestedMounts = new Set(
-        grants.filter((grant) => grant.access === "read_write").map((grant) => grant.mount),
+        this.everyMountGrant()
+          .filter((grant) => grant.access === "read_write")
+          .map((grant) => grant.mount),
       );
     }
     return this.writeRequestedMounts.has(name);
+  }
+
+  /**
+   * The governed mounts this workflow grants **anywhere** — in
+   * `mounts.allow_always` or in any state's `mounts.allow` — minus what
+   * `mounts.forbid_always` denies: the reach of a call on runtime authority (a
+   * hook script, the runtime's own `file` value check). Such a call runs outside
+   * every state's surface, so no state's `allow` or `forbid` narrows it, but never
+   * outside its own workflow's grants: a governed mount only another workflow in
+   * the tree grants stays out of reach, though one table serves both.
+   * Declaration order, `allow_always` first, then each state in spec order.
+   */
+  workflowGrantedMounts(governed: readonly string[]): string[] {
+    const table = new Set(governed);
+    const denied = new Set(this.workflowForbiddenMounts());
+    const names = new Set(this.everyMountGrant().map((grant) => grant.mount));
+    return [...names].filter((name) => table.has(name) && !denied.has(name));
+  }
+
+  /**
+   * {@link mountWritable} on workflow scope, for a call on runtime authority. The
+   * host's posture is still the ceiling, and a governed mount still needs a grant
+   * of this workflow asking `read_write`; only a workflow-wide `access: read` (in
+   * `mounts.allow_always`) narrows it, since a state's narrowing is that state's
+   * surface. An ungoverned mount takes the host's posture unless the workflow
+   * narrows it.
+   */
+  workflowMountWritable(name: string, mounts: MountPrefixes): boolean {
+    if (!mounts.writable.includes(name)) return false;
+    const narrowed = normalizeMountGrants(this.spec.mounts?.allow_always).some(
+      (grant) => grant.mount === name && grant.access === "read",
+    );
+    if (narrowed) return false;
+    return !mounts.governed.includes(name) || this.mountWriteRequested(name);
+  }
+
+  /** Every mount grant of this spec: `mounts.allow_always`, then each state's `mounts.allow` in spec order. */
+  private everyMountGrant() {
+    return [
+      ...normalizeMountGrants(this.spec.mounts?.allow_always),
+      ...Object.values(this.spec.states).flatMap((state) => normalizeMountGrants(state?.mounts?.allow)),
+    ];
   }
 
   // --- Graph ----------------------------------------------------------------------

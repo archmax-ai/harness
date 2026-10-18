@@ -530,7 +530,6 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   // `file` return copied back: across sessions, each bound in turn.
   const callerFiles = fileGovernance({
     machine: target,
-    workflow: input.workflow,
     policyRules: governanceRules,
     mountPrefixes: ctx.mountPrefixes,
     skills: ctx.skillTable,

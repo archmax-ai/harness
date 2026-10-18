@@ -280,6 +280,31 @@ describe("tool-call origin", () => {
     expect(forbiddenPath.ruleId).toBe("tool.forbidden");
   });
 
+  /**
+   * The kernel binds a workflow's own `mounts.forbid_always` and
+   * `skills.forbid_always` to its own hooks by itself: no caller has to compile
+   * them into rules, as it does to pass a caller's denials down to a child.
+   */
+  it("binds a lifecycle call to the workflow's own mount and skill denials, with no rules passed", () => {
+    const machine = machineOf({
+      mounts: { forbid_always: ["reference"] },
+      skills: { forbid_always: ["payroll"] },
+      states: { work: { triggers: { manual: null } } },
+    });
+    const mounts: MountPrefixes = { dirs: ["reference", "skills"], files: [], writable: [], governed: [], unsearchable: [] };
+    const hook = (file_path: string) =>
+      decide(
+        machine,
+        { kind: "tool-call", state: "work", tool: "read_file", args: { file_path }, origin: "lifecycle" },
+        [],
+        mounts,
+        {},
+        [{ slug: "payroll", prefix: "skills/payroll" }],
+      );
+    expect(hook("reference/rates.csv").ruleId).toBe("mount.forbidden");
+    expect(hook("skills/payroll/assets/rates.csv").ruleId).toBe("skill.forbidden");
+  });
+
   it("still binds a lifecycle call to consumer rules", () => {
     const machine = machineOf(GATED_SPEC);
     const blockLs: GovernanceRule = (action) =>

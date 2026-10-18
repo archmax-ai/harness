@@ -32,7 +32,6 @@ const ENTRIES: Record<string, "file" | "directory"> = {
 function governance(spec: MachineSpec = SPEC, policyRules: FileGovernance["policyRules"] = []): FileGovernance {
   return fileGovernance({
     machine: WorkflowMachine.fromSpec(spec),
-    workflow: "w",
     policyRules,
     mountPrefixes: MOUNTS,
     skills: SKILLS,
@@ -74,7 +73,24 @@ describe("fileValueIssues", () => {
     const spec: MachineSpec = { ...SPEC, mounts: { allow_always: ["reference"], forbid_always: ["reference"] } };
     const [issue] = await issuesFor("reference/salaries.pdf", governance(spec));
     expect(issue?.message).toMatch(/^'doc' names 'reference\/salaries\.pdf', which this session may not read: /);
-    expect(issue?.message).toContain("workflow 'w'");
+    expect(issue?.message).toContain("'mounts.forbid_always' denies in every state");
+  });
+
+  it("refuses a path under a governed mount the workflow grants in no state", async () => {
+    const spec: MachineSpec = { states: { work: { triggers: { manual: null } } } };
+    const [issue] = await issuesFor("reference/salaries.pdf", governance(spec));
+    expect(issue?.message).toMatch(/^'doc' names 'reference\/salaries\.pdf', which this session may not read: /);
+    expect(issue?.message).toContain("no grant of this workflow names");
+  });
+
+  it("passes a path under a governed mount another state of the workflow grants", async () => {
+    const spec: MachineSpec = {
+      states: {
+        work: { triggers: { manual: null }, transitions: [{ to: "review", description: "Test edge." }] },
+        review: { mounts: { allow: ["reference"] } },
+      },
+    };
+    expect(await issuesFor("reference/salaries.pdf", governance(spec))).toEqual([]);
   });
 
   it("refuses a path under a mount an ancestor forbids, as a child inherits it", async () => {

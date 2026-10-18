@@ -131,7 +131,12 @@ export interface Governance {
    */
   dispatchCount(sessionId: string, state: unknown): number;
   /** A hook context for one request, from the model context captured for the session. */
-  lifecycleCtx(sessionId: string, state: unknown, messages: unknown[]): LifecycleContext;
+  lifecycleCtx(
+    sessionId: string,
+    state: unknown,
+    messages: unknown[],
+    signal?: AbortSignal,
+  ): LifecycleContext;
   reportMove(sessionId: string, moved: { from: string; to: string; park?: PendingDecision }): void;
   /** End the session's turn: drop its model context and return the `beforeDone` entries staged this turn. */
   endTurn(sessionId: string): Record<string, boolean> | undefined;
@@ -402,7 +407,12 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     }) as T;
   }
 
-  function lifecycleCtx(sessionId: string, state: unknown, messages: unknown[]): LifecycleContext {
+  function lifecycleCtx(
+    sessionId: string,
+    state: unknown,
+    messages: unknown[],
+    signal?: AbortSignal,
+  ): LifecycleContext {
     const context = modelContexts.get(sessionId);
     const fields = readWorkflowState(state);
     return {
@@ -417,6 +427,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
         Object.entries(readVariables(state)).map(([name, entry]) => [name, entry.value]),
       ),
       variableStore: readVariables(state),
+      ...(signal ? { signal } : {}),
     };
   }
 
@@ -562,7 +573,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       const veto = await lifecycle.runPhase(
         workflowState,
         "before",
-        lifecycleCtx(sessionId, request.state, request.messages ?? []),
+        lifecycleCtx(sessionId, request.state, request.messages ?? [], request.runtime?.signal),
       );
       if (veto) {
         // The refusal is the person's answer *and* a rejection: the text is the

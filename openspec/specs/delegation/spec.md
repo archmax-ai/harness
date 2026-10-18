@@ -91,7 +91,8 @@ number in the parent session (see "A child's id is its dispatch number in the se
 in the configured session store with its own checkpoints, artifacts and `scratchpad/`, and
 with the parent session id recorded on it. Its variable store SHALL contain exactly the built-in
 `trigger` (`manual`) and the call's arguments, seeded locked through the same construction a
-host's `variables` seeds use; the caller's variables SHALL NOT be copied down under any name.
+host's `variables` seeds use — except `title` and an argument the target also declares in its
+`returns`, which land unlocked; the caller's variables SHALL NOT be copied down under any name.
 The child's transcript SHALL start with one `opening` runtime note and no caller prose; its brief
 is its own spec. The note SHALL be rendered from the call's arguments alone: it SHALL list, by
 name in alphabetical order, every argument whose value is a string (rendered as a JSON string
@@ -383,40 +384,41 @@ caller that passes `title` as an argument seeds it unlocked, as before.
 - **THEN** the child session holds no `title` variable and no `title-set` event carries its
   dispatch id
 
-### Requirement: The call answers with the returns the child set and the closing message
+### Requirement: The call answers with the child's returns and the closing message
 
 A completed child SHALL answer its tool call with `{ message, returns }` when the target declares
-`returns`, and with the closing message alone otherwise. `returns` SHALL carry every declared return
-the child set, each conforming to its declared type. A child that finished with some declared returns
+`returns`, and with the closing message alone otherwise. `returns` SHALL carry every declared return,
+each the child set conforming to its declared type. A child that finished with some declared returns
 unset SHALL still complete the call — it is not handed back for another attempt — and `returns` SHALL
-then also carry `note`, reading `Not all return variables were set by the sub-workflow: '<name>', … was
-not set.` / `were not set.`, naming every unset one; an unset name SHALL be left out rather than
-passed as `undefined`. A declared return holding a value that does not conform to its type SHALL fail
-the call with kind `invalid-return` naming the state, the variable and the type, and no partial result
-SHALL reach the caller then. `note` SHALL be reserved: a trigger's `returns` may not declare it. A
+carry each unset name empty, as `null` (never left out, never `undefined`), and also `note`, reading
+`Not all return variables were set by the sub-workflow: '<name>', … was not set.` / `were not set.`,
+naming every unset one. Whether a return is set SHALL be decided only as the child settles: no state
+of the child is held for one, and an argument seeding one lands unlocked (see `runtime`). A declared return holding a value
+that does not conform to its type SHALL fail the call with kind `invalid-return` naming the state,
+the variable and the type, and no partial result SHALL reach the caller then. `note` SHALL be reserved: a trigger's `returns` may not declare it. A
 mocked dispatch SHALL be held to the same rule. Nothing else SHALL cross back: the child's transcript,
 trail and every other variable are discarded when it settles. Nothing captures the answer into a
 caller variable; an agent that needs one sets it with `archmax_set_variables`, a script writes the
 value it received, and the calling state's `requires:` is the guarantee. The delegation tool's
-description SHALL say that a run finishing without some returns answers with the ones it set and a
-`note` naming the rest.
+description SHALL say that a run finishing without some returns answers with those empty (`null`)
+and a `note` naming them.
 
 #### Scenario: Returns delivered by name
 
 - **WHEN** a target declaring `returns: [enrichment_file, delayed]` completes with both set
 - **THEN** the caller's tool result carries both under `returns` beside the closing `message`, and no `note`
 
-#### Scenario: A child short of its returns answers with what it set and a note
+#### Scenario: A child short of its returns answers with the rest empty and a note
 
 - **WHEN** a target declaring `returns: [enrichment_file, delayed]` finishes with only
   `enrichment_file` set
 - **THEN** the call succeeds at once, with no further model call in the child, and `returns` is
-  `{ enrichment_file, note: "Not all return variables were set by the sub-workflow: 'delayed' was not set." }`
+  `{ enrichment_file, delayed: null, note: "Not all return variables were set by the sub-workflow: 'delayed' was not set." }`
 
-#### Scenario: A child that set none answers with the note alone
+#### Scenario: A child that set none answers with every return empty and the note
 
 - **WHEN** a target declaring `returns: [enrichment_file]` finishes without setting it
-- **THEN** `returns` is `{ note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set." }`
+- **THEN** `returns` is `{ enrichment_file: null, note: "Not all return variables were set by the sub-workflow: 'enrichment_file' was not set." }`
   and the caller's state is not failed
 
 #### Scenario: A child whose typed return does not conform fails closed

@@ -712,6 +712,39 @@ describe("handleSetVariables — typed returns", () => {
   });
 });
 
+describe("handleSetVariables — a return's lock is the agent's call", () => {
+  const machine = WorkflowMachine.fromSpec({
+    states: {
+      draft: {
+        triggers: { manual: { returns: ["summary"] } },
+        transitions: [{ to: "finish", description: "Drafted." }],
+      },
+      finish: {},
+    },
+  } as MachineSpec);
+  const set = (variables: Record<string, unknown>, opts: { lock?: boolean; held?: object } = {}) =>
+    handleSetVariables(
+      {
+        toolCallId: "c1",
+        args: { variables, ...(opts.lock !== undefined ? { lock: opts.lock } : {}) },
+        state: { trigger: { id: "manual" }, variables: opts.held ?? {} },
+      },
+      machine,
+    );
+
+  it("writes a return unlocked, and lets a later write replace it", () => {
+    expect(set({ summary: "draft" }).delta).toEqual({ summary: { value: "draft", locked: false } });
+    const held = { summary: { value: "draft", locked: false } };
+    expect(set({ summary: "final" }, { held }).delta).toEqual({ summary: { value: "final", locked: false } });
+  });
+
+  it("locks a return when asked, after which a write of it is refused", () => {
+    expect(set({ summary: "final" }, { lock: true }).delta).toEqual({ summary: { value: "final", locked: true } });
+    const held = { summary: { value: "final", locked: true } };
+    expect(set({ summary: "other" }, { held }).delta).toBeUndefined();
+  });
+});
+
 describe("set-variables tool declaration", () => {
   const description = (opts?: { child?: boolean }) =>
     createControlTools(opts).find((t) => t.name === SET_VARIABLES_TOOL)!.description;
