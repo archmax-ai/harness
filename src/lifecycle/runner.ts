@@ -128,6 +128,12 @@ export interface LifecycleContext {
    * `requires`.
    */
   variableStore?: VariableStore;
+  /**
+   * The abort signal of the turn the hook runs in, read where the hook runs,
+   * not `config`'s, which is captured at the session's last model call. Once it
+   * aborts, a script hook's eval settles with an error and its calls are refused.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -290,6 +296,7 @@ export class LifecycleRunner {
       // could pass, so there is nothing to dispatch by. A script that wants a
       // model verdict gets a `rubric` hook declared beside it in the same list.
       lifecycle: true,
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
     });
   }
 

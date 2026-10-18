@@ -52,7 +52,12 @@ export interface ToolServiceContext {
   subWorkflows?: SubWorkflowDispatcher;
   /** The `file` type's runtime check for a session in a state; omitted, a `file` value is held to its shape alone. */
   files?: (state: string, variables: VariableStore) => FileValueCheck;
-  lifecycleCtx(sessionId: string, state: unknown, messages: unknown[]): LifecycleContext;
+  lifecycleCtx(
+    sessionId: string,
+    state: unknown,
+    messages: unknown[],
+    signal?: AbortSignal,
+  ): LifecycleContext;
 }
 
 /** The identities of one call being serviced. */
@@ -360,7 +365,18 @@ export function createToolService(ctx: ToolServiceContext) {
           () =>
             handleAdvance(
               { machine, lifecycle, mountPrefixes },
-              { toolCallId, callId, args, state, ctx: ctx.lifecycleCtx(sessionId, state, state?.messages ?? []) },
+              {
+                toolCallId,
+                callId,
+                args,
+                state,
+                ctx: ctx.lifecycleCtx(
+                  sessionId,
+                  state,
+                  state?.messages ?? [],
+                  request.runtime?.signal,
+                ),
+              },
             ),
           // A refused transition replies without erroring the message, so the outcome is read off the move.
           (result) => (result.moved ? "ok" : "error"),

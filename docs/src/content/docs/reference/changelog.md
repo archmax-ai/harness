@@ -50,6 +50,26 @@ as it is today; the guides themselves describe only the present. Every release a
   `archmax_advance` never checked the returns. A state's own `requires:` is still
   the only gate on leaving it. See
   [a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
+- **Disposing a session can no longer end the host's process.** A host that called
+  `agent.dispose(sessionId)` while a script's `tools.*` call was still pending freed
+  the script's QuickJS context under the call. A host does exactly that in a `finally`
+  around a cancelled `send`. When the call settled, `@langchain/quickjs` wrote its
+  result into the freed context and threw where nothing could catch it. The
+  unhandled rejection ended the Node process, and every turn running in it. A turn
+  that ended while a timed-out script still awaited a call did the same. Disposal
+  now abandons the calls still pending and frees the context once every call made
+  from it has settled. `dispose` stays synchronous. See
+  [cancelling a turn](/reference/public-api/#cancelling-a-turn).
+- **A cancelled turn stops its scripts.** The `signal` a host passes to `send`
+  reached a script's tools but not the script, so a cancelled script ran on until
+  `timeoutMs`, and a retry in its `catch` could start a sub-workflow under the
+  cancelled turn. The signal now reaches every `archmax_eval`, `archmax_run` and
+  hook script of the turn, in the session and in its child sessions. The
+  evaluation ends with an error at once. A `tools.*` call still pending fails with
+  `the turn was aborted`, and any call the script makes after that is refused
+  before it reaches the tool. A custom `sandboxRuntime` receives the signal as the
+  third argument of `eval`. See
+  [the code interpreter](/guides/code-interpreter/#a-script-lives-as-long-as-its-turn).
 
 ## 0.6.0
 

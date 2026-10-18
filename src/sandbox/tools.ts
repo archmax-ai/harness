@@ -92,6 +92,8 @@ export function createInterpreter(opts: {
         tools: scopeTools(scope),
         ...scopeSurface(scope),
         prelude: true,
+        // A cancelled turn stops the script: its eval settles, and its calls are refused.
+        signal: runtimeConfig.signal,
       });
       return outcome.formatted;
     },
@@ -122,6 +124,7 @@ export function createInterpreter(opts: {
         args: { ...(input.args ?? {}), variables: variablesByScope.get(scope) ?? {} },
         tools: scopeTools(scope),
         ...scopeSurface(scope),
+        signal: runtimeConfig.signal,
       });
       return outcome.formatted;
     },

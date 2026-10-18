@@ -42,6 +42,11 @@ export interface ScriptRunParams {
    * which is what a lifecycle hook keeps.
    */
   surface?: readonly string[];
+  /**
+   * The turn's abort signal. Once it aborts, the evaluation settles with an
+   * error, and a `tools.*` call the script makes is refused before the tool.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ScriptOutcome {
@@ -131,7 +136,7 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
       captureConsole: true,
       sessionId: params.sessionId,
     });
-    return session.eval(code, timeoutMs);
+    return session.eval(code, timeoutMs, params.signal);
   }
 
   async function runHook(source: string, filePath: string, params: ScriptRunParams): Promise<ScriptOutcome> {

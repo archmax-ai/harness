@@ -340,6 +340,12 @@ can act on what worked — `Promise.allSettled` is the honest shape when partial
 meaningful. Each sub-run is its own session with its own `scratchpad/`, so concurrent sub-runs
 never collide on a path; a `file` return comes back as a copy under a name no other file holds.
 
+A script lives as long as its turn. When the host cancels the turn, a call still in flight fails
+with `Tool '<name>' failed: the turn was aborted`, and every call the script makes after that is
+refused the same way before it reaches the tool. A retry in a `catch` therefore dispatches nothing
+more, so there is no need to tell a cancel apart from an ordinary failure. Hook scripts stop the
+same way.
+
 ### Worked example: a `before` gate
 
 The tenancy half of the bundled example's entry gate
