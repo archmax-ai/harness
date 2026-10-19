@@ -32,24 +32,37 @@ const PTC_PRELUDE = [
   // surface the executor names per evaluation (`__archmaxScope`). Its identity
   // never changes, so a reference an earlier evaluation kept reads the current
   // state. `get` still resolves a registered name outside the view, so calling
-  // one reaches governance and its refusal, not a TypeError. An IIFE: the
-  // evaluation hoists top-level declarations onto `globalThis`.
+  // one reaches governance and its refusal, not a TypeError. The session keys
+  // each tool by its camelCase name, but a model writes the name it calls the
+  // tool by (`tools.read_file`), so the executor also hands over each tool's own
+  // name → its key, and every lookup resolves through that; the listing stays
+  // the keys. An IIFE: the evaluation hoists top-level declarations onto
+  // `globalThis`.
   `(() => {
   if (globalThis.__archmaxScope) return;
   const all = globalThis.tools != null && typeof globalThis.tools === "object" ? globalThis.tools : {};
   const injected = (name) => typeof name === "string" && Object.prototype.hasOwnProperty.call(all, name);
   let surface = null;
+  let keys = {};
+  const keyOf = (name) =>
+    !injected(name) && typeof name === "string" && Object.prototype.hasOwnProperty.call(keys, name) ? keys[name] : name;
   const visible = (name) => injected(name) && (surface === null || surface.has(name));
   const view = new Proxy({}, {
-    get: (_target, name) => (injected(name) ? all[name] : undefined),
-    has: (_target, name) => visible(name),
+    get: (_target, name) => {
+      const key = keyOf(name);
+      return injected(key) ? all[key] : undefined;
+    },
+    has: (_target, name) => visible(keyOf(name)),
     ownKeys: () => Object.keys(all).filter(visible),
-    getOwnPropertyDescriptor: (_target, name) =>
-      visible(name) ? { value: all[name], writable: false, enumerable: true, configurable: true } : undefined,
+    getOwnPropertyDescriptor: (_target, name) => {
+      const key = keyOf(name);
+      return visible(key) ? { value: all[key], writable: false, enumerable: true, configurable: true } : undefined;
+    },
   });
   Object.defineProperty(globalThis, "__archmaxScope", {
-    value: (names) => {
+    value: (names, ownNames) => {
       surface = new Set(names);
+      keys = ownNames ?? {};
       globalThis.tools = view;
     },
   });

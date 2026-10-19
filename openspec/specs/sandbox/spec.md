@@ -170,8 +170,18 @@ first evaluation after a transition sees the new state's tools. `tools` SHALL be
 the life of the REPL session: a reference an earlier evaluation kept SHALL read the current
 surface, and a script that overwrites `tools` SHALL get the view back at its next evaluation. A
 name outside the view that names a tool on the bridge SHALL still resolve, so calling it reaches
-the kernel, which refuses it with its rule and reason and emits `tool-blocked`. A lifecycle
-hook's `tools` SHALL keep every tool on the bridge.
+the kernel, which refuses it with its rule and reason and emits `tool-blocked`. In such a script
+a tool's own name (`tools.read_file`, `tools["archmax_workflow_enrich-order"]`) SHALL resolve to
+the same function as its camelCase key, for a lookup, a call and `in` alike, under the same
+governance; the listing SHALL name the camelCase keys only. A lifecycle hook's `tools` SHALL keep
+every tool on the bridge.
+
+#### Scenario: A script calls a tool by its own name
+
+- **WHEN** an `archmax_eval` in a state that allows `read_file` calls
+  `await tools.read_file({ file_path: "notes.md" })`
+- **THEN** the call reaches `read_file` exactly as `tools.readFile` would, governed and evented
+  the same way, and `Object.keys(tools)` still lists `readFile`
 
 #### Scenario: Script call governed by the active state
 
