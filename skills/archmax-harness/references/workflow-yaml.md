@@ -23,6 +23,7 @@ tests:                           # case suite config (no tests.config.js exists)
   maxConcurrency: 1              # only 1 accepted
   caseTimeoutMs: 120000          # per-case wall clock, distinct from settings.timeoutMs
   judge: {}                      # required for grade:; {} = env default model, or { model, modelOptions }
+budget: { maxModelCalls: 50 }    # model calls one turn may make across ALL states (default 50); raise for long turns
 metadata: { canvas: {} }         # host data, never read; accepted at root, state, rubric — leave as found
 extensions: { hooks: [] }        # host-registered hook kinds; rarely authored
 
@@ -174,7 +175,8 @@ states:
   bind them; `forbid_always`, safety rules and the workflow's mount grants
   (any state's) do. Human states may not declare hooks.
 - **Budgets and `on_error`.** `budget.maxTurns`/`timeoutMs`/`maxParks` bound
-  a state's segment. A terminal failure (hook execution error, exhausted
+  a state's segment; the root `budget.maxModelCalls` (default 50) bounds a whole
+  turn across states, so a cycle between states ends there. A terminal failure (hook execution error, exhausted
   corrections, exhausted budget, exhausted parks) routes to `on_error`
   instead of failing the run; recoverable rejections (invalid edge, veto,
   in-budget correct) keep the agent in place. Declare `on_error` on states

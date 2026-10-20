@@ -86,6 +86,17 @@ A state that polls can bound its own loop with `budget.maxParks`. Exhausting tha
 budget is a budget failure, routed by `on_error`. See [sessions and parked
 sessions](/guides/sessions/#waiting-for-a-time-not-a-reply).
 
+One turn is bounded as a whole. The workflow's
+[`budget.maxModelCalls`](/reference/machine-spec/#budget-the-turn-budget)
+(default 50) counts the model calls of a turn across every state, so an agent
+that moves back and forth between two states without answering is stopped, which
+a state's own `maxTurns` cannot do, since it starts over on every entry. The
+exhaustion routes through `on_error` like any budget failure, and near the end the
+agent is told how many calls it has left. A turn that throws instead (a model
+provider failing, the step limit, a cancelled turn) ends the session `failed`
+with an exit code, so the next message starts a fresh turn rather than finding
+the session stuck.
+
 `archmax_wait` is available in every state, terminal ones included. A session
 that has answered and now awaits a reply parks where it answered and stays open.
 Ban it with `tools: { forbid_always: [archmax_wait] }` to keep sessions from
@@ -172,6 +183,7 @@ Workflow state is checkpointed per session (the LangGraph `thread_id`):
 | `messages` | Conversation history |
 | `workflowState` | Current YAML state |
 | `stateTurns` | Model calls made in the current state, against `budget.maxTurns` |
+| `turnCalls` | Model calls made in the current invocation across every state, against the workflow's `budget.maxModelCalls` |
 | `pendingDecision` / `pendingInput` | The park record a suspended session presents |
 | `beforeDone` | Lifecycle `before` hooks already executed |
 | `iterations` | Grade-and-retry attempts per state |

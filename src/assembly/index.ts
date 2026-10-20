@@ -23,7 +23,7 @@ import {
   type TurnInput,
   type WorkflowSurface,
 } from "../agent.js";
-import type { CompiledAgentGraph } from "../core/deepagents.js";
+import { turnStepLimit, type CompiledAgentGraph } from "../core/deepagents.js";
 import { consoleEventHandler, createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
 import type { MountSpec } from "../core/mounts.js";
 import type { SessionStore } from "../core/session-store.js";
@@ -509,6 +509,8 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     return seeded;
   };
 
+  // The step limit follows the turn budget, so the budget ends a runaway turn first; a caller's own limit wins.
+  const stepLimit: RunnableConfig = { recursionLimit: turnStepLimit(machine.maxModelCalls) };
   const workflow: WorkflowSurface = {
     name: workflowName,
     machine,
@@ -568,7 +570,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       // Validated here, so a bad name is refused before anything runs.
       if (turn.variables) buildSeededVariables(turn.variables);
       const seeds = { ...(turn.variables ?? {}), ...(hasFiles ? await placeTurnFiles(sessionId, turn) : {}) };
-      const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, config, {
+      const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, stepLimit, config, {
         configurable: {
           thread_id: sessionId,
           // Seeded per turn, locked, through the per-invocation seed channel the
@@ -590,5 +592,6 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     members: agentMembers,
     driver,
     workflow,
+    config: stepLimit,
   });
 }

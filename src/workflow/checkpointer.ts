@@ -144,6 +144,13 @@ export class BackendCheckpointSaver extends MemorySaver {
   async getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
     const sessionId = config.configurable?.thread_id as string | undefined;
     if (sessionId !== undefined) await this.ensureLoaded(sessionId);
+    // `MemorySaver.put` creates the namespace before it stores the checkpoint, across an
+    // await; read in that window, the parent takes the newest of no checkpoints and throws.
+    if (sessionId !== undefined && config.configurable?.checkpoint_id === undefined) {
+      const ns = (config.configurable?.checkpoint_ns as string | undefined) ?? "";
+      const held = this.storage[sessionId]?.[ns];
+      if (held !== undefined && Object.keys(held).length === 0) return undefined;
+    }
     return super.getTuple(config);
   }
 

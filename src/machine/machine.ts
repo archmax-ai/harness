@@ -41,6 +41,7 @@ import {
   type ToolPaths,
 } from "./tool-paths.js";
 import {
+  DEFAULT_MAX_MODEL_CALLS,
   specDisabled,
   type AllowEntry,
   type ForbidEntry,
@@ -464,6 +465,11 @@ export class WorkflowMachine {
 
   getTransition(from: string, to: string): MachineTransition | undefined {
     return this.spec.states[from]?.transitions?.find((t) => t.to === to);
+  }
+
+  /** The model calls one turn may make across every state: `budget.maxModelCalls`, else the default. */
+  get maxModelCalls(): number {
+    return this.spec.budget?.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
   }
 
   /** The state a failed turn routes to (`on_error`), if declared and present. */

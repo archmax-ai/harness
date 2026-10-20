@@ -37,6 +37,7 @@ export {
   transitionTypeSchema,
   stateTypeSchema,
   stateBudgetSchema,
+  workflowBudgetSchema,
   allowEntrySchema,
   forbidEntrySchema,
   /** The `*` entry a `forbid` list uses to refuse every tool. */
@@ -76,6 +77,7 @@ export type {
   Hook,
   HookSpec,
   StateBudget,
+  WorkflowBudget,
   AllowEntry,
   ForbidEntry,
   ToolsBlock,

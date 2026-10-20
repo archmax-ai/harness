@@ -306,6 +306,12 @@ describe("BackendCheckpointSaver — eviction", () => {
     expect(tuple?.pendingWrites).toEqual([["task-1", "messages", "hi"]]);
   });
 
+  it("reads a session whose checkpoint is still being written as having none", async () => {
+    const saver = await saverWith();
+    saver.storage["t1"] = { "": {} };
+    expect(await saver.getTuple({ configurable: { thread_id: "t1" } })).toBeUndefined();
+  });
+
   it("is a no-op for an unknown id and safe to repeat", async () => {
     const saver = await saverWith("t1");
     saver.evict("nobody");

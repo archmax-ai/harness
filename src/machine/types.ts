@@ -27,6 +27,7 @@ import type {
   signatureEntryObjectSchema,
   specMetadataSchema,
   stateBudgetSchema,
+  workflowBudgetSchema,
   toolsBlockSchema,
   transitionTypeSchema,
   triggerDeclarationSchema,
@@ -73,6 +74,16 @@ export type HookSpec = z.infer<typeof hookSpecSchema>;
  * is a turn failure subject to `on_error`.
  */
 export type StateBudget = z.infer<typeof stateBudgetSchema>;
+
+/**
+ * Workflow-wide execution budget. `maxModelCalls` bounds the model calls of one
+ * turn (an invocation: a message, a decision, a reply or a delivery) across every
+ * state; exhausting it is a failure of the current state, subject to `on_error`.
+ */
+export type WorkflowBudget = z.infer<typeof workflowBudgetSchema>;
+
+/** The turn budget a workflow runs under when it declares none. */
+export const DEFAULT_MAX_MODEL_CALLS = 50;
 
 /** One entry of a `tools.allow` list: a bare tool name, or a constrained shape. */
 export type AllowEntry = z.infer<typeof allowEntrySchema>;

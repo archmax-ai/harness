@@ -162,6 +162,13 @@ export const parkPhaseSchema = z.enum(["closing", "suspend"]);
 /** Model calls made in `state` since it was entered; `budget.maxTurns` is enforced against the visit. */
 export const stateTurnsSchema = z.object({ state: z.string(), count: z.number() });
 
+/**
+ * Model calls made in the current invocation, across every state; the workflow's
+ * `budget.maxModelCalls` is enforced against it. `exhausted` once that budget has
+ * been routed, so the error handler it routed to is not routed again.
+ */
+export const turnCallsSchema = z.object({ invocation: z.string(), count: z.number(), exhausted: z.boolean().optional() });
+
 // --- Trail --------------------------------------------------------------------
 
 export const TRAIL_STEP_KINDS = ["trigger", "agent", "human", "sub-workflow", "reset", "on_error"] as const;
@@ -270,6 +277,7 @@ const workflowStateFields = {
   /** Parks per state, keyed by slug — what `budget.maxParks` is enforced against. */
   parkCounts: z.record(z.string(), z.number()).optional(),
   stateTurns: stateTurnsSchema.nullable().optional(),
+  turnCalls: turnCallsSchema.nullable().optional(),
   /** Ordered audit trail. Accumulates: a writer sends only the steps it adds. */
   auditTrail: z.array(trailStepSchema).optional(),
   /**

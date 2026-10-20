@@ -8,7 +8,7 @@ sidebar:
 `workflows/<name>/workflow.yaml` is the enforced state machine, a pure YAML
 mapping with these top-level keys:
 
-`title`, `instructions`, `disabled`, `runtime`, `settings`, `tests`, `tools`,
+`title`, `instructions`, `disabled`, `runtime`, `budget`, `settings`, `tests`, `tools`,
 `skills`, `mounts`, `extensions`, `metadata`, `states`.
 
 This page documents the schema fields, focusing on those added by the core
@@ -747,7 +747,7 @@ Per-state execution budget bounding the turn:
 states:
   research:
     budget:
-      maxTurns: 8       # overrides the default recursion limit (50) for this state
+      maxTurns: 8       # model calls this state may make per visit
       timeoutMs: 30000  # time budget per model call; the failure routes through on_error
       maxParks: 5       # how many times this state may park itself with archmax_wait
 ```
@@ -763,8 +763,9 @@ states:
   Parks are counted per state in the checkpoint, so the count survives restarts,
   and the park that would exceed the bound is refused.
 - Any exhaustion is treated as a **turn failure**, subject to `on_error`
-  routing. A state with no `budget` runs under the default recursion limit (50)
-  and may park any number of times.
+  routing. A state with no `budget` may make any number of model calls per visit,
+  within the workflow's [turn budget](#budget-the-turn-budget), and may park any
+  number of times.
 
 `archmax validate` checks that `maxTurns`, `timeoutMs` and `maxParks` are
 positive numbers.
@@ -1240,6 +1241,36 @@ caller's. A block from an inherited rule names the workflow that declared it.
 A child can narrow what is permitted, and re-granting is closed to it. The
 per-state `allow` and `forbid` lists stay local, inherited in neither
 direction.
+
+### `budget`: the turn budget
+
+The model calls one turn may make, counted across every state:
+
+```yaml
+budget:
+  maxModelCalls: 80   # default 50
+```
+
+A turn is one invocation: a message, a decision, a reply or a delivery. Each
+counts from zero. A state's `maxTurns` starts over every time the state is
+entered, so an agent moving back and forth between states never exhausts it.
+This bound is the one that ends such a turn.
+
+- The call that would exceed `maxModelCalls` is not made. The exhaustion is a
+  failure of the current state: it routes through that state's `on_error`, else
+  the turn ends rejected. It routes once per turn. The error handler then runs
+  under its own `maxTurns`.
+- While a fifth of the budget or less is left, every model call is told how many
+  calls the turn has left, and to finish its work and answer the person.
+- The turn's step limit (LangGraph's `recursionLimit`) follows the budget, so the
+  budget runs out first: `(maxModelCalls + 10) × 8` graph steps, never fewer
+  than 400. A host's own `recursionLimit` in the invoke config takes precedence.
+- A delegated child counts against its own workflow's budget, not its caller's.
+- A park's single reply-only call is not counted.
+
+Raise it for a workflow whose turns legitimately take more calls, such as a long
+chain of states or a review cycle the agent repeats on its own. `archmax validate`
+checks that it is a positive number.
 
 ### `tests`
 

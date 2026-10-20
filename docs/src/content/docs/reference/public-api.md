@@ -100,7 +100,7 @@ the notes below.
 Several of these names are also on the root. They are the same bindings, exported
 here for the weight of the import.
 
-- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
+- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `workflowBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `WorkflowBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
 - **Validation:** `validateSpec` `lintSpec` `schemaIssueDiagnostic` `SpecValidation` `Diagnostic` `DiagnosticSeverity`.
 - **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
@@ -363,11 +363,28 @@ error rather than a runtime throw. Session-level members stay on the agent eithe
 way: `sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `toolMocks` and
 `dispose`.
 
+### A turn that throws
+
+`send`, `decide`, `reply` and `deliver` reject with the original error when a turn
+throws: a model provider failing, a cancellation, the step limit. Before the error
+leaves, the runtime ends the session `failed` with an exit record, as
+`archmax_raise` would, unless the turn had already parked it. The code is
+`recursion-limit` for LangGraph's `GraphRecursionError`, `turn-cancelled` for an
+aborted turn, and `turn-error` for anything else, with the error's message as the
+reason. `sessions.get` reports it as `exit`, and the session's next message
+starts a fresh turn from where it stood.
+
+The step limit a governed turn runs under follows the workflow's turn budget:
+`(budget.maxModelCalls + 10) × 8` graph steps, and never fewer than 400. So the
+budget, which ends a runaway turn through `on_error`, runs out first. A
+`recursionLimit` the host passes in the invoke config takes precedence.
+
 ### Cancelling a turn
 
 Pass an `AbortSignal` as `config.signal` and abort it to cancel the turn. `send`
-rejects with the abort, and every script of the turn stops with it, in the
-session and in its child sessions. A script's pending `tools.*` call fails, and a
+rejects with the abort, the session ends `failed` with the code `turn-cancelled`
+(see [a turn that throws](#a-turn-that-throws)), and every script of the turn
+stops with it, in the session and in its child sessions. A script's pending `tools.*` call fails, and a
 call it makes afterwards is refused before it reaches the tool. See
 [a script lives as long as its turn](/guides/code-interpreter/#a-script-lives-as-long-as-its-turn).
 

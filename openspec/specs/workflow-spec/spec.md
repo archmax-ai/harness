@@ -89,7 +89,7 @@ no mapping to its replacement. The schema carries no memory of a former spelling
 
 The spec root SHALL accept exactly: `title` (string, a human label — the workflow's identity
 is its directory slug), `instructions` (non-empty string of standing guidance rendered into
-the system prompt for the whole session), `disabled` (boolean), `runtime`,
+the system prompt for the whole session), `disabled` (boolean), `runtime`, `budget`,
 `settings`, `tools` (`allow_always`, `forbid_always`), `skills` (`allow_always`, `forbid_always`),
 `mounts` (`allow_always`, `forbid_always`), `tests`, `extensions`,
 `metadata`, and `states` — a mapping of state slug to state, which SHALL be present and
@@ -127,6 +127,11 @@ state it enters.
 - **THEN** loading fails naming the unrecognized key and its path, as every retired spelling in this
   schema does — denial is declared beside the grant it overrides (`tools.forbid_always`,
   `skills.forbid_always`), and there is one skills model rather than a ceiling and a grant
+
+#### Scenario: A root budget is a recognized root key
+
+- **WHEN** a spec declares `budget: { maxModelCalls: 80 }` at the root
+- **THEN** it is accepted, and a state-only budget key at the root (`budget: { maxTurns: 8 }`) is a load error naming the key and its path
 
 ### Requirement: State keys
 
@@ -337,11 +342,17 @@ A state's `budget` SHALL accept `maxTurns`, `timeoutMs` and `maxParks`, each a p
 integer when present and unbounded when absent. `maxTurns` counts the state's model turns,
 `timeoutMs` bounds a model call in the state, `maxParks` counts the state's `archmax_wait`
 parks; exhausting any of them fails the state, which routes through `on_error` when declared
-and otherwise rejects the session.
+and otherwise rejects the session. The root `budget` SHALL accept only `maxModelCalls`, a
+positive integer bounding the model calls of one turn across every state, `50` when absent.
 
 #### Scenario: Non-positive budget rejected
 
 - **WHEN** a state declares `budget: { maxParks: 0 }` or a non-integer value
+- **THEN** loading fails with "must be a positive number" addressed to that field
+
+#### Scenario: Non-positive root budget rejected
+
+- **WHEN** a spec declares `budget: { maxModelCalls: 0 }` at the root
 - **THEN** loading fails with "must be a positive number" addressed to that field
 
 ### Requirement: Allow entries and the tools blocks

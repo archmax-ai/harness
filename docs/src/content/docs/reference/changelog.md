@@ -36,6 +36,26 @@ as it is today; the guides themselves describe only the present. Every release a
   store, and the session's next turn loads them back from there, as after a
   restart. A caller-provided `checkpointer` is left alone. See
   [session storage](/reference/public-api/#session-storage-sessionstore-and-the-sessions-handles).
+- **Breaking: a turn is bounded as a whole.** A state's `maxTurns` starts over on
+  every entry, so an agent cycling between two states never exhausted it and ran
+  until LangGraph's recursion limit threw. A new root `budget: { maxModelCalls }`,
+  50 by default, counts the model calls of one turn across every state. Its
+  exhaustion routes through `on_error`, else ends the turn rejected. Near the end,
+  the agent is told how many calls are left. The turn's step limit now follows the
+  budget, so the budget runs out first. **Migrate** a workflow whose turns
+  legitimately make more than 50 model calls by raising `budget.maxModelCalls`.
+  See [the turn budget](/reference/machine-spec/#budget-the-turn-budget).
+- **A turn that throws no longer strands its session.** A turn that threw (a model
+  provider failing, the step limit, a cancellation) left the session `running`, and
+  every later message was refused with `SessionNotResumableError`. The session now
+  ends `failed` with the exit code `turn-error`, `recursion-limit` or
+  `turn-cancelled`, the original error still reaches the caller, and the next
+  message starts a fresh turn. A session already stranded by an earlier version
+  stays so until `sessions.delete`. See
+  [a turn that throws](/reference/public-api/#a-turn-that-throws).
+- **A session read while its first checkpoint is being written reads as new.** A
+  read in that window, such as the next `send` after a cancelled one, crashed
+  with a `TypeError` from LangGraph's in-memory saver.
 
 ## 0.7.1
 

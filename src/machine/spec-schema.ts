@@ -314,6 +314,13 @@ export const stateBudgetSchema = z
   })
   .strict();
 
+/** @see WorkflowBudget */
+export const workflowBudgetSchema = z
+  .object({
+    maxModelCalls: positiveInt.optional(),
+  })
+  .strict();
+
 /** @see AllowEntry */
 export const allowEntrySchema = z.union([
   z.string(),
@@ -753,6 +760,7 @@ export const machineSpecSchema = z
       })
       .optional(),
     runtime: runtimeMetadataSchema.optional(),
+    budget: workflowBudgetSchema.optional(),
     settings: machineSettingsSchema.optional(),
     tools: workflowToolsConfigSchema.optional(),
     skills: workflowSkillsConfigSchema.optional(),

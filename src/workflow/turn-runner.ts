@@ -5,12 +5,12 @@
  * and settle to the same state the graph's `invoke` would.
  */
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { INTERRUPT } from "@langchain/langgraph";
+import { GraphRecursionError, INTERRUPT } from "@langchain/langgraph";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import type { CompiledAgentGraph } from "../core/deepagents.js";
 import { contentToString, isAiMessage } from "../core/messages.js";
-import { currentWorkflowState } from "./state.js";
-import { DEFAULT_SESSION_ID } from "../sessions/scope.js";
+import { currentWorkflowState, WORKFLOW_STATUSES } from "./state.js";
+import { DEFAULT_SESSION_ID, withInvocation } from "../sessions/scope.js";
 
 /** Drives one turn on a session: the graph's `invoke`/`stream`/`streamEvents`, session-bound. */
 export interface TurnRunner {
@@ -61,9 +61,10 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
    * streamed so far as `agent-text` events flagged `partial`, since the
    * governance hooks that emit the final `agent-text` never ran for it.
    */
-  async function drive(input: unknown, config: RunnableConfig | undefined): Promise<Record<string, unknown>> {
+  async function drive(input: unknown, invoked: RunnableConfig | undefined): Promise<Record<string, unknown>> {
+    const config = withInvocation(invoked);
     const stream = await graph.stream(input, {
-      ...(config ?? {}),
+      ...config,
       streamMode: ["values", "messages"],
     } as never);
     let state = opts.entryState;
@@ -107,7 +108,35 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
       for (const { text, messageId } of streamedText.values()) {
         emit({ type: "agent-text", state, text, partial: true, ...(messageId ? { messageId } : {}) });
       }
+      await endFailed(config, err);
       throw err;
+    }
+  }
+
+  /**
+   * A turn that throws while the session is still `running` would leave it
+   * refused for good, so it ends `failed` with an exit record, as `archmax_raise`
+   * would, and the next message starts a fresh turn. A park is left as it is.
+   */
+  async function endFailed(config: RunnableConfig | undefined, err: unknown): Promise<void> {
+    const at = { configurable: { thread_id: sessionIdOfConfig(config) } };
+    try {
+      const values = ((await graph.getState(at)) as { values?: Record<string, unknown> } | undefined)?.values ?? {};
+      if (values.status !== WORKFLOW_STATUSES.running) return;
+      const code =
+        err instanceof GraphRecursionError
+          ? "recursion-limit"
+          : config?.signal?.aborted || (err as Error)?.name === "AbortError"
+            ? "turn-cancelled"
+            : "turn-error";
+      const reason = err instanceof Error ? err.message : String(err);
+      await graph.updateState(at, {
+        status: WORKFLOW_STATUSES.failed,
+        raised: { code, reason, state: currentWorkflowState(values, opts.entryState) },
+      });
+    } catch (failure) {
+      // The original error is what the caller needs; this one only explains why the session stayed `running`.
+      emit({ type: "warning", scope: "session", message: `could not end the failed turn: ${(failure as Error).message}` });
     }
   }
 
@@ -119,12 +148,12 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
     },
     stream(input, config) {
       return boundIterable(sessionIdOfConfig(config), bindSession, () =>
-        graph.stream(input, config as never),
+        graph.stream(input, withInvocation(config) as never),
       );
     },
     streamEvents(input, config, options) {
       return boundIterable(sessionIdOfConfig(config), bindSession, async () =>
-        graph.streamEvents(input, config, options),
+        graph.streamEvents(input, withInvocation(config), options),
       );
     },
   };

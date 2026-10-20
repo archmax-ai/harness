@@ -28,7 +28,7 @@ import {
   type PendingDecision,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
-import { CALLING_STATE_KEY, releaseScopes } from "../sessions/scope.js";
+import { CALLING_STATE_KEY, invocationOf, releaseScopes } from "../sessions/scope.js";
 import { isWorkflowToolName, workflowSlugFromToolName } from "../machine/tool-names.js";
 import { toolOutputPreview } from "../core/tool-telemetry.js";
 import { decide, type GovernanceRule } from "../kernel/kernel.js";
@@ -431,6 +431,17 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     };
   }
 
+  /**
+   * The model calls this turn has left, this one included, while its budget is
+   * being counted and not yet spent; `beforeModel` has already counted this call.
+   */
+  function turnCallsLeft(request: ModelCallRequest): number | undefined {
+    const calls = readWorkflowState(request.state).turnCalls;
+    const invocation = invocationOf(request.runtime as RunnableConfig | undefined);
+    if (!calls || calls.exhausted || invocation === undefined || calls.invocation !== invocation) return undefined;
+    return machine.maxModelCalls - calls.count + 1;
+  }
+
   /** The volatile prompt section: what the model is told about where the run stands right now. */
   function volatileSection(request: ModelCallRequest, workflowState: string, replyOnly: boolean): string {
     // First, and outside either heading: the clock is true of the turn, not of
@@ -485,6 +496,12 @@ export function createGovernance(ctx: GovernanceContext): Governance {
           "Enforced tool argument constraints in this state (a call with any other value is blocked):",
           ...argConstraints,
         ].join("\n"),
+      );
+    }
+    const left = turnCallsLeft(request);
+    if (left !== undefined && left * 5 <= machine.maxModelCalls) {
+      sections.push(
+        `This turn has ${left} model call${left === 1 ? "" : "s"} left. Finish what you are doing and answer the person.`,
       );
     }
     // Last, immediately before the model acts: choosing the edge is the decision
