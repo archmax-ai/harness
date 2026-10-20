@@ -78,6 +78,7 @@ import {
   settle,
 } from "../sessions/resume.js";
 import { createSessionFiles, isPlainFileName } from "../core/attachments.js";
+import { turnAnchorOf } from "../core/messages.js";
 import { BackendCheckpointSaver } from "../workflow/checkpointer.js";
 import { DEFAULT_WORKFLOW, workflowPaths } from "../workflow/paths.js";
 import type { PromptCacheOptions } from "../workflow/prompt-cache.js";
@@ -440,14 +441,22 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   if (skillRegistry.size > 0) emit({ type: "skills-loaded", names: [...skillRegistry.keys()] });
 
   // The session-level members every agent carries, governed or plain.
-  const members = (graph: CompiledAgentGraph, dispose: (sessionId: string) => void, toolMocks: boolean): AgentMembers => ({
-    dispose,
-    runtimeContract,
-    toolMocks,
-    emitRunArtifacts: createArtifactEmitter({ graph, machine, workspace, workflowName, runtimeContract, usage, emit }),
-    sessions: createSessionOperations({ checkpointer, sessionStore, workspace, mountPrefixes, dispose }),
-    getSpecSnapshot: createSpecSnapshotReader(workspace),
-  });
+  const members = (graph: CompiledAgentGraph, release: (sessionId: string) => void, toolMocks: boolean): AgentMembers => {
+    // The default saver also frees the session's checkpoints, which the store still holds; a
+    // host's own checkpointer may hold the only copy, so it is left alone.
+    const dispose = (sessionId: string) => {
+      release(sessionId);
+      if (checkpointer instanceof BackendCheckpointSaver) checkpointer.evict(sessionId);
+    };
+    return {
+      dispose,
+      runtimeContract,
+      toolMocks,
+      emitRunArtifacts: createArtifactEmitter({ graph, machine, workspace, workflowName, runtimeContract, usage, emit }),
+      sessions: createSessionOperations({ checkpointer, sessionStore, workspace, mountPrefixes, dispose }),
+      getSpecSnapshot: createSpecSnapshotReader(workspace),
+    };
+  };
 
   if (!machine) {
     const plain = composePlain(ctx, systemPrompt);
@@ -568,8 +577,11 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
           ...(Object.keys(seeds).length > 0 ? { [SEED_VARIABLES_KEY]: seeds } : {}),
         },
       });
+      // Where this turn begins, so the outcome's reply is what this turn said.
+      const before = await checkpointer.getTuple({ configurable: { thread_id: sessionId } });
+      const anchor = turnAnchorOf((before?.checkpoint.channel_values as { messages?: unknown } | undefined)?.messages);
       const result = await driver.invoke({ messages: [{ role: "user", content: message }], trigger }, turnConfig);
-      return outcomeOf(settle(result, sessionId), "turn");
+      return outcomeOf(settle(result, anchor, sessionId), "turn");
     },
   };
 

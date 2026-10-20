@@ -153,7 +153,7 @@ try {
     return lastAssistantText(result.messages);
   }
 } finally {
-  agent.dispose(sessionId);   // cleans up sandbox/PTC state for the session
+  agent.dispose(sessionId);   // frees the session's sandbox/PTC state and its checkpoints in memory; the next turn reloads them from the store
 }
 ```
 

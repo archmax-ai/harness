@@ -117,6 +117,8 @@ export interface SessionEngine {
 /** The view of one settled {@link Outcome}, as assertions read it. */
 function viewOf(session: DriveSession, outcome: Outcome): SessionView {
   const view = messagesToSessionView(outcome.messages, session.name, outcome.auditTrail, outcome.variables);
+  // What this action's turn said, not the session's last text: the grader's reply.
+  view.reply = outcome.reply;
   if (outcome.kind === "parked") {
     view.parked = true;
     if (outcome.parkedChannel) view.parkedChannel = outcome.parkedChannel;

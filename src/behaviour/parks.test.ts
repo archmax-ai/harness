@@ -144,6 +144,25 @@ describe("a human node", () => {
     expect((await agent.sessions.get("s1"))?.status).toBe("completed");
   });
 
+  it("replies with what the agent said before it parked and the handoff after it", async () => {
+    const { agent } = await assemble(workspaceWith(REVIEW), {
+      turns: [{ ...advanceTo("review", "ready"), text: "Your draft is ready." }, { reply: "A reviewer will check it." }],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "please review" });
+    expect(outcome).toMatchObject({ kind: "parked", state: "review" });
+    expect(outcome.reply).toBe("Your draft is ready.\n\nA reviewer will check it.");
+  });
+
+  it("replies with nothing when a decision ends the session without the agent speaking", async () => {
+    const { agent, model } = await parkAtReview();
+    model.enqueue({ reply: "" });
+    const outcome = await agent.workflow.decide("s1", { target: "approved" });
+    expect(outcome).toMatchObject({ status: "completed", workflowState: "approved" });
+    // Not the park's handoff message, which the turn before it said.
+    expect(lastAgentText(outcome.messages)).not.toBe("");
+    expect(outcome.reply).toBe("");
+  });
+
   it("records the decision in the transcript as a runtime note, not as a person's message", async () => {
     const { agent, model } = await parkAtReview();
     model.enqueue({ reply: "closing" });
@@ -634,7 +653,8 @@ describe("the park budget", () => {
     expect(eventsOf(events, "state-error-routed")).toMatchObject([{ state: "clarify", to: "escalate" }]);
     expect(eventsOf(events, "state-error-routed")[0]?.reason).toMatch(/maxParks: 1/);
     expect(outcome).toMatchObject({ workflowState: "escalate", status: "completed", reparked: false });
-    expect(outcome.reply).toBe("escalated");
+    // An error route takes nothing back: the turn said both, in order.
+    expect(outcome.reply).toBe("cannot wait again\n\nescalated");
   });
 
   it("ends the turn rejected when the budgeted state declares no on_error", async () => {

@@ -9,6 +9,34 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.8.0
+
+- **Breaking: an outcome's `reply` is what the agent said this turn.** `reply` was
+  the last assistant text in the session's whole history. Text the agent wrote next
+  to an `archmax_advance` was lost whenever it wrote more in the next state, though
+  the agent is told to put what a person should read in that message. A turn that
+  said nothing repeated the previous turn's text. `reply` on an `Outcome` and on what
+  `decide`, `reply` and `deliver` return is now every text of the turn, in order,
+  joined by a blank line, and `""` when the turn said nothing. When a terminal
+  state's completion check asks for a revision, the draft before it is dropped.
+  `archmax decide` and `archmax deliver` print this reply. **Migrate** a host that
+  wants the last thing the session ever said to `lastAgentText(outcome.messages)`.
+  See [`Agent`, in detail](/reference/public-api/#agent-in-detail).
+- **A case's `grade` is given the action's own reply.** The grader's reply section
+  was the session's last text, so a step whose turn said nothing was graded on an
+  earlier turn's answer. It is now what that step's action said. The record beside
+  it still covers the session so far. See
+  [what the grader sees](/guides/testing/#what-the-grader-sees).
+- **`dispose` frees a session's checkpoints from memory.** The default checkpointer
+  writes every checkpoint to the session store and also kept it in memory. Only
+  `sessions.delete` cleared that copy, so a long-running host that disposed its
+  finished sessions still grew with every session until it ran out of memory.
+  `agent.dispose(sessionId)` now drops the session and every child session under
+  it from memory, on a governed and a plain agent alike. The records stay in the
+  store, and the session's next turn loads them back from there, as after a
+  restart. A caller-provided `checkpointer` is left alone. See
+  [session storage](/reference/public-api/#session-storage-sessionstore-and-the-sessions-handles).
+
 ## 0.7.1
 
 - **A script reaches a tool by its own name.** The bridge keys each tool by its

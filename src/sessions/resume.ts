@@ -11,7 +11,7 @@
 import { Command } from "@langchain/langgraph";
 import { mergeConfigs, type RunnableConfig } from "@langchain/core/runnables";
 import type { IntrospectableStateGraph } from "../core/deepagents.js";
-import { lastAgentText } from "../core/messages.js";
+import { turnAnchorOf, turnReply, type TurnAnchor } from "../core/messages.js";
 import { hasUsage, type UsageSummary } from "../core/usage.js";
 import {
   InvalidVariableNameError,
@@ -235,7 +235,10 @@ export interface DecideOutcome {
   state?: string;
   /** Present when the pending decision is a delegated child's, not this session's own. */
   delegation?: DelegatedPark;
-  /** What the session last said to the person — a finished turn's answer, or a park's message. Empty when it said nothing. */
+  /**
+   * What the agent said to the person during this turn — a finished turn's answer, a park's
+   * message — each text in order, joined by a blank line. Empty when the turn said nothing.
+   */
   reply: string;
   /** Why the session was rejected, when `status` is `rejected`: the refusal or failure, worded for a person. */
   rejected?: string;
@@ -305,7 +308,7 @@ export interface Outcome {
    * shape-testing the child's interrupt.
    */
   delegation?: DelegatedPark;
-  /** What the session last said to the person. Empty when it said nothing. */
+  /** What the agent said to the person during this turn, each text in order. Empty when it said nothing. */
   reply: string;
   /** Why the session was rejected, when `kind` is `rejected`: the refusal or failure, worded for a person. */
   rejected?: string;
@@ -386,10 +389,11 @@ function delegationOf(
 
 /**
  * The settled values of a turn or a resume, read into a {@link ResumeOutcome}.
- * `sessionId` is the session the values belong to, when the caller knows it; it
- * lets a delegated park name the child's session id.
+ * `anchor` is where the turn began, read before it ran, so `reply` is what this
+ * turn said. `sessionId` is the session the values belong to, when the caller
+ * knows it; it lets a delegated park name the child's session id.
  */
-export function settle(result: Record<string, unknown>, sessionId?: string): ResumeOutcome {
+export function settle(result: Record<string, unknown>, anchor: TurnAnchor, sessionId?: string): ResumeOutcome {
   const messages = Array.isArray(result.messages) ? result.messages : [];
   const park = parkOf(result);
   const parkedAt = park ? parkedStateOf(park.pending) : undefined;
@@ -409,7 +413,7 @@ export function settle(result: Record<string, unknown>, sessionId?: string): Res
     ...(park ? { parkedChannel: park.channel, pending: park.pending } : {}),
     ...(parkedAt ? { state: parkedAt } : {}),
     ...(delegation ? { delegation } : {}),
-    reply: lastAgentText(messages),
+    reply: turnReply(messages, anchor),
     ...(rejected ? { rejected } : {}),
     ...(exit ? { exit } : {}),
     messages,
@@ -466,7 +470,7 @@ async function validate(
   graph: IntrospectableStateGraph,
   sessionId: string,
   payload: ResumePayload,
-): Promise<{ value: unknown; parkedAt?: string }> {
+): Promise<{ value: unknown; parkedAt?: string; anchor: TurnAnchor }> {
   if ("decision" in payload) {
     const values = await readParkedSession(graph, sessionId, WORKFLOW_STATUSES.awaitingDecision);
     if (!values) throw new SessionNotParkedError(sessionId);
@@ -480,7 +484,7 @@ async function validate(
     if (!target || !validTargets.includes(target)) {
       throw new InvalidDecisionTargetError(sessionId, target || undefined, validTargets);
     }
-    return { value: payload.decision, parkedAt };
+    return { value: payload.decision, parkedAt, anchor: turnAnchorOf(values.messages) };
   }
   if ("delivery" in payload) {
     const values = await readParkedSession(graph, sessionId, WORKFLOW_STATUSES.awaitingInput);
@@ -501,6 +505,7 @@ async function validate(
         ...(message ? { message } : {}),
       } satisfies TriggerDelivery,
       parkedAt: parkedStateOf(values.pendingInput as PendingInput | null | undefined),
+      anchor: turnAnchorOf(values.messages),
     };
   }
   const values = await readParkedSession(graph, sessionId, WORKFLOW_STATUSES.awaitingDecision);
@@ -510,6 +515,7 @@ async function validate(
   return {
     value: { message: text },
     parkedAt: parkedStateOf(values.pendingDecision as PendingDecision | null | undefined),
+    anchor: turnAnchorOf(values.messages),
   };
 }
 
@@ -523,7 +529,7 @@ export async function resume(
   payload: ResumePayload,
   config?: RunnableConfig,
 ): Promise<ResumeOutcome> {
-  const { value, parkedAt } = await validate(graph, sessionId, payload);
+  const { value, parkedAt, anchor } = await validate(graph, sessionId, payload);
   // A resumed turn is a turn: the caller's config carries that turn's tool mocks
   // and its abort signal, so it merges here exactly as it does on a fresh turn.
   // The thread id is applied last, so no caller can redirect the resume.
@@ -531,7 +537,7 @@ export async function resume(
     new Command({ resume: value }),
     mergeConfigs(config, { configurable: { thread_id: sessionId } }),
   );
-  const outcome = settle(result, sessionId);
+  const outcome = settle(result, anchor, sessionId);
   if ("message" in payload) {
     // A message never routes: the session is parked where it was. The resumed
     // record is preferred only so the two cannot disagree.

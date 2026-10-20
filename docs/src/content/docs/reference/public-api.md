@@ -274,7 +274,7 @@ const agent = await createAgent({ workflow: "order-lookup" });
 
 // Operations on every agent (workflow-governed or plain):
 agent.graph;                        // the runnable LangGraph graph
-agent.dispose(sessionId);           // release per-session resources
+agent.dispose(sessionId);           // release per-session resources, its checkpoints in memory included
 agent.workflow?.name;               // the workflow slug (undefined if ungoverned)
 agent.runtimeContract;              // resolved (and enforced) runtime contract
 agent.toolMocks;                    // whether declared tool mocks intercept the agent's own calls
@@ -297,7 +297,7 @@ if (agent.workflow) {
   outcome.state;         // where the session is — for a park, the state it is parked at
   outcome.pending;       // the park record, when parked
   outcome.delegation;    // when the pending decision is a delegated child's: which child, which call
-  outcome.reply;         // what the session said
+  outcome.reply;         // what the agent said this turn, each text in order ("" when it said nothing)
   outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed hook)
   outcome.exit;          // SessionExit on a turn the agent ended: { success: true } when "completed",
                          // { success: false, code, reason } when "failed" (the agent called archmax_raise)
@@ -315,6 +315,16 @@ if (agent.workflow) {
   const answer = await agent.workflow.reply(sessionId, "Any news?"); // parked session, still parked
 }
 ```
+
+**What a turn said.** `reply`, on an `Outcome` and on what `decide`, `reply` and
+`deliver` return, is every text the agent wrote during this turn, in order, joined
+by a blank line. Text written next to an `archmax_advance`, `archmax_wait` or
+`archmax_raise` is part of it, because the agent is told to write what a person
+should read in that same message. A park's handoff message is part of it too. When
+a terminal state's completion check asks for a revision, the text before that
+request is dropped, so the person gets the revised answer and not the draft. A
+turn that said nothing has `reply: ""`, not the previous turn's text. For the last
+thing the session ever said, read `lastAgentText(outcome.messages)`.
 
 **Handing a turn files.** `TurnInput.files` maps a variable to a `TurnFile`,
 `{ name, content }`, where `content` is the file's exact bytes. Before the turn
@@ -816,6 +826,16 @@ Governance varies by area:
 `BackendCheckpointSaver` writing `<sessionId>/checkpoints/`, but through the
 configured session store. A caller-provided LangGraph `checkpointer` still takes
 precedence, as the custom-adapter escape hatch.
+
+**`dispose` frees a session's checkpoints from memory.** The default checkpointer
+also keeps every checkpoint of every session it has seen in memory, so a
+long-running host should call `agent.dispose(sessionId)` once a session's turn
+settles. It drops the session and every child session under it (`<sessionId>~1`,
+…) from memory. Their records stay in the store, so the session's next turn, or
+any read of it, loads it back from the store, as after a restart. A
+caller-provided `checkpointer` is left alone, since it may hold the only copy. A
+host with its own checkpointer frees a session's memory through
+`sessions.delete` or through that checkpointer.
 
 The agent exposes session handles over the same store:
 
@@ -1334,9 +1354,9 @@ argument.
 A grader whose reply cannot be read as JSON is asked once more, JSON only, before
 its turn scores 0.
 
-What the grader scores is the turn's `JudgeEvidence`. That is its final reply,
-plus a bounded chronological record of the assistant messages and tool calls
-behind it (see [what the grader sees](/guides/testing/#what-the-grader-sees)).
+What the grader scores is the turn's `JudgeEvidence`. That is the action's
+`reply`, what the agent said during that turn, plus a bounded chronological record
+of the session's assistant messages and tool calls so far (see [what the grader sees](/guides/testing/#what-the-grader-sees)).
 
 ```ts
 const judged = results[0].records.filter((r) => r.threshold != null);

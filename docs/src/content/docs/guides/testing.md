@@ -244,7 +244,7 @@ carries. A failure in one of them [halts the case](#which-assertions-halt-a-case
 | `noTraversal: true` | **Structural.** The trail holds only trigger arrivals: a veto at entry committed no transition. |
 | `triggerArrival: <trigger-id>` | **Structural.** Some trail step has `kind: trigger` and that reason, confirming the session started from the declared trigger. |
 | `variables: { expect, path?, locked? }` | **Structural.** Every named variable is set to the expected value, by deep equality, so structured values compare by value. `path` addresses into a value per name: `items.-1.sku` is the last element. `locked` asserts the lock state. |
-| `grade: { closedQA: <criterion>, atLeast: <0..1> }` | A model scores the turn's **evidence** against a yes/no criterion: its final reply *and* the record of what it did to get there (see [What the grader sees](#what-the-grader-sees)). **`atLeast` decides the outcome**: at or above it passes, below it fails the case. The model's own boolean never overrides your bar. Requires `tests: { judge: … }` in `workflow.yaml`; without it, a `grade` entry records an actionable failure. `judge:` is accepted as a deprecated alias for one release. |
+| `grade: { closedQA: <criterion>, atLeast: <0..1> }` | A model scores the turn's **evidence** against a yes/no criterion: what the action's turn said *and* the record of what the session did to get there (see [What the grader sees](#what-the-grader-sees)). **`atLeast` decides the outcome**: at or above it passes, below it fails the case. The model's own boolean never overrides your bar. Requires `tests: { judge: … }` in `workflow.yaml`; without it, a `grade` entry records an actionable failure. `judge:` is accepted as a deprecated alias for one release. |
 
 A case seeds the session's input with a top-level `variables:` block. The block
 is supplied as the runtime's `variables`, and is therefore locked for every
@@ -295,13 +295,16 @@ A `grade` criterion scores the turn's **evidence**. The grading input has two
 labelled sections:
 
 1. **What the assistant did, in order**: every assistant message and every
-   tool call of the turn, interleaved as they happened, with the runtime's own
+   tool call of the session so far, earlier turns included, interleaved as they
+   happened, with the runtime's own
    notes among them (a person's decision, a delivered event, an error route).
    Each call carries its input, its output, and its status (`completed`,
    `failed`, `rejected`, `pending`). A call answered by a declared
    [mock](#mocking-tool-results) appears like any other, carrying the mocked
    value, so the grader scores the turn the agent actually experienced.
-2. **The final reply to the user**: the turn's last assistant message.
+2. **The final reply to the user**: what the agent said during this step's
+   action, every text of its turn in order. A turn that said nothing has an empty
+   reply, never an earlier turn's.
 
 The two are weighed differently, and the prompt says so. A criterion about what
 the user was *told* is met only by the final reply, while a criterion about what

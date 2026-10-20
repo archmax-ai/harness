@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { READ_FILE_TEXT_ONLY_LINE } from "../core/binary-read.js";
 import { createAgent, createMemorySessionStore, SessionStoreIdError } from "../index.js";
-import { AGENTS_MD, cleanupWorkspaces, makeWorkspace, ScriptedModel } from "./support.js";
+import { AGENTS_MD, cleanupWorkspaces, heldSessions, makeWorkspace, ScriptedModel } from "./support.js";
 
 afterEach(cleanupWorkspaces);
 
@@ -46,6 +46,22 @@ describe("a plain agent", () => {
     // And the session is a session: its checkpoint is listed and countable.
     expect((await agent.sessions.get("s1"))?.sessionId).toBe("s1");
     expect(await agent.sessions.messageCount("s1")).toBe(result.messages.length);
+  });
+
+  it("frees a disposed session from memory and continues it on its next turn", async () => {
+    const { agent, model } = await plainAgent([{ reply: "first" }]);
+    const config = { configurable: { thread_id: "s1" } };
+    const first = (await agent.invoke({ messages: [{ role: "user", content: "one" }] } as never, config)) as {
+      messages: unknown[];
+    };
+    agent.dispose("s1");
+    expect(heldSessions(agent)).toEqual([]);
+
+    model.enqueue({ reply: "second" });
+    const second = (await agent.invoke({ messages: [{ role: "user", content: "two" }] } as never, config)) as {
+      messages: unknown[];
+    };
+    expect(second.messages).toHaveLength(first.messages.length + 2);
   });
 
   it("keeps two sessions' scratchpads apart", async () => {

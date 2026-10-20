@@ -300,6 +300,32 @@ describe("after hooks", () => {
     expect(summary?.status).toBe("completed");
   });
 
+  it("replies with the revision only, never the draft the completion check sent back", async () => {
+    const script = [
+      "/** Requires the last reply to be a revision. */",
+      "export default ({ messages }) => {",
+      "  const replies = messages.filter((m) => m.role === 'assistant' && m.text);",
+      "  return replies[replies.length - 1].text.indexOf('revised') >= 0 ? ok() : veto('reply revised');",
+      "};",
+    ].join("\n");
+    const root = workspaceWith(
+      {
+        runtime: RUNTIME,
+        states: {
+          start: { triggers: { manual: null }, transitions: [{ to: "done", description: "Test edge to done." }] },
+          done: { after: { script: "hooks/complete.js" } },
+        },
+      },
+      { "workflows/w/hooks/complete.js": script },
+    );
+    const { agent } = await assemble(root, {
+      turns: [{ ...advanceTo("done"), text: "Looking into it." }, { reply: "draft" }, { reply: "revised answer" }],
+    });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "go" });
+    expect(outcome.status).toBe("completed");
+    expect(outcome.reply).toBe("revised answer");
+  });
+
   it("completes a terminal state whose completion check passes", async () => {
     const sid = freshSessionId();
     const root = workspaceWith(

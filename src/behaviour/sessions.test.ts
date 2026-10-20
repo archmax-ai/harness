@@ -5,12 +5,14 @@
  * store, never the filesystem directly.
  */
 import { afterEach, describe, expect, it } from "vitest";
+import { MemorySaver } from "@langchain/langgraph-checkpoint";
 import { createMemorySessionStore, type MachineSpec } from "../index.js";
 import {
   advanceTo,
   assemble,
   cleanupWorkspaces,
   eventsOf,
+  heldSessions,
   linearSpec,
   ScriptedModel,
   storeFile,
@@ -96,6 +98,38 @@ describe("sessions", () => {
     model.enqueue({ reply: "fresh" });
     await turn(agent, "s1", "again");
     expect(eventsOf(events, "advance")[0]).toMatchObject({ from: "__start__", to: "start" });
+  });
+
+  it("frees a disposed session from memory and continues it on its next turn", async () => {
+    const { agent, model } = await assemble(workspaceWith(linearSpec()), {
+      turns: [{ tool: "archmax_set_variables", args: { variables: { order_id: "ORD-1" } } }, { reply: "noted" }],
+    });
+    const first = await agent.workflow.send("s1", { message: "remember ORD-1" });
+    expect(heldSessions(agent)).toEqual(["s1"]);
+
+    agent.dispose("s1");
+    expect(heldSessions(agent)).toEqual([]);
+
+    model.enqueue({ reply: "still here" });
+    const second = await agent.workflow.send("s1", { message: "what was it?" });
+    const texts = (messages: unknown[]) => messages.map((m) => (m as { content?: unknown }).content);
+    expect(texts(second.messages).slice(0, first.messages.length)).toEqual(texts(first.messages));
+    expect(second.variables.order_id?.value).toBe("ORD-1");
+    expect(second.auditTrail.filter((step) => step.kind === "trigger")).toHaveLength(2);
+  });
+
+  it("leaves a host's own checkpointer alone on dispose", async () => {
+    const { agent, model } = await assemble(workspaceWith(linearSpec()), {
+      turns: [{ reply: "first" }],
+      params: { checkpointer: new MemorySaver() },
+    });
+    await agent.workflow.send("s1", { message: "go" });
+    agent.dispose("s1");
+    expect(heldSessions(agent)).toEqual(["s1"]);
+
+    model.enqueue({ reply: "second" });
+    const second = await agent.workflow.send("s1", { message: "again" });
+    expect(second.auditTrail.filter((step) => step.kind === "trigger")).toHaveLength(2);
   });
 
   it("seeds run-zone files the agent can read on its first turn", async () => {

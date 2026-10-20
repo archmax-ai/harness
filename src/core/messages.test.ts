@@ -10,6 +10,8 @@ import {
   runtimeNote,
   runtimeNoteKind,
   spokeSinceLastHumanMessage,
+  turnAnchorOf,
+  turnReply,
 } from "./messages.js";
 
 describe("contentToString", () => {
@@ -142,6 +144,64 @@ describe("lastAgentText", () => {
 
   it("is empty when the agent never spoke", () => {
     expect(lastAgentText([{ role: "human", content: "hi" }])).toBe("");
+  });
+});
+
+describe("turnReply", () => {
+  const before = [
+    { id: "m1", role: "human", content: "earlier" },
+    { id: "m2", role: "assistant", content: "the earlier answer" },
+  ];
+  const anchor = turnAnchorOf(before);
+
+  it("is every text the turn added, text written next to an advance included", () => {
+    const turn = [
+      { role: "human", content: "book it" },
+      { role: "assistant", content: "Here is the plan: X.", tool_calls: [{ name: "archmax_advance", args: {} }] },
+      { role: "tool", content: "advanced" },
+      { role: "assistant", content: "  I'll wait for your confirmation.  " },
+    ];
+    expect(turnReply([...before, ...turn], anchor)).toBe("Here is the plan: X.\n\nI'll wait for your confirmation.");
+  });
+
+  it("is empty for a turn that said nothing, whatever an earlier turn said", () => {
+    expect(turnReply([...before, { role: "human", content: "again" }], anchor)).toBe("");
+  });
+
+  it("drops a draft a completion check asked to revise, and keeps text across other notes", () => {
+    const turn = [
+      { role: "human", content: "go" },
+      { role: "assistant", content: "first look" },
+      ...runtimeNote("sub-workflow", "[sub-workflow] the child finished"),
+      { role: "assistant", content: "draft" },
+      ...runtimeNote("after", "[after] did not pass: revise"),
+      { role: "assistant", content: "final" },
+    ];
+    expect(turnReply([...before, ...turn], anchor)).toBe("final");
+    const kept = [
+      { role: "human", content: "go" },
+      { role: "assistant", content: "first look" },
+      ...runtimeNote("error", "[error] routed"),
+      { role: "assistant", content: "handled" },
+    ];
+    expect(turnReply([...before, ...kept], anchor)).toBe("first look\n\nhandled");
+  });
+
+  it("finds the turn by the anchor's id when the list was rewritten ahead of it", () => {
+    // Tool-call patching dropped an orphaned tool message before the anchor: the count would skip the turn's first text.
+    const rewritten = [
+      { id: "m2", role: "assistant", content: "the earlier answer" },
+      { role: "human", content: "go" },
+      { role: "assistant", content: "now" },
+    ];
+    expect(turnReply(rewritten, { id: "m2", count: 3 })).toBe("now");
+  });
+
+  it("falls back to the count when no message carries the anchor's id", () => {
+    const list = [...before, { role: "human", content: "go" }, { role: "assistant", content: "now" }];
+    expect(turnReply(list, { id: "gone", count: 2 })).toBe("now");
+    expect(turnReply(list, turnAnchorOf([]))).toBe("the earlier answer\n\nnow");
+    expect(turnReply(list, { count: 99 })).toBe("");
   });
 });
 

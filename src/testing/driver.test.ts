@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Agent, WorkflowSurface } from "../agent.js";
 import { outcomeOf, settle, type Outcome, type SendDisposition } from "../sessions/resume.js";
 import { DEFAULT_SESSION_ID, createSessionEngine } from "./driver.js";
+import { judgeEvidenceFromView } from "./grade.js";
 
 /**
  * Give a fake agent the `send` the engine drives through, composed over the
@@ -61,7 +62,9 @@ function withSend(agent: Agent & { workflow: WorkflowSurface }): Agent & { workf
       },
       { ...config, configurable: { thread_id: sessionId, ...(config?.configurable ?? {}) } },
     )) as Record<string, unknown>;
-    return remember(sessionId, outcomeOf(settle(result), "turn"));
+    // The turn starts at the message it sent, as `send` anchors it before the invoke.
+    const sent = ((result.messages ?? []) as { content?: unknown }[]).map((m) => m.content).lastIndexOf(input.message);
+    return remember(sessionId, outcomeOf(settle(result, { count: sent }), "turn"));
   }) as never;
   return agent;
 }
@@ -312,6 +315,38 @@ function humanParkedAgent(reply = "It is with a reviewer.") {
   } as unknown as Agent & { workflow: WorkflowSurface });
   return { agent, messages };
 }
+
+describe("what the grader is given as a step's reply", () => {
+  /** A fake whose sessions keep their history, answering each send with the next scripted text. */
+  function talkingAgent(texts: string[]) {
+    const history: Array<{ type: string; content: string }> = [];
+    return withSend({
+      async invoke(input: { messages: Array<{ content: string }> }) {
+        history.push({ type: "human", content: input.messages[0]!.content });
+        const text = texts.shift() ?? "";
+        if (text) history.push({ type: "ai", content: text });
+        return { messages: [...history] };
+      },
+      toolMocks: true,
+      sessions: { async seed() {} },
+      dispose() {},
+      workflow: {
+        resolveTrigger(trigger?: { id: string }) {
+          return { ...(trigger ?? { id: "manual" }), startState: "start" };
+        },
+      },
+    } as unknown as Agent & { workflow: WorkflowSurface });
+  }
+
+  it("is this action's reply, never an earlier turn's", async () => {
+    const engine = createSessionEngine({ agent: talkingAgent(["ORD-1001 is shipped", ""]), defaultSessionId: "t" });
+    await engine.open(DEFAULT_SESSION_ID);
+    expect((await engine.send(DEFAULT_SESSION_ID, "where is it?")).reply).toBe("ORD-1001 is shipped");
+    const silent = await engine.send(DEFAULT_SESSION_ID, "thanks");
+    expect(silent.reply).toBe("");
+    expect(judgeEvidenceFromView(silent).reply).toBe("");
+  });
+});
 
 describe("sending to a session parked at a human state", () => {
   it("routes the message to the messaging surface instead of starting a turn", async () => {

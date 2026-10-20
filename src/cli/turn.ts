@@ -9,7 +9,6 @@ import type { TriggerInput } from "../machine/triggers.js";
 import type { DecideOutcome, Outcome, ReplyOutcome, SessionExit } from "../sessions/resume.js";
 import type { ParkChannel, PendingDecision, PendingInput } from "../workflow/state.js";
 import type { WorkflowMachine } from "../machine/machine.js";
-import { lastAgentText } from "../core/messages.js";
 import { formatUsage, hasUsage, type UsageTracker } from "../core/usage.js";
 import { icons, type Style } from "./style.js";
 import { CliError, err, out } from "./command.js";
@@ -116,7 +115,7 @@ export function printResumed(style: Style, sessionId: string, verb: string, outc
     return 1;
   }
   err(style.green(style.bold(`${icons.check} ${verb}`)));
-  out(lastAgentText(outcome.messages) || `Session ${sessionId} resumed (state=${outcome.workflowState ?? "?"}).`);
+  out(outcome.reply || `Session ${sessionId} resumed (state=${outcome.workflowState ?? "?"}).`);
   return 0;
 }
 

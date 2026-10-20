@@ -96,12 +96,11 @@ export function createSessionOperations(deps: {
       return Array.isArray(messages) ? messages.length : 0;
     },
     delete: async (sessionId) => {
-      // Evict live checkpointer state first so a deleted session cannot be resumed
-      // from memory, then remove the persisted namespace through the store.
-      await checkpointer.deleteThread(sessionId);
-      const removed = await sessionStore.deleteSession(sessionId);
+      // Release and evict first, then mark the session as not to be replayed, so the
+      // eviction cannot lift the mark; memory is cleared before the store removes the files.
       dispose(sessionId);
-      return removed;
+      await checkpointer.deleteThread(sessionId);
+      return sessionStore.deleteSession(sessionId);
     },
     seed: async (sessionId, files) => {
       const idRejection = sessionIdRejection(sessionId, mountPrefixes);

@@ -19,7 +19,10 @@ export {
   opensTurn,
   runtimeNoteKind,
   spokeSinceLastHumanMessage,
+  turnAnchorOf,
+  turnReply,
   type RuntimeNoteKind,
+  type TurnAnchor,
 } from "./message-readers.js";
 
 /** The marker every message of a runtime note carries. */

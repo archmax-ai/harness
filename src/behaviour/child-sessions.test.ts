@@ -29,6 +29,7 @@ import {
   blockedTools,
   cleanupWorkspaces,
   eventsOf,
+  heldSessions,
   makeWorkspace,
   AGENTS_MD,
   storeFile,
@@ -390,6 +391,24 @@ describe("a child session's id", () => {
     expect(child?.parentSessionId).toBe("s1");
     expect(eventsOf(events, "sub-workflow-result")).toMatchObject([{ dispatchId: "subwf-1", status: "ok" }]);
     expect(await agent.sessions.get("s1~1")).toBeNull();
+  });
+
+  it("is freed from memory with its caller on dispose, and the caller still resumes it", async () => {
+    const root = workspace(parentSpec(), REVIEWING_CHILD);
+    const { agent, model } = await assemble(root, {
+      turns: [{ tool: CHILD_TOOL, args: { order_id: "ORD-1" } }, advanceTo("review", "needs a reviewer")],
+    });
+    const parked = await agent.workflow.send("s1", { message: "enrich ORD-1" });
+    expect(parked.delegation?.sessionId).toBe("s1~1");
+    expect(heldSessions(agent)).toEqual(["s1", "s1~1"]);
+
+    agent.dispose("s1");
+    expect(heldSessions(agent)).toEqual([]);
+
+    model.enqueue({ reply: "child approved" }, { reply: "parent done" });
+    const outcome = await agent.workflow.decide("s1", { target: "approved" });
+    expect(outcome.status).toBe("completed");
+    expect((await agent.sessions.get("s1~1"))?.workflowState).toBe("approved");
   });
 
   it("refuses a host's session id holding '~' in any other shape", async () => {

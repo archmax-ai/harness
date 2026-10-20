@@ -56,11 +56,24 @@ describe("printResumed", () => {
 
   it("still reports a completed resume, exit 0", () => {
     const { code, stdout, stderr } = capture(() =>
-      printResumed(style, "s1", "delivered", settled({ status: "completed", messages: [new AIMessage("All set.")] })),
+      printResumed(style, "s1", "delivered", settled({ status: "completed", reply: "All set." })),
     );
     expect(code).toBe(0);
     expect(stderr).toContain("✔ delivered");
     expect(stdout).toBe("All set.");
+  });
+
+  it("prints the resumed line, not an earlier turn's text, when the resume said nothing", () => {
+    const { code, stdout } = capture(() =>
+      printResumed(
+        style,
+        "s1",
+        "decided",
+        settled({ status: "completed", workflowState: "approved", messages: [new AIMessage("A reviewer will check it.")] }),
+      ),
+    );
+    expect(code).toBe(0);
+    expect(stdout).toBe("Session s1 resumed (state=approved).");
   });
 
   it("reports a resume that ended in a raise as a failure with its code, exit 1", () => {
