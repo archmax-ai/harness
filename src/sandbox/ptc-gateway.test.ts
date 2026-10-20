@@ -15,8 +15,8 @@ const SPEC: MachineSpec = {
       transitions: [{ to: "done", description: "Test edge to done." }],
     },
     // Narrower than `work`, so the same call's verdict depends on which state
-    // is active — `write_file` is an essential built-in, so a state must name
-    // it to constrain it at all.
+    // is active — `write_file` is a default tool, granted unconstrained in every
+    // state of this workflow, so a state must name it to constrain it at all.
     done: { tools: { allow: [{ tool: "write_file", args: { file_path: ["output/final/**"] } }] } },
   },
 };
@@ -341,8 +341,11 @@ describe("PTC calls are not interpolated", () => {
 });
 
 describe("the surface a script lists", () => {
+  // A declared allow_always replaces the default tools: `write_file` is named
+  // nowhere, so no state discloses it; the sandbox tools are granted, so their
+  // absence from a script's surface is the exclusion, not a missing grant.
   const SURFACE_SPEC: MachineSpec = {
-    tools: { allow_always: ["lookup"] },
+    tools: { allow_always: ["lookup", "read_file", "archmax_eval", "archmax_run"] },
     states: {
       work: { triggers: { manual: null }, tools: { allow: ["alpha"] }, transitions: [{ to: "done", description: "Finish." }] },
       done: { tools: { allow: ["beta"], forbid: ["lookup"] } },
@@ -352,8 +355,9 @@ describe("the surface a script lists", () => {
   it("is the state's disclosed tools, following the live context from state to state", () => {
     const { gateway } = setup({ spec: SURFACE_SPEC });
     const work = gateway.surface("t1");
-    expect(work).toEqual(expect.arrayContaining(["alpha", "lookup", "read_file", "write_file"]));
+    expect(work).toEqual(expect.arrayContaining(["alpha", "lookup", "read_file"]));
     expect(work).not.toContain("beta");
+    expect(work).not.toContain("write_file");
 
     gateway.refresh("t1", { state: "done", config: {} });
     const done = gateway.surface("t1");

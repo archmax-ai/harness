@@ -45,11 +45,13 @@ import type {
 export type TransitionType = z.infer<typeof transitionTypeSchema>;
 
 /**
- * One outgoing edge of a state. `description` is **required and non-empty**: the
- * agent is disclosed the active state's edges and nothing else of the graph, so
- * this is the whole of what it routes on — write it for a reader standing in the
- * source state, which knows nothing of the target ("Refunds over $50", never "go
- * to refund-review"). At a human state it is also the decision's button label.
+ * One outgoing edge of a state. The agent is disclosed the active state's edges
+ * and nothing else of the graph, so `description` is what it routes on — write it
+ * for a reader standing in the source state, which knows nothing of the target
+ * ("Refunds over $50", never "go to refund-review"). An **undescribed** edge
+ * (absent, empty or blank) routes on the target state's `instructions` instead,
+ * which the edge then discloses; it loads only when the target has some. At a
+ * human state the description is also the decision's button label, and required.
  */
 export type MachineTransition = z.infer<typeof machineTransitionSchema>;
 
@@ -79,8 +81,9 @@ export type AllowEntry = z.infer<typeof allowEntrySchema>;
 
 /**
  * Per-state tool governance. Allow-only: a state with `allow` permits exactly the
- * listed tools/arg-shapes (plus workflow-level `allow_always` grants and the
- * essential surface); a state without one gets the essential surface only.
+ * listed tools/arg-shapes plus the workflow-wide grant (the declared
+ * `allow_always`, else the default tools) and the host's `essentialTools`; a
+ * state without one gets those two only.
  */
 export type ToolsBlock = z.infer<typeof toolsBlockSchema>;
 
@@ -143,7 +146,10 @@ export type StateType = z.infer<typeof stateTypeSchema>;
  */
 export type MachineState = z.infer<typeof machineStateSchema>;
 
-/** Workflow-level tool grants. */
+/**
+ * Workflow-level tool governance. A declared `allow_always` is the whole
+ * workflow-wide grant; an absent one grants the default tools.
+ */
 export type WorkflowToolsConfig = z.infer<typeof workflowToolsConfigSchema>;
 
 /**

@@ -80,8 +80,8 @@ instructions?: string         # the workflow's STANDING instructions — free-fo
                               # simply ignored; use `instructions:`, rereading the
                               # text as direction, not narration.
                               # A test case's `description` is UNAFFECTED. A
-                              # TRANSITION's `description` is now REQUIRED and
-                              # non-empty (see `transitions` below).
+                              # TRANSITION's `description` is what the agent routes
+                              # on (see `transitions` below).
 
 disabled?: boolean            # `true` = this machine STARTS NO NEW TURNS. Bounds
                               # STARTING, not finishing.
@@ -146,7 +146,13 @@ tests?:                       # cases suite config (declarative data;
                               #      factory's `judge` role; other keys are errors
 
 tools?:
-  allow_always?: AllowEntry[] # grants added to every state's allowlist
+  allow_always?: AllowEntry[] # the WORKFLOW-WIDE GRANT, in every state. ABSENT = the
+                              #      default tools (ls, read_file, write_file, edit_file,
+                              #      glob, grep, copy_file, move_file, remove_file,
+                              #      write_todos, archmax_eval, archmax_run). DECLARED
+                              #      ([] included) = exactly what it lists: it REPLACES
+                              #      the default tools, so list each one you want. A
+                              #      new workflow lists all twelve.
   forbid_always?: ForbidEntry[]
                               # DENIED in EVERY state, and absolute: nothing reaches
                               #      past it — no state grant, allow_always entry,
@@ -312,8 +318,9 @@ states:
                                # NO PART OF THE PROMPT — the model never reads it,
                                # so it is free, and it can NOT carry routing logic.
                                # The routing text the agent reads is the SOURCE
-                               # state's transition `description`s; nothing about a
-                               # target state is disclosed at all.
+                               # state's transition `description`s, or a target's
+                               # `instructions` where an edge is undescribed; a
+                               # target's summary is never disclosed.
 
     instructions?: string      # behavior guidance.
                                #   agent node: surfaced to the LLM while active.
@@ -328,13 +335,14 @@ states:
                                #   for a terminal state)
 
     tools?:
-      allow?: AllowEntry[]     # grants beyond the always-on tools (plus
-                               # allow_always grants and the always-allowed
-                               # archmax_advance); an entry naming
-                               # an always-on tool NARROWS it.
+      allow?: AllowEntry[]     # grants beyond the workflow-wide grant (plus the
+                               # always-allowed archmax_advance); an entry naming
+                               # a tool that grant includes NARROWS it, and one
+                               # naming a default tool a declared allow_always
+                               # leaves out GRANTS it here.
       forbid?: ForbidEntry[]   # what this state DENIES while active — beating the
-                               # workflow's allow_always, this state's own allow,
-                               # and the always-on surface alike. Deny beats allow.
+                               # workflow-wide grant, this state's own allow,
+                               # and a host's essentialTools alike. Deny beats allow.
                                # Not inherited by a sub-workflow; a lifecycle hook
                                # is exempt from it (runtime authority).
 
@@ -421,25 +429,35 @@ states:
                                #
                                # Transition = {
                                #   to: string          # a declared state's SLUG
-                               #   description: string # REQUIRED, non-empty
+                               #   description?: string # what the agent routes on
                                #   type?: "approve" | "reject" | "refine" | "none"
                                # }
                                #
                                # THE AGENT SEES THIS STATE'S EDGES AND NOTHING
                                # ELSE OF THE GRAPH — no other state's slug, title,
                                # summary, hooks or transitions, and no count of
-                               # the states. So `description` is the whole of what
-                               # it knows about where an edge leads, and a missing
-                               # or blank one is a LOAD ERROR naming
-                               # states.<slug>.transitions.<i>.description.
+                               # the states. So `description` is what it knows
+                               # about where an edge leads. An UNDESCRIBED edge
+                               # (absent/empty/blank) routes on the TARGET's
+                               # `instructions` instead: the edge's line carries
+                               # them, quoted, and nothing else of the target.
+                               # LOAD ERRORS (states.<slug>.transitions.<i>.description):
+                               # an undescribed edge whose target has no
+                               # instructions; an undescribed transition of a
+                               # HUMAN state (it is the button label); a
+                               # non-string. An undescribed edge INTO a human
+                               # state discloses that state's reviewer-facing
+                               # instructions to the agent — describe it to keep
+                               # them private.
                                #
                                # Write it for a reader standing in THIS state,
                                # which knows nothing about the target:
                                #   GOOD: "The refund is over $50."   (when)
                                #   BAD:  "Go to refund-review."      (where)
                                # A routing condition CANNOT live in the target's
-                               # summary/instructions — those are never disclosed
-                               # to the state routing into it.
+                               # summary, which is never disclosed; it lives in the
+                               # target's instructions only when the edge is left
+                               # undescribed.
                                #
                                # The rendered line marks a target that is a human
                                # decision node or terminal (each changes the call
@@ -666,11 +684,12 @@ an entry naming an unprefixed variant governs a tool that does not exist,
 silently granting nothing. A host tool may never claim the prefix. Deep Agents' built-ins
 (`read_file`, `task`, …) keep their own names.
 
-- A state with **no `tools` block** gets the **always-on tools only**
-  (`ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`, `remove_file`, `glob`,
-  `grep`, `write_todos`, `archmax_eval`, `archmax_run`, plus the always-allowed `archmax_advance` and `allow_always`
-  grants — minus
-  whatever a `forbid` list denies there, and read-only-zone protection).
+- A state with **no `tools` block** gets the **workflow-wide grant only**: what
+  `tools.allow_always` lists, or the default tools (`ls`, `read_file`, `write_file`,
+  `edit_file`, `copy_file`, `move_file`, `remove_file`, `glob`, `grep`, `write_todos`,
+  `archmax_eval`, `archmax_run`) when the key is absent, plus the always-allowed
+  `archmax_advance` and a host's `essentialTools`, minus whatever a `forbid` list
+  denies there, and read-only-zone protection.
   Governance is closed by default; there is no way to declare a fully open state.
 - `tools.forbid` on a state **denies** while that state is active, beating every
   grant that would otherwise reach it (see [Tool governance](#tool-governance)).
@@ -712,7 +731,8 @@ success.
 ```yaml
 transitions:
   - to: string                 # REQUIRED target state SLUG (must exist); never a title
-    description?: string        # shown to the agent (or human) to pick the edge
+    description?: string        # shown to the agent (or human) to pick the edge; absent =
+                                #   the agent is shown the target's instructions instead
     type?: "approve" | "reject" | "refine" | "none"   # default "none"
 ```
 
@@ -746,22 +766,30 @@ platform-provided tool resolves through when its collection has several) and
 `source` (any string: a host's own label for where the tool came from) — the
 runtime matches governance by `tool` name alone and never reads `source`.
 
-**The model is closed by default, and a denial beats every grant.** Every state always has the
-**always-on tools** (`ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`,
-`remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`). One built-in is **never
+**The model is closed by default, and a denial beats every grant.** Every state has the
+**workflow-wide grant**: what `tools.allow_always` lists, or, when the workflow does not
+declare that key, the **default tools** (`ls`, `read_file`, `write_file`, `edit_file`,
+`copy_file`, `move_file`, `remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval`,
+`archmax_run`). A declared list **replaces** the default tools, never adds to them:
+`allow_always: []` grants no tool workflow-wide, and a list without `write_file` leaves
+every state that does not name it unable to write. So a new workflow lists all twelve and
+removes only what it must not have. Every state also has the always-allowed controls and
+any tool the host passes as `essentialTools`, whatever the workflow declares. One built-in is **never
 disclosed** and grantable by nothing: `task`, the runtime's own dispatch for
 grading rubrics — a rubric grades the agent rather than serving it, so naming
 `task` in an allow entry is a `validate` error and the kernel refuses the call.
 The planning scratchpad `write_todos` and the sandbox
-`archmax_eval` are standard equipment — always disclosed, always permitted,
-no setting; only a `forbid` list refuses them. The interpreter is safe as a
+`archmax_eval` are default tools: granted wherever the workflow-wide grant includes
+them (everywhere, in a workflow without `allow_always`). `write_todos`'s prompt
+guidance appears only when some state is granted it, and hooks run in the sandbox
+whether or not the agent is granted `archmax_eval`. The interpreter is safe as a
 default because the `tools.*` calls its code makes are decided against the active
 state by the same kernel: it adds computation over what the state permits, not
-access. `archmax_run` — executing an authored script **file** — is always on on
+access. `archmax_run` — executing an authored script **file** — is a default tool on
 the same terms (the script is a file the state could already read); declare it
 per state to **narrow** which files may run there. The file operations —
 `copy_file({ source, destination, overwrite? })`, `move_file` (same arguments)
-and `remove_file({ file_path })` — are always on on the same terms: every tool
+and `remove_file({ file_path })` — are default tools on the same terms: every tool
 **declares its path arguments** with how the call uses each (`read`, `list`,
 `search`, `write`, `remove`, `execute`), and every path rule reads that
 declaration. `copy_file` reads `source` and writes `destination`; `move_file`
@@ -774,16 +802,19 @@ entry guards every declared path argument: a grant needs all of them to match
 declares its paths (`toolPaths`, or a descriptor's `paths`) is governed the same
 way; an argument may hold a list of paths, each one governed (and each one
 tested by a `paths:` guard), and any other shape is refused
-(`tool.path-argument`). `scratchpad/` is open in every state to the always-on
-tools only — a host tool a state must grant stays refused where it is not
-granted, whatever its paths. Any other tool
+(`tool.path-argument`). `scratchpad/` is open in every state to each default file tool the state
+is granted, whatever the granting entry narrows, and to a host's `essentialTools`.
+A file tool the state is not granted gets nothing from it, and a host tool a state
+must grant stays refused where it is not granted, whatever its paths. Any other tool
 must be declared in the state's `tools.allow` or workflow-level
-`tools.allow_always`. A `tools.allow` entry naming an always-on tool **narrows**
-it for that state.
+`tools.allow_always`. A `tools.allow` entry naming a tool the workflow-wide grant
+includes **narrows** it for that state. A guard on an `allow_always` entry is
+enforced like any other (`{ tool: write_file, paths: [reports/**] }` binds in every
+state that does not name `write_file`).
 Denial is declared beside the grant, in the same two positions and with the same
 entries: `tools.forbid_always` at the root denies in every state,
 `tools.forbid` on a state denies while it is active — subtracting from the
-workflow's grant, the state's own `allow` and the always-on surface alike.
+workflow-wide grant, the state's own `allow` and a host's `essentialTools` alike.
 **Deny beats allow, and no narrower level widens a denial.** A forbid entry may
 name the tool `*` (every tool); `*` in an allow list is a load error. A lifecycle
 hook is exempt from the state's `allow` **and** its `forbid` — runtime authority,
@@ -803,17 +834,18 @@ Precedence (highest first):
    (and regardless of always-allowed): deny beats allow, and no narrower level
    widens a denial.
 2. **Always allowed**: `archmax_advance` (baked in, every state).
-3. **Per-state `tools.allow`** — the listed tools/arg-shapes. An entry for an
-   always-on tool (or one also in `allow_always`) takes precedence
-   (**narrower wins** — the state's arg globs apply, not the broader grant).
-4. **Essential built-ins** — always permitted when no state entry narrows
-   them. Listing one in `allow_always` is inert (`archmax validate` warns).
-5. **Workflow `tools.allow_always`** — grants tools that are not always on in every
-   state.
+3. **Per-state `tools.allow`** — the listed tools/arg-shapes. An entry for a
+   tool the workflow-wide grant includes takes precedence (**narrower wins** —
+   the state's arg globs apply, not the broader grant); an entry for a default
+   tool a declared `allow_always` omits grants it in this state.
+4. **The workflow-wide grant** — the declared `tools.allow_always`, guards
+   included, or the default tools, unconstrained, when the key is absent.
+5. **The host's `essentialTools`** — always permitted when no state entry
+   narrows them, whatever the workflow declares.
 6. **Default**: everything else is blocked.
 
 **Progressive disclosure.** The model is only shown the active state's tool
-surface: always-on tools + `allow_always` + the state's entries + `archmax_advance`
+surface: the workflow-wide grant + a host's `essentialTools` + the state's entries + `archmax_advance`
 (hidden in terminal states), minus every tool denied there by name. Disclosure is
 name-level (arg-constrained tools stay visible; the kernel enforces args at
 call time) and never replaces enforcement. **Skills are disclosed the same way**:
@@ -1839,7 +1871,7 @@ them. Its shape:
 - `orders-question` (terminal) answers from `skills/order-data/assets/orders.json`; an
   `after: { rubric: order-reply-tone }` grades the reply at completion.
 - `refund-request` records a decision to `scratchpad/refund.json` (no allow entry
-  narrows it — the working area is open in every state; what holds the agent to a
+  narrows it — the working area is open to `write_file` wherever it is granted; what holds the agent to a
   correct file is the hook), runs `after: check-refund.js`, and pairs
   `budget.maxTurns: 24` with `on_error: escalation` so a terminal failure
   (hook error, exhausted corrections, exhausted budget) routes to escalation

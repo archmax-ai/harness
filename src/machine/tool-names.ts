@@ -37,6 +37,9 @@ export const COPY_FILE_TOOL = "copy_file";
 export const MOVE_FILE_TOOL = "move_file";
 export const REMOVE_FILE_TOOL = "remove_file";
 
+/** The planning scratchpad, a default tool whose prompt guidance follows its grant. */
+export const TODO_TOOL = "write_todos";
+
 /** The runtime's file operations, which no host tool may share a name with. */
 export const RUNTIME_FILE_TOOLS: ReadonlySet<string> = new Set([COPY_FILE_TOOL, MOVE_FILE_TOOL, REMOVE_FILE_TOOL]);
 
@@ -118,14 +121,15 @@ export const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The built-in tools essential in every assembly — always disclosed, always
- * permitted, never declared: the file tools (the runtime's file operations
- * among them), `write_todos`, and the two sandbox tools. A script's `tools.*` calls are
- * governed against the active state like a direct call. A state entry naming
- * an essential tool *narrows* the grant
- * (`{ tool: archmax_run, paths: [...] }`); `policy.forbid_tools` closes one.
+ * The default tools: the workflow-wide grant of a workflow that does not declare
+ * `tools.allow_always` — the file tools (the runtime's file operations among
+ * them), `write_todos`, and the two sandbox tools, unconstrained in every state.
+ * A declared `allow_always` (an empty list included) *replaces* them: a default
+ * tool is then granted only where `allow_always` or a state's `tools.allow`
+ * names it. A state entry naming a granted tool narrows it there
+ * (`{ tool: archmax_run, paths: [...] }`); a `forbid` closes one.
  */
-export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
+export const DEFAULT_TOOLS: ReadonlySet<string> = new Set([
   "ls",
   "read_file",
   "write_file",
@@ -135,7 +139,7 @@ export const ESSENTIAL_TOOLS: ReadonlySet<string> = new Set([
   REMOVE_FILE_TOOL,
   "glob",
   "grep",
-  "write_todos",
+  TODO_TOOL,
   EVAL_TOOL,
   RUN_TOOL,
 ]);

@@ -12,7 +12,7 @@ or write.
    "Naming the run" below.
 <!-- /top-level-only -->
 2. Do the current state's work. Write files where its instructions or listed
-   mounts say; `scratchpad/`, always writable, is only the default.
+   mounts say; `scratchpad/` is only the default.
 3. Call **`archmax_advance({ "to": "<next>", "reason": "<one sentence>" })`**,
    choosing `to` from the transitions under "Current state" by their descriptions.
    `to` takes the target's **slug** — the backticked token on the transition line.
@@ -98,8 +98,8 @@ a state may narrow a tool's arguments (e.g. `write_file` to one path). Tools nam
 `archmax_*` are the runtime's controls. A blocked call names the tool, the state
 and the policy: fix the call, or advance if you are done.
 
-**Write code instead of many calls.** **`archmax_eval({ "code": "…" })`**, in
-every state, runs JavaScript in a sandbox where `tools.*` calls your tools,
+**Write code instead of many calls.** **`archmax_eval({ "code": "…" })`**, when
+your tools include it, runs JavaScript in a sandbox where `tools.*` calls your tools,
 governed exactly as your own calls are. Reach for it by default for loops,
 filters, arithmetic, or more than about two calls whose results feed each other:
 **only your last expression and whatever you `console.log` come back to you**, so

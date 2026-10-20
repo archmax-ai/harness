@@ -25,7 +25,7 @@ import {
   ADVANCE_TOOL,
   ALWAYS_ALLOWED_TOOLS,
   UNGRANTABLE_TOOLS,
-  ESSENTIAL_TOOLS,
+  DEFAULT_TOOLS,
   GET_VARIABLES_TOOL,
   RESET_TOOL,
   SET_VARIABLES_TOOL,
@@ -50,7 +50,7 @@ import {
   type MachineTransition,
 } from "./types.js";
 
-export { ALWAYS_ALLOWED_TOOLS, ESSENTIAL_TOOLS, UNGRANTABLE_TOOLS };
+export { ALWAYS_ALLOWED_TOOLS, DEFAULT_TOOLS, UNGRANTABLE_TOOLS };
 
 /**
  * A declared list, or nothing. `validate` builds a machine from a spec whose
@@ -97,8 +97,9 @@ export class WorkflowMachine {
   private constructor(
     readonly spec: MachineSpec,
     /**
-     * Host-declared tool names treated as essential — always disclosed and
-     * permitted in every state, exactly like the built-in {@link ESSENTIAL_TOOLS}.
+     * The host's `essentialTools`: always disclosed and permitted in every state,
+     * whatever the workflow's `tools.allow_always` declares — the host opted
+     * them in, not the workflow. A state's own entry still narrows one.
      */
     private readonly extraEssential: ReadonlySet<string> = new Set(),
     /** Every tool's declared path arguments: the built-ins plus the host's. */
@@ -145,8 +146,8 @@ export class WorkflowMachine {
   /**
    * This machine with `extra` path declarations added to its table: how a
    * composition declares the `file` arguments of the delegation tools it binds,
-   * which only reading each target's signature reveals. The spec, the essential
-   * tools and every other declaration are unchanged.
+   * which only reading each target's signature reveals. The spec, the host's
+   * `essentialTools` and every other declaration are unchanged.
    */
   withToolPaths(extra: Readonly<Record<string, ToolPaths>>): WorkflowMachine {
     if (Object.keys(extra).length === 0) return this;
@@ -551,26 +552,44 @@ export class WorkflowMachine {
   }
 
   private allowAlwaysEntries(): AllowEntry[] {
-    return this.spec.tools?.allow_always ?? [];
+    return list(this.spec.tools?.allow_always);
   }
 
   /**
-   * Whether `tool` is essential — always disclosed and permitted, in every state:
-   * the built-ins of {@link ESSENTIAL_TOOLS} and the host's `essentialTools`.
+   * The workflow-wide grant: the declared `tools.allow_always` entries, guards
+   * included (an empty list included), or — when the key is absent — the
+   * {@link DEFAULT_TOOLS}, unconstrained. A declared list *replaces* the default
+   * tools; it never adds to them. A non-list (a spec whose schema failed, which
+   * only `validate` builds a machine from) counts as absent. `task` is in it
+   * under no circumstances (see {@link UNGRANTABLE_TOOLS}).
    */
-  isEssential(tool: string): boolean {
-    return ESSENTIAL_TOOLS.has(tool) || this.extraEssential.has(tool);
+  private workflowGrant(): NormalizedAllowEntry[] {
+    const declared = this.spec.tools?.allow_always;
+    if (Array.isArray(declared)) return declared.map(normalizeAllowEntry);
+    return [...DEFAULT_TOOLS].map((tool): NormalizedAllowEntry => ({ tool, argMatchers: null }));
   }
 
   /**
-   * The effective essential set: the built-ins plus the host's `essentialTools`.
-   * Unconditional — no property of a workspace or a spec adds to it, and `task`
-   * is in it under no circumstances (see {@link UNGRANTABLE_TOOLS}).
+   * Whether the always-open working areas (`scratchpad/` and the offload areas)
+   * admit `tool` in `state` whatever its granting entry narrows: a host
+   * `essentialTools` tool, or a default tool some effective entry of the state
+   * names, guarded or not — the areas stay open under a narrowing entry. A
+   * default tool the state is not granted gets nothing from them, so they never
+   * make a withheld tool callable; any other tool is left to the state's grant.
    */
-  private essentialTools(): Set<string> {
-    const tools = new Set(ESSENTIAL_TOOLS);
-    for (const tool of this.extraEssential) tools.add(tool);
-    return tools;
+  opensWorkingAreas(state: string, tool: string): boolean {
+    if (this.extraEssential.has(tool)) return true;
+    if (!DEFAULT_TOOLS.has(tool)) return false;
+    return this.effectiveEntries(state).some((entry) => entry.tool === tool);
+  }
+
+  /**
+   * Whether some declared state discloses `tool` — granted there and not denied
+   * by name. Decided once per composition, for guidance that belongs in the
+   * static prompt only when the tool can be offered at all (`write_todos`).
+   */
+  grantsAnywhere(tool: string): boolean {
+    return Object.keys(this.spec.states).some((state) => this.disclosedTools(state).has(tool));
   }
 
   /**
@@ -587,21 +606,23 @@ export class WorkflowMachine {
   /**
    * The entries that govern `state`, in precedence order — the one derivation
    * enforcement and disclosure both read. A tool is decided by exactly one tier:
-   * the state's own entries when they name it (the narrower constraint, even for
-   * an essential tool); else the essential grant; else `allow_always`. An
-   * `allow_always` entry for a tool the state mentions or that is essential is
-   * therefore inert.
+   * the state's own entries when they name it (the narrower constraint, which
+   * also grants a default tool a declared `allow_always` omits); else the
+   * workflow-wide grant ({@link workflowGrant}); else the host's
+   * `essentialTools`, unconstrained. The last two never name the same tool — a
+   * workflow-wide entry for a host tool is inert — so their order is only the
+   * order a block message lists them in.
    */
   private effectiveEntries(state: string): NormalizedAllowEntry[] {
     const own = this.allowEntries(state).map(normalizeAllowEntry);
     const mentioned = new Set(own.map((e) => e.tool));
-    const essential = [...this.essentialTools()]
+    const workflow = this.workflowGrant().filter(
+      (e) => e.tool && !mentioned.has(e.tool) && !this.extraEssential.has(e.tool),
+    );
+    const host = [...this.extraEssential]
       .filter((tool) => !mentioned.has(tool))
       .map((tool): NormalizedAllowEntry => ({ tool, argMatchers: null }));
-    const always = this.allowAlwaysEntries()
-      .map(normalizeAllowEntry)
-      .filter((e) => e.tool && !mentioned.has(e.tool) && !this.essentialTools().has(e.tool));
-    return [...own, ...essential, ...always];
+    return [...own, ...workflow, ...host];
   }
 
   /**

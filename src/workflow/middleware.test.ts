@@ -151,7 +151,7 @@ describe("workflow middleware tool governance", () => {
     expect((result as ToolMessage).additional_kwargs?.governance_blocked).toBe(true);
   });
 
-  it("permits an essential tool not named by the state's allow list", async () => {
+  it("permits a default tool not named by the state's allow list", async () => {
     const { result, handlerRan } = await callMiddleware("read_file", {
       file_path: "data/orders.json",
     });
@@ -202,7 +202,7 @@ describe("workflow middleware progressive tool disclosure", () => {
     return seen;
   }
 
-  it("hides undeclared non-essential tools and keeps declared, essential, and movement tools", async () => {
+  it("hides undeclared tools and keeps declared, default, and movement tools", async () => {
     const seen = await seenByModel([
       "web_fetch",
       "task",
@@ -831,7 +831,7 @@ describe("workflow middleware tool-call events", () => {
     expect(called).toMatchObject({ tool: "write_file", detail: "output/a.json" });
   });
 
-  it("emits tool-called for a permitted essential tool", async () => {
+  it("emits tool-called for a permitted default tool", async () => {
     const events = await callWithEvents("read_file", { file_path: "data/orders.json" });
     expect(events.some((e) => e.type === "tool-called" && e.tool === "read_file")).toBe(true);
   });

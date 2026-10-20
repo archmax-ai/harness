@@ -228,12 +228,12 @@ export {
   HARNESS_CONTROL_TOOLS,
   /** Tools permitted in every state regardless of `allow`. */
   ALWAYS_ALLOWED_TOOLS,
-  /** The always-on built-ins a state's own entry may narrow but `allow_always` cannot add to. */
-  ESSENTIAL_TOOLS,
+  /** The workflow-wide grant when `tools.allow_always` is absent; a declared list replaces it. */
+  DEFAULT_TOOLS,
   /** Tools no list may grant (`task`). */
   UNGRANTABLE_TOOLS,
   ReservedToolNameError,
-  /** The runtime's file operations, always on in every agent. */
+  /** The runtime's file operations, registered in every agent and among the default tools. */
   COPY_FILE_TOOL,
   MOVE_FILE_TOOL,
   REMOVE_FILE_TOOL,

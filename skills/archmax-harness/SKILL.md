@@ -55,8 +55,10 @@ then verify. Do not write a file, validate, and discover the next file.
    `triggers: { manual: }` (plus any host trigger ids that enter there),
    terminal states (no `transitions`), the edges between them — and for each
    edge, the *condition* under which it is taken. That condition is the edge's
-   required `description`, and it is the only thing the agent will know about
-   where the edge leads. If something outside the session calls the workflow
+   `description`, which is what the agent knows about where the edge leads. Leave
+   an edge undescribed only when the target's `instructions` already say when it
+   applies: the agent is then shown them instead (never on a human state's
+   transitions, whose description is the button label). If something outside the session calls the workflow
    (another workflow, a host's MCP tool or form), give its trigger a
    `description` for the caller and a `requires`/`returns` signature, typing an
    entry (`{ name, type, description }`; `string` `integer` `number` `boolean`
@@ -77,7 +79,9 @@ then verify. Do not write a file, validate, and discover the next file.
    `skills/<capability>/` bundle only for data, an `archmax_run` script, or
    guidance two or more states share identically; `AGENTS.md` only for a
    workspace-wide persona.
-3. **Write `workflow.yaml`** from the skeleton in [`references/workflow-yaml.md`](references/workflow-yaml.md). Each state's behaviour
+3. **Write `workflow.yaml`** from the skeleton in [`references/workflow-yaml.md`](references/workflow-yaml.md),
+   keeping its `tools.allow_always` list of the twelve default tools: a declared
+   list replaces them, so drop only a tool this workflow must not have. Each state's behaviour
    goes inline in its `instructions`; run-wide rules once in the top-level
    `instructions`; nothing about the machine itself (the platform prompt and
    the disclosed edges already say it, and prose is billed on every call), and
@@ -212,8 +216,8 @@ Rules that follow:
   (`script.skill-only`): a script in `scratchpad/` or `hooks/` is unrunnable.
 - **Paths have no leading slash** (`skills/order-data/assets/orders.json`,
   `scratchpad/refund.json`); never author a `run/` prefix. `scratchpad/` is
-  writable in every state regardless of `tools.allow`, so an allow entry
-  inside it narrows nothing (warning); to govern *where* a result lands, name
+  writable in every state that is granted `write_file`, whatever its entry
+  narrows, so an allow entry inside it narrows nothing (warning); to govern *where* a result lands, name
   a non-reserved run path (`reports/*.json`) and allow it.
 - **Guidance has three homes, one per rule**: every workflow → `AGENTS.md`;
   the whole run → top-level `instructions` (`|-` literal block, since `>-`

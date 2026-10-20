@@ -233,8 +233,9 @@ export interface CreateAgentParams {
   modelFactory?: ModelFactory;
   /**
    * Tool names to treat as always-on: disclosed and permitted in every state,
-   * like the file tools. A per-state `tools.allow` entry naming one still
-   * narrows it, and the safety/policy rules still bind.
+   * whatever the workflow's `tools.allow_always` declares (a declared list
+   * replaces the default tools, never these). A per-state `tools.allow` entry
+   * naming one still narrows it, and the safety/policy rules still bind.
    */
   essentialTools?: string[];
   /**

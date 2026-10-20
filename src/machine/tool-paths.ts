@@ -27,9 +27,10 @@ export const PATH_ACCESSES: readonly PathAccess[] = ["read", "list", "search", "
 export const MUTATING_ACCESSES: ReadonlySet<PathAccess> = new Set(["write", "remove"]);
 
 /**
- * The accesses the always-open `scratchpad/` permits an essential tool in every
- * state, whatever the state's `allow` list says. Searching and executing are not
- * among them, and a tool a state must grant gets nothing from it.
+ * The accesses the always-open `scratchpad/` permits a default file tool the
+ * state is granted (or a host `essentialTools` tool), whatever the granting
+ * entry narrows. Searching and executing are not among them, and a tool the
+ * state is not granted gets nothing from it.
  */
 export const SCRATCHPAD_ACCESSES: ReadonlySet<PathAccess> = new Set(["read", "list", "write", "remove"]);
 

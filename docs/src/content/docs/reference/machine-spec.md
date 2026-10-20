@@ -93,11 +93,11 @@ states:
     tools:
       allow:                # this state's grants; `forbid:` beside it denies
         - { tool: write_file, args: { file_path: [reports/answer.json] } }   # a governed session path;
-                              # scratchpad/** is writable in every state, so an entry
-                              # naming a path inside it narrows nothing there
+                              # scratchpad/** is writable wherever write_file is granted,
+                              # so an entry naming a path inside it narrows nothing there
     transitions:
       - to: orders-question
-        description: "User is asking about orders."   # REQUIRED, non-empty
+        description: "User is asking about orders."   # when to take it; omit to route on the target's instructions
 ```
 
 A state with **no `transitions`** is terminal. The turn ends when the agent
@@ -105,17 +105,17 @@ finishes there, and the volatile prompt block says so in place of the list.
 
 ### `transitions`: the only part of the graph the agent sees
 
-Each entry is `{ to, description, type? }`:
+Each entry is `{ to, description?, type? }`:
 
 | Key | Value |
 | --- | --- |
 | `to` | a declared state's slug |
-| `description` | required, non-empty: when this edge applies |
+| `description` | when this edge applies; omit it to route on the target's `instructions` |
 | `type` | one of `approve`, `reject`, `refine`, `none` |
 
 The agent is disclosed the active state's outgoing edges, so the description is
-the whole of what it knows about where an edge leads. Write it for a reader
-standing in the *source* state, which has no picture of the target:
+what it knows about where an edge leads. Write it for a reader standing in the
+*source* state, which has no picture of the target:
 
 ```yaml
 transitions:
@@ -125,9 +125,34 @@ transitions:
     description: Go to the orders-question state.                           # avoid: where
 ```
 
-A missing, empty or mistyped `description` is a **load error** naming
-`states.<slug>.transitions.<index>.description`. There is no fallback to the
-target's `summary` or `instructions`.
+An edge may also go **undescribed**: no `description`, or an empty or blank one.
+The agent then routes on the target state's own `instructions`, which the edge's
+line carries in place of a description, quoted and introduced as what the agent
+will do once there. Use it when the next state's instructions already say when
+it applies, rather than paraphrasing them on every edge into it. Nothing else of
+the target is disclosed: not its `title`, `summary`, hooks or transitions.
+
+```yaml
+states:
+  triage:
+    transitions:
+      - to: lookup                # undescribed: routes on lookup's instructions
+  lookup:
+    instructions: Look the order up by its id and summarise its status.
+```
+
+Three cases are **load errors**, each naming
+`states.<slug>.transitions.<index>.description`:
+
+- an undescribed edge whose target has no instructions, because there is nothing
+  to route on;
+- an undescribed transition of a **human state**, where the description is the
+  label of the decision's button for the person deciding;
+- a `description` that is not a string.
+
+An undescribed edge *into* a human state discloses that state's instructions to
+the agent, and those are written for the reviewer. Describe the edge to keep them
+from the agent.
 
 An edge's rendered line marks a target that is a **human decision node** or
 **terminal**, because each changes the call or what follows it. Both marks mean
@@ -184,7 +209,7 @@ fails load.
 
 `instructions` are sent to the model **while that state is active**. When
 deciding where to advance, the model reads the transition `description`s of the
-state it is in, which is why a `description` is required and non-empty.
+state it is in, or a target's `instructions` where an edge is undescribed.
 `archmax validate` warns when a state with several transitions has no
 `instructions` to classify the request with.
 
@@ -220,9 +245,9 @@ Governance, transitions, events, session artifacts, and the CLI state-flow trail
 all use the slug, so retitling a state changes no behavior. Reword a title
 freely. Rename a slug deliberately, since it is a reference target.
 
-`title` and `summary` are both labels for people and hosts. The one-line routing
-text the model reads when choosing an edge is that edge's own `description`,
-which the schema requires.
+`title` and `summary` are both labels for people and hosts. The routing text the model reads when
+choosing an edge is that edge's own `description`, or, for an undescribed edge,
+the target's `instructions`.
 
 At the top level, `title:` is the workflow's human-readable name, metadata only.
 [`instructions`](#instructions-the-workflows-standing-instructions) is the
@@ -239,25 +264,31 @@ keys are `title:` and `instructions:`.
 
 ### `tools.allow`: closed-by-default governance
 
-Tool governance is **closed by default**. Every state always has the
-**always-on tools**:
+Tool governance is **closed by default**. Every state has the workflow's
+**workflow-wide grant**: the entries of [`tools.allow_always`](#toolsallow_always)
+when the workflow declares that key, and otherwise the **default tools**:
 
 `ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`,
 `remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`.
 
-It also has the runtime controls `archmax_reset`, `archmax_wait`,
+A declared `tools.allow_always` **replaces** the default tools rather than adding
+to them, so a workflow that declares it lists every default tool it wants. A new
+workflow lists all twelve and removes only those it must not have.
+
+Every state also has the runtime controls `archmax_reset`, `archmax_wait`,
 `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, plus
-`archmax_advance` in non-terminal states. Workflow-level
-[`tools.allow_always`](#toolsallowalways) grants extend every state as well.
+`archmax_advance` in non-terminal states, and any tool the host passes as
+[`essentialTools`](/reference/public-api/), whatever the workflow declares.
 Everything else is declared: consumer-supplied custom tools, sub-workflow
 delegation tools, and the rest.
 
-A state with **no `tools` block** therefore gets exactly the always-on surface.
-There is no syntax for a fully open state.
+A state with **no `tools` block** therefore gets exactly the workflow-wide grant,
+the controls and the host's `essentialTools`. There is no syntax for a fully
+open state.
 
 The runtime's file operations, `copy_file({ source, destination, overwrite? })`,
 `move_file({ source, destination, overwrite? })` and `remove_file({ file_path })`,
-are always on for the same reason as the code interpreter below: they reach
+are default tools for the same reason as the code interpreter below: they reach
 nothing the path rules do not let them. Every tool **declares its path
 arguments** and how a call uses each one: `read`, `list`, `search`, `write`,
 `remove` or `execute`. `copy_file` reads `source` and writes `destination`,
@@ -271,8 +302,10 @@ host tools (see [`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-
 - the runtime-internal areas, a skill the state does not enable and a mount it
   was not given refuse every access;
 - `scratchpad/` is open to `read`, `list`, `write` and `remove` in every state,
-  for the always-on tools (the file tools, the file operations and a host's
-  `essentialTools`). Any other tool needs its state's grant there as anywhere.
+  for each default file tool the state is granted (by the workflow-wide grant or
+  by its own entry, whatever that entry narrows) and for a host's
+  `essentialTools`. A file tool the state is not granted gets nothing from it,
+  and any other tool needs its state's grant there as anywhere.
 
 A call naming several paths is refused when any one of them is, and the refusal
 names the argument (`'copy_file' on 'skills/x.md' (destination)`). An argument
@@ -280,22 +313,26 @@ may hold a list of paths, each governed with the argument's access; a declared
 argument holding anything but a path or a list of paths is refused
 (`tool.path-argument`).
 
-`archmax_eval`, the code interpreter, is always on because evaluated code reaches
-what the state already permits and no further. Its `tools.*` calls are decided
-against the active state by the same kernel that decides the agent's own calls.
-Close it workflow-wide with
-[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial).
+`archmax_eval`, the code interpreter, is a default tool because evaluated code
+reaches what the state already permits and no further. Its `tools.*` calls are
+decided against the active state by the same kernel that decides the agent's own
+calls. Withhold it by leaving it out of a declared `tools.allow_always`, or close
+it workflow-wide with
+[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). Hooks run in
+the same sandbox either way: they run on the runtime's authority, not the agent's.
 
-`archmax_run`, which executes an authored script **file**, is always on for the
-same reason: the script is a file the state could already read. Which files a
+`archmax_run`, which executes an authored script **file**, is a default tool for
+the same reason: the script is a file the state could already read. Which files a
 state may execute is still a governance question, and narrowing the grant per
 state answers it (`{ tool: archmax_run, paths: ["scripts/**"] }`).
 
 A state's `tools.allow` list does two things:
 
-- **grants** tools that are not always on for that state, and
-- **narrows** an always-on tool when an entry names one (the narrower entry
-  wins, e.g. constraining `write_file` to a single artifact path).
+- **grants** tools the workflow-wide grant does not include, for that state (a
+  default tool a declared `allow_always` leaves out among them), and
+- **narrows** a tool the workflow-wide grant includes when an entry names one
+  (the narrower entry wins, e.g. constraining `write_file` to a single artifact
+  path).
 
 Denial is declared beside the grant, in the same two positions; see
 [`tools.forbid_always` / `tools.forbid`](#toolsforbid_always--toolsforbid-denial)
@@ -303,8 +340,8 @@ below.
 
 The model **sees** the active state's tool surface, and that alone. On every
 model call the middleware filters the presented tool definitions to the
-disclosed set: always-on tools + `allow_always` + the state's entries +
-`archmax_advance`, minus every tool denied here by name. `archmax_advance` is
+disclosed set: the workflow-wide grant + the host's `essentialTools` + the
+state's entries + `archmax_advance`, minus every tool denied here by name. `archmax_advance` is
 hidden in terminal states.
 
 Disclosure is name-level, so an arg-constrained tool stays visible while the
@@ -415,8 +452,8 @@ The two mechanisms compose as *enabled AND allowed*. A `tools.allow` entry
 narrows **within** the enabled set, which is the right tool for a different
 question. `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }` beside
 `skills: { allow: [<slug>] }` says "this capability, and authored scripts
-alone". `archmax_run` is otherwise always on, so a script the agent wrote into
-`scratchpad/` could be run.
+alone". `archmax_run` is otherwise granted unconstrained wherever the workflow-wide
+grant includes it, so a script the agent wrote into `scratchpad/` could be run.
 
 Lifecycle **hooks are exempt**, as they are from a state's `tools.allow`,
 because a hook runs on runtime authority. So a routing state can enable nothing
@@ -1132,22 +1169,50 @@ or supplies a `sessionPath` on the firing. See
 
 ### `tools.allow_always`
 
-Workflow-wide **grants** for tools beyond the always-on set, extending every
-state's allowlist:
+The **workflow-wide grant**: the tools every state has. Declared, it is exactly
+what it lists, guards included. Absent, it is the
+[default tools](#toolsallow-closed-by-default-governance). A declared list
+**replaces** the default tools rather than adding to them, so it names each
+default tool the workflow needs beside its own grants:
 
 ```yaml
 tools:
   allow_always:
+    # the default tools: keep the ones this workflow needs
+    - ls
+    - read_file
+    - write_file
+    - edit_file
+    - glob
+    - grep
+    - copy_file
+    - move_file
+    - remove_file
+    - write_todos
+    - archmax_eval
+    - archmax_run
+    # workflow-wide grants beyond them
     - { tool: lookup_customer, args: { region: ["eu-*"] } }
 ```
 
-A per-state `allow` entry for the same tool takes precedence over the grant
-(narrower wins), so a state can constrain a tool that is otherwise granted
-everywhere.
+`allow_always: []` is a declaration too. It grants no tool workflow-wide, so
+each state's `tools.allow` grants everything that state uses, which is what
+`skills.allow_always: []` means for capabilities.
 
-Listing an **always-on** tool here is inert: always-on tools are always
-permitted, and a per-state entry is what narrows them. `archmax validate` warns
-about such entries, redundant when bare and unenforced when constrained.
+A per-state `allow` entry for a tool the grant includes takes precedence (the
+narrower entry wins), so a state can constrain a tool that is otherwise granted
+everywhere. An entry naming a default tool that the declared list leaves out
+grants it in that state alone.
+
+A guard on a default tool here is enforced like any other.
+`{ tool: write_file, paths: ["reports/**"] }` lets every state write under
+`reports/` (and in `scratchpad/`) and nowhere else, unless a state's own entry
+says otherwise.
+
+`archmax validate` warns when a declared `allow_always` grants none of the
+default tools and no state's `tools.allow` names one either. Such an agent can
+read no file, not even an offloaded tool result. List the default tools, or
+remove the key to get them back.
 
 ### `skills.allow_always` / `skills.forbid_always` (root)
 
@@ -1187,7 +1252,7 @@ entries. `tools.forbid_always` at the root denies in **every** state.
 
 ```yaml
 tools:
-  allow_always: [read_file]
+  allow_always: [read_file, ls]              # a declared list: replaces the default tools
   forbid_always:
     - execute                                  # blocked in every state
     - { tool: "*", paths: ["logs/**"] }        # every tool, on those globs
@@ -1204,8 +1269,8 @@ One rule covers both levels and both capabilities:
 
 Nothing reaches past `forbid_always`: no state grant, `allow_always` entry,
 argument guard or consumer rule. Inside a state, its `forbid` is final too. It
-subtracts from the workflow's grant, the state's own `allow`, and the always-on
-surface alike, which is how a state opts out of a capability the workflow gives
+subtracts from the workflow-wide grant, the state's own `allow`, and the host's
+`essentialTools` alike, which is how a state opts out of a capability the workflow gives
 everywhere. An empty `allow` list leaves the grant standing.
 
 A forbid entry may name the tool `*`, meaning **every** tool. That is vocabulary
@@ -1302,14 +1367,17 @@ schema rejects both by name. Delegation bounds are the dispatcher's
 configuration (see [sub-workflows](/guides/sub-workflows/)), and
 there is one prompt rendering.
 
-The todo surface has no knob. `write_todos` is always disclosed and always
-permitted, like the filesystem tools. The runtime installs it itself, so the
-surface stays the same whatever an upstream default does. Its schema plus
-guidance costs ~13,250 characters on every model call: the price of the agent
-always having a planning scratchpad.
+The todo surface is a grant like any other. `write_todos` is one of the default
+tools, disclosed and permitted wherever the workflow-wide grant or a state's own
+entry includes it. The runtime installs it itself, so the surface stays the same
+whatever an upstream default does, and only when some state of the workflow is
+granted it. Its guidance sits in the static prompt and its schema is offered
+wherever it is granted: together ~13,250 characters per model call, the price of
+a planning scratchpad.
 
-To refuse it outright, list it in
-[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). `archmax validate`
+To leave it out, omit it from a declared `tools.allow_always` (and from every
+state's `tools.allow`), which drops its guidance too. To refuse it outright, list
+it in [`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). `archmax validate`
 checks the shape of every field. See
 [Token efficiency and cost](/guides/token-efficiency/).
 

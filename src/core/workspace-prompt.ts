@@ -67,7 +67,8 @@ export function renderWorkspaceZones(mounts: MountPrefixes = NO_MOUNTS): string 
 
   const bullets = [
     `- **\`${SESSION_OPEN_DIR}/\`** — your working area: intermediate files and the ` +
-      `artifacts you produce. Always readable and writable, whatever state you are in.`,
+      `artifacts you produce. Readable and writable in every state, with the file tools ` +
+      `that state gives you.`,
     `- **${offload}** — where the runtime parks oversized tool results and ` +
       `history. Read them when handed a path (paginate with \`read_file\` offset/limit); ` +
       `you cannot write there.`,

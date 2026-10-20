@@ -67,7 +67,7 @@ describe("validateWorkflow — human nodes", () => {
       (d) => d.field === "states.review.transitions.0.description",
     );
     expect(diagnostic?.severity).toBe("error");
-    expect(diagnostic?.message).toContain("only thing the agent is told about this edge");
+    expect(diagnostic?.message).toContain("the label of the decision's button");
   });
 
   it("flags a human node with two transitions of the same labeled type", async () => {

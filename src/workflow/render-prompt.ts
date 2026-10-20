@@ -17,7 +17,8 @@
  * No other state's slug, `title`, `summary`, hooks, budget or transitions is
  * rendered anywhere, and neither is a count of the states: a state the agent
  * cannot advance to is a state it cannot name. A state's `instructions` body is
- * surfaced only for the active state, by the caller.
+ * surfaced for the active state, by the caller, and — quoted, for choosing — for
+ * the target of an undescribed edge of the active state, by this renderer.
  */
 
 import { afterHookLabel, hookKind, normalizeHooks } from "../lifecycle/hook-shape.js";
@@ -28,14 +29,20 @@ import type { MachineState, MachineTransition } from "../machine/types.js";
 
 /**
  * One outgoing edge: the target's slug (the exact token `archmax_advance` takes),
- * its declared `type`, and the required `description` the agent routes on.
+ * its declared `type`, and the `description` the agent routes on.
  *
  * The two markers a target may carry are disclosed because each changes what the
  * call must carry or what follows it — `evidence` is accepted only when the
  * target is a human state, and both markers mean *stop* rather than *continue*.
  * They disclose the **consequence of taking the edge**, not the state on the
- * other side of it: nothing of the target's own title, summary, instructions,
- * hooks or transitions is rendered.
+ * other side of it: nothing of the target's own title, summary, hooks or
+ * transitions is rendered.
+ *
+ * An **undescribed** edge (no description, or a blank one) is transparent: the
+ * target's `instructions` stand in for the description, quoted under the line
+ * and framed as what the agent will do once there — given for choosing the edge,
+ * not to be followed now. The author opts in per edge by leaving it undescribed;
+ * the schema refuses one whose target has no instructions to show.
  */
 function renderTransition(machine: WorkflowMachine, edge: MachineTransition): string {
   const notes: string[] = [];
@@ -43,7 +50,18 @@ function renderTransition(machine: WorkflowMachine, edge: MachineTransition): st
   if (machine.isHumanState(edge.to)) notes.push("human decision node");
   if (machine.isTerminal(edge.to)) notes.push("terminal");
   const suffix = notes.length ? ` (${notes.join(", ")})` : "";
-  return `- to \`${edge.to}\`${suffix} — ${edge.description.trim()}`;
+  const head = `- to \`${edge.to}\`${suffix}`;
+  const description = edge.description?.trim();
+  if (description) return `${head} — ${description}`;
+  const instructions = machine.spec.states[edge.to]?.instructions?.trim() ?? "";
+  const quoted = instructions
+    .split("\n")
+    .map((line) => (line.trim() ? `  > ${line.trimEnd()}` : "  >"));
+  return [
+    `${head} — no description; the instructions you will follow once in \`${edge.to}\`, ` +
+      `given only for choosing this edge:`,
+    ...(instructions ? quoted : []),
+  ].join("\n");
 }
 
 /**

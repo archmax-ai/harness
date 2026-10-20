@@ -111,6 +111,36 @@ describe("archmax_advance", () => {
   });
 });
 
+describe("an undescribed edge", () => {
+  // `start` leaves its one edge undescribed: the agent routes on `lookup`'s own
+  // instructions, disclosed in the edge's place.
+  const spec = {
+    runtime: { engine: "archmax-harness", version: "2" },
+    states: {
+      start: { triggers: { manual: null }, instructions: "Route the request.", transitions: [{ to: "lookup" }] },
+      lookup: { title: "Order lookup", instructions: "Look the order up by its id.\n\nSummarise its status." },
+    },
+  };
+
+  it("discloses the target's instructions under the edge, and the edge can be taken", async () => {
+    const { agent, events, model } = await assemble(workspaceWith(spec), {
+      turns: [advanceTo("lookup"), { reply: "ok" }],
+    });
+    await turn(agent, "s1", "go");
+
+    const system = (model.calls[0]?.parts.find((message) => message.type === "system")?.parts ?? [])
+      .map((part) => String(part.text))
+      .join("\n");
+    expect(system).toContain(
+      "- to `lookup` (terminal) — no description; the instructions you will follow once in `lookup`, " +
+        "given only for choosing this edge:\n  > Look the order up by its id.\n  >\n  > Summarise its status.",
+    );
+    // Nothing else of the target: its title stays out.
+    expect(system).not.toContain("Order lookup");
+    expect(advances(events)).toEqual([{ from: "start", to: "lookup", reason: "moving to lookup" }]);
+  });
+});
+
 describe("terminal states", () => {
   it("ends the run when the agent finishes in a state with no transitions", async () => {
     const { agent, events } = await assemble(workspaceWith(linearSpec()), {

@@ -74,7 +74,13 @@ my-workspace/
 # workflows/order-lookup/workflow.yaml (excerpt)
 title: Order lookup
 instructions: Only ever disclose the requester's own company's orders.
-tools:  { forbid_always: [archmax_reset] }  # denied in every state; deny beats allow
+tools:
+  allow_always: [ls, read_file, write_file, edit_file, glob, grep, copy_file,
+                 move_file, remove_file, write_todos, archmax_eval, archmax_run]
+                                          # granted in every state. Without this key a
+                                          # workflow gets these default tools; declared,
+                                          # it gets exactly what it lists
+  forbid_always: [archmax_reset]          # denied in every state; deny beats allow
 skills: { allow_always: [order-data] }    # enabled in every state; a state's own
                                           # `skills.allow` adds, `skills.forbid` subtracts
 mounts: { allow_always: [reference] }     # which STATES reach a host-governed mount;
@@ -87,9 +93,10 @@ states:
       manual:
     instructions: Classify the request and archmax_advance to the matching path.
     before: { script: hooks/check-requester.js }
-    transitions:                    # a description is REQUIRED on every edge: the
-                                    # agent is shown this state's edges and nothing
-                                    # else of the graph, so it is all it routes on
+    transitions:                    # the agent is shown this state's edges and nothing
+                                    # else of the graph: it routes on each description,
+                                    # or, where an edge has none, on the target's
+                                    # instructions
       - to: orders-question
         description: The user is asking about orders, status, shipping, or tracking.
   orders-question:                  # no transitions: terminal
