@@ -275,8 +275,9 @@ resolves to an `Error: …` string instead.
 **Authoring rule for `archmax_run` scripts:** if sandboxed code calls `tools.X`,
 the state's `allow` list must cover `tool: X` (with any argument constraints the
 script's call satisfies), or the call is blocked. Grant it per state with
-`tools.allow`, or workflow-wide with `tools.allow_always`. Lifecycle hooks need
-no such grant.
+`tools.allow`, or workflow-wide with `tools.allow_always`; a default tool such as
+`read_file` is covered wherever the workflow-wide grant includes it. Lifecycle
+hooks need no such grant.
 
 ### `archmax_run` scripts: the `args` contract
 
@@ -775,8 +776,8 @@ steps:
 Two operational notes:
 
 - Seeding writes the file; **reading it is still governed** — the triggered
-  start state must allow the read tool the agent needs (`read_file` is an
-  always-on tools unless a state narrows it).
+  start state must allow the read tool the agent needs (`read_file` is granted
+  wherever the workflow-wide grant includes it, unless a state narrows it).
 - Hosts that pin case sessions via `sessionIdForCase` reuse sessions across test
   runs: declared files are overwritten each run, but a file seeded by an
   _earlier_ run whose declaration was since removed can linger. The default

@@ -17,14 +17,15 @@ measured size:
 | Component | pre-reduction | today |
 | --- | --- | --- |
 | Tool schemas | 21,731 (~5,430 tok) | 22,057 (~5,510 tok) |
-| - `write_todos` alone | 12,175 | 12,175 (always disclosed) |
-| - the three file operations | — | 2,250 (always disclosed) |
+| - `write_todos` alone | 12,175 | 12,175 (a default tool) |
+| - the three file operations | — | 2,250 (default tools) |
 | - `task` alone | 1,924 | 0 (disclosed in no state) |
 | System prompt | 16,333 (~4,080 tok) | 9,321 (~2,330 tok) |
 | **Prefix per model call** | **38,064 (~9,520 tok)** | **31,378 (~7,840 tok)** |
 
-One tool dominates the surface: `write_todos` alone is more than half of the tool schemas,
-and it is standard equipment in every assembly, so it stays. The whole reduction
+One tool dominates the surface: `write_todos` alone is more than half of the tool schemas.
+It is a default tool, so a workflow without `tools.allow_always` keeps it. A workflow that
+declares the list and leaves `write_todos` out drops its schema and its guidance. The whole reduction
 therefore comes out of the system prompt, which keeps the prefix saving modest.
 Caching removes the bulk of what is left.
 
@@ -144,9 +145,10 @@ stay out of the static section.
   they are sent once in the cached prefix. The same paragraph pasted into every
   state is paid for per turn.
 - Write each transition's `description` for a reader standing in the *source*
-  state. It is required, and it is the whole of what the agent knows about where
-  an edge leads: nothing about the target is disclosed. Say *when* to take the
-  edge ("Refunds over $50").
+  state. It is what the agent knows about where an edge leads. Say *when* to take
+  the edge ("Refunds over $50"). An undescribed edge is shown the target's whole
+  `instructions` instead, on every call in the source state, so a one-line
+  description is the cheaper choice when the instructions are long.
 - A state's `summary` and `title` stay out of every model call and cost nothing.
   They are labels for people and hosts, so write them for whoever opens the spec.
 - Splitting one broad state into several narrow ones does not widen the prefix.
@@ -334,8 +336,9 @@ an OpenAI-compatible endpoint:
 
 44% fewer input tokens, and 94% fewer input tokens at full price.
 
-That run was measured while the todo surface was still an opt-in. It is now
-always disclosed, so the reduced figure would be higher today. The composition
+That run was measured while the todo surface was still an opt-in. It is now a
+default tool, disclosed wherever a workflow grants it, so for a workflow without
+`tools.allow_always` the reduced figure would be higher today. The composition
 table above gives the current prefix.
 
 The addition sits in the **static** block. After the first call of a session the

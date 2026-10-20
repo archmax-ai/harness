@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BackendProtocolV2 } from "deepagents";
 import { Workspace } from "../core/workspace.js";
 import { afterHookLabel } from "../lifecycle/hook-shape.js";
-import { WorkflowMachine } from "./machine.js";
+import { DEFAULT_TOOLS, WorkflowMachine } from "./machine.js";
 import { MANUAL_TRIGGER, stateTriggerIds } from "./triggers.js";
 import type { MachineSpec } from "./types.js";
 
@@ -232,7 +232,7 @@ describe("WorkflowMachine graph queries", () => {
     expect(stateTriggerIds(spec.states.answer!)).toEqual([]);
   });
 
-  it("permits only essential tools when a state has no tools block (closed default)", async () => {
+  it("permits only the default tools in a no-tools state of a workflow without allow_always (closed default)", async () => {
     const m = await loadMachine();
     expect(m.checkAllowed("open_state", "ls", {})).toBe(true);
     expect(m.checkAllowed("open_state", "grep", { pattern: "x" })).toBe(true);
@@ -245,7 +245,7 @@ describe("WorkflowMachine graph queries", () => {
     expect(m.checkAllowed("open_state", "web_fetch", { url: "https://x" })).toBe(false);
   });
 
-  it("allows essentials, blocks undeclared non-essentials in allow states", async () => {
+  it("allows the default tools, blocks undeclared tools in allow states", async () => {
     const m = await loadMachine();
     expect(m.checkAllowed("identify_case", "ls", {})).toBe(true);
     expect(m.checkAllowed("identify_case", "archmax_eval", { code: "1 + 1" })).toBe(true);
@@ -253,7 +253,7 @@ describe("WorkflowMachine graph queries", () => {
     expect(m.checkAllowed("identify_case", "web_fetch", { url: "https://x" })).toBe(false);
   });
 
-  it("treats both sandbox entry points as always-on essentials in every state", () => {
+  it("grants both sandbox entry points as default tools in every state", () => {
     const states = {
       // An allow block that says nothing about the interpreter.
       s: { tools: { allow: ["web_fetch"] }, transitions: [{ to: "done", description: "Test edge to done." }] },
@@ -270,7 +270,7 @@ describe("WorkflowMachine graph queries", () => {
     }
   });
 
-  it("lets a state narrow the essential archmax_run grant to scoped files", () => {
+  it("lets a state narrow the default archmax_run grant to scoped files", () => {
     const m = WorkflowMachine.fromSpec({
       states: {
         s: {
@@ -282,7 +282,7 @@ describe("WorkflowMachine graph queries", () => {
     });
     expect(m.checkAllowed("s", "archmax_run", { file_path: "scripts/x.js" })).toBe(true);
     expect(m.checkAllowed("s", "archmax_run", { file_path: "scratchpad/x.js" })).toBe(false);
-    // `done` narrows nothing, so the unconstrained essential grant stands there.
+    // `done` narrows nothing, so the unconstrained default grant stands there.
     expect(m.checkAllowed("done", "archmax_run", { file_path: "scratchpad/x.js" })).toBe(true);
   });
 
@@ -291,18 +291,18 @@ describe("WorkflowMachine graph queries", () => {
       tools: { forbid_always: [{ tool: "archmax_eval" }] },
       states: { s: { triggers: { manual: null } as const } },
     });
-    // The essential grant is a per-state default; a denial outranks it (the
+    // The default grant is a per-state default; a denial outranks it (the
     // kernel evaluates both denial stages ahead of the state's tools rule).
     expect(m.disclosedTools("s").has("archmax_eval")).toBe(false);
   });
 
-  it("treats write_todos as an always-on essential in every state and profile", () => {
+  it("grants write_todos as a default tool in every state and profile", () => {
     const states = {
       s: { tools: { allow: ["read_file"] }, transitions: [{ to: "done", description: "Test edge to done." }] },
       done: {},
     };
-    // Standard equipment, like the filesystem surface: no opt-in, nothing to
-    // withhold, and the same answer in a terminal state.
+    // A default tool, like the filesystem surface: granted in every state of a
+    // workflow without allow_always, a terminal state included.
     for (const m of [WorkflowMachine.fromSpec({ states })]) {
       for (const state of ["s", "done"]) {
         expect(m.checkAllowed(state, "write_todos", {})).toBe(true);
@@ -312,7 +312,7 @@ describe("WorkflowMachine graph queries", () => {
     }
   });
 
-  it("never treats task as essential, whatever the workflow declares", () => {
+  it("never treats task as a default tool, whatever the workflow declares", () => {
     // `task` is the runtime's own dispatch for grading rubrics. Registered
     // rubrics make the tool exist in the assembled list, but nothing puts it in
     // front of the model: disclosure withholds it and the kernel refuses it.
@@ -346,7 +346,7 @@ describe("WorkflowMachine graph queries", () => {
   it("treats host-declared essentialTools as always-on (disclosed and permitted everywhere)", () => {
     const spec = {
       states: {
-        // A terminal state with no tools block: only essentials are open.
+        // A terminal state with no tools block: only the default and host tools are open.
         answer: { triggers: { manual: null } as const },
       },
     };
@@ -355,7 +355,7 @@ describe("WorkflowMachine graph queries", () => {
     // Permitted in a state that declares nothing, exactly like a built-in.
     expect(m.checkAllowed("answer", "get_markdown", { path: "a.pdf" })).toBe(true);
     expect(m.checkAllowed("answer", "archive_file", { source: "a", destination: "b" })).toBe(true);
-    // An undeclared, non-essential tool is still closed by default.
+    // An undeclared tool is still closed by default.
     expect(m.checkAllowed("answer", "download", { url: "https://x" })).toBe(false);
 
     // Disclosed to the model alongside the built-in surface.
@@ -369,7 +369,7 @@ describe("WorkflowMachine graph queries", () => {
     expect(m.describeAllowed("answer")).toContain("get_markdown");
   });
 
-  it("keeps the essential set unchanged when no essentialTools are declared", () => {
+  it("keeps the default set unchanged when no essentialTools are declared", () => {
     const spec = { states: { answer: { triggers: { manual: null } as const } } };
     const m = WorkflowMachine.fromSpec(spec);
     expect(m.checkAllowed("answer", "get_markdown", { path: "a.pdf" })).toBe(false);
@@ -521,70 +521,67 @@ states:
     expect(m.checkAllowed("constrained", "archive_file", { file_path: "other/x.json" })).toBe(false);
   });
 
-  it("lets a state narrow the file-based sandbox tool it declares", async () => {
+  it("grants a default tool the declared list omits only where a state names it", async () => {
     const m = await load();
-    // `constrained` declares archmax_run for scripts/**, which narrows the
-    // essential grant there; `done` declares nothing, so it keeps the grant.
+    // allow_always is declared and omits archmax_run, so `constrained`'s entry is
+    // what grants it there (narrowed to scripts/**), and `done` has none.
     expect(m.checkAllowed("constrained", "archmax_run", { file_path: "scripts/x.js" })).toBe(true);
     expect(m.checkAllowed("constrained", "archmax_run", { file_path: "other/x.js" })).toBe(false);
-    expect(m.checkAllowed("done", "archmax_run", { file_path: "other/x.js" })).toBe(true);
-    // The interpreter, essential too, is open in both.
-    expect(m.checkAllowed("done", "archmax_eval", { code: "1 + 1" })).toBe(true);
+    expect(m.checkAllowed("done", "archmax_run", { file_path: "other/x.js" })).toBe(false);
+    // The interpreter is named nowhere, so it is granted nowhere.
+    expect(m.checkAllowed("constrained", "archmax_eval", { code: "1 + 1" })).toBe(false);
+    expect(m.checkAllowed("done", "archmax_eval", { code: "1 + 1" })).toBe(false);
   });
 
-  it("treats an allow_always constraint on an essential tool as inert", async () => {
+  it("enforces an allow_always constraint on a default tool", async () => {
     const m = await load();
-    // write_file is essential; the essential grant passes before allow_always
-    // is consulted, so the output/** constraint there does not bind.
+    // write_file is granted by the declared list only, on output/**.
     expect(m.checkAllowed("constrained", "write_file", { file_path: "output/x.json" })).toBe(true);
-    expect(m.checkAllowed("constrained", "write_file", { file_path: "notes/x.json" })).toBe(true);
+    expect(m.checkAllowed("constrained", "write_file", { file_path: "notes/x.json" })).toBe(false);
+    expect(m.checkAllowed("done", "write_file", { file_path: "notes/x.json" })).toBe(false);
   });
 
-  it("lets a per-state allow constraint override the essential grant", async () => {
+  it("lets a per-state allow constraint override the workflow-wide grant", async () => {
     const m = await load();
-    // read_file is essential (and in allow_always) but the state constrains it
-    // to skills/** — the narrower state entry wins.
+    // read_file is in allow_always, but the state constrains it to skills/** —
+    // the narrower state entry wins.
     expect(m.checkAllowed("constrained", "read_file", { file_path: "skills/a.md" })).toBe(true);
     expect(m.checkAllowed("constrained", "read_file", { file_path: "data/orders.json" })).toBe(false);
   });
 
-  it("permits essentials but not undeclared non-essentials in a no-tools state", async () => {
+  it("permits only the declared grant in a no-tools state", async () => {
     const m = await load();
-    expect(m.checkAllowed("done", "ls", {})).toBe(true);
-    expect(m.checkAllowed("done", "write_file", { file_path: "anywhere/x.json" })).toBe(true);
+    expect(m.checkAllowed("done", "read_file", { file_path: "anywhere/x.json" })).toBe(true);
+    expect(m.checkAllowed("done", "write_file", { file_path: "output/x.json" })).toBe(true);
+    // A declared list replaces the default tools rather than adding to them.
+    expect(m.checkAllowed("done", "ls", {})).toBe(false);
+    expect(m.checkAllowed("done", "write_todos", {})).toBe(false);
     expect(m.checkAllowed("done", "web_fetch", { url: "https://x" })).toBe(false);
   });
 
-  it("describes a no-tools state as the essential surface it enforces", async () => {
+  it("describes a no-tools state as the declared grant it enforces", async () => {
     const m = await load();
-    const text = m.describeAllowed("done");
-    expect(text).toContain("ls");
-    expect(text).toContain("read_file");
-    expect(text).toContain("archive_file(file_path=output/**)");
-    // The planning scratchpad and the interpreter are part of the essential
-    // surface everywhere, and `done` narrows neither.
-    expect(text).toContain("write_todos");
-    expect(text).toContain("archmax_eval");
-    expect(text).not.toContain("archmax_eval(");
-    // `archmax_run` is declared in `constrained` only, so it is absent here.
-    expect(text).not.toContain("archmax_run(");
-    expect(text).not.toContain("(all tools)");
+    const parts = m.describeAllowed("done").split(", ");
+    expect(parts).toContain("read_file");
+    expect(parts).toContain("archive_file(file_path=output/**)");
+    expect(parts).toContain("write_file(file_path=output/**)");
+    // None of the default tools the declared list omits is presented.
+    for (const tool of ["ls", "write_todos", "archmax_eval", "archmax_run"]) {
+      expect(parts.some((part) => part === tool || part.startsWith(`${tool}(`))).toBe(false);
+    }
     // `done` is terminal, so archmax_advance can never succeed there.
-    expect(text).not.toContain("archmax_advance");
-    // The allow_always write_file constraint is inert (essential wins first).
-    expect(text).not.toContain("write_file(file_path=output/**)");
+    expect(parts).not.toContain("archmax_advance");
   });
 
   it("describes an allow state from the same entries it enforces", async () => {
     const m = await load();
-    const text = m.describeAllowed("constrained");
-    expect(text).toContain("read_file(file_path=skills/**)");
-    expect(text).toContain("write_todos");
-    expect(text).toContain("archmax_advance");
-    // write_file is essential and not narrowed by the state, so it renders
-    // unconstrained; the inert allow_always constraint is not presented.
-    expect(text).toContain("write_file");
-    expect(text).not.toContain("write_file(file_path=output/**)");
+    const parts = m.describeAllowed("constrained").split(", ");
+    expect(parts).toContain("read_file(file_path=skills/**)");
+    expect(parts).toContain("archmax_run(file_path=scripts/**)");
+    expect(parts).toContain("archmax_advance");
+    // The workflow-wide write_file constraint binds here, so it is presented.
+    expect(parts).toContain("write_file(file_path=output/**)");
+    expect(parts).not.toContain("write_todos");
   });
 
   it("describes the argument constraints that bind in an allow state", async () => {
@@ -592,19 +589,21 @@ states:
     const lines = m.describeArgConstraints("constrained");
     // The state's own arg-constrained entry.
     expect(lines).toContain("- read_file: file_path must match 'skills/**'");
-    // An allow_always arg-constrained grant that binds (non-essential, not mentioned).
+    // allow_always arg-constrained grants the state does not mention bind.
     expect(lines).toContain("- archive_file: file_path must match 'output/**'");
+    expect(lines).toContain("- write_file: file_path must match 'output/**'");
     // The state's own entry granting the file-based sandbox tool binds too.
     expect(lines).toContain("- archmax_run: file_path must match 'scripts/**'");
-    // The inert allow_always constraint on an essential tool is not presented.
-    expect(lines.join("\n")).not.toContain("write_file");
   });
 
   it("describes only binding allow_always constraints in a no-tools state", async () => {
     const m = await load();
     const lines = m.describeArgConstraints("done");
     // `constrained`'s archmax_run entry is that state's, not the workflow's.
-    expect(lines).toEqual(["- archive_file: file_path must match 'output/**'"]);
+    expect(lines).toEqual([
+      "- archive_file: file_path must match 'output/**'",
+      "- write_file: file_path must match 'output/**'",
+    ]);
   });
 
   it("returns no argument constraints when none are declared", async () => {
@@ -636,19 +635,103 @@ states:
     ]);
   });
 
-  it("discloses essentials, allow_always, state entries, and archmax_advance per state", async () => {
+  it("discloses allow_always, state entries, and archmax_advance per state", async () => {
     const m = await load();
     const constrained = m.disclosedTools("constrained");
     expect(constrained.has("read_file")).toBe(true);
+    expect(constrained.has("write_file")).toBe(true);
     expect(constrained.has("archmax_run")).toBe(true);
-    expect(constrained.has("ls")).toBe(true);
     expect(constrained.has("archmax_advance")).toBe(true);
+    expect(constrained.has("ls")).toBe(false);
     expect(constrained.has("web_fetch")).toBe(false);
 
     const done = m.disclosedTools("done");
     expect(done.has("archmax_advance")).toBe(false);
-    // Essentials are disclosed even in a terminal state.
-    expect(done.has("write_todos")).toBe(true);
+    expect(done.has("read_file")).toBe(true);
+    // A default tool the declared list omits is not disclosed, terminal or not.
+    expect(done.has("write_todos")).toBe(false);
+    expect(done.has("archmax_run")).toBe(false);
+  });
+
+  it("grants the default tools when allow_always is absent, and exactly the list when declared", () => {
+    const states = {
+      s: { tools: { allow: ["web_fetch"] }, transitions: [{ to: "done", description: "Test edge to done." }] },
+      done: {},
+    };
+    const absent = WorkflowMachine.fromSpec({ tools: { forbid_always: ["archmax_reset"] }, states });
+    const declared = WorkflowMachine.fromSpec({ tools: { allow_always: ["read_file", "ls"] }, states });
+    for (const tool of DEFAULT_TOOLS) {
+      expect(absent.disclosedTools("done").has(tool)).toBe(true);
+      expect(declared.disclosedTools("done").has(tool)).toBe(tool === "read_file" || tool === "ls");
+    }
+    expect(declared.checkAllowed("s", "write_file", { file_path: "scratchpad/x.md" })).toBe(false);
+    expect(declared.checkAllowed("s", "web_fetch", { url: "https://x" })).toBe(true);
+  });
+
+  it("reads an empty allow_always as a declaration: every tool is state-specific", () => {
+    const m = WorkflowMachine.fromSpec({
+      tools: { allow_always: [] },
+      states: {
+        s: { tools: { allow: ["write_file"] }, transitions: [{ to: "done", description: "Test edge to done." }] },
+        done: {},
+      },
+    });
+    expect([...m.disclosedTools("done")].sort()).toEqual(
+      ["archmax_get_variables", "archmax_raise", "archmax_reset", "archmax_set_variables", "archmax_wait"],
+    );
+    expect(m.checkAllowed("done", "read_file", { file_path: "a.md" })).toBe(false);
+    expect(m.checkAllowed("s", "write_file", { file_path: "a.md" })).toBe(true);
+  });
+
+  it("keeps the host's essentialTools always-on under a declared allow_always", () => {
+    const m = WorkflowMachine.fromSpec(
+      { tools: { allow_always: ["read_file"] }, states: { answer: { triggers: { manual: null } as const } } },
+      ["get_markdown"],
+    );
+    expect(m.checkAllowed("answer", "get_markdown", { path: "a.pdf" })).toBe(true);
+    expect(m.disclosedTools("answer").has("get_markdown")).toBe(true);
+    expect(m.disclosedTools("answer").has("write_file")).toBe(false);
+  });
+
+  it("opens the working areas only to a default tool the state is granted, or a host tool", () => {
+    const m = WorkflowMachine.fromSpec(
+      {
+        tools: { allow_always: ["read_file"] },
+        states: {
+          draft: {
+            tools: { allow: [{ tool: "write_file", paths: ["reports/**"] }, "web_fetch"] },
+            transitions: [{ to: "done", description: "Test edge to done." }],
+          },
+          done: {},
+        },
+      },
+      ["get_markdown"],
+    );
+    // Granted by a narrowing state entry: the areas stay open to it there.
+    expect(m.opensWorkingAreas("draft", "write_file")).toBe(true);
+    // Not granted in `done`: the areas do not make it callable.
+    expect(m.opensWorkingAreas("done", "write_file")).toBe(false);
+    // Granted by the declared list in every state.
+    expect(m.opensWorkingAreas("done", "read_file")).toBe(true);
+    // A host essential tool, always; a granted non-default tool, never.
+    expect(m.opensWorkingAreas("done", "get_markdown")).toBe(true);
+    expect(m.opensWorkingAreas("draft", "web_fetch")).toBe(false);
+  });
+
+  it("answers whether some state discloses a tool, denials included", () => {
+    const states = {
+      s: { tools: { allow: ["write_todos"] }, transitions: [{ to: "done", description: "Test edge to done." }] },
+      done: {},
+    };
+    expect(WorkflowMachine.fromSpec({ states }).grantsAnywhere("write_todos")).toBe(true);
+    expect(WorkflowMachine.fromSpec({ tools: { allow_always: [] }, states }).grantsAnywhere("write_todos")).toBe(true);
+    expect(
+      WorkflowMachine.fromSpec({ tools: { allow_always: [], forbid_always: ["write_todos"] }, states })
+        .grantsAnywhere("write_todos"),
+    ).toBe(false);
+    expect(
+      WorkflowMachine.fromSpec({ tools: { allow_always: [] }, states: { done: {} } }).grantsAnywhere("write_todos"),
+    ).toBe(false);
   });
 
   it("never discloses a tool tools.forbid_always denies", () => {

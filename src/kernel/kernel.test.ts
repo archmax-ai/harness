@@ -47,9 +47,9 @@ describe("decide — tool-call", () => {
     expect(v.ruleId).toBe("tool.eval");
   });
 
-  it("permits the harness's own interpreter as an essential built-in", () => {
+  it("permits the harness's own interpreter as a default built-in", () => {
     // `archmax_eval` is not the name the safety rule refuses — the state's
-    // essential grant decides it, in a state whose allow list omits it.
+    // default grant decides it, in a state whose allow list omits it.
     const v = decide(machine(), {
       kind: "tool-call",
       state: "collect",
@@ -70,7 +70,7 @@ describe("decide — tool-call", () => {
   });
 
   it("blocks a disallowed tool with a descriptive, warn-level message", () => {
-    // write_file is essential, but `collect` narrows it to output/answer.json.
+    // write_file is a default tool, but `collect` narrows it to output/answer.json.
     const v = decide(machine(), {
       kind: "tool-call",
       state: "collect",
@@ -83,7 +83,7 @@ describe("decide — tool-call", () => {
     expect(v.reason).toContain("on 'output/x.json'");
   });
 
-  it("blocks an undeclared non-essential tool in a state with no tools block", () => {
+  it("blocks an undeclared tool in a state with no tools block", () => {
     const v = decide(machine(), {
       kind: "tool-call",
       state: "review",
@@ -94,7 +94,7 @@ describe("decide — tool-call", () => {
     expect(v.ruleId).toBe("tool.not-allowed");
   });
 
-  it("allows essential tools in a state with no tools block (closed default)", () => {
+  it("allows default tools in a state with no tools block (closed default)", () => {
     for (const [tool, args] of [
       ["read_file", { file_path: "data/orders.json" }],
       ["write_file", { file_path: "output/x.json" }],
@@ -105,7 +105,7 @@ describe("decide — tool-call", () => {
     }
   });
 
-  it("allows write_todos as an essential built-in, with policy the only off-switch", () => {
+  it("allows write_todos as a default built-in, with policy the only off-switch", () => {
     // The planning scratchpad is standard equipment: permitted in every state
     // without declaration, like the filesystem surface.
     const call = { kind: "tool-call", state: "collect", tool: "write_todos", args: {} } as const;
@@ -119,7 +119,7 @@ describe("decide — tool-call", () => {
 });
 
 describe("read-only authored zone", () => {
-  // A state with no `tools` block: the essential write tools are permitted
+  // A state with no `tools` block: the default write tools are permitted
   // there, so the zone rule must still refuse authored paths.
   const openSpec: MachineSpec = {
     states: {
@@ -402,7 +402,7 @@ describe("reply-only turns", () => {
     expect(v.ruleId).toBe("tool.reply-only");
   });
 
-  it("refuses an essential built-in", () => {
+  it("refuses a default built-in", () => {
     expect(decide(machine(), call("write_todos")).ruleId).toBe("tool.reply-only");
   });
 

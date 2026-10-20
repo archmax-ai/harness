@@ -1,6 +1,6 @@
 import {
   ADVANCE_TOOL,
-  ESSENTIAL_TOOLS,
+  DEFAULT_TOOLS,
   HARNESS_CONTROL_TOOLS,
   EVAL_TOOL,
   SET_VARIABLES_TOOL,
@@ -764,16 +764,20 @@ export function compileForbiddenSkillRules(slugs: readonly string[], source: str
  * still block it), just ahead of the per-state defaults — so it loosens only
  * the state `allow` list, never the governed run paths outside it.
  *
- * It opens these areas only to an **essential** tool — one every state already
- * permits (the file tools, the file operations, the host's `essentialTools`) —
- * sparing it a grant it does not need where a state narrows it. Any other tool
- * is left to the state's grant: declaring a host tool's path arguments only ever
- * narrows what it may do, and never makes it callable in a state that does not
- * grant it.
+ * It opens these areas only to a default file tool the active state is granted
+ * — by the workflow-wide grant or its own entry, whatever that entry narrows —
+ * and to the host's `essentialTools` (see {@link WorkflowMachine.opensWorkingAreas}).
+ * A default tool the state is not granted gets nothing here, so the areas never
+ * make a withheld tool callable. Any other tool is left to the state's grant:
+ * declaring a host tool's path arguments only ever narrows what it may do, and
+ * never makes it callable in a state that does not grant it.
  */
 const runOpenAccessRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
-  if (!(api.machine ? api.machine.isEssential(action.tool) : ESSENTIAL_TOOLS.has(action.tool))) return null;
+  const opens = api.machine
+    ? api.machine.opensWorkingAreas(action.state, action.tool)
+    : DEFAULT_TOOLS.has(action.tool);
+  if (!opens) return null;
   const paths = pathsOf(action, api);
   if (paths.length === 0) return null;
   // Open only when every path the call names is: a copy from a mount into the

@@ -1,5 +1,5 @@
 /**
- * Per-state tool governance: `tools.allow`, the essential file surface, the
+ * Per-state tool governance: `tools.allow`, the default file surface, the
  * always-open `scratchpad/`, read-only mounts, `policy.forbid_tools`, and
  * `skills.allow`. A refusal is observed as a `tool-blocked` event plus an error
  * tool result marked `governance_blocked`; a tool that throws is answered the
@@ -93,7 +93,7 @@ describe("tools.allow per state", () => {
     ]);
   });
 
-  it("discloses to the model only the tools the state allows, plus the essentials", async () => {
+  it("discloses to the model only the tools the state allows, plus the default tools", async () => {
     const { agent, model } = await assemble(workspaceWith(spec), {
       turns: [advanceTo("done"), { reply: "ok" }],
       params: { tools: hostTools() },
@@ -109,8 +109,8 @@ describe("tools.allow per state", () => {
     }
   });
 
-  it("grants a tool in every state through allow_always", async () => {
-    const { agent, events } = await assemble(
+  it("grants a tool in every state through allow_always, in place of the default tools", async () => {
+    const { agent, events, model } = await assemble(
       workspaceWith({ ...spec, tools: { allow_always: ["beta"] } }),
       {
         turns: [{ tool: "beta", args: { q: "x" } }, advanceTo("done"), { reply: "ok" }],
@@ -119,6 +119,13 @@ describe("tools.allow per state", () => {
     );
     await turn(agent, "s1", "go");
     expect(blockedTools(events)).toEqual([]);
+    // A declared list replaces the default tools: none of them is offered.
+    for (const call of model.calls) {
+      expect(call.tools).toContain("beta");
+      for (const tool of ["read_file", "write_file", "ls", "write_todos", "archmax_eval"]) {
+        expect(call.tools).not.toContain(tool);
+      }
+    }
   });
 
   it("constrains a tool's arguments when the entry declares an args guard", async () => {
@@ -155,7 +162,7 @@ describe("tools.allow per state", () => {
   });
 });
 
-describe("the essential file surface", () => {
+describe("the default file surface", () => {
   const spec = {
     runtime: RUNTIME,
     states: {
@@ -268,7 +275,7 @@ describe("the essential file surface", () => {
 });
 
 describe("tools.forbid_always", () => {
-  it("withholds and blocks a forbidden tool in every state, even an essential one", async () => {
+  it("withholds and blocks a forbidden tool in every state, even a default one", async () => {
     const spec = {
       runtime: RUNTIME,
       tools: { forbid_always: [{ tool: "archmax_eval" }, { tool: "alpha" }] },

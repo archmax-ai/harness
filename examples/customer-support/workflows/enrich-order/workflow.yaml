@@ -29,6 +29,25 @@ runtime:
 settings:
   timeoutMs: 15000
 
+# The tools every state has. Declared, `allow_always` replaces the default tools
+# rather than adding to them, so it lists each default tool this workflow uses —
+# here, all of them, as a new workflow starts. Leaving one out withholds it
+# everywhere a state's own `tools.allow` does not grant it.
+tools:
+  allow_always:
+    - ls
+    - read_file
+    - write_file
+    - edit_file
+    - glob
+    - grep
+    - copy_file
+    - move_file
+    - remove_file
+    - write_todos
+    - archmax_eval
+    - archmax_run
+
 # The capability this machine reads: order records live in a skill bundle, and a
 # bundle is reachable only where a list names it. `allow_always` names it once,
 # for the whole workflow — the skills half of `tools.allow_always` — so every
@@ -88,6 +107,7 @@ states:
       is terminal - stop once the file is written, the returns are set, and you
       have summarized.
     # No `tools` block. The enrichment file lands under `scratchpad/`, the run's
-    # single working area, which every state may write. Concurrent sub-runs
+    # single working area, open to `write_file` wherever it is granted (here,
+    # workflow-wide). Concurrent sub-runs
     # cannot collide there: each is its own session with its own `scratchpad/`,
     # and the copies their caller receives never overwrite one another.

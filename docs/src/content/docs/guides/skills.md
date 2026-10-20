@@ -92,7 +92,8 @@ Resolution has **one rule**: a skill is enabled only where a list names it.
 So a workflow declares a capability **once**, at the level where the decision
 was made. Use `allow_always` for what every state needs, and a state's `allow`
 for what belongs to that state alone. It is the same shape as
-`tools.allow_always` and `tools.allow`.
+`tools.allow_always` and `tools.allow`, and `tools.allow_always: []` means the
+same thing for tools: every tool is state-specific.
 
 Enabling a slug is a **grant**: `skills/order-data/**` becomes readable and its
 scripts runnable, with no `tools.allow` path entries at all. A skill the state
@@ -182,7 +183,8 @@ the two classes cannot meet. See [The authoring plane](/guides/authoring-plane/)
 A skill's *contents* are guidance. A skill can tell the agent to write just
 `reports/answer.json`, and a `tools.allow` entry is what
 [actually guarantees it](/guides/workflow-machine/#tool-governance).
-That guarantee covers paths outside `scratchpad/`, which every state may write.
+That guarantee covers paths outside `scratchpad/`, which stays writable wherever
+`write_file` is granted.
 
 So pair every skill instruction that matters with a matching governance rule or
 an `after` hook. What *is* enforced about a skill is its `skills.allow`

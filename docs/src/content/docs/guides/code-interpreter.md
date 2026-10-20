@@ -17,8 +17,8 @@ it drives.
 
 | Tool | Source of the code | Governance |
 | --- | --- | --- |
-| `archmax_eval` | inline, written by the model | always-on; every state has it |
-| `archmax_run` | an authored **file** in a skill bundle | always-on; narrow the paths per state (`tools.allow`) |
+| `archmax_eval` | inline, written by the model | a default tool; granted wherever the workflow-wide grant includes it |
+| `archmax_run` | an authored **file** in a skill bundle | a default tool; narrow the paths per state (`tools.allow`) |
 
 Both evaluate in the same REPL session for a run. A helper a script file defines
 is therefore in scope for a later `archmax_eval` call. Both get:
@@ -113,17 +113,21 @@ scripts, in the session and in the child sessions it dispatched:
 
 ## Governance
 
-`archmax_eval` is **always on**: every state has it without declaring it. That is
-safe because evaluated code reaches exactly what the state already permits (see
-the PTC rule below). The sandbox adds computation over a state's surface.
+`archmax_eval` is one of the **default tools**. A workflow that does not declare
+`tools.allow_always` grants it in every state, and a workflow that declares the
+list grants it wherever the list, or a state's own `tools.allow`, names it. Granting
+it broadly is safe because evaluated code reaches exactly what the state already
+permits (see the PTC rule below). The sandbox adds computation over a state's
+surface. Hook scripts run in the same sandbox whether or not the agent is granted
+either tool, because a hook runs on the runtime's authority.
 
-`archmax_run` is always on for the same reason. A script is a file the state could
+`archmax_run` is a default tool for the same reason. A script is a file the state could
 already read, and running it reaches what an inline `archmax_eval` of the same
 source reaches.
 
 Which authored files a state may execute is still a real governance question.
 Answer it by *narrowing*, the way you would narrow `write_file`. A state's own
-entry wins over the always-on grant:
+entry wins over the workflow-wide grant:
 
 ```yaml
 states:
@@ -162,11 +166,13 @@ runs stays with the state.
 To close the sandbox for a whole workflow, deny both tools in
 [`tools.forbid_always`](/reference/machine-spec/#toolsforbid_always--toolsforbid-denial).
 Workflow denials are evaluated ahead of the per-state defaults, so a denial there
-outranks the always-on grant.
+outranks any grant. In a workflow that declares `tools.allow_always`, leaving both
+tools out of the list (and out of every state's `tools.allow`) withholds the
+sandbox too.
 
-An `allow_always` entry constraining `archmax_eval` is **inert**. Always-on tools
-are permitted everywhere, and a per-state entry is what narrows them.
-`archmax validate` warns about it.
+An `allow_always` entry constraining `archmax_run`
+(`{ tool: archmax_run, paths: ["skills/orders/scripts/**"] }`) is an ordinary
+grant. It binds in every state that does not name the tool itself.
 
 A tool named bare `eval` (upstream's default name for an interpreter, or a host
 tool claiming it) stays blocked by a non-overridable safety rule.

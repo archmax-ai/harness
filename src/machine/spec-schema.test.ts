@@ -59,36 +59,64 @@ describe("strict keys", () => {
    * covers every way of not writing one; the path names the edge.
    */
   describe("a transition's description", () => {
-    const withDescription = (value: unknown) =>
+    /** `start` → `lookup` with `value` as the edge's description and `lookup` carrying `instructions`. */
+    const withDescription = (value: unknown, instructions?: string) =>
       issuesFor({
         states: {
           start: {
             triggers: { manual: null },
             transitions: [
               { to: "done", description: "The question is answered." },
-              value === undefined ? { to: "start" } : { to: "start", description: value },
+              value === undefined ? { to: "lookup" } : { to: "lookup", description: value },
             ],
           },
+          lookup: instructions === undefined ? null : { instructions },
           done: null,
         },
       });
-
-    it.each([
+    const UNDESCRIBED = [
       ["absent", undefined],
       ["empty", ""],
       ["whitespace only", " \n "],
-      ["not a string", 42],
-    ])("is rejected when %s, naming the edge", (_label, value) => {
-      const issues = withDescription(value);
+    ] as const;
+
+    it.each(UNDESCRIBED)("is accepted when %s and the target has instructions", (_label, value) => {
+      expect(withDescription(value, "Look the order up by its id.")).toEqual([]);
+    });
+
+    it.each(UNDESCRIBED)("is rejected when %s and the target has none, naming the edge", (_label, value) => {
+      for (const instructions of [undefined, "  \n "]) {
+        const issues = withDescription(value, instructions);
+        expect(issues).toHaveLength(1);
+        expect(issues[0]?.path).toBe("states.start.transitions.1.description");
+        expect(issues[0]?.message).toContain("'lookup' declares none");
+        // The message says what to write, not just that something is missing.
+        expect(issues[0]?.message).toContain("Say when to take this edge");
+      }
+    });
+
+    it("is rejected when not a string, whatever the target", () => {
+      const issues = withDescription(42, "Look the order up by its id.");
       expect(issues).toHaveLength(1);
       expect(issues[0]?.path).toBe("states.start.transitions.1.description");
-      expect(issues[0]?.message).toContain("only thing the agent is told about this edge");
-      // The message says what to write, not just that something is missing.
-      expect(issues[0]?.message).toContain("Say when to take it");
+      expect(issues[0]?.message).toContain("must be a string");
+    });
+
+    it("is required on a human state's transition, even to an instructed target", () => {
+      const issues = issuesFor({
+        states: {
+          start: { triggers: { manual: null }, transitions: [{ to: "review", description: "Ready for review." }] },
+          review: { type: "human", instructions: "Approve or send back.", transitions: [{ to: "lookup" }] },
+          lookup: { instructions: "Look the order up by its id." },
+        },
+      });
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.path).toBe("states.review.transitions.0.description");
+      expect(issues[0]?.message).toContain("button");
     });
 
     it("accepts a described edge", () => {
-      expect(withDescription("Loop back for another pass.")).toEqual([]);
+      expect(withDescription("Look it up.")).toEqual([]);
     });
   });
 

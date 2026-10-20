@@ -56,9 +56,9 @@ describe("harness control tool names", () => {
 
   it("permits every control tool regardless of a state's allow list", () => {
     for (const tool of HARNESS_CONTROL_TOOLS) {
-      // Both sandbox entry points are governed like ordinary tools: they ride
-      // on the essential grant, which a `policy` denial still outranks and a
-      // state's own entry can narrow.
+      // Both sandbox entry points are governed like ordinary tools: they are
+      // default tools, granted like any other: a denial outranks the grant and
+      // a state's own entry can narrow it.
       if (tool === RUN_TOOL || tool === EVAL_TOOL) continue;
       expect(ALWAYS_ALLOWED_TOOLS.has(tool)).toBe(true);
     }
@@ -87,7 +87,7 @@ states:
     expect(disclosed.has(GET_VARIABLES_TOOL)).toBe(true);
     expect(disclosed.has(SET_VARIABLES_TOOL)).toBe(true);
     expect(disclosed.has(RUN_TOOL)).toBe(true);
-    // The interpreter is essential — disclosed without any declaration.
+    // The interpreter is a default tool — disclosed without any declaration here.
     expect(disclosed.has(EVAL_TOOL)).toBe(true);
   });
 

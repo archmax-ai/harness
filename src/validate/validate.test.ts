@@ -390,7 +390,33 @@ describe("validateWorkflow", () => {
       expect(warnings[0].message).toContain("'work'");
       expect(warnings[0].message).toContain("write_file");
       expect(warnings[0].message).toContain("scratchpad/refund.json");
-      expect(warnings[0].message).toContain("permitted in every state");
+      expect(warnings[0].message).toContain("permitted wherever the tool is granted");
+    });
+
+    it("warns for a workflow-wide entry whose every path sits in the always-open area", async () => {
+      const root = makeWorkspace({
+        "workflows/p/workflow.yaml": workflowFile(
+          [
+            "tools:",
+            "  allow_always:",
+            "    - read_file",
+            "    - { tool: write_file, paths: ['scratchpad/refund.json'] }",
+            "states:",
+            "  work:",
+            "    triggers: { manual: }",
+            "    transitions:",
+            "      - to: done",
+            "        description: done",
+            "  done: {}",
+          ].join("\n"),
+        ),
+      });
+
+      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+      const warnings = scratchpadWarnings(result.diagnostics);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({ field: "tools.allow_always.1" });
+      expect(warnings[0].message).toContain("'tools.allow_always' allows 'write_file'");
     });
 
     it("does not warn for a governed run path", async () => {
@@ -428,59 +454,63 @@ describe("validateWorkflow", () => {
     });
   });
 
-  it("warns when tools.allow_always names an essential tool (inert entry)", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
+  describe("tools.allow_always and the default tools", () => {
+    /** A two-state workflow with `root` as its root `tools` block and `workAllow` on `work`. */
+    function workflowWith(root: string[], workAllow: string[] = []): string {
+      return workflowFile(
         [
-          "tools:",
-          "  allow_always:",
-          "    - read_file",
-          "    - { tool: write_file, args: { file_path: [output/**] } }",
-          "    - { tool: archmax_eval, args: { code: ['*'] } }",
-          "    - { tool: archmax_run, paths: [skills/gate/scripts/**] }",
-          "    - { tool: archive_file, paths: [output/**] }",
+          ...root,
           "states:",
           "  work:",
           "    triggers: { manual: }",
+          ...(workAllow.length > 0 ? ["    tools:", "      allow:", ...workAllow.map((e) => `        - ${e}`)] : []),
           "    transitions:",
           "      - to: done",
           "        description: done",
           "  done: {}",
         ].join("\n"),
-      ),
+      );
+    }
+    const noDefaultWarnings = (diagnostics: { severity: string; message: string; field?: string }[]) =>
+      diagnostics.filter((d) => d.severity === "warning" && /grants none of the default tools/.test(d.message));
+    const validate = async (yaml: string) =>
+      validateWorkflow({ rootDir: makeWorkspace({ "workflows/p/workflow.yaml": yaml }), workflow: "p" });
+
+    it("treats default tools in allow_always as grants, guarded or not — no warning", async () => {
+      const result = await validate(
+        workflowWith([
+          "tools:",
+          "  allow_always:",
+          "    - read_file",
+          "    - { tool: write_file, args: { file_path: [output/**] } }",
+          "    - { tool: archmax_run, paths: [skills/gate/scripts/**] }",
+          "    - { tool: archive_file, paths: [output/**] }",
+        ]),
+      );
+      expect(result.diagnostics.filter((d) => d.field?.startsWith("tools.allow_always"))).toEqual([]);
+      expect(result.valid).toBe(true);
     });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    // Bare essential: redundant. Constrained essential: never enforced.
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "warning" && /'read_file'.*redundant/.test(d.message),
-      ),
-    ).toBe(true);
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "warning" && /'write_file'.*never enforced/.test(d.message),
-      ),
-    ).toBe(true);
-    // The interpreter is essential too, so constraining it workflow-wide is
-    // inert in the same way — narrow it with a per-state 'tools.allow' entry.
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "warning" && /'archmax_eval'.*never enforced/.test(d.message),
-      ),
-    ).toBe(true);
-    // Same for the file-based entry point: a workflow-wide path constraint on
-    // it never binds, since the essential grant is consulted first.
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "warning" && /'archmax_run'.*never enforced/.test(d.message),
-      ),
-    ).toBe(true);
-    // Non-essential allow_always entries are the intended use — no warning.
-    expect(result.diagnostics.some((d) => /archive_file/.test(d.message))).toBe(false);
-    // Warnings are non-fatal, and a state with no tools block is the ordinary
-    // closed default — no diagnostics for it.
-    expect(result.valid).toBe(true);
-    expect(result.diagnostics.some((d) => /states\.work/.test(d.field ?? ""))).toBe(false);
+
+    it("warns once when a declared list grants no default tool anywhere", async () => {
+      for (const root of [["tools:", "  allow_always: []"], ["tools:", "  allow_always: [lookup]"]]) {
+        const result = await validate(workflowWith(root));
+        const warnings = noDefaultWarnings(result.diagnostics);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatchObject({ field: "tools.allow_always" });
+        expect(warnings[0]!.message).toContain("read_file");
+        expect(warnings[0]!.message).toContain("replaces the default tools");
+        expect(result.valid).toBe(true);
+      }
+    });
+
+    it("does not warn once a state names a default tool, or when the key is absent", async () => {
+      const stateGrant = await validate(workflowWith(["tools:", "  allow_always: []"], ["read_file"]));
+      expect(noDefaultWarnings(stateGrant.diagnostics)).toEqual([]);
+      const absent = await validate(workflowWith(["tools:", "  forbid_always: [archmax_reset]"]));
+      expect(noDefaultWarnings(absent.diagnostics)).toEqual([]);
+      const noBlock = await validate(workflowWith([]));
+      expect(noDefaultWarnings(noBlock.diagnostics)).toEqual([]);
+    });
   });
 
   it("errors when workflow.yaml is not a YAML mapping", async () => {
@@ -1435,7 +1465,35 @@ describe("validateWorkflow", () => {
   // Root `instructions` are standing prose for every turn; they cannot say when
   // one edge is the right one. The description is the only per-edge routing text
   // the agent gets, so the schema requires it however well the root is written.
-  it("requires a description on every transition, whatever the root instructions say", async () => {
+  it("lets an edge go undescribed when its target has instructions", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": workflowFile(
+        [
+          "instructions: Cite an order id in every answer.",
+          "states:",
+          "  start:",
+          "    triggers: { manual: }",
+          "    instructions: Route the request.",
+          "    transitions:",
+          "      - to: lookup",
+          "      - to: done",
+          "        description: ''",
+          "  lookup:",
+          "    instructions: Look the order up by its id.",
+          "    transitions:",
+          "      - to: done",
+          "        description: The order is summarised.",
+          "  done:",
+          "    instructions: Say goodbye.",
+        ].join("\n"),
+      ),
+    });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.valid).toBe(true);
+    expect(result.diagnostics.filter((d) => d.field?.includes("transitions"))).toEqual([]);
+  });
+
+  it("requires a description on an edge whose target has no instructions, whatever the root instructions say", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
@@ -1455,7 +1513,7 @@ describe("validateWorkflow", () => {
       (d) => d.field === "states.start.transitions.0.description",
     );
     expect(diagnostic?.severity).toBe("error");
-    expect(diagnostic?.message).toContain("only thing the agent is told about this edge");
+    expect(diagnostic?.message).toContain("'done' declares none");
   });
 
   it("fails when the workflow slug is not kebab-case", async () => {
