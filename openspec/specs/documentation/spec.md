@@ -210,8 +210,11 @@ and `title`); **tool and skill governance as one symmetric model** — `allow_al
 `forbid_always` at the root, `allow` and `forbid` on a state, for `tools` and `skills` alike; that a
 grant composes additively while a denial beats every grant and no narrower level widens one; that a
 forbid entry may name the tool `*`; that a state's `forbid` is how a state opts out of a
-workflow-wide grant, an empty `allow` being no denial at all; always-on tools, and that `task` is
-grantable by nothing; the authoring backend split (the agent cannot read
+workflow-wide grant, an empty `allow` being no denial at all; the default tools and the absent/declared rule for
+`tools.allow_always` (absent, the default tools are granted in every state; declared, an empty
+list included, exactly what it lists is), and that `task` is grantable by nothing; that a new
+workflow's `workflow.yaml` lists every default tool under `tools.allow_always`, removing only those
+the workflow must not have; the authoring backend split (the agent cannot read
 `workflows/**`; hook scripts in `workflows/<slug>/hooks/`, runtime scripts and
 data in skill bundles; `scratchpad/` as the one working area); the hook contract (a default-export
 function receiving `{ state, phase, trigger, variables, messages, tools }` and returning `ok()`,
@@ -275,6 +278,11 @@ shape (a bare `false`, `{ ok: false }`).
 
 - **WHEN** the skill is searched for a superseded authoring form
 - **THEN** it documents none of them, and points at the changelog for what changed
+
+#### Scenario: Skill scaffolds a workflow with the default tools listed
+
+- **WHEN** an agent follows the skill to scaffold a new workflow
+- **THEN** the produced `workflow.yaml` declares `tools.allow_always` listing `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `copy_file`, `move_file`, `remove_file`, `write_todos`, `archmax_eval` and `archmax_run` (less any the workflow must not have), and the skill's skeleton declares no empty `tools.allow_always`
 
 ### Requirement: The skill teaches the wiring API as it is
 
