@@ -74,7 +74,10 @@ The calling state must allow every tool the script calls (here
 `archmax_workflow_enrich-order`). A script's `tools` lists exactly the calling
 state's tools, re-scoped at every evaluation (so after an advance the same REPL
 lists the next state's); a tool the state does not offer is unlisted, and
-calling it by name is refused with governance's reason.
+calling it by name is refused with governance's reason. The listing is
+camelCased, but a tool's own name reaches the same function
+(`tools["archmax_workflow_enrich-order"]`, `tools.read_file`); a hook's `tools`
+takes the camelCased names alone.
 
 **Return into a variable.** A script's result reaches the model as one tool
 message and no further — it is not written to the variable store, and a script

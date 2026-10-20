@@ -9,6 +9,16 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.7.1
+
+- **A script reaches a tool by its own name.** The bridge keys each tool by its
+  camelCased name, so `await tools.read_file({ … })` in an `archmax_eval` or
+  `archmax_run` script, the spelling a model writes, was `undefined` and died with
+  `TypeError: not a function`. A tool's own name now resolves to the same function
+  as its camelCased key, governed and evented the same way; the listing still names
+  only the camelCased keys, and a hook's `tools` is unchanged. See
+  [the code interpreter](/guides/code-interpreter/#two-entry-points-one-sandbox).
+
 ## 0.7.0
 
 - **Breaking: a hook reaches a governed mount only where its workflow grants it.**

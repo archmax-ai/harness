@@ -142,6 +142,34 @@ describe("PTC governance through the sandbox", () => {
     expect(write.calls).toHaveLength(0);
   });
 
+  it("governs an archmax_eval call by the tool's own name exactly as by its camelCase key", async () => {
+    const write = recordingTool("write_file");
+    const { gateway, executor, events } = harness({});
+    gateway.refresh("t3b", { state: "work", config: { configurable: { thread_id: "t3b" } } });
+
+    const outcome = await executor.runCode(
+      `
+        await tools.write_file({ file_path: "output/a.md", content: "hi" });
+        let caught = null;
+        try { await tools.write_file({ file_path: "elsewhere/a.md" }); } catch (err) { caught = String(err.message); }
+        caught;
+      `,
+      {
+        sessionId: "t3b",
+        sessionNamespace: AGENT_SESSION,
+        prelude: true,
+        tools: gateway.wrap([write.tool], { origin: "script", sessionId: "t3b" }),
+        surface: gateway.surface("t3b"),
+      },
+    );
+    executor.dispose("t3b");
+
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(String(outcome.value)).toMatch(/elsewhere\/a\.md/);
+    expect(write.calls).toEqual([{ file_path: "output/a.md", content: "hi" }]);
+    expect(events.map((e) => e.type)).toEqual(["tool-called", "tool-result", "tool-blocked"]);
+  });
+
   it("lets a lifecycle hook past the state's allow list but not past a safety rule", async () => {
     const write = recordingTool("write_file");
     const { gateway, executor } = harness({

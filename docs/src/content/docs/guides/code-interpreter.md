@@ -25,6 +25,10 @@ is therefore in scope for a later `archmax_eval` call. Both get:
 
 - **Programmatic tool calling (PTC)**, under the `tools` namespace with
   camelCased names: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })`.
+  A tool's own name reaches the same function (`tools.read_file`,
+  `tools["archmax_workflow_enrich-order"]`), which is how a model tends to
+  write it; the listing names only the camelCased ones. A hook's `tools` takes
+  the camelCased names alone.
   It lists **the active state's tools**: the ones the model's own tool list
   carries in that state, without the runtime's controls and the two sandbox
   tools. The listing is re-scoped at the start of every evaluation, so after an

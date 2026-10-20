@@ -89,10 +89,22 @@ const argsAssignment = (args: Record<string, unknown> | undefined) =>
 
 /**
  * The line that scopes `tools` to a surface, after the `ptc` prelude installed
- * the view: named the way the session keys its injected tools, so the two match.
+ * the view: named the way the session keys its injected tools, so the two match,
+ * plus each tool's own name mapped to that key, so a script may call either.
  */
-const scopeCall = (surface: readonly string[] | undefined): string[] =>
-  surface ? [`globalThis.__archmaxScope(${JSON.stringify(surface.map((name) => toCamelCase(name)))});`] : [];
+const scopeCall = (surface: readonly string[] | undefined, tools: readonly StructuredTool[] = []): string[] =>
+  surface
+    ? [
+        `globalThis.__archmaxScope(${JSON.stringify(surface.map((name) => toCamelCase(name)))}, ${JSON.stringify(ownNames(tools))});`,
+      ]
+    : [];
+
+/** Each tool's own name → the camelCase key the session injects it under, where the two differ. */
+function ownNames(tools: readonly StructuredTool[]): Record<string, string> {
+  return Object.fromEntries(
+    tools.map((tool) => [tool.name, toCamelCase(tool.name)]).filter(([own, key]) => own !== key),
+  );
+}
 
 /**
  * The code a lifecycle hook runs as. The hook body is evaluated as its own
@@ -162,7 +174,7 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
       const prelude = readPrelude(sandboxContext(params), sandboxVersion);
       const code = [
         prelude,
-        ...scopeCall(params.surface),
+        ...scopeCall(params.surface, params.tools),
         argsAssignment(params.args),
         `globalThis.__scriptPath = ${JSON.stringify(normalizeRelPath(filePath))};`,
         source,
@@ -175,7 +187,10 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
       // Same contract as an authored file: the PTC prelude runs first so inline
       // code sees the same `SANDBOX_CONTRACT` marker, the same scoped `tools` and
       // the same absence of the hook-only vocabulary.
-      const preamble = [readPrelude(sandboxContext(params), sandboxVersion), ...scopeCall(params.surface)];
+      const preamble = [
+        readPrelude(sandboxContext(params), sandboxVersion),
+        ...scopeCall(params.surface, params.tools),
+      ];
       return evalCode(`${preamble.join("\n")}\n${code}`, params);
     },
 

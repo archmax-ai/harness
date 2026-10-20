@@ -122,6 +122,48 @@ describe("a script's tools, scoped to a surface", () => {
     expect(raw.value).toEqual(["readFile", "writeFile", "archmaxWorkflowEnrichOrder"]);
   });
 
+  it("calls a tool by its own name as well as by its camelCase key, and lists only the key", async () => {
+    const executor = createScriptExecutor({ workspace: workspaceWith({}) });
+    const outcome = await executor.runCode(
+      [
+        "const own = await tools.read_file({});",
+        'const kebab = await tools["archmax_workflow_enrich-order"]({});',
+        "const camel = await tools.readFile({});",
+        '[own, kebab, camel, "read_file" in tools, "write_file" in tools, Object.keys(tools)]',
+      ].join("\n"),
+      {
+        sessionId: "s6",
+        sessionNamespace: "agent",
+        prelude: true,
+        tools: STUB_TOOLS,
+        surface: ["read_file", "archmax_workflow_enrich-order"],
+      },
+    );
+    executor.dispose("s6");
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(outcome.value).toEqual([
+      "read_file:done",
+      "archmax_workflow_enrich-order:done",
+      "read_file:done",
+      true,
+      false,
+      ["readFile", "archmaxWorkflowEnrichOrder"],
+    ]);
+  });
+
+  it("resolves a tool's own name outside the surface, so the call reaches governance", async () => {
+    const executor = createScriptExecutor({ workspace: workspaceWith({}) });
+    const outcome = await executor.runCode("[typeof tools.write_file, typeof tools.no_such_tool]", {
+      sessionId: "s7",
+      sessionNamespace: "agent",
+      prelude: true,
+      tools: STUB_TOOLS,
+      surface: ["read_file"],
+    });
+    executor.dispose("s7");
+    expect(outcome.value).toEqual(["function", "undefined"]);
+  });
+
   it("keeps a hook's tools whole, whatever surface the run names", async () => {
     const executor = createScriptExecutor({
       workspace: workspaceWith({ "/hooks/keys.js": "export default ({ tools }) => ok(Object.keys(tools).join(','));" }),
