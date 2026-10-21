@@ -3,7 +3,8 @@
 ## Purpose
 
 Define the one QuickJS sandbox the archmax harness runs authored JavaScript in: the two sandbox tools the
-agent calls (`archmax_eval` for inline code, `archmax_run` for a script file from a skill bundle)
+agent calls (`archmax_eval` for inline code, `archmax_run` for an authored script file: a skill
+bundle's, or a workflow's own)
 and the lifecycle hook scripts the runtime runs on its own authority. It fixes the two execution
 contexts and what each exposes, how script sources are read and prepared, how programmatic tool
 calls (PTC) are governed, the quotas that bound a session, and the pluggable runtime interface
@@ -14,7 +15,8 @@ the bundled QuickJS engine implements. Cases never run in the sandbox.
 ### Requirement: Two sandbox tools, one REPL session per scope
 
 The runtime SHALL expose `archmax_eval`, which evaluates inline code supplied by the model, and
-`archmax_run`, which executes a script file read through the workspace backend. Both SHALL
+`archmax_run`, which executes an authored script file — read through the agent workspace, or for a
+workflow's script through the authoring backend. Both SHALL
 evaluate in the same REPL session for a session scope — keyed by the executing session, with a
 child session's scope nested beneath its parent's — under the same contract and the same PTC
 surface, so the only difference is where the source came from. REPL state and `console.*` output
@@ -240,33 +242,6 @@ every tool on the bridge.
 - **WHEN** a `before` hook of `work` lists `Object.keys(tools)`
 - **THEN** it sees both `alpha` and `beta`
 
-### Requirement: `archmax_run` executes skill-bundle sources only
-
-`archmax_run` SHALL execute only sources that resolve inside a skill of the assembly's resolved
-skill registry, read through the backend; any other path SHALL be blocked by the non-overridable
-`script.skill-only` rule ahead of the declared denials, consumer and per-state rules, and a script in a skill
-the state does not enable SHALL be refused by `skill.not-allowed`. Both sandbox tools are
-default tools: granted in every state of a workflow that does not declare `tools.allow_always`,
-and otherwise only where `tools.allow_always` or a state's `tools.allow` names them. A state's own
-`tools.allow` entry on `archmax_run` SHALL narrow which files it may execute there (or grant it
-there, when the workflow-wide grant omits it), and an entry naming paths outside `skills/` SHALL be inert and reported by
-validation.
-
-#### Scenario: Non-skill source blocked
-
-- **WHEN** the agent calls `archmax_run` on `scratchpad/x.js` or a `workflows/**` path
-- **THEN** the call is blocked with rule `script.skill-only`, whatever the state declares
-
-#### Scenario: Restricted script path
-
-- **WHEN** a state allows `{ tool: archmax_run, paths: ["skills/order-data/scripts/lookup.js"] }`
-- **THEN** only that script may run in that state and other skill scripts are blocked
-
-#### Scenario: A workflow that omits the sandbox tools
-
-- **WHEN** a workflow declares `tools.allow_always: [read_file, ls]` and the model calls `archmax_eval` in a state that does not name it
-- **THEN** `archmax_eval` is not disclosed and the call is blocked with `tool.not-allowed`, while the state's `before` and `after` script hooks still run in the sandbox
-
 ### Requirement: No sandbox context has `task()`
 
 The `task()` global SHALL NOT be provided in any sandbox context — not to `archmax_eval`, not to
@@ -377,3 +352,39 @@ pending" state them.
 - **WHEN** a caller supplies a custom `sandboxRuntime`
 - **THEN** `archmax_eval`, `archmax_run` and hook scripts all execute through it, with per-scope
   namespacing preserved
+
+### Requirement: `archmax_run` executes authored scripts only
+
+`archmax_run` SHALL execute only an authored script: a file inside a skill of the assembly's
+resolved skill registry, read through the agent workspace, or a file under `workflows/` that is not
+under any workflow's `hooks/` and is not a workflow's `workflow.yaml`, `WORKFLOW.md` or `tests/`
+content, read through the authoring backend. Any other path SHALL be blocked by the non-overridable
+`script.authored-only` rule ahead of the declared denials, consumer and per-state rules: a hook
+script, a workflow's spec or case, a session path such as `scratchpad/x.js`, a mount other than a
+skill bundle's, and a path escaping the root. A script in a skill the state does not enable SHALL be
+refused by `skill.not-allowed`; a workflow's script belongs to no skill, so no skill grant gates it.
+Both sandbox tools are default tools: granted in every state of a workflow that does not declare
+`tools.allow_always`, and otherwise only where `tools.allow_always` or a state's `tools.allow` names
+them. An entry on `archmax_run` SHALL narrow which authored scripts it may execute (or grant it
+where the workflow-wide grant omits it), and an entry naming no authored script SHALL be inert and
+reported by validation.
+
+#### Scenario: Non-authored source blocked
+
+- **WHEN** the agent calls `archmax_run` on `scratchpad/x.js`, a data mount's file, or `workflows/<slug>/hooks/check.js`
+- **THEN** the call is blocked with rule `script.authored-only`, whatever the state declares
+
+#### Scenario: A workflow's script runs without a skill
+
+- **WHEN** a workflow with the default tools and no skills block calls `archmax_run` on `workflows/<slug>/scripts/tally.js`
+- **THEN** the script runs, reading `args.variables` like any other `archmax_run` script
+
+#### Scenario: Restricted script path
+
+- **WHEN** a state allows `{ tool: archmax_run, paths: ["skills/order-data/scripts/lookup.js"] }`
+- **THEN** only that script may run in that state, and other skill scripts and every workflow script are blocked
+
+#### Scenario: A workflow that omits the sandbox tools
+
+- **WHEN** a workflow declares `tools.allow_always: [read_file, ls]` and the model calls `archmax_eval` in a state that does not name it
+- **THEN** `archmax_eval` is not disclosed and the call is blocked with `tool.not-allowed`, while the state's `before` and `after` script hooks still run in the sandbox

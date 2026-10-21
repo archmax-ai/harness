@@ -215,8 +215,9 @@ workflow-wide grant, an empty `allow` being no denial at all; the default tools 
 list included, exactly what it lists is), and that `task` is grantable by nothing; that a new
 workflow's `workflow.yaml` lists every default tool under `tools.allow_always`, removing only those
 the workflow must not have; the authoring backend split (the agent cannot read
-`workflows/**`; hook scripts in `workflows/<slug>/hooks/`, runtime scripts and
-data in skill bundles; `scratchpad/` as the one working area); the hook contract (a default-export
+`workflows/**`; hook scripts in `workflows/<slug>/hooks/`, data in skill bundles, and the scripts
+the agent runs with `archmax_run` in a skill bundle or beside their workflow — any authored file
+except a hook, a spec or a case, never a session or mount file; `scratchpad/` as the one working area); the hook contract (a default-export
 function receiving `{ state, phase, trigger, variables, messages, tools }` and returning `ok()`,
 `veto()` or `correct()`, throwing vetoes, typed imports from `@archmax-ai/harness/sandbox`), including that a
 hook is bound by a workflow-wide denial and not by a state's; **grading

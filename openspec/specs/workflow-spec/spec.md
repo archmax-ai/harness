@@ -1331,7 +1331,8 @@ backend and imports only from `@archmax-ai/harness/*`, a custom kind listed unde
 (a `rubric` has no referent to check: the grader is the hook's own value); every skills list against the
 registry; kernel probes of `tools.allow` and `tools.allow_always` entries the runtime would refuse (a write
 into a runtime-owned or offload area, the read-only authored zone, a path or tool a `forbid_always` or
-`forbid` list denies, an entry naming `task`, an `archmax_run` path outside every skill bundle, a path that names the authoring
+`forbid` list denies, an entry naming `task`, an `archmax_run` path naming no authored script — a session or mount path, hook
+scripts, a workflow's spec or cases — in `tools.allow` or `tools.allow_always`, a path of any other tool that names the authoring
 backend, a path inside a bundle the state does not enable), each an error; sibling workflows
 named by `archmax_workflow_<slug>` entries (missing or unusable spec, no `manual` entry, a
 non-slug target, a cycle, a chain past the dispatcher's depth bound — errors; a disabled
@@ -1357,8 +1358,8 @@ SHALL validate the workspace's only workflow and refuse when there are several o
 #### Scenario: Inert run grant
 
 - **WHEN** a state allows `{ tool: archmax_run, paths: ["scratchpad/**"] }`
-- **THEN** `validate` reports an error that `archmax_run` is confined to skill bundles
-  (`script.skill-only`), so the entry grants nothing
+- **THEN** `validate` reports an error that `archmax_run` runs only authored scripts
+  (`script.authored-only`), so the entry grants nothing
 
 #### Scenario: Delegation chain checked across siblings
 
