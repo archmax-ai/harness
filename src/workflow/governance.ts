@@ -58,6 +58,7 @@ import { replyOnlyDirective } from "./parks.js";
 import { renderStateGraph } from "./render-prompt.js";
 import { blockedMessage, createToolService } from "./tool-service.js";
 import { buildRunnableConfig } from "./runtime-config.js";
+import { messagesIn, visitSpans } from "./visits.js";
 
 export { buildRunnableConfig } from "./runtime-config.js";
 
@@ -131,12 +132,7 @@ export interface Governance {
    */
   dispatchCount(sessionId: string, state: unknown): number;
   /** A hook context for one request, from the model context captured for the session. */
-  lifecycleCtx(
-    sessionId: string,
-    state: unknown,
-    messages: unknown[],
-    signal?: AbortSignal,
-  ): LifecycleContext;
+  lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext;
   reportMove(sessionId: string, moved: { from: string; to: string; park?: PendingDecision }): void;
   /** End the session's turn: drop its model context and return the `beforeDone` entries staged this turn. */
   endTurn(sessionId: string): Record<string, boolean> | undefined;
@@ -407,18 +403,16 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     }) as T;
   }
 
-  function lifecycleCtx(
-    sessionId: string,
-    state: unknown,
-    messages: unknown[],
-    signal?: AbortSignal,
-  ): LifecycleContext {
+  function lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext {
     const context = modelContexts.get(sessionId);
     const fields = readWorkflowState(state);
+    // The session's own transcript, never the request prepared for the model, which summarization may have shortened.
+    const messages = messagesIn(state);
     return {
       sessionId,
       tools: context?.tools ?? [],
       messages,
+      visits: visitSpans(messages, state),
       taskTool: context?.taskTool,
       config: context?.config ?? {},
       iterations: { ...(fields.iterations ?? {}) },
@@ -590,7 +584,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       const veto = await lifecycle.runPhase(
         workflowState,
         "before",
-        lifecycleCtx(sessionId, request.state, request.messages ?? [], request.runtime?.signal),
+        lifecycleCtx(sessionId, request.state, request.runtime?.signal),
       );
       if (veto) {
         // The refusal is the person's answer *and* a rejection: the text is the

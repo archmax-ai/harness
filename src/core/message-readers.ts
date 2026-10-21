@@ -79,6 +79,12 @@ export function turnAnchorOf(messages: unknown): TurnAnchor {
   return { ...(id ? { id } : {}), count: list.length };
 }
 
+/** Where the messages after `anchor` begin in `messages`: after its id, else at its clamped count. */
+export function anchorIndex(messages: readonly unknown[], anchor: TurnAnchor): number {
+  const at = anchor.id === undefined ? -1 : messages.findIndex((m) => messageIdOf(m) === anchor.id);
+  return at >= 0 ? at + 1 : Math.min(Math.max(0, anchor.count), messages.length);
+}
+
 function messageIdOf(message: unknown): string | undefined {
   const msg = message as { id?: unknown; kwargs?: { id?: unknown } } | undefined;
   const id = msg?.id ?? msg?.kwargs?.id;
@@ -92,8 +98,7 @@ function messageIdOf(message: unknown): string | undefined {
  * reaches the person; no other note does. Empty when the turn said nothing.
  */
 export function turnReply(messages: unknown[], anchor: TurnAnchor): string {
-  const at = anchor.id === undefined ? -1 : messages.findIndex((m) => messageIdOf(m) === anchor.id);
-  const start = at >= 0 ? at + 1 : Math.min(Math.max(0, anchor.count), messages.length);
+  const start = anchorIndex(messages, anchor);
   let said: string[] = [];
   for (const message of messages.slice(start)) {
     if (runtimeNoteKind(message) === "after") said = [];

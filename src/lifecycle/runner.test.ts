@@ -679,14 +679,15 @@ describe("LifecycleRunner hook input", () => {
       ...ctx(),
       messages: [
         { type: "human", content: "refund ORD-1" },
-        { type: "ai", content: "", tool_calls: [{ name: "read_file", args: { file_path: "x" } }] },
-        { type: "tool", name: "read_file", content: "[]" },
+        { type: "ai", content: "", tool_calls: [{ id: "c1", name: "read_file", args: { file_path: "x" } }] },
+        { type: "tool", name: "read_file", tool_call_id: "c1", content: "[]" },
       ],
     });
+    // A tool result carries its tool and call, not its text: results are read through `toolCalls`.
     expect(capturedArgs?.messages).toEqual([
       { role: "user", text: "refund ORD-1" },
-      { role: "assistant", text: "", toolCalls: [{ name: "read_file", args: { file_path: "x" } }] },
-      { role: "tool", text: "[]", tool: "read_file" },
+      { role: "assistant", text: "", toolCalls: [{ id: "c1", name: "read_file", args: { file_path: "x" } }] },
+      { role: "tool", text: "", tool: "read_file", id: "c1" },
     ]);
     expect(capturedArgs).not.toHaveProperty("run");
     expect(capturedArgs).not.toHaveProperty("history");

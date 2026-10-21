@@ -161,9 +161,40 @@ export default async function hook({ state, phase, trigger, variables, messages,
 | `state`, `phase` | The state whose hook is running; `"before"` or `"after"`. |
 | `trigger` | The trigger **id string** the run started from. It carries no payload — the run's input is in `variables`. |
 | `variables` | The run's variables as a plain `name → value` map, including the built-in `trigger`. Structured values are present whole (`variables.order.items[0].sku`). **Read-only**: assigning changes nothing, and the variable tools are absent from `tools.*` — a hook that could write variables would be editing the governance inputs of the state it judges. |
-| `messages` | The recent transcript (last 24 messages), newest last, as `{ role, text, toolCalls? }`. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, a completion check; `note` names the kind). A hook that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. |
+| `messages` | The transcript of the **current visit**, newest last, as `{ role, text, toolCalls? }`: everything since the session entered the state it is in. On an advance that is the state being left, for its `after` hook and the target's `before` hook alike; a visit spans turns, and entering a state again starts a new one. `role` is `user`, `assistant`, `tool`, `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, a completion check; `note` names the kind). A `tool` entry carries `tool` and the call's `id` with an empty `text`: its result comes from `toolCalls`. A hook that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. |
+| `toolCalls(filter?)` | **Async.** The session's tool calls with their results, across every visit, oldest first: `{ id, name, args, result, status, state, visit }` (`result` parsed when it is JSON; `status` `completed`, `failed`, `rejected` by governance, or `pending`). `filter` narrows by `name`, `state`, `visit` (a number or `"current"`), `status` and `last`; an unknown key throws. The control tools are not in it, nor are calls a script or hook made through `tools.*`. Only the records it returns are copied into the sandbox. |
 | `from`, `to`, `reason` | Present on `after` hooks: the transition the agent is attempting (`reason` is the agent's `archmax_advance` reason). |
 | `tools` | The privileged tool-call bridge (async), camelCased: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })` → file text, or the binary notice for a binary file (see below). See [Governance](#governance-of-tools-calls). |
+
+**What a hook checks.** The conversation is the model's memory, not evidence: a
+hook checks its own visit and the session's records — `variables`, files, and
+the tool results `toolCalls` keeps as the tools returned them. Check a result
+itself, never a copy the model wrote into a variable, and never call a tool
+again just to see its result (for a host whose tools reach an external system,
+that is a second action):
+
+```js
+/**
+ * Cancel gate — an order may be cancelled only while it is pending.
+ *
+ * Finds the latest get_order call for the order being cancelled and vetoes
+ * unless its result says pending.
+ */
+export default async function hook({ toolCalls }) {
+  const [cancel] = await toolCalls({ name: "cancel_order", visit: "current", last: 1 });
+  if (!cancel) return ok();
+  const lookups = await toolCalls({ name: "get_order", status: "completed" });
+  const order = lookups.findLast((c) => c.args.id === cancel.args.id);
+  if (!order) return veto(`Look order ${cancel.args.id} up with get_order before cancelling it.`);
+  if (order.result.status !== "pending") return veto(`Order ${cancel.args.id} is ${order.result.status}, not pending.`);
+  return ok();
+}
+```
+
+What a later state or turn needs from the conversation (the person's words, a
+decision) is stored in a variable or a file by the state that has it. A `before`
+hook re-run by `archmax_reset` starts a new visit and no longer sees the
+session's opening request.
 
 **The verdict** — the three helpers are globals:
 
@@ -502,6 +533,8 @@ get the exact same flow when they return `correct(reason)` under a
 into a verdict **fails closed** (veto with a snippet of the raw output). A rubric
 receives a compact JSON payload (`userRequest`, `history`, `state`, `phase`) —
 its `instructions` are written against that, not against a hook's `messages`.
+`history` is the visit the hook gates, tool results in full; `userRequest` is the
+message that opened the session, which an earlier state usually received.
 
 ---
 

@@ -56,6 +56,7 @@ import {
   type PromptShaping,
   type StateModels,
 } from "./governance.js";
+import { visitStart } from "./visits.js";
 
 export type { PromptShaping, StateModels } from "./governance.js";
 export { resolveToolName } from "./governance.js";
@@ -390,6 +391,8 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           return asHookResult({
             ...update,
             ...routed,
+            // The marker is removed, so the handler's visit starts after the message before it.
+            ...(routed.visits ? { visits: visitStart(routed.visits[0]!.state, messages.slice(0, -1)) } : {}),
             messages: [new RemoveMessage({ id: last.id }), ...(routed.messages ?? [])],
           });
         }
@@ -433,12 +436,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         // runs at completion: `correct` hands the state back with a note, a
         // terminal failure routes through `on_error`.
         if (machine.isTerminal(workflowState) && lifecycleHooks[workflowState]?.after?.length) {
-          const ctx = governance.lifecycleCtx(
-            sessionIdOf(runtime),
-            state,
-            messages,
-            runtime.signal,
-          );
+          const ctx = governance.lifecycleCtx(sessionIdOf(runtime), state, runtime.signal);
           const reject = await lifecycle.runPhase(workflowState, "after", ctx, undefined, true);
           commitDispatches();
           if (reject) {

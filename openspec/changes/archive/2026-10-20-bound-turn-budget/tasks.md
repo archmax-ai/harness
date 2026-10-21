@@ -24,6 +24,6 @@
 
 - [x] 5.1 Update `docs/src/content/docs/reference/machine-spec.md`: the root `budget` (with default, warning and when to raise it), and the per-state budget section's wrong "default recursion limit (50)". Verify with `npm run docs:build`.
 - [x] 5.2 Update the budgets explanation in `docs/src/content/docs/guides/workflow-machine.md`, and in `docs/src/content/docs/reference/public-api.md` what a thrown turn leaves behind (`failed`, the exit codes, the rethrow) and the derived `recursionLimit`. Verify with `npm run docs:build`.
-- [x] 5.3 Add 0.8.0 changelog entries in `docs/src/content/docs/reference/changelog.md`: the turn budget (with its behaviour change and migration line), a thrown turn ending failed, and the read race. Verify with `npm run docs:build`.
+- [x] 5.3 Add 0.9.0 changelog entries in `docs/src/content/docs/reference/changelog.md`: the turn budget (with its behaviour change and migration line), a thrown turn ending failed, and the read race. Verify with `npm run docs:build`.
 - [x] 5.4 Update `skills/archmax-harness/references/workflow-schema.md` and `references/workflow-yaml.md` with the root `budget` and when to raise it. Verify by reading the diff.
 - [x] 5.5 Check README.md for budget or recursion-limit text (`grep -n -i "budget\|recursion" README.md`) and update it if found. Run `npx openspec validate bound-turn-budget --strict`. It passes.

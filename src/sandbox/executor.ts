@@ -4,6 +4,7 @@ import type { Workspace } from "../core/workspace.js";
 import { normalizeRelPath } from "../core/workspace.js";
 import { readPrelude } from "./prelude.js";
 import { prepareHookSource } from "./imports.js";
+import { TOOL_CALLS_QUERY } from "../machine/tool-names.js";
 import { DEFAULT_SANDBOX_VERSION, type SandboxContext } from "../runtime/contract.js";
 import { createQuickJsSandboxRuntime, type SandboxRuntime } from "./runtime.js";
 
@@ -114,10 +115,19 @@ function ownNames(tools: readonly StructuredTool[]): Record<string, string> {
  * Whatever came back is reduced to a verdict by the prelude.
  */
 function buildHookCode(prepared: string, filePath: string, prelude: string, args?: Record<string, unknown>): string {
+  const query = toCamelCase(TOOL_CALLS_QUERY);
   return [
     prelude,
     "globalThis.__hookDef = undefined;",
     argsAssignment(args),
+    // The sandbox keeps the tools it was first handed: the `toolCalls` function is
+    // taken out of `tools` on the first run and kept, hidden, for every run after.
+    `if (typeof tools !== "undefined" && typeof tools.${query} === "function") {`,
+    `  const query = tools.${query};`,
+    `  delete tools.${query};`,
+    "  globalThis.__archmaxToolCalls = async (filter) => JSON.parse(await query(filter ?? {}));",
+    "}",
+    "globalThis.args.toolCalls = globalThis.__archmaxToolCalls;",
     `globalThis.__scriptPath = ${JSON.stringify(normalizeRelPath(filePath))};`,
     `globalThis.__hookBody = await ${transformForEval(prepared)};`,
     "globalThis.__hookVerdict(",

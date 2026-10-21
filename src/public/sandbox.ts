@@ -7,7 +7,7 @@
  * ```js
  * import { veto, ok } from "@archmax-ai/harness/sandbox";
  * /** Vetoes a refund the policy forbids. *\/
- * export default async function hook({ state, phase, variables, messages, tools }) {
+ * export default async function hook({ state, phase, variables, messages, toolCalls, tools }) {
  *   const refund = JSON.parse(await tools.readFile({ file_path: "scratchpad/refund.json" }));
  *   if (refund.decision !== "denied") return veto(`order ${refund.orderId} is not eligible`);
  *   return ok();
@@ -26,12 +26,40 @@ export interface HookVerdict {
 /** One transcript message, as plain data. `role` is `user`, `assistant`, `tool`, `system`, or `runtime`. */
 export interface HookMessage {
   role: string;
+  /** The message's text; empty on a tool result, whose result `toolCalls` returns. */
   text: string;
-  toolCalls?: { name: string; args: unknown }[];
-  /** Tool results: the tool that produced the text. */
+  toolCalls?: { id?: string; name: string; args: unknown }[];
+  /** Tool results: the tool that answered. */
   tool?: string;
+  /** Tool results: the id of the call answered, as `toolCalls` records carry it. */
+  id?: string;
   /** Runtime notes: which kind of note (an arrival, a decision, an error route). */
   note?: string;
+}
+
+/** One tool call of the session, as `toolCalls` returns it. */
+export interface ToolCallRecord {
+  id?: string;
+  name: string;
+  args: unknown;
+  /** The tool's result, parsed when it is JSON text; absent while `pending`. */
+  result?: unknown;
+  /** `rejected` is a call governance refused; `pending` has no result yet. */
+  status: "completed" | "pending" | "failed" | "rejected";
+  /** The state and visit (numbered from 1) of the message that made the call. */
+  state: string;
+  visit: number;
+}
+
+/** What `toolCalls` narrows by; every given key must match, and an unknown key is refused. */
+export interface ToolCallFilter {
+  name?: string;
+  state?: string;
+  /** A visit's number, or `"current"`: the visit the hook sees. */
+  visit?: number | "current";
+  status?: ToolCallRecord["status"];
+  /** Only the last `last` matches. */
+  last?: number;
 }
 
 /** The machine context a lifecycle hook receives (also the global `args`). */
@@ -42,8 +70,13 @@ export interface HookArgs {
   trigger?: string;
   /** The session's variables as a plain `name → value` map. Read-only: assigning changes nothing. */
   variables: Record<string, unknown>;
-  /** The recent transcript, newest last. */
+  /**
+   * The transcript of the current visit, newest last: everything since the
+   * session entered the state it is in (on an advance, the state being left).
+   */
   messages: HookMessage[];
+  /** The session's tool calls with their results, across every visit, oldest first. */
+  toolCalls(filter?: ToolCallFilter): Promise<ToolCallRecord[]>;
   /** `after` hooks on an advance: the transition being attempted and the agent's reason. */
   from?: string;
   to?: string;

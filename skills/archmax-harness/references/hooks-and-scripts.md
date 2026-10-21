@@ -38,7 +38,8 @@ export default async function hook({ state, phase, trigger, variables, messages,
 | `state`, `phase` | state slug; `"before"` or `"after"` |
 | `trigger` | trigger id string (payload is in `variables`) |
 | `variables` | read-only `name → value` map incl. `trigger`; structured values whole |
-| `messages` | last 24 messages, newest last, `{ role, text, toolCalls? }`; roles `user`/`assistant`/`tool`/`system`/`runtime` (a runtime note; match `role === "runtime"`, never a `[bracket]`) |
+| `messages` | the **current visit**, newest last: everything since the session entered the state it is in (on an advance, the state being left; it can span turns). `{ role, text, toolCalls? }`; roles `user`/`assistant`/`tool`/`system`/`runtime` (a runtime note; match `role === "runtime"`, never a `[bracket]`). A `tool` entry has `tool`, `id` and an empty `text`: read results with `toolCalls` |
+| `toolCalls(filter?)` | async: the session's tool calls with results, every visit, oldest first, `{ id, name, args, result, status, state, visit }`; filter by `name`, `state`, `visit` (number or `"current"`), `status`, `last`. No control tools. Only what it returns enters the sandbox |
 | `from`, `to`, `reason` | `after` only: the attempted transition and the agent's reason |
 | `tools` | async camelCased bridge: `tools.readFile`, `tools.writeFile`, `tools.archmaxWorkflowEnrichOrder(...)`; no control tools; a hook's lists every tool on the bridge, not only the state's |
 

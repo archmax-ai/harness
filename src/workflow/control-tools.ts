@@ -42,6 +42,7 @@ import {
 } from "../machine/variables.js";
 import { decisionRecordFor, inputRecordFor } from "./parks.js";
 import { fileValueIssues, type FileValueCheck } from "./signature-checks.js";
+import { messagesIn, visitStart } from "./visits.js";
 import {
   currentWorkflowState,
   NO_PENDING_FAILURE,
@@ -372,6 +373,7 @@ export async function handleAdvance(
     ...NO_PENDING_FAILURE,
     stateTurns: null,
     auditTrail: [step],
+    visits: visitStart(result.to, messagesIn(request.state)),
     messages: [
       toolReply(
         ADVANCE_TOOL,
@@ -572,6 +574,7 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
       ...NO_PENDING_FAILURE,
       stateTurns: null,
       auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
+      visits: visitStart(entry, messagesIn(request.state)),
       messages: [
         toolReply(
           RESET_TOOL,

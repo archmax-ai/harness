@@ -68,7 +68,7 @@ _None._
 - **docs/**: `reference/machine-spec.md` (root `budget`; the per-state budget section, which
   wrongly says the default recursion limit is 50), `guides/workflow-machine.md` where budgets are
   explained, `reference/public-api.md` (what a thrown turn leaves behind, and the derived
-  `recursionLimit`), and a 0.8.0 changelog entry.
+  `recursionLimit`), and a 0.9.0 changelog entry.
 - **README.md**: no change unless it describes budgets (checked in tasks).
 - **skills/archmax-harness/**: the workflow schema references (`references/workflow-schema.md`,
   `references/workflow-yaml.md`) document the root `budget` and when to raise it.

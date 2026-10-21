@@ -217,7 +217,7 @@ called with **one object** and answers with a **verdict**:
 ```js
 // workflows/order-lookup/hooks/check-requester.js
 /** Vetoes a request from a requester the order records do not know. */
-export default async function hook({ state, phase, trigger, variables, messages, tools }) {
+export default async function hook({ state, phase, trigger, variables, messages, toolCalls, tools }) {
   const orders = JSON.parse(await tools.readFile({ file_path: "skills/order-data/assets/orders.json" }));
   const request = messages.find((m) => m.role === "user")?.text ?? "";
   const email = request.match(/[\w.+-]+@[\w.-]+/)?.[0];
@@ -234,7 +234,8 @@ The input (`HookInput` in `@archmax-ai/harness/sandbox`; also available as the g
 | `state`, `phase` | The state whose hook is running, and `"before"` or `"after"`. |
 | `trigger` | The trigger id the run started from. The run's input arrives in `variables`. |
 | `variables` | The session's variables as a plain `name → value` map, including the built-in `trigger`. Read-only. |
-| `messages` | The recent transcript, newest last, as `{ role, text, toolCalls? }` objects. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or `runtime`. A `runtime` entry is a note the runtime wrote (an arrival, a decision, an error route), and `note` says which kind. |
+| `messages` | The transcript of the **current visit**, newest last, as `{ role, text, toolCalls? }` objects: everything since the session entered the state it is in (on an advance, the state being left). `role` is `user`, `assistant`, `tool`, `system`, or `runtime`. A `tool` entry names its tool and call (`tool`, `id`) with an empty `text`; its result comes from `toolCalls`. A `runtime` entry is a note the runtime wrote (an arrival, a decision, an error route), and `note` says which kind. |
+| `toolCalls(filter?)` | Async. The session's tool calls with their results, across every visit, oldest first: `{ id, name, args, result, status, state, visit }`. `filter` narrows by `name`, `state`, `visit` (a number or `"current"`), `status` (`completed`, `failed`, `rejected`, `pending`) and `last`. The runtime's control tools are not in it. |
 | `from`, `to`, `reason` | `after` hooks on an advance: the transition being attempted and the agent's reason. |
 | `tools` | The PTC bridge, camelCased: `tools.readFile({ file_path })`, which resolves to the file's text, or to the binary notice for a binary file. A hook's lists every tool on the bridge, not only the state's. |
 
@@ -258,8 +259,28 @@ the same list, and the runtime dispatches that one.
 export is evaluated as a plain script, and its completion value is the verdict.
 So `orders.length ? ok() : veto("no orders")` on the last line works too.
 
-A bare `false` is read as a veto, with the reason `precondition not met`. The
-transcript is `messages`; there is no other view of the session.
+A bare `false` is read as a veto, with the reason `precondition not met`.
+
+A hook sees **its visit** of the conversation and the session's **records**. The
+visit is `messages`: however many control calls it holds, nothing in it scrolls
+away, and nothing from an earlier state is in it. The records are `variables`,
+the files, and the tool results `toolCalls` returns, which the runtime keeps as
+the tools returned them, so a check compares against the result itself, not a
+copy the model made. Only the calls a hook asks for are copied into the sandbox:
+
+```js
+export default async function hook({ toolCalls }) {
+  const [order] = await toolCalls({ name: "get_order", last: 1 });
+  if (!order) return veto("Look the order up with get_order before cancelling it.");
+  if (order.result.status !== "pending") return veto(`Order ${order.args.id} is ${order.result.status}.`);
+}
+```
+
+What a later state or turn needs from the conversation belongs in a variable or
+a file. Calls a script makes through `tools.*`, a hook's own calls included,
+are not tool calls of the session and are not in `toolCalls`. A result too
+large for the transcript is the pointer to its file under `large_tool_results/`,
+as the agent saw it.
 
 ## Typed sandbox imports
 

@@ -7,6 +7,7 @@ import { contentToString, messageTypeOf, NOTE_KEY, ROLE_BY_TYPE, type RuntimeNot
 // The readers are pure and live in `message-readers.ts` (the `@archmax-ai/harness/messages`
 // subpath); re-exported so every runtime importer keeps one module for both halves.
 export {
+  anchorIndex,
   contentToString,
   isAiMessage,
   isHumanMessage,
@@ -83,9 +84,6 @@ export interface RunContext {
   userRequest: string;
 }
 
-/** How many trailing messages a hook's compact `history` carries. */
-const HISTORY_WINDOW = 24;
-
 /** One message as a hook reads it: its role, its text, and any tool calls it made. */
 function historyEntry(m: unknown): HistoryEntry {
   const msg = m as Record<string, unknown>;
@@ -103,17 +101,16 @@ function historyEntry(m: unknown): HistoryEntry {
 }
 
 /**
- * Build the compact view a lifecycle hook and a rubric grader read: the last
- * {@link HISTORY_WINDOW} messages plus the request that opened the session.
+ * Build the view a rubric grader reads: the messages from `visitStart` on (the
+ * visit its hook sees) plus the request that opened the session.
  *
- * `userRequest` is derived from the **whole** list, not the window: a grader
- * asked whether the reply satisfies the request must see the request, and a
- * session of more than a couple of tool-calling turns pushes the opening message
- * out of any fixed window (issue #61).
+ * `userRequest` is derived from the **whole** list, not the visit: a grader
+ * asked whether the reply satisfies the request must see the request, which an
+ * earlier state usually received (issue #61).
  */
-export function runContextFromMessages(messages: unknown[]): RunContext {
+export function runContextFromMessages(messages: unknown[], visitStart = 0): RunContext {
   const all = Array.isArray(messages) ? messages : [];
-  const history = all.slice(-HISTORY_WINDOW).map(historyEntry);
+  const history = all.slice(visitStart).map(historyEntry);
   const opening = all.find((m) => (ROLE_BY_TYPE[messageTypeOf(m) || "?"] ?? "") === "user");
   const userRequest = opening !== undefined ? contentToString((opening as Record<string, unknown>).content) : "";
   return { history, userRequest };

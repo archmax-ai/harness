@@ -751,6 +751,49 @@ Argument-shape restrictions belong in `tools.allow`, or in a `forbid` entry's ow
 guards. *Semantic* validation of a permitted call belongs in the state's `after`
 hook, which can veto the transition after inspecting what was actually written.
 
+### What a hook sees: its visit, and the session's records
+
+A **visit** is the span of a session from its entry into a state until it next
+enters one. An advance, a person's decision, an `on_error` route and
+`archmax_reset` each start one, and so does a turn that opens a state (the
+session's first turn): that visit begins with the person's message. A turn that
+continues in the state the session is in continues its visit, and so do a
+delivery after `archmax_wait` and a sub-workflow's return. So a visit can span
+turns, and a state entered again starts a new one.
+
+```text
+ … | entered S ──────────────────────────────────────── advance → T
+     │ user "cancel 42"                                  │ S's after hook
+     │ get_order(42) → pending                           │ T's before hook
+     │ (the turn ends; the person answers)               │   both see this visit
+     │ user "yes, do it"                                 │
+     │ cancel_order(42) → ok                             │
+     └───────────────────────────────────────────────────┘
+```
+
+A hook sees the visit of the state the session is in when it runs. On an advance
+from `S`, that is `S`'s visit for both `S`'s `after` hook and the target's
+`before` hook. A script reads it as `messages`, all of it, however many control
+calls it holds. A rubric's grader is shown the same visit, plus the request that
+opened the session.
+
+Beside the visit, a hook reads the session's **records**: `variables`, the files,
+and the tool results `toolCalls` returns. The runtime keeps those results as the
+tools returned them, across every visit, each marked with the state and visit
+that made the call. So the rule for authoring is:
+
+- **The conversation is the model's memory, not evidence.** A hook checks its
+  own visit and the records, never what an earlier state said.
+- **What a later state or turn depends on is stored**: in a variable, in a file,
+  or in a tool result the runtime already keeps. A check compares against the
+  result itself, not a copy the model made.
+- **A reset starts a new visit.** A `before` hook re-run by `archmax_reset` does
+  not see the request that opened the session; what it gates on belongs in a
+  variable.
+
+The fields are listed under
+[lifecycle hooks](/guides/code-interpreter/#lifecycle-hooks).
+
 ### Script hooks are hand-authored
 
 The yaml only *wires* a script hook (`before: { script: hooks/x.js }`). The

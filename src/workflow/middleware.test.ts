@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { GraphInterrupt } from "@langchain/langgraph";
 import type { BackendProtocolV2 } from "deepagents";
 import { runtimeNote } from "../core/messages.js";
@@ -164,6 +164,42 @@ describe("workflow middleware tool governance", () => {
     // the planning scratchpad anyway is served rather than refused.
     const { handlerRan } = await callMiddleware("write_todos", {});
     expect(handlerRan).toBe(true);
+  });
+});
+
+describe("a before hook's transcript", () => {
+  it("is the session's own, not the request a summary shortened for the model", async () => {
+    const machine = await WorkflowMachine.load(
+      machineWorkspace(STATE_YAML.replace("after: { script: hooks/after.js }", "before: { script: hooks/before.js }")),
+      SPEC_PATHS,
+    );
+    let seen: unknown;
+    const executor: ScriptExecutor = {
+      async runFile(_path, params) {
+        seen = (params.args as { messages?: unknown }).messages;
+        return passOutcome;
+      },
+      async runCode() {
+        return passOutcome;
+      },
+      dispose() {},
+    };
+    const instrumentation = createWorkflowInstrumentation({ machine: machine!, executor, ptcNames: [], onEvent: () => {} });
+    const wrapModelCall = (
+      instrumentation.middleware as unknown as {
+        wrapModelCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
+      }
+    ).wrapModelCall;
+    await wrapModelCall(
+      {
+        runtime: { configurable: { thread_id: "t1" } },
+        tools: [],
+        messages: [new HumanMessage("SUMMARY of the conversation so far")],
+        state: { messages: [new HumanMessage({ id: "m1", content: "cancel order 42" })] },
+      },
+      () => new AIMessage("AI"),
+    );
+    expect(seen).toEqual([{ role: "user", text: "cancel order 42" }]);
   });
 });
 
@@ -775,7 +811,11 @@ describe("workflow middleware session isolation and dispose", () => {
     await mw.wrapToolCall(advanceRequest("t1"), () => "OK");
     await mw.wrapToolCall(advanceRequest("t2"), () => "OK");
 
-    expect(toolsSeen).toEqual([["alpha"], ["beta"]]);
+    // Beside the session's own surface, every hook is handed its `toolCalls` query.
+    expect(toolsSeen).toEqual([
+      ["alpha", "archmax_tool_calls"],
+      ["beta", "archmax_tool_calls"],
+    ]);
   });
 
   it("clears segment context on dispose, including mid-segment aborts", async () => {
@@ -791,7 +831,7 @@ describe("workflow middleware session isolation and dispose", () => {
 
     // A later lifecycle hook on the same session sees no stale tool surface.
     await mw.wrapToolCall(advanceRequest("t1"), () => "OK");
-    expect(toolsSeen).toEqual([[]]);
+    expect(toolsSeen).toEqual([["archmax_tool_calls"]]);
   });
 
   it("is idempotent on double dispose", async () => {

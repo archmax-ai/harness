@@ -1,5 +1,7 @@
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
+import { tool } from "langchain";
+import { z } from "zod";
 import { runContextFromMessages } from "../core/messages.js";
 import { createSubagentBridgeDispatch } from "../sandbox/bridge.js";
 import {
@@ -9,6 +11,7 @@ import {
 } from "../sandbox/executor.js";
 import { resolvePtcTools } from "../sandbox/tools.js";
 import { afterHookLabel, hookKind, hookMaxIterations, iterationKey } from "./hook-shape.js";
+import { queryToolCalls } from "./tool-calls.js";
 import { hookTranscript } from "./transcript.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { Hook } from "../machine/types.js";
@@ -20,6 +23,9 @@ import {
   type Rubric,
 } from "../rubrics/rubrics.js";
 import type { VariableStore } from "../machine/variables.js";
+import type { VisitSpan } from "../workflow/visits.js";
+import { TOOL_CALLS_QUERY } from "../machine/tool-names.js";
+import { releaseScopes } from "../sessions/scope.js";
 import {
   createWorkflowEventEmitter,
   type WorkflowEventEmitter,
@@ -98,7 +104,10 @@ function describeNonVerdict(value: object): string {
 export interface LifecycleContext {
   sessionId: string;
   tools: StructuredTool[];
+  /** The session's whole transcript. */
   messages: unknown[];
+  /** Its visits, in order; the last is the one a hook sees. Absent, the whole transcript is one visit. */
+  visits?: VisitSpan[];
   taskTool?: StructuredTool;
   config: RunnableConfig;
   /**
@@ -214,6 +223,14 @@ export class LifecycleRunner {
    * identity default keeps a bare runner working.
    */
   private readonly resolveScript: HookScriptResolver;
+  /**
+   * Per session: the `toolCalls` host function its hooks' sandbox was handed
+   * (a sandbox keeps its first tools, and a call carries no session), and the
+   * context of the hook running now, which that function reads. A session's
+   * hooks run one at a time.
+   */
+  private readonly toolCallQueries = new Map<string, StructuredTool>();
+  private readonly hookContexts = new Map<string, LifecycleContext>();
   /** Deprecations already reported — each is said once per assembly. */
 
   constructor(
@@ -256,7 +273,7 @@ export class LifecycleRunner {
       const rubric = this.rubrics.get(input.subagentType);
       const description =
         input.description?.trim() ||
-        buildRubricTaskDescription({ ...lifecycleArgs, ...runContextFromMessages(ctx.messages) });
+        buildRubricTaskDescription({ ...lifecycleArgs, ...runContextFromMessages(ctx.messages, visitStartOf(ctx)) });
       const responseSchema =
         input.responseSchema ?? (rubric ? resolveRubricResponseFormat(rubric) : undefined);
       return base({
@@ -287,11 +304,12 @@ export class LifecycleRunner {
         formatted: `error: ${resolved.reason}`,
       };
     }
+    this.hookContexts.set(ctx.sessionId, ctx);
     return this.executor.runFile(resolved.path, {
       sessionId: ctx.sessionId,
       sessionNamespace: PROCESS_SESSION,
       args,
-      tools: ctx.tools,
+      tools: [...ctx.tools, this.toolCallQuery(ctx.sessionId)],
       // No `task()` for a script hook: an inline rubric has no name a script
       // could pass, so there is nothing to dispatch by. A script that wants a
       // model verdict gets a `rubric` hook declared beside it in the same list.
@@ -317,7 +335,7 @@ export class LifecycleRunner {
         subagentType: name,
         // The grader's payload keeps the compact `userRequest`/`history` view a
         // rubric's `instructions` are written against.
-        description: buildRubricTaskDescription({ ...args, ...runContextFromMessages(ctx.messages) }),
+        description: buildRubricTaskDescription({ ...args, ...runContextFromMessages(ctx.messages, visitStartOf(ctx)) }),
         ...(responseSchema !== undefined ? { responseSchema } : {}),
       });
       // Fail closed on unreadable grader output, exactly like a thrown error: a
@@ -430,7 +448,7 @@ export class LifecycleRunner {
       phase,
       ...(ctx.trigger ? { trigger: ctx.trigger.id } : {}),
       variables: ctx.variables ?? {},
-      messages: hookTranscript(ctx.messages),
+      messages: hookTranscript(visitMessages(ctx)),
       ...extraArgs,
     };
     const to = typeof extraArgs?.to === "string" ? extraArgs.to : undefined;
@@ -557,5 +575,44 @@ export class LifecycleRunner {
 
   dispose(sessionId: string): void {
     this.executor.dispose(sessionId, PROCESS_SESSION);
+    releaseScopes(this.toolCallQueries, sessionId);
+    releaseScopes(this.hookContexts, sessionId);
   }
+
+  /** The session's `toolCalls` host function, answering from the hook context running now. */
+  private toolCallQuery(sessionId: string): StructuredTool {
+    let query = this.toolCallQueries.get(sessionId);
+    if (!query) {
+      query = tool(
+        async (filter) => {
+          const ctx = this.hookContexts.get(sessionId);
+          return JSON.stringify(ctx ? queryToolCalls(ctx.messages, ctx.visits ?? [], filter) : []);
+        },
+        { name: TOOL_CALLS_QUERY, description: "The session's tool calls, for a hook.", schema: toolCallFilterSchema },
+      ) as unknown as StructuredTool;
+      this.toolCallQueries.set(sessionId, query);
+    }
+    return query;
+  }
+}
+
+/** A hook's `toolCalls` filter; an unknown key is refused, so a misspelt one never matches everything. */
+const toolCallFilterSchema = z
+  .object({
+    name: z.string().optional(),
+    state: z.string().optional(),
+    visit: z.union([z.number().int().positive(), z.literal("current")]).optional(),
+    status: z.enum(["completed", "pending", "failed", "rejected"]).optional(),
+    last: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/** Where the visit a hook sees begins: the last of the context's visits. */
+function visitStartOf(ctx: LifecycleContext): number {
+  return ctx.visits?.at(-1)?.start ?? 0;
+}
+
+/** The messages of the visit a hook sees. */
+function visitMessages(ctx: LifecycleContext): unknown[] {
+  return ctx.messages.slice(visitStartOf(ctx));
 }

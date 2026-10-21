@@ -535,8 +535,12 @@ export class JudgeModel extends BaseChatModel<BaseChatModelCallOptions> {
     return this as unknown as BaseChatModel;
   }
 
-  async _generate(): Promise<ChatResult> {
+  /** The text of everything each dispatch was shown, one entry per dispatch. */
+  readonly prompts: string[] = [];
+
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
     this.calls += 1;
+    this.prompts.push(messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n"));
     if (this.failWith) throw new Error(this.failWith);
     const verdict = this.verdicts[this.cursor++] ?? this.fallback;
     const extract = this.lastBound.find((name) => name.startsWith("extract-"));

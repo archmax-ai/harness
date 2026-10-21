@@ -451,9 +451,12 @@ await agent.invoke(
 
 Three things to know:
 
-- **A hook reads the transcript from `messages`, newest last.** A hook that
-  keys off "the current request" should take the *last* `user` entry. The
-  first is the message that opened the session.
+- **A hook reads its visit from `messages`, newest last**: the conversation
+  since the session entered the state it is in, which can span turns. A hook
+  that keys off "the current request" should take the *last* `user` entry. A
+  message from an earlier state is not in it: what a hook needs from there is
+  stored in a variable, a file, or a tool result `toolCalls` returns. See
+  [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
 - **A definition edit is adopted.** A session takes its next turn under the
   `workflow.yaml` in force now. The recorded `specHash` is a record of which
   definition each turn ran under, resolvable via `getSpecSnapshot`, and it binds
@@ -1602,13 +1605,14 @@ package `exports`):
 
 - **`@archmax-ai/harness/sandbox`** holds the verdict helpers `ok` / `veto` /
   `correct`, `defineHook`, and the types `HookInput`, `HookArgs`, `HookMessage`,
-  `HookVerdict`, `SandboxTools`, `TrailStep`, for hook scripts:
+  `HookVerdict`, `SandboxTools`, `ToolCallRecord`, `ToolCallFilter`, `TrailStep`,
+  for hook scripts:
 
   ```js
   import { ok, veto } from "@archmax-ai/harness/sandbox";
 
   /** Vetoes a refund the policy forbids. */
-  export default async function hook({ variables, messages, tools }) {
+  export default async function hook({ variables, messages, toolCalls, tools }) {
     // …
     return ok();
   }

@@ -36,20 +36,21 @@ describe("runContextFromMessages", () => {
     expect(ctx.history[2].content).toBe("ok");
   });
 
-  it("keeps only the last 24 messages", () => {
+  it("keeps every message of the visit, however many", () => {
     const many = Array.from({ length: 30 }, (_, i) => ({ role: "ai", content: `${i}` }));
-    expect(runContextFromMessages(many).history).toHaveLength(24);
+    expect(runContextFromMessages(many).history).toHaveLength(30);
+    expect(runContextFromMessages(many, 26).history.map((h) => h.content)).toEqual(["26", "27", "28", "29"]);
   });
 
-  it("keeps the opening request after it falls out of the history window", () => {
+  it("keeps the opening request when the visit starts after it", () => {
     // A grader asked whether the reply satisfies the request must still see the
-    // request once tool-calling turns push it past the window (issue #61).
+    // request, which an earlier state usually received (issue #61).
     const msgs: unknown[] = [{ role: "human", content: "ORIGINAL REQUEST" }];
     for (let i = 0; i < 30; i++) msgs.push({ role: "ai", content: `step ${i}` });
-    const ctx = runContextFromMessages(msgs);
+    const ctx = runContextFromMessages(msgs, 10);
 
     expect(ctx.userRequest).toBe("ORIGINAL REQUEST");
-    expect(ctx.history).toHaveLength(24);
+    expect(ctx.history).toHaveLength(21);
     expect(ctx.history.some((h) => h.role === "user")).toBe(false);
   });
 

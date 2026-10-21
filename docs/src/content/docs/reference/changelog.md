@@ -9,7 +9,7 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
-## 0.8.0
+## 0.9.0
 
 - **Breaking: an outcome's `reply` is what the agent said this turn.** `reply` was
   the last assistant text in the session's whole history. Text the agent wrote next
@@ -56,6 +56,24 @@ as it is today; the guides themselves describe only the present. Every release a
 - **A session read while its first checkpoint is being written reads as new.** A
   read in that window, such as the next `send` after a cancelled one, crashed
   with a `TypeError` from LangGraph's in-memory saver.
+- **Breaking: a hook sees its visit.** A hook's `messages` was the last 24
+  entries of the transcript. Every control call costs two, so a few of them
+  pushed a tool result, or the person's confirmation, out of sight, and hooks
+  vetoed valid moves. `messages` is now the **visit**: everything since the
+  session entered the state it is in, which can span turns, with no other bound.
+  A tool entry in it carries its tool and call `id` with an empty `text`. The
+  new `toolCalls(filter?)` resolves to the session's tool calls with their
+  results, across every visit, each marked with its state and visit, and copies
+  into the sandbox only what it returns. A rubric's `history` is the same visit,
+  tool results in full; `userRequest` is unchanged. A `before` hook no longer
+  reads the summarized request prepared for the model, so a summary never looks
+  like the person speaking. **Migrate** a hook that read a tool result's text
+  from `messages` to `toolCalls({ name })`, and a hook that read an earlier
+  state's messages to a variable, a file or `toolCalls`. See
+  [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
+
+## 0.8.0
+
 - **Breaking: a declared `tools.allow_always` replaces the default tools.** Every
   state used to have `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
   `copy_file`, `move_file`, `remove_file`, `write_todos`, `archmax_eval` and

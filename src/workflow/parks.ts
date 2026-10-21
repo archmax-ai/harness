@@ -57,6 +57,7 @@ import {
   isDecisionPark,
 } from "./state.js";
 import { SubWorkflowError, subWorkflowParkOf, type SubWorkflowDispatcher } from "./sub-workflow.js";
+import { messagesIn, visitStart } from "./visits.js";
 
 // --- Records ------------------------------------------------------------------
 
@@ -429,6 +430,7 @@ function applyDecision(
     stateTurns: null,
     ...NO_PENDING_FAILURE,
     auditTrail: [humanStep],
+    visits: visitStart(target, messagesIn(state)),
     ...continueToModel(site),
   };
 

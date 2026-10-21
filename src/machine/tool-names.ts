@@ -87,6 +87,13 @@ export function isWorkflowToolName(name: string): boolean {
  */
 export const NOTE_TOOL = "archmax_note";
 
+/**
+ * The host function behind a hook's `toolCalls`, handed to the hooks' own
+ * sandbox only and hidden from their `tools`. **Not a tool** the agent can see
+ * or call; reserved-prefixed so no host tool can claim the name.
+ */
+export const TOOL_CALLS_QUERY = "archmax_tool_calls";
+
 /** Every harness-owned control tool, by canonical name. */
 export const HARNESS_CONTROL_TOOLS: ReadonlySet<string> = new Set([
   ADVANCE_TOOL,
