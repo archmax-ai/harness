@@ -9,6 +9,37 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.9.0
+
+- **`archmax_run` runs any authored script, not only a skill bundle's.** A
+  workflow's own scripts now run where they are written, beside the workflow
+  (`workflows/<slug>/scripts/` by convention), with no skill bundle to package
+  and enable. An **authored script** is a file in a skill bundle, or a file under
+  `workflows/` that is not in any workflow's `hooks/` and is not a
+  `workflow.yaml`, a `WORKFLOW.md` or anything in a `tests/`. `archmax_run` reads
+  a workflow's script from the authoring backend, by its canonical path and never
+  from the session, so a file the agent writes at a `workflows/` path never runs.
+  The agent still cannot read, list or search the authoring backend. See
+  [The authoring plane](/guides/authoring-plane/#archmax_run-executes-only-authored-scripts).
+- **What stays refused, whatever a state grants:** every hook script (the
+  agent's own workflow's and every other's, in any spelling a case-insensitive or
+  Windows filesystem resolves to one; a path holding a `\` is never run), a
+  workflow's spec, prose addendum and
+  cases, every session file (`scratchpad/` included), and every mount other than
+  a skill bundle's. A host tool that declares an `execute` path argument stays
+  confined to skill bundles.
+- **The rule is renamed `script.authored-only`** (it was `script.skill-only`). It
+  is still a non-overridable safety rule in the same place, and a state's entry
+  still narrows it. No export or event carries a rule id, so nothing to migrate,
+  but a test that matched the old id or reason text sees the new one.
+- **A broad `archmax_run` entry is no longer inert.** `paths: ["**"]` reaches every
+  authored script, and a state that enables no skill can still run a workflow's
+  scripts, so narrow `archmax_run` where a state should run fewer. `archmax
+  validate` reports an entry naming no authored script (a session or mount path,
+  hook scripts, a spec or cases), now in `tools.allow_always` too, and no longer
+  reports an `archmax_run` entry on a workflow's scripts as naming the authoring
+  plane.
+
 ## 0.8.0
 
 - **Breaking: a declared `tools.allow_always` replaces the default tools.** Every

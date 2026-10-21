@@ -159,10 +159,11 @@ const SESSION_AREA_SET: ReadonlySet<string> = new Set(sessionAreaNames());
  * something downstream could relax.
  *
  * Still a **set**, though it holds one member: the classification is the contract
- * and its cardinality is incidental. One list, three consumers — mount resolution,
- * the decision kernel's script diagnostic, and static validation — so a further
- * prefix is a one-line change and the three can never disagree about what the
- * authoring backend serves. Declared here, with the rest of the root namespace
+ * and its cardinality is incidental. One list, four consumers — mount resolution,
+ * the decision kernel (the plane refusal and `script.authored-only`), the script
+ * executor's source routing, and static validation — so a further prefix is a
+ * one-line change and they can never disagree about what the authoring backend
+ * serves. Declared here, with the rest of the root namespace
  * vocabulary, so a browser-safe consumer can read it without the mount composition.
  */
 export const AUTHORING_PREFIXES = ["workflows"] as const;

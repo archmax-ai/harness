@@ -292,7 +292,15 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   entry; a disabled bundle is unreachable **and invisible** (not listed, not
   in the prompt). `allow` adds, `forbid` subtracts, `allow: []` denies
   nothing. A `tools.allow` entry may still narrow *within* an enabled bundle.
-  A state enabling no skill can run no script at all.
+  A state enabling no skill can run no skill script.
+- **`archmax_run` runs authored scripts only** (`script.authored-only`, no grant
+  widens it): a file in an enabled skill bundle, or a workflow's own script under
+  `workflows/` — anything there but a `hooks/` file, a `workflow.yaml`, a
+  `WORKFLOW.md` or a `tests/` file; `workflows/<slug>/scripts/` by convention.
+  Never a hook, a session file (`scratchpad/` included) or another mount's file.
+  The agent runs a workflow's script without being able to read it, so the
+  state's `instructions` name its path. Narrow per state:
+  `{ tool: archmax_run, paths: ["workflows/<slug>/scripts/**"] }`.
 - **Scripts' `tools.*` calls** are governed per call: an `archmax_run` script
   is bound like the model (grant every tool it calls); a hook is exempt from
   the state's lists but held to its workflow's mount grants. Neither may read

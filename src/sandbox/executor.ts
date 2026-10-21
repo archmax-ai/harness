@@ -1,7 +1,8 @@
 import type { StructuredTool } from "@langchain/core/tools";
 import { toCamelCase, transformForEval } from "@langchain/quickjs";
 import type { Workspace } from "../core/workspace.js";
-import { normalizeRelPath } from "../core/workspace.js";
+import { canonicalizeRelPath, normalizeRelPath } from "../core/workspace.js";
+import { authoringPlanePrefix } from "../core/zones.js";
 import { readPrelude } from "./prelude.js";
 import { prepareHookSource } from "./imports.js";
 import { DEFAULT_SANDBOX_VERSION, type SandboxContext } from "../runtime/contract.js";
@@ -64,7 +65,17 @@ export interface ScriptExecutor {
 }
 
 export interface ScriptExecutorOptions {
+  /** Where a script's source is read from. */
   workspace: Workspace;
+  /**
+   * Where a source under an authoring prefix (`workflows/…`) is read from
+   * instead: the agent's executor reads a workflow's authored scripts from the
+   * authoring backend. The agent workspace has no route there, so the same path
+   * read from it would resolve in the session, where the agent itself can write
+   * a file of that name. Absent, `workspace` serves every path, which is the
+   * hook executor's case: its workspace is the authoring backend.
+   */
+  authoring?: Workspace;
   timeoutMs?: number;
   memoryLimitBytes?: number;
   maxPtcCalls?: number | null;
@@ -137,6 +148,20 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
   const runtime = opts.sandboxRuntime ?? createQuickJsSandboxRuntime();
   const sessionKey = (sessionId: string, ns: string) => `${sessionId}:${ns}`;
 
+  /**
+   * A script's source, and where it was looked for. A path under an authoring
+   * prefix is canonicalized first, exactly as the kernel classified it, so a
+   * spelling such as `skills/../workflows/x.js` is read where the kernel's
+   * verdict assumed and never from the session.
+   */
+  async function readSource(filePath: string): Promise<{ source: string | null; from: string }> {
+    const { path: rel, escapes } = canonicalizeRelPath(filePath);
+    if (opts.authoring && !escapes && authoringPlanePrefix(rel) != null) {
+      return { source: await opts.authoring.readText(rel), from: "the authoring backend" };
+    }
+    return { source: await workspace.readText(filePath), from: "the agent workspace" };
+  }
+
   async function evalCode(code: string, params: ScriptRunParams): Promise<ScriptOutcome> {
     const session = runtime.session(sessionKey(params.sessionId, params.sessionNamespace), {
       tools: params.tools ?? [],
@@ -167,8 +192,8 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
 
   return {
     async runFile(filePath, params) {
-      const source = await workspace.readText(filePath);
-      if (source == null) return errorOutcome(`cannot read script '${filePath}' from the agent workspace.`);
+      const { source, from } = await readSource(filePath);
+      if (source == null) return errorOutcome(`cannot read script '${filePath}' from ${from}.`);
       if (params.lifecycle) return runHook(source, filePath, params);
 
       const prelude = readPrelude(sandboxContext(params), sandboxVersion);

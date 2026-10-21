@@ -483,7 +483,7 @@ describe("validateWorkflow", () => {
           "  allow_always:",
           "    - read_file",
           "    - { tool: write_file, args: { file_path: [output/**] } }",
-          "    - { tool: archmax_run, paths: [skills/gate/scripts/**] }",
+          "    - { tool: archmax_run, paths: [workflows/p/scripts/**] }",
           "    - { tool: archive_file, paths: [output/**] }",
         ]),
       );
@@ -959,28 +959,98 @@ describe("validateWorkflow", () => {
     expect(result.diagnostics.some((d) => /outside 'hooks\//.test(d.message))).toBe(true);
   });
 
-  it("reports an archmax_run entry that grants nothing because it names no bundle", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    tools:",
-          "      allow:",
-          "        - { tool: archmax_run, args: { file_path: [scratchpad/**] } }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
+  describe("archmax_run entries", () => {
+    /** A workflow whose `start` state allows `archmax_run` on `patterns`, plus `root` keys. */
+    const runEntry = (patterns: string[], root: string[] = []) =>
+      validateWorkflow({
+        rootDir: makeWorkspace({
+          "workflows/p/workflow.yaml": workflowFile(
+            [
+              ...root,
+              "states:",
+              "  start:",
+              "    triggers: { manual: }",
+              "    tools:",
+              "      allow:",
+              `        - { tool: archmax_run, paths: [${patterns.map((p) => JSON.stringify(p)).join(", ")}] }`,
+              "    transitions:",
+              "      - to: done",
+              "        description: Test edge to done.",
+              "  done: {}",
+            ].join("\n"),
+          ),
+        }),
+        workflow: "p",
+      });
+    const messages = (result: { diagnostics: { message: string }[] }) =>
+      result.diagnostics.map((d) => d.message).join("\n");
+
+    it("reports an entry naming no authored script as granting nothing", async () => {
+      const result = await runEntry(["scratchpad/**", "data/run.js"]);
+      expect(result.valid).toBe(false);
+      const inert = result.diagnostics.filter((d) => /names no authored script/.test(d.message));
+      expect(inert.map((d) => d.field)).toEqual(["states.start.tools.allow", "states.start.tools.allow"]);
+      expect(inert[0]?.message).toContain("rule 'script.authored-only'");
+      expect(inert[0]?.message).toContain("this entry grants nothing");
     });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(result.valid).toBe(false);
-    expect(
-      result.diagnostics.some((d) => /outside every skill bundle/.test(d.message)),
-    ).toBe(true);
+
+    it("reports an entry naming hook scripts, and not as a misread of the plane", async () => {
+      const result = await runEntry(["workflows/p/hooks/**", "workflows/other/hooks/gate.js"]);
+      expect(result.valid).toBe(false);
+      expect(result.diagnostics.filter((d) => /names lifecycle hook scripts/.test(d.message))).toHaveLength(2);
+      expect(messages(result)).not.toMatch(/names the authoring plane/);
+    });
+
+    it("reports an entry naming a workflow's spec or cases", async () => {
+      const result = await runEntry(["workflows/p/workflow.yaml", "workflows/p/tests/**"]);
+      expect(result.diagnostics.filter((d) => /spec, prose addendum or cases/.test(d.message))).toHaveLength(2);
+    });
+
+    it("accepts a workflow's authored scripts, with no skill and no plane error", async () => {
+      const result = await runEntry(["workflows/p/scripts/**", "workflows/shared/format.js"]);
+      expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+      expect(messages(result)).not.toMatch(/archmax_run/);
+    });
+
+    it("accepts a broad entry, which reaches every authored script", async () => {
+      // `**` used to be inert; it now reaches the bundles and the workflows'
+      // scripts, and the kernel still refuses the hooks and session files under it.
+      for (const pattern of ["**", "workflows/**", "*.js"]) {
+        const result = await runEntry([pattern]);
+        expect(messages(result), pattern).not.toMatch(/archmax_run/);
+      }
+    });
+
+    it("still reports the authoring plane for any other tool", async () => {
+      const root = makeWorkspace({
+        "workflows/p/workflow.yaml": workflowFile(
+          [
+            "states:",
+            "  start:",
+            "    triggers: { manual: }",
+            "    tools:",
+            "      allow:",
+            "        - { tool: read_file, paths: [workflows/p/scripts/**] }",
+            "    transitions:",
+            "      - to: done",
+            "        description: Test edge to done.",
+            "  done: {}",
+          ].join("\n"),
+        ),
+      });
+      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+      expect(messages(result)).toMatch(/names the authoring plane/);
+    });
+
+    it("reports an inert entry under tools.allow_always too", async () => {
+      const result = await runEntry(
+        ["workflows/p/scripts/**"],
+        ["tools:", "  allow_always:", "    - read_file", "    - { tool: archmax_run, paths: [scratchpad/**] }"],
+      );
+      const inert = result.diagnostics.filter((d) => /names no authored script/.test(d.message));
+      expect(inert).toMatchObject([{ severity: "error", field: "tools.allow_always" }]);
+      expect(inert[0]?.message).toMatch(/^'tools.allow_always' allows 'archmax_run' on 'scratchpad\/\*\*'/);
+    });
   });
 
   it("errors on an inline rubric with no instructions", async () => {

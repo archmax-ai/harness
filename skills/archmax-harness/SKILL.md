@@ -29,7 +29,7 @@ file needs, once, and nothing else:
 | You are about to… | Load |
 | --- | --- |
 | write or edit `workflow.yaml` | [`references/workflow-yaml.md`](references/workflow-yaml.md) — every key, machine rules, governance |
-| write a script — a skill's `scripts/*.js` (`archmax_run`) or a `hooks/*.js` gate | [`references/hooks-and-scripts.md`](references/hooks-and-scripts.md); sequence the skill case with the *Script playbook* below |
+| write a script — an `archmax_run` script (a skill's or a workflow's `scripts/*.js`) or a `hooks/*.js` gate | [`references/hooks-and-scripts.md`](references/hooks-and-scripts.md); sequence the `archmax_run` case with the *Script playbook* below |
 | write or fix a case (`tests/*.test.yaml`) | [`references/cases.md`](references/cases.md) |
 | fix what `archmax validate` / `archmax test` reported | [`references/diagnostics.md`](references/diagnostics.md) |
 | embed the package in a service | [`references/wiring.md`](references/wiring.md) |
@@ -76,9 +76,10 @@ then verify. Do not write a file, validate, and discover the next file.
    *judgment* gate (tone, completeness); cases — one happy path per branch,
    one per hook veto path, one `decide:` per human state, one `raised:` per
    failure a host branches on; a
-   `skills/<capability>/` bundle only for data, an `archmax_run` script, or
-   guidance two or more states share identically; `AGENTS.md` only for a
-   workspace-wide persona.
+   `workflows/<slug>/scripts/<x>.js` for an `archmax_run` script only this
+   workflow runs; a `skills/<capability>/` bundle only for data, a script
+   several workflows share or the agent must read, or guidance two or more
+   states share identically; `AGENTS.md` only for a workspace-wide persona.
 3. **Write `workflow.yaml`** from the skeleton in [`references/workflow-yaml.md`](references/workflow-yaml.md),
    keeping its `tools.allow_always` list of the twelve default tools: a declared
    list replaces them, so drop only a tool this workflow must not have. Each state's behaviour
@@ -133,27 +134,33 @@ those first; fall back to a recorded session's variables (`archmax sessions <id>
 only when no such tool exists. Reading more files never reveals what a live
 system returns.
 
-### Script playbook (a skill's `scripts/<x>.js`)
+### Script playbook (an `archmax_run` script)
 
 Deterministic work the model triggers with `archmax_run`. In order:
 
 1. **Shapes first.** Trigger payload and tool I/O from the host's describe/sample
    tools; the variables a run actually carries from `archmax sessions <id>`.
    Guessing a field name here costs a whole run (above).
-2. **Write it.** `skills/<cap>/scripts/<x>.js`: JSDoc, then the body. Input is the
-   global `args` — `args.<param>` from the model plus `args.variables`, a read-only
-   snapshot — and the **last expression** is the result. Contract:
-   [`references/hooks-and-scripts.md`](references/hooks-and-scripts.md).
+2. **Write it.** `workflows/<slug>/scripts/<x>.js` when only this workflow runs it,
+   `skills/<cap>/scripts/<x>.js` when a capability several workflows share carries it:
+   JSDoc, then the body. Input is the global `args` — `args.<param>` from the model
+   plus `args.variables`, a read-only snapshot — and the **last expression** is the
+   result. A script cannot read `workflows/**` through `tools.*` (a workflow's own
+   script included): the data it reads lives in a bundle, a mount or `scratchpad/`.
+   Contract: [`references/hooks-and-scripts.md`](references/hooks-and-scripts.md).
 3. **Land the result in a variable.** Return structured data, and name the variable
    in the calling state's `requires:`. A script may not call
    `archmax_set_variables`, so `requires` is what makes the model record the return;
    unrecorded, the result lives in one tool message and is gone.
-4. **Announce it in the skill.** The `SKILL.md` `description` says *when* to run it;
-   the body says the script's path, its arguments, and the variable its result
-   lands in. A script nothing points at is never reached.
+4. **Announce it.** A workflow's script: the calling state's `instructions` name
+   its path (`Run workflows/<slug>/scripts/<x>.js with archmax_run`), its arguments
+   and the variable its result lands in — the agent cannot list `workflows/`, so the
+   path in the instructions is how it learns the script exists. A skill's script:
+   the `SKILL.md` `description` says *when* to run it, the body the same three
+   facts. A script nothing points at is never reached.
 5. **Grant it.** The calling state allows `{ tool: archmax_run, paths:
-   ["skills/<cap>/scripts/**"] }` plus every tool the script itself calls. Then
-   `archmax validate`.
+   ["workflows/<slug>/scripts/**"] }` (or `["skills/<cap>/scripts/**"]`) plus every
+   tool the script itself calls. Then `archmax validate`.
 
 ### Reference a variable, never retype it
 
@@ -184,6 +191,7 @@ read `args.variables`. To write the characters literally: `$${{name}}`.
     workflow.yaml                    #   the machine (required, canonical)
     WORKFLOW.md                      #   optional plain-markdown addendum, NO frontmatter
     hooks/<check>.js                 #   lifecycle hook scripts, run by the runtime
+    scripts/<script>.js              #   this workflow's archmax_run sources: the agent runs, never reads
     tests/<case>.test.yaml           #   one case per file; fixtures beside them (`from:`)
   skills/<capability>/               # AGENT PLANE — mounted read-only, enabled per state by slug
     SKILL.md                         #   frontmatter (name = directory slug, description) + body
@@ -200,20 +208,24 @@ read `args.variables`. To write the characters literally: `$${{name}}`.
 
 Rules that follow:
 
-- **The agent cannot read `workflows/**`** — its spec, hooks, rubrics and
-  cases have no route in its workspace. Never point `instructions`,
-  `evidence` or a case `workspace:` at one (`validate` errors). Text the agent
-  needs goes in a skill bundle.
-- **Placement**: a hook is the guard, a runtime script is the tool; they
+- **The agent cannot read `workflows/**`** — its spec, hooks, rubrics,
+  cases and scripts have no route in its workspace. Never point `instructions`,
+  `evidence` or a case `workspace:` at one to *read* (`validate` errors); the one
+  exception is a script the instructions tell it to *run* with `archmax_run`.
+  Text the agent needs goes in a skill bundle.
+- **Placement**: a hook is the guard, an authored script is the tool; they
   never share a file or a directory.
 
   | Script | Runs on | Lives at | Wired as |
   | --- | --- | --- | --- |
   | Hook | runtime authority, at `before`/`after` | `workflows/<slug>/hooks/<x>.js` | `before: { script: hooks/<x>.js }` (workflow-relative, confined to `hooks/`) |
-  | Runtime script | the model's authority, via `archmax_run` | `skills/<cap>/scripts/<x>.js` | enabling the skill; narrow with `{ tool: archmax_run, paths: ["skills/<cap>/scripts/**"] }` |
+  | Authored script | the model's authority, via `archmax_run` | `workflows/<slug>/scripts/<x>.js`, or `skills/<cap>/scripts/<x>.js` | named in the state's instructions; narrow with `{ tool: archmax_run, paths: ["workflows/<slug>/scripts/**"] }` (a skill's also needs the skill enabled) |
 
-  `archmax_run` is confined to skill bundles by a non-overridable rule
-  (`script.skill-only`): a script in `scratchpad/` or `hooks/` is unrunnable.
+  `archmax_run` runs only authored scripts, by a non-overridable rule
+  (`script.authored-only`): a file in a skill bundle, or under `workflows/`
+  outside every `hooks/`, `workflow.yaml`, `WORKFLOW.md` and `tests/`. A hook, a
+  spec or case, a file in `scratchpad/` (or anywhere in the session) and a file
+  under any other mount are unrunnable, whatever the state grants.
 - **Paths have no leading slash** (`skills/order-data/assets/orders.json`,
   `scratchpad/refund.json`); never author a `run/` prefix. `scratchpad/` is
   writable in every state that is granted `write_file`, whatever its entry

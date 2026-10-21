@@ -899,15 +899,21 @@ Why by slug, and not with `tools.allow` paths:
   of reach, while the entry confines execution to *this* capability's scripts.
   Capability governance and execution governance are different questions.
 - **`archmax_run` can only ever be narrowed.** A non-overridable kernel rule
-  (`script.skill-only`) confines it to skill bundles, so a script the agent writes
-  into `scratchpad/` is unrunnable, a lifecycle hook script is unrunnable, and
-  `{ tool: archmax_run, paths: ["**"] }` grants nothing — `validate` reports such
-  an entry as inert.
+  (`script.authored-only`) confines it to authored scripts: a file in a skill
+  bundle, or under `workflows/` outside every `hooks/`, `workflow.yaml`,
+  `WORKFLOW.md` and `tests/`. A script the agent writes into `scratchpad/` (or
+  anywhere in its session), a file under any other mount, a spec or case and a
+  lifecycle hook script are unrunnable whatever a state grants. An entry naming
+  none of the authored scripts (`paths: ["scratchpad/**"]`,
+  `["workflows/<slug>/hooks/**"]`) grants nothing — `validate` reports it as inert.
+  `paths: ["**"]` reaches every authored script, so it is not inert: narrow
+  instead.
 
-- **No skill enabled means no script at all.** Since `script.skill-only` confines
-  `archmax_run` to bundles, a state that enables no skill — nothing on
-  `allow_always`, nothing on its own list — can execute nothing: the tool stays on
-  the surface and refuses every path.
+- **No skill enabled means no skill script.** A state that enables no skill —
+  nothing on `allow_always`, nothing on its own list — runs no bundle's script.
+  It still runs a workflow's own scripts (`workflows/<slug>/scripts/…`), which
+  belong to no bundle; narrow `archmax_run` in that state, or leave it out of the
+  state's grant, when it must run none.
 
 `archmax validate` warns when a state entry names a slug `allow_always` already
 grants everywhere, when a state's `allow: []` beside such a grant subtracts
@@ -1230,7 +1236,8 @@ before:
   authoring plane. An absolute path, a `..` climb, or anything outside `hooks/`
   (including the former `skills/<name>/scripts/…` spelling) is a load error and a
   `validate` error. Hook scripts are **not** agent-readable and **not** runnable
-  with `archmax_run`: the runtime runs them, and that separation is what stops an
+  with `archmax_run` (`script.authored-only` refuses every file under a `hooks/`,
+  any workflow's): the runtime runs them, and that separation is what stops an
   agent probing the guard that gates it.
 - **Reserved sidecar key** on a script or custom hook: `max_iterations` (see
   Verdicts below). It is **refused beside a `rubric`**, whose budget is inside its
@@ -1661,8 +1668,11 @@ it costs latency, not correctness.
 workflows/<name>/workflow.yaml    # the machine (canonical spec)
 workflows/<name>/WORKFLOW.md      # OPTIONAL prose addendum (no frontmatter)
 workflows/<name>/hooks/*.js       # lifecycle hook scripts — run BY THE HARNESS.
-                                  # Authoring plane: the agent cannot read or run
+                                  # Authoring plane: the agent cannot read
                                   # anything under workflows/
+workflows/<name>/scripts/*.js     # this workflow's archmax_run sources — run BY
+                                  # THE AGENT, read from the authoring backend; the
+                                  # agent runs them but cannot read them
 workflows/<name>/tests/           # cases (*.test.yaml, one case per
                                   # file; fixture files referenced with `from:`)
 skills/<capability>/SKILL.md      # a capability, bundled (Agent Skills format).
@@ -1670,7 +1680,8 @@ skills/<capability>/SKILL.md      # a capability, bundled (Agent Skills format).
                                   # across MULTIPLE states — single-state
                                   # behavior goes inline in that state's
                                   # `instructions` (never one SKILL.md per state)
-skills/<capability>/scripts/*.js  # its archmax_run sources — run BY THE AGENT
+skills/<capability>/scripts/*.js  # its archmax_run sources — run BY THE AGENT,
+                                  # readable through the skills/ mount
                                   # (lifecycle hook scripts are NOT here: they
                                   # live in workflows/<name>/hooks/, are run by
                                   # the runtime, and the agent cannot read them)

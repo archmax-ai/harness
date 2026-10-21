@@ -684,9 +684,13 @@ const agent = await createAgent({
 - `createWorkspaceContext` returns it as `authoring`, a `Workspace` distinct from
   `workspace`.
 - Hook scripts are read here, from `workflows/<slug>/hooks/`, wired
-  workflow-relative (`{ script: hooks/check.js }`). Scripts the *agent* runs with
-  `archmax_run` stay in skill bundles and are confined there by the kernel's
-  `script.skill-only` rule.
+  workflow-relative (`{ script: hooks/check.js }`).
+- A workflow's own authored scripts are read here too, when the agent runs one
+  with `archmax_run` (`workflows/<slug>/scripts/…`). The kernel's
+  `script.authored-only` rule lets `archmax_run` execute a file in a skill bundle
+  or under `workflows/`, and never a hook, a `workflow.yaml`, a `WORKFLOW.md`, a
+  case, a session file or another mount. Executing a source is not addressing it:
+  no agent tool lists or reads this backend.
 - Grading rubrics are read here too, as part of the spec. A rubric is declared
   inline on the hook that applies it, and the runtime alone dispatches it. The
   agent has no `task` tool, and `task()` is absent from every sandbox context. See
@@ -873,8 +877,11 @@ const agent = await createAgent({
   path rule of the kernel then binds them, exactly as it binds `read_file`'s
   `file_path`: the read-only zone and the runtime's own areas, the skills and
   mounts the state was given, a mount's `access: read`, the inherited denials,
-  and `paths:` guards. A refused call never reaches the handler. A tool with no
-  declaration has no path rules.
+  and `paths:` guards. An `execute` path runs only a file in a skill bundle
+  (`script.authored-only`): a `workflows/` path is authored for `archmax_run`
+  alone, which reads it from the authoring backend, while your handler would
+  resolve it in the session. A refused call never reaches the handler. A tool
+  with no declaration has no path rules.
 - **An argument may hold a list of paths** (`files: string[]`). Each path is
   governed with the argument's access, and a `paths:` guard tests each one: a
   grant needs every path to match, a denial any. A declared argument holding

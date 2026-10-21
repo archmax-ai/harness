@@ -322,9 +322,21 @@ it workflow-wide with
 the same sandbox either way: they run on the runtime's authority, not the agent's.
 
 `archmax_run`, which executes an authored script **file**, is a default tool for
-the same reason: the script is a file the state could already read. Which files a
-state may execute is still a governance question, and narrowing the grant per
-state answers it (`{ tool: archmax_run, paths: ["scripts/**"] }`).
+the same reason: the script is authored, and what it does once it runs is
+governed like the agent's own calls. It executes only an **authored script**, a
+non-overridable rule (`script.authored-only`) no grant widens:
+
+- a file in a skill bundle the state enables (`skills/<slug>/scripts/…`), or
+- a file under `workflows/` that is none of a workflow's own files: not in any
+  workflow's `hooks/`, and not a `workflow.yaml`, a `WORKFLOW.md` or anything in a
+  `tests/`. A workflow's scripts conventionally live in
+  `workflows/<slug>/scripts/`, and are read from the authoring backend, which the
+  agent still cannot read.
+
+A hook script, a spec or case, a session file (`scratchpad/` included) and a file
+under any other mount are refused. Which authored scripts a state may execute is
+still a governance question, and narrowing the grant per state answers it
+(`{ tool: archmax_run, paths: ["workflows/order-lookup/scripts/**"] }`).
 
 A state's `tools.allow` list does two things:
 
@@ -451,19 +463,20 @@ prompt, and `ls skills/` there leaves it off the listing.
 The two mechanisms compose as *enabled AND allowed*. A `tools.allow` entry
 narrows **within** the enabled set, which is the right tool for a different
 question. `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }` beside
-`skills: { allow: [<slug>] }` says "this capability, and authored scripts
-alone". `archmax_run` is otherwise granted unconstrained wherever the workflow-wide
-grant includes it, so a script the agent wrote into `scratchpad/` could be run.
+`skills: { allow: [<slug>] }` says "this capability's scripts alone". `archmax_run`
+is otherwise granted unconstrained wherever the workflow-wide grant includes it,
+so it reaches every enabled bundle's scripts and every workflow's own scripts. A
+script the agent wrote into `scratchpad/` is never run either way.
 
 Lifecycle **hooks are exempt**, as they are from a state's `tools.allow`,
 because a hook runs on runtime authority. So a routing state can enable nothing
 while the `before` hook that enforces tenancy still reads the order records.
 The workflow's `skills.forbid_always` still binds its hooks.
 
-[`archmax_run`](#toolsallow-closed-by-default-governance) executes scripts inside
-a bundle and nowhere else (`script.skill-only`). A state that enables no skill
-therefore runs **no script at all**: the tool stays on the surface and refuses
-every path.
+[`archmax_run`](#toolsallow-closed-by-default-governance) executes only authored
+scripts (`script.authored-only`). A state that enables no skill therefore runs
+**no skill script**. It still runs a workflow's own scripts, which belong to no
+bundle, unless its grant narrows `archmax_run` or leaves it out.
 
 See the [Skills guide](/guides/skills/) for the full rationale.
 `archmax validate` supplies the static diagnostics:

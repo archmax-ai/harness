@@ -13,14 +13,16 @@ reference covers:
    QuickJS sandbox: plain JavaScript with **top-level `await`**, no State APIs, no
    filesystem beyond the `tools.*` bridge.
 
-   **A hook script is not a runtime script.** The runtime runs a hook; the agent
-   runs an `archmax_run` source. The two live in different places on purpose —
-   hooks in `workflows/<slug>/hooks/`, runtime scripts in
-   `skills/<capability>/scripts/` — and the classes cannot meet: the agent
-   cannot read `workflows/**` at all, and `archmax_run` is confined to skill
-   bundles by a non-overridable kernel rule (`script.skill-only`). An agent that
-   could execute its own guard could probe it for a bypass, which is the whole
-   reason for the split. A hook's source also never reaches the model: not in a
+   **A hook script is not an authored script.** The runtime runs a hook; the
+   agent runs an `archmax_run` source. The two live in different places on
+   purpose — hooks in `workflows/<slug>/hooks/`, authored scripts beside their
+   workflow (`workflows/<slug>/scripts/`) or in a skill bundle
+   (`skills/<capability>/scripts/`) — and the classes cannot meet: the agent
+   cannot read `workflows/**` at all, and a non-overridable kernel rule
+   (`script.authored-only`) refuses `archmax_run` on any file under a `hooks/`,
+   on a spec or case, and on every session or mount file. An agent that could
+   execute its own guard could probe it for a bypass, which is the whole reason
+   for the split. A hook's source also never reaches the model: not in a
    prompt, not in an event, not in a session artifact — a veto reports its
    verdict and reason, never its code.
 2. **Cases** (`workflows/<name>/tests/*.test.yaml`) — declarative
@@ -281,7 +283,8 @@ hooks need no such grant.
 
 ### `archmax_run` scripts: the `args` contract
 
-An `archmax_run` source (`skills/<capability>/scripts/*.js`) is a plain script:
+An `archmax_run` source (`workflows/<slug>/scripts/*.js` or
+`skills/<capability>/scripts/*.js`) is a plain script:
 top-level `await`, `tools.*`, `console.log`, and the **last expression** is its
 result — returned to the model as the tool result, never into the variable
 store. It reads its input from the global **`args`**:

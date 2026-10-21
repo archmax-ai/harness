@@ -18,7 +18,7 @@ it drives.
 | Tool | Source of the code | Governance |
 | --- | --- | --- |
 | `archmax_eval` | inline, written by the model | a default tool; granted wherever the workflow-wide grant includes it |
-| `archmax_run` | an authored **file** in a skill bundle | a default tool; narrow the paths per state (`tools.allow`) |
+| `archmax_run` | an authored **file**: in a skill bundle, or beside its workflow | a default tool; narrow the paths per state (`tools.allow`) |
 
 Both evaluate in the same REPL session for a run. A helper a script file defines
 is therefore in scope for a later `archmax_eval` call. Both get:
@@ -87,9 +87,11 @@ A state's `${{name}}` argument guard resolves against the run's variables. So a
 script passing the literal value the guard names is admitted, and any other value
 is blocked.
 
-`archmax_run` reads its source **through the configured backend**. Authored
-scripts therefore run against whatever backend the runtime is configured with, a
-remote one included.
+`archmax_run` reads its source **through the configured backend**: a skill
+bundle's script through the agent's workspace, and a workflow's own script
+(`workflows/<slug>/scripts/…`) through the authoring backend. Authored scripts
+therefore run against whatever backends the runtime is configured with, remote
+ones included.
 
 Configure the sandbox via `settings` in `workflow.yaml`:
 
@@ -121,9 +123,8 @@ permits (see the PTC rule below). The sandbox adds computation over a state's
 surface. Hook scripts run in the same sandbox whether or not the agent is granted
 either tool, because a hook runs on the runtime's authority.
 
-`archmax_run` is a default tool for the same reason. A script is a file the state could
-already read, and running it reaches what an inline `archmax_eval` of the same
-source reaches.
+`archmax_run` is a default tool for the same reason. A script is an authored file,
+and running it reaches what an inline `archmax_eval` of the same source reaches.
 
 Which authored files a state may execute is still a real governance question.
 Answer it by *narrowing*, the way you would narrow `write_file`. A state's own
@@ -138,20 +139,26 @@ states:
         - { tool: archmax_run, args: { file_path: ["skills/orders/scripts/lookup-*.js"] } }
 ```
 
-**`archmax_run` executes only scripts inside a skill bundle.** A non-overridable
-kernel rule (`script.skill-only`) enforces that ahead of workflow `policy`,
-consumer rules, and the per-state allow list. A state's entry therefore
-*narrows* within the bundles. Two consequences:
+**`archmax_run` executes only authored scripts.** A non-overridable kernel rule
+(`script.authored-only`) enforces that ahead of workflow `policy`, consumer
+rules, and the per-state allow list. An authored script is a file in a skill
+bundle, or a file under `workflows/` other than a workflow's hooks, spec, prose
+addendum and cases. A state's entry therefore *narrows* within that set. Three
+consequences:
 
-- A script the agent writes into `scratchpad/` cannot be run.
-- A **lifecycle hook** cannot be run by the agent either. Hooks live on the
-  authoring plane (`workflows/<slug>/hooks/`). The runtime runs them, and the
-  agent can neither read nor execute them. See
+- A script the agent writes, into `scratchpad/` or anywhere else in its session,
+  cannot be run. Neither can a file under a mount, other than a skill bundle's.
+- A **lifecycle hook** cannot be run by the agent, its own workflow's or another's.
+  Hooks live on the authoring plane (`workflows/<slug>/hooks/`). The runtime runs
+  them, and the agent can neither read nor execute them. See
   [The authoring plane](/guides/authoring-plane/).
+- A workflow's own scripts (`workflows/<slug>/scripts/…`) run without a skill
+  bundle. The agent cannot read them; it runs the one a state's instructions name.
 
-An entry naming paths outside every bundle (`["**"]`, `["scratchpad/**"]`) grants
-nothing, and `archmax validate` reports it as inert. A state that declares no entry
-may run any bundled script its enabled skills expose.
+An entry naming no authored script (`["scratchpad/**"]`,
+`["workflows/<slug>/hooks/**"]`) grants nothing, and `archmax validate` reports
+it as inert. A state that declares no entry may run every authored script: the
+bundled scripts its enabled skills expose, and every workflow's own scripts.
 
 Every PTC call sandboxed code makes is **also** governed, individually, at the
 moment it runs. That code runs on the model's authority.

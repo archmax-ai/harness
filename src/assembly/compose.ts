@@ -462,8 +462,11 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   const settings = target.harnessSettings;
 
   // Two executors, one sandbox runtime: agent scripts read sources from the
-  // agent workspace, hook scripts from the authoring plane the agent cannot
-  // address. Sharing the runtime keeps a session's REPL a single session.
+  // agent workspace, and a workflow's authored scripts from the authoring
+  // backend, never from the session the agent writes; hook scripts are read from
+  // the authoring backend alone. Which of them the agent may run at all is the
+  // kernel's `script.authored-only` rule. Sharing the runtime keeps a session's
+  // REPL a single session.
   const sandboxRuntime = params.sandboxRuntime ?? createQuickJsSandboxRuntime();
   const sandboxLimits = {
     timeoutMs: settings.timeoutMs,
@@ -473,8 +476,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     sandboxRuntime,
   };
   const sandboxVersion = ctx.runtimeContract.sandbox;
-  const executor = createScriptExecutor({ workspace, sandboxVersion, ...sandboxLimits });
-  const hookExecutor = createScriptExecutor({ workspace: authoring, sandboxVersion, ...sandboxLimits });
+  const executor = createScriptExecutor({ workspace, authoring, sandboxVersion, ...sandboxLimits });
+  const hookExecutor = createScriptExecutor({ workspace: authoring, authoring, sandboxVersion, ...sandboxLimits });
   // One gateway for both programmatic-tool-call consumers — the model's own
   // sandbox code and lifecycle hook scripts — so a script's `tools.*` call is
   // governed and instrumented by the same kernel and event stream.

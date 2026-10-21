@@ -197,7 +197,9 @@ export function resolveMounts(table: Record<string, MountSpec> = {}): {
  * runs with `archmax_run` — together with the data a state reads
  * (`skills/<name>/scripts/…`, `skills/<name>/assets/…`), reaching the agent through
  * the `skills/` mount, which also lets a state scope execution to one capability
- * (`skills/triage/scripts/**`).
+ * (`skills/triage/scripts/**`). A script only one workflow runs may instead sit
+ * beside it (`workflows/<slug>/scripts/…`): `archmax_run` executes it from the
+ * authoring backend without the plane gaining a route.
  *
  * None of the conventional mounts is `governed`: a zero-config workspace's
  * content is visible in every state, exactly as it was before the `mounts`

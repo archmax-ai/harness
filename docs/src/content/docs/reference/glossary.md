@@ -33,6 +33,7 @@ the concepts below is a defect. Please report it.
 | **transition** | A declared edge from one state to another, taken by `archmax_advance`. On a human state each transition has a `type` (approve, reject, refine, none). | edge, route |
 | **trigger** | How a session starts or resumes: `manual` (a prompt), or a host-declared id. Declared under the `triggers:` of the state it enters, keyed by id. That state is its entry, and the declaration carries its session path and signature. | event, firing |
 | **hook** | A `before` or `after` slot on a state. A **script hook** runs a JavaScript file in the sandbox; a **rubric hook** asks a grading rubric for a verdict. | gate, guard, judge |
+| **authored script** | A file `archmax_run` may execute: one in a skill bundle, or one under `workflows/` that is not in a `hooks/` and is not a `workflow.yaml`, a `WORKFLOW.md` or a case. A file of the session or of any other mount never is. | runtime script |
 | **verdict** | What a hook returns: `ok`, `correct` (the model gets another attempt), or `veto` (the move is blocked). A hook that errors vetoes. | decision, result |
 | **default tools** | The built-ins a workflow that does not declare `tools.allow_always` is granted in every state: the file tools, the file operations, `write_todos` and the sandbox tools. A declared `tools.allow_always` replaces them, so a workflow that declares it lists the ones it wants. | essential tools, standard tools |
 | **always-on tools** | Tools permitted in every state: the workflow-wide grant (what `tools.allow_always` lists, or the default tools when it is absent), the control tools, and any tool the host passes as `essentialTools`. Every other tool is granted per state under `tools.allow`. | essential tools |
@@ -53,7 +54,7 @@ the concepts below is a defect. Please report it.
 | **session store** | Where sessions physically live: the filesystem by default, any Deep Agents backend, or memory. | run store |
 | **mount** | A route in the agent's workspace composite: a key at the root served by a backend, read-only by default. Where the host declares it `governed`, each state reaches it through `mounts.allow` / `mounts.forbid`, read or read/write per the grant's `access`. | zone (for a mount), plane |
 | **zone** | The kernel's classification of a path: a mount, the working area, an offload area, a runtime-internal area, or the authoring backend. | area |
-| **authoring backend** | The backend the runtime reads specs (rubrics included), hooks and cases from. The runtime alone reads it; assembly fails if a workspace exposes it. | authoring plane, governance plane |
+| **authoring backend** | The backend the runtime reads specs (rubrics included), hooks, cases and a workflow's own authored scripts from. The runtime alone reads it, and `archmax_run` executes from it without the agent reading it; assembly fails if a workspace exposes it. | authoring plane, governance plane |
 | **scratchpad** | `scratchpad/`, the one working area a session can always write to. | output, work |
 | **control tools** | `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. | workflow tools |
 | **sandbox tools** | `archmax_eval` (inline code) and `archmax_run` (an authored script), both executing in the QuickJS sandbox. | interpreter tools |

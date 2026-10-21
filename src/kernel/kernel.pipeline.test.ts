@@ -393,13 +393,12 @@ describe("skill rule precedence", () => {
   it("still lets a state entry narrow within the enabled set", () => {
     // `archmax_run` is narrowed to `skills/**`, so an enabled bundle's script runs…
     expect(verdict("archmax_run", "skills/order-data/scripts/lookup.js").decision).toBe("allow");
-    // …and a scratch script does not, despite `archmax_run` being essential. The
-    // state's entry would refuse it anyway, but `script.skill-only` gets there
-    // first and says the more useful thing: not "this state disallows it" but
-    // "a script outside a skill bundle is never runnable".
+    // …and a scratch script does not. The state's entry would refuse it anyway,
+    // but `script.authored-only` gets there first and says the more useful
+    // thing: not "this state disallows it" but "a session file never runs".
     const v = verdict("archmax_run", "scratchpad/x.js");
     expect(v.decision).toBe("block");
-    expect(v.ruleId).toBe("script.skill-only");
+    expect(v.ruleId).toBe("script.authored-only");
   });
 
   it("is still bound by a workflow denial of the tool", () => {

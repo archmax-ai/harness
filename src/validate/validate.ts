@@ -19,7 +19,7 @@ import {
 } from "../machine/mount-grants.js";
 import { hookKind, normalizeHooks } from "../lifecycle/hook-shape.js";
 import { BUILTIN_HOOK_KINDS } from "../lifecycle/runner.js";
-import { authoringPlanePrefix, describeAuthoringPrefix } from "../core/mounts.js";
+import { AUTHORING_PREFIXES, authoringPlanePrefix, describeAuthoringPrefix } from "../core/mounts.js";
 import { ADVANCE_TOOL, RUN_TOOL, UNGRANTABLE_TOOLS, workflowToolName } from "../machine/tool-names.js";
 import { MANUAL_TRIGGER, triggerBindings } from "../machine/triggers.js";
 import { WorkflowMachine } from "../machine/machine.js";
@@ -32,11 +32,12 @@ import {
   type MachineState,
   type MountGrantEntry,
 } from "../machine/types.js";
-import { decide } from "../kernel/kernel.js";
+import { decide, unrunnableScript, type UnrunnableScript } from "../kernel/kernel.js";
 import { classifyWorkspacePath, mountNameOfPattern, SESSION_OPEN_DIR } from "../core/zones.js";
 import { NO_MOUNTS, type MountPrefixes, type MountSpec } from "../core/mounts.js";
 import {
   DEFAULT_SKILL_SOURCES,
+  type SkillPrefixes,
   type SkillRegistry,
   inspectSkillSources,
   skillOfPattern,
@@ -236,6 +237,11 @@ export async function validateWorkflow(
         file: specFile,
         field: "tools.allow_always",
       });
+    }
+    if (tool === RUN_TOOL) {
+      for (const message of inertRunEntries("'tools.allow_always'", argMatchers?.file_path, skillPrefixes(skillRegistry))) {
+        add("error", message, { file: specFile, field: "tools.allow_always" });
+      }
     }
     for (const filePath of argMatchers?.file_path ?? []) {
       const zone = classifyWorkspacePath(filePath);
@@ -746,9 +752,60 @@ function validateMounts(
 }
 
 /**
+ * The diagnostics for an `archmax_run` entry's path patterns that can match no
+ * authored script, so the kernel's `script.authored-only` refuses every call they
+ * would permit and the entry grants nothing. Classified by the kernel's own
+ * {@link unrunnableScript}: a plain path exactly as a call naming it, a glob by
+ * the literal directory every match lies under. A glob whose directory is an
+ * authored root or an ancestor of one (`**`, `skills/**`, `workflows/**`) can
+ * reach an authored script and is never reported.
+ */
+function inertRunEntries(
+  where: string,
+  patterns: readonly string[] | undefined,
+  bundles: SkillPrefixes,
+): string[] {
+  const messages: string[] = [];
+  for (const pattern of patterns ?? []) {
+    const why = inertRunPattern(pattern, bundles);
+    if (why == null) continue;
+    messages.push(
+      `${where} allows '${RUN_TOOL}' on '${pattern}', which ${INERT_RUN_WHY[why]} ` +
+        `'${RUN_TOOL}' runs only authored scripts (rule 'script.authored-only'): a file in a skill ` +
+        `bundle, or under 'workflows/' outside a workflow's spec, prose addendum, cases and hooks. ` +
+        `So this entry grants nothing — scope it to authored scripts ` +
+        `(e.g. 'skills/<name>/scripts/**' or 'workflows/<slug>/scripts/**').`,
+    );
+  }
+  return messages;
+}
+
+/** Why each kind of inert pattern names nothing `archmax_run` executes. */
+const INERT_RUN_WHY: Record<UnrunnableScript, string> = {
+  "not-authored":
+    "names no authored script: a file in the session or under a mount is never executed.",
+  hook:
+    "names lifecycle hook scripts: the runtime runs a hook at its lifecycle point, and the agent never does.",
+  governance: "names a workflow's spec, prose addendum or cases, which are not scripts.",
+};
+
+/** {@link inertRunEntries} for one pattern: why it can match no authored script, or `null`. */
+function inertRunPattern(pattern: string, bundles: SkillPrefixes): UnrunnableScript | null {
+  const normalized = normalizeRelPath(pattern);
+  const literal = normalized.split(/[*?[{]/, 1)[0] ?? "";
+  if (literal === normalized) return unrunnableScript(RUN_TOOL, normalized, bundles);
+  const { path: dir, escapes } = canonicalizeRelPath(literal.slice(0, literal.lastIndexOf("/") + 1));
+  if (escapes) return "not-authored";
+  const roots = [...bundles.map(({ prefix }) => prefix), ...AUTHORING_PREFIXES];
+  if (dir === "" || roots.some((root) => root === dir || root.startsWith(`${dir}/`))) return null;
+  // Every match lies under `dir`, so a file there stands for all of them.
+  return unrunnableScript(RUN_TOOL, `${dir}/x`, bundles);
+}
+
+/**
  * Kernel probes for one state's `tools.allow`: entries the spec grants that the
  * runtime would nonetheless refuse (a runtime-owned or read-only zone, a
- * denied path or tool, an `archmax_run` path outside every skill bundle,
+ * denied path or tool, an `archmax_run` path naming no authored script,
  * a path inside a bundle the state does not enable, the authoring plane) and
  * `archmax_advance` targets with no matching edge. Decided through the same
  * kernel the runtime uses, so the diagnostic and the enforcement cannot diverge.
@@ -794,35 +851,22 @@ function validateStateGovernance(
     }
   }
 
-  // `archmax_run` is confined to skill bundles by a non-overridable safety rule,
-  // so an entry naming paths outside one is inert — and reads as permissive.
-  const bundlePrefixes = skillPrefixes(skillRegistry);
-  /** Whether a pattern can match anything inside a skill bundle (or an ancestor of one). */
-  const reachesABundle = (pattern: string): boolean => {
-    if (skillOfPattern(pattern, bundlePrefixes) != null) return true;
-    const literal = normalizeRelPath(pattern).split(/[*?[{]/, 1)[0] ?? "";
-    const upTo = literal.slice(0, literal.lastIndexOf("/") + 1);
-    return upTo !== "" && bundlePrefixes.some(({ prefix }) => `${prefix}/`.startsWith(upTo));
-  };
+  // `archmax_run` runs only authored scripts (a non-overridable safety rule), so
+  // a pattern naming none — a session or mount path, hooks, a spec or cases — is
+  // inert, and reads as permissive.
   for (const { tool, argMatchers } of entries) {
-    if (tool !== RUN_TOOL || !argMatchers) continue;
-    const inert = (argMatchers.file_path ?? []).filter((pattern) => !reachesABundle(pattern));
-    if (inert.length === 0) continue;
-    add(
-      "error",
-      `State '${slug}' allows '${RUN_TOOL}' on ${inert.map((p) => `'${p}'`).join(", ")}, which is ` +
-        `outside every skill bundle. '${RUN_TOOL}' may only execute scripts in a skill bundle ` +
-        `(rule 'script.skill-only'), so this entry grants nothing — scope it to a capability's ` +
-        `scripts (e.g. 'skills/<name>/scripts/**'). Lifecycle hook scripts are not run this way: ` +
-        `they live in 'workflows/<slug>/hooks/' and are executed by the harness.`,
-      { field: `${field}.tools.allow` },
-    );
+    if (tool !== RUN_TOOL) continue;
+    for (const message of inertRunEntries(`State '${slug}'`, argMatchers?.file_path, skillPrefixes(skillRegistry))) {
+      add("error", message, { field: `${field}.tools.allow` });
+    }
   }
 
   // An entry naming the authoring plane: no plane prefix is routed into the
   // agent's workspace, so such a path silently resolves inside the run's own zone.
+  // `archmax_run` is the exception, and checked above: its executor reads a
+  // workflow's authored scripts from the authoring backend.
   for (const { tool, argMatchers } of entries) {
-    if (!argMatchers) continue;
+    if (!argMatchers || tool === RUN_TOOL) continue;
     for (const filePath of argMatchers.file_path ?? []) {
       const { path: rel } = canonicalizeRelPath(filePath);
       const prefix = authoringPlanePrefix(rel);

@@ -338,8 +338,8 @@ narrows within the enabled set.
 The [Skills guide](/guides/skills/) goes further. It covers why
 capability governance belongs in a skills list, and the hook exemption: a state
 may enable nothing while a `before` hook still reads the data it checks against.
-It also covers why a state that enables no skill can run no script, since
-`archmax_run` is confined to bundles.
+It also covers why a state that enables no skill can run no skill script, while
+a workflow's own scripts belong to no bundle and stay runnable.
 
 ## Mount governance
 
@@ -462,7 +462,8 @@ are read by the runtime through a separate authoring backend, and they have no
 route in the agent's workspace.
 
 So a session cannot read the workflow that governs it, or the rubric that vetoes
-it. See [The authoring plane](/guides/authoring-plane/).
+it. `archmax_run` may execute a workflow's own authored scripts from there, never
+a hook, the spec or a case. See [The authoring plane](/guides/authoring-plane/).
 
 ## Session variables
 

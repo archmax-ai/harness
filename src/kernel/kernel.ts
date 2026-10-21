@@ -3,6 +3,7 @@ import {
   DEFAULT_TOOLS,
   HARNESS_CONTROL_TOOLS,
   EVAL_TOOL,
+  RUN_TOOL,
   SET_VARIABLES_TOOL,
   UNGRANTABLE_TOOLS,
 } from "../machine/tool-names.js";
@@ -29,6 +30,7 @@ import {
 } from "../machine/tool-paths.js";
 import type { VariableStore } from "../machine/variables.js";
 import { unmetRequirements } from "../workflow/control-tools.js";
+import { HOOKS_DIR, workflowFileKind } from "../workflow/paths.js";
 import { canonicalizeRelPath } from "../core/workspace.js";
 import {
   classifyWorkspacePath,
@@ -839,33 +841,101 @@ function unresolvedGuardVerdict(
 }
 
 /**
- * Safety rule: `archmax_run` executes only scripts that live inside a skill bundle.
- * Hook scripts (run by the lifecycle runner from the authoring plane) and runtime
- * scripts (run by the agent from a skill bundle) are disjoint by construction: an
- * agent cannot run its own guard, a file it wrote into the run zone, or another
- * workflow's hooks. Classification uses the resolved skill registry rather than a
- * literal `skills/` string, so an empty registry blocks every `archmax_run`.
+ * Why a path is not an authored script a call may execute, or `null` when it is
+ * one. An authored script is a file in a skill bundle of the resolved registry,
+ * or, for `archmax_run` alone, a file under an authoring prefix (`workflows/`)
+ * other than a workflow's hooks and governance files (see `workflowFileKind`):
+ *
+ * - `hook`: a lifecycle hook script. The runtime runs it at its lifecycle point
+ *   to vet the agent's moves, so the agent never runs one, its own workflow's or
+ *   another's.
+ * - `governance`: a workflow's spec, prose addendum or case, which the runtime
+ *   governs and grades the session with. It is not a script, and executing it
+ *   would hand its content back through the error it raises.
+ * - `not-authored`: anything else — the session's own files (`scratchpad/`, the
+ *   rest of the run root, the runtime's areas), every mount but a skill bundle's
+ *   (data, remote and host mounts alike), a path escaping the root or holding
+ *   a `\`. Running one could run code the agent wrote itself.
+ *
+ * A `workflows/` file is authored only for `archmax_run`, because only its executor
+ * reads a `workflows/` path from the authoring backend. The agent workspace has
+ * no route there, so for any other tool, a host tool declaring an `execute` path
+ * included, the same path resolves in the session, where the agent can write.
+ * Skill bundles are classified through the resolved registry rather than a
+ * literal `skills/`, so a workspace serving them elsewhere is governed the same.
+ *
+ * Pure, and shared with `archmax validate`, so the two classify alike.
+ */
+export type UnrunnableScript = "hook" | "governance" | "not-authored";
+
+export function unrunnableScript(
+  tool: string,
+  path: string,
+  skills: SkillPrefixes = NO_SKILLS,
+): UnrunnableScript | null {
+  const { path: rel, escapes } = canonicalizeRelPath(path);
+  // A `\` is a separator to some backends and a filename character to others,
+  // so a path holding one cannot be classified the way every backend reads it.
+  if (escapes || rel === "" || rel.includes("\\")) return "not-authored";
+  // The authoring prefix is decided first: it is never mounted, so no skill
+  // source can serve it, and a hook stays a hook whatever else would match.
+  const kind = workflowFileKind(rel);
+  if (kind === "hook" || kind === "governance") return kind;
+  if (kind === "authored") return tool === RUN_TOOL ? null : "not-authored";
+  return skillOfPath(rel, skills) == null ? "not-authored" : null;
+}
+
+/** The refusal for each kind of path that is not an authored script. */
+function unrunnableReason(tool: string, path: string, why: UnrunnableScript): string {
+  const head = `[workflow] BLOCKED: '${tool}' runs only authored scripts, and '${path}' `;
+  switch (why) {
+    case "hook":
+      return (
+        head +
+        `is a lifecycle hook script (under a workflow's '${HOOKS_DIR}/'). The runtime runs a hook ` +
+        `at its lifecycle point to vet your moves; you never run one.`
+      );
+    case "governance":
+      return (
+        head +
+        `is a workflow's spec, prose addendum or case, which the runtime governs and grades the ` +
+        `session with. It is not a script.`
+      );
+    case "not-authored":
+      return (
+        head +
+        `is not one: a file in this session (such as '${SESSION_OPEN_DIR}/…') or under a mount ` +
+        `is never executed, so a script written during the session cannot run. Authored scripts ` +
+        `live in a skill bundle ('skills/<capability>/scripts/…') or beside a workflow ` +
+        `('workflows/<slug>/scripts/…').`
+      );
+  }
+}
+
+/**
+ * Safety rule: an `execute` path runs only an authored script
+ * ({@link unrunnableScript}). The agent cannot run a hook — the guard that vets
+ * its own transition, or another workflow's — nor a workflow's spec or cases,
+ * nor anything it could have written itself: the session's files and the mounts.
  *
  * Non-overridable: evaluated with the safety rules, ahead of `policy`, consumer
  * rules, and the per-state `allow` default, so a broad `tools.allow` entry cannot
- * widen it; a state's entry may still *narrow* execution within the bundles.
+ * widen it; a state's entry may still *narrow* which authored scripts run.
  */
-const scriptSkillOnlyRule: GovernanceRule = (action, api) => {
+const scriptAuthoredOnlyRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
-  const path = pathsOf(action, api).find(
-    (p) => p.access === "execute" && skillOfPath(p.path, api.skills ?? NO_SKILLS) == null,
-  );
-  if (!path) return null;
-  return {
-    decision: "block",
-    ruleId: "script.skill-only",
-    reason:
-      `[workflow] BLOCKED: '${action.tool}' may only execute scripts that live in a skill bundle, ` +
-      `and '${path.path}' is not in one. Scripts the agent runs belong in ` +
-      `'skills/<capability>/scripts/'; lifecycle hook scripts live on the authoring plane and are ` +
-      `run by the harness, never by the agent.`,
-    warn: true,
-  };
+  for (const path of pathsOf(action, api)) {
+    if (path.access !== "execute") continue;
+    const why = unrunnableScript(action.tool, path.path, api.skills ?? NO_SKILLS);
+    if (why == null) continue;
+    return {
+      decision: "block",
+      ruleId: "script.authored-only",
+      reason: unrunnableReason(action.tool, path.path, why),
+      warn: true,
+    };
+  }
+  return null;
 };
 
 /**
@@ -930,7 +1000,7 @@ const SAFETY_RULES: readonly GovernanceRule[] = [
   // First: every path rule below reads the declared paths, which this vouches for.
   pathArgumentRule,
   governancePlaneRule,
-  scriptSkillOnlyRule,
+  scriptAuthoredOnlyRule,
   replyOnlyRule,
   evalBlockRule,
   taskBlockRule,

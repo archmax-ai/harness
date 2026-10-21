@@ -64,9 +64,10 @@ my-workspace/
 ├── workflows/order-lookup/
 │   ├── workflow.yaml              # the enforced state machine, and its grading rubrics
 │   ├── WORKFLOW.md                # optional prose addendum
-│   ├── hooks/check-requester.js   # lifecycle hook scripts
+│   ├── hooks/check-requester.js   # lifecycle hook scripts: run by the runtime, never the agent
+│   ├── scripts/tally.js           # this workflow's own scripts, which the agent runs with archmax_run
 │   └── tests/*.test.yaml          # cases for `archmax test`
-├── skills/<slug>/                 # skill bundles: SKILL.md, assets/, scripts/
+├── skills/<slug>/                 # skill bundles: SKILL.md, assets/, scripts/ (archmax_run too)
 └── sessions/                      # default session store (gitignored)
 ```
 

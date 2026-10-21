@@ -106,9 +106,12 @@ leaves unenabled is:
 - **invisible**: its slug and description stay out of that state's prompt, and
   `ls skills/` in that state omits it.
 
-`archmax_run` executes only scripts that live inside a bundle (the
-`script.skill-only` rule). So **a state that enables no skill can run no script
-at all**: the tool is still on the surface, and refuses every path it is given.
+`archmax_run` executes only authored scripts (the `script.authored-only` rule):
+a bundle's scripts, or a workflow's own scripts beside its spec. So **a state
+that enables no skill can run no skill script**. It can still run a workflow's
+own scripts (`workflows/<slug>/scripts/…`), which belong to no bundle; narrow
+`archmax_run` in that state, or leave it out of the state's grant, when it
+should run none.
 
 That is why capability governance belongs here. One declaration covers the whole
 bundle, where `tools.allow` path globs take one entry per file tool. A path
@@ -122,8 +125,9 @@ entry still narrows **within** the enabled set. Put
 bundle's scripts.
 
 On its own, `skills: { allow: [order-enrichment] }` lets `archmax_run` reach the
-scripts of every enabled bundle. A script the agent wrote into `scratchpad/`
-stays refused either way, by the `script.skill-only` safety rule.
+scripts of every enabled bundle, beside every workflow's own scripts. A script
+the agent wrote into `scratchpad/` stays refused either way, by the
+`script.authored-only` safety rule.
 
 Lifecycle **hooks are exempt**, exactly as they are exempt from a state's
 `tools.allow`, because a `before` hook runs on runtime authority. So a routing
@@ -156,8 +160,9 @@ It also warns in these cases:
 A skill bundle is also where a capability's own machinery lives, in two
 directories:
 
-- `skills/<name>/scripts/`, the **runtime scripts** the agent executes with
-  `archmax_run`;
+- `skills/<name>/scripts/`, the **authored scripts** the agent executes with
+  `archmax_run` (a script only one workflow runs may instead live beside that
+  workflow, in `workflows/<slug>/scripts/`);
 - `skills/<name>/assets/`, the data its states read.
 
 That is why the bundled example ships three bundles (`order-data`,
@@ -169,8 +174,9 @@ or guidance is shared across workflows.
 **Lifecycle hook scripts do not live here.** The runtime runs a hook, so it
 belongs on the authoring plane beside the spec that wires it
 (`workflows/<slug>/hooks/<check>.js`), out of the agent's reach entirely.
-`archmax_run` is confined to skill bundles by a non-overridable kernel rule, so
-the two classes cannot meet. See [The authoring plane](/guides/authoring-plane/).
+`archmax_run` never executes a file under a `hooks/` (a non-overridable kernel
+rule), so the two classes cannot meet. See
+[The authoring plane](/guides/authoring-plane/).
 
 ## Where skills fit
 

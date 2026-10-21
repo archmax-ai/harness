@@ -1,6 +1,6 @@
 ---
 title: The authoring plane
-description: Why the agent cannot read the workflow that governs it or the rubric that grades it, where hook scripts and runtime scripts each live, and how the split is enforced.
+description: Why the agent cannot read the workflow that governs it or the rubric that grades it, where hook scripts and the scripts the agent runs each live, and how the split is enforced.
 ---
 
 An archmax harness workspace has two planes. Which one a file belongs to is decided by a
@@ -8,15 +8,16 @@ single question: **who reads it?**
 
 | | Authoring plane | Agent workspace |
 | --- | --- | --- |
-| **Holds** | `workflows/<slug>/`: `workflow.yaml` (grading rubrics included), `WORKFLOW.md`, `hooks/`, `tests/` | `AGENTS.md`, `skills/`, and the session's `scratchpad/` |
+| **Holds** | `workflows/<slug>/`: `workflow.yaml` (grading rubrics included), `WORKFLOW.md`, `hooks/`, `tests/`, and any scripts of the workflow's own | `AGENTS.md`, `skills/`, and the session's `scratchpad/` |
 | **Read by** | the runtime | the agent |
 | **Served by** | the `authoring` backend | the workspace composite (mounts + session store) |
-| **Agent access** | none (no route exists) | read-only mounts, plus its own session zone |
+| **Agent access** | none (no route exists); `archmax_run` may execute an authored script there | read-only mounts, plus its own session zone |
 
-The plane is a **set of reserved root prefixes**, today just `workflows/`. Three
+The plane is a **set of reserved root prefixes**, today just `workflows/`. Four
 components have to answer "is this path on the plane?": mount resolution, the
-decision kernel, and `archmax validate`. All three read the same set, so they
-agree by construction.
+decision kernel, the script executor (which reads a workflow's own script from
+the plane), and `archmax validate`. All four read the same set, so they agree by
+construction.
 
 ## The agent cannot read `workflows/**`
 
@@ -49,10 +50,13 @@ legitimately needs.
 
 Two rules follow when you author:
 
-- **Never point the agent at a `workflows/**` path** from state `instructions`, a
-  human state's `evidence` list, or a test case's `workspace:` block. Each one
-  resolves inside the session zone and comes back empty. `archmax validate`
-  reports a `tools.allow` entry that names the plane.
+- **Never point the agent at a `workflows/**` path to read** from state
+  `instructions`, a human state's `evidence` list, or a test case's `workspace:`
+  block. Each one resolves inside the session zone and comes back empty.
+  `archmax validate` reports a `tools.allow` entry that names the plane. The one
+  exception is a script the agent should **run**: `archmax_run` executes a
+  workflow's authored script from the authoring backend (see below), so
+  instructions may name `workflows/<slug>/scripts/<script>.js` for it.
 - **`workflows/` cannot be mounted.** Declaring it in a mount table throws
   `MountCollisionError` at assembly, naming the `authoring` option instead.
 
@@ -83,18 +87,18 @@ style guide it should follow while drafting. Put that content in a skill bundle
 (`skills/<capability>/…`), which is agent-visible by design. What stays on the
 plane is the standard it will be *measured* against.
 
-## Two kinds of script, two homes
+## Two kinds of script
 
 The plane split draws a clear line between two kinds of script. A **hook
-script** and a **runtime script** have different executors, so they live in
-different places.
+script** and an **authored script** have different executors, and the agent
+can only ever run the second.
 
-| | Hook script | Runtime script |
+| | Hook script | Authored script |
 | --- | --- | --- |
 | **Run by** | the runtime, at a lifecycle point | the agent, via `archmax_run` |
-| **Lives in** | `workflows/<slug>/hooks/<check>.js` | `skills/<capability>/scripts/<script>.js` |
-| **Wired as** | `before: { script: hooks/<check>.js }` | `{ tool: archmax_run, paths: ["skills/<capability>/scripts/**"] }` |
-| **Agent can read it** | no | yes (through the `skills/` mount) |
+| **Lives in** | `workflows/<slug>/hooks/<check>.js` | a skill bundle (`skills/<capability>/scripts/<script>.js`), or beside its workflow (`workflows/<slug>/scripts/<script>.js`) |
+| **Wired as** | `before: { script: hooks/<check>.js }` | named in a state's instructions; narrowed with `{ tool: archmax_run, paths: [...] }` |
+| **Agent can read it** | no | a skill bundle's, yes (through the `skills/` mount); a workflow's, no |
 
 A hook's `script:` path is **workflow-relative**, confined to that workflow's
 `hooks/` directory. So `hooks/check-requester.js` resolves to
@@ -105,33 +109,70 @@ A hook's *source* stays on the plane too. Prompts, event payloads and session
 artifacts all leave it out, so what a veto hands back is the verdict and the
 reason.
 
-### `archmax_run` executes only skill-bundled scripts
+Put a script in a skill bundle when it belongs to a capability several
+workflows share, or when the agent should be able to read it. Put it beside the
+workflow when only that workflow runs it. `workflows/<slug>/scripts/` is the
+convention; nothing enforces the name.
 
-The decision kernel enforces the agent-facing half of the same rule. It is a
-non-overridable safety rule (`script.skill-only`), evaluated ahead of workflow
-`policy`, consumer rules, and the per-state `allow` list:
+### `archmax_run` executes only authored scripts
+
+The decision kernel enforces the agent-facing half of the rule. It is a
+non-overridable safety rule (`script.authored-only`), evaluated ahead of workflow
+`policy`, consumer rules, and the per-state `allow` list. An **authored script**
+is a file in a skill bundle, or a file under `workflows/` that is not one of a
+workflow's own files: not in any workflow's `hooks/`, and not a `workflow.yaml`,
+a `WORKFLOW.md` or anything in a `tests/`.
 
 ```
 archmax_run("skills/order-enrichment/scripts/fan-out.js")  → allowed
-archmax_run("scratchpad/generated.js")                     → blocked: script.skill-only
-archmax_run("workflows/order-lookup/hooks/check.js")       → blocked: script.skill-only
+archmax_run("workflows/order-lookup/scripts/tally.js")     → allowed
+archmax_run("workflows/order-lookup/hooks/check.js")       → blocked: script.authored-only
+archmax_run("workflows/order-lookup/workflow.yaml")        → blocked: script.authored-only
+archmax_run("scratchpad/generated.js")                     → blocked: script.authored-only
+archmax_run("reference/run.js")   # a mount                → blocked: script.authored-only
 ```
 
-So `archmax_run` reaches exactly the scripts a skill bundle ships. A file the
-agent just wrote and its own hook both fall outside that set. The rule sits
-above every declaration, so `{ tool: archmax_run, paths: ["**"] }` grants nothing
-extra and `validate` reports it as inert. A state's own entry can still *narrow*
-execution within the bundles, which is the useful thing to write:
+What stays refused, and why:
+
+- **Every hook**, the agent's own workflow's and every other workflow's. A hook
+  vets the agent's moves; an agent that could run its own guard could probe it
+  for a bypass. Every hook lives under a `hooks/`, so refusing that location
+  refuses them all, in any spelling a filesystem resolves to it (`HOOKS/`,
+  `hooks./`). A path holding a `\` is never run at all.
+- **A workflow's spec, prose addendum and cases.** They are not scripts, and the
+  error a YAML file raises when executed as JavaScript can quote it, rubrics
+  included.
+- **The session's files and the mounts**: `scratchpad/`, every other session
+  path, and every mount but a skill bundle's (data, remote and host mounts
+  alike). The agent can write some of these during the session, so running one
+  would run code it wrote itself.
+
+A workflow's script is **read from the authoring backend**, by its canonical
+path, never from the session. The agent's workspace has no route to
+`workflows/`, so a `write_file` to `workflows/order-lookup/scripts/own.js`
+lands in the session, and `archmax_run` on that path still reads the authoring
+backend, which has no such file. Running a script does not open the plane
+either: the agent still cannot read, list or search it, and the script's own
+`tools.*` calls are refused a `workflows/` path like any script's (see below).
+Keep the data a workflow's script reads in a skill bundle, a mount or the
+session.
+
+The rule sits above every declaration, so no grant reaches a hook or a session
+file. A state's own entry can still *narrow* which authored scripts run, which
+is the useful thing to write. `{ tool: archmax_run, paths: ["**"] }` reaches every
+authored script, so narrow instead:
 
 ```yaml
 tools:
   allow:
-    - { tool: archmax_run, paths: ["skills/order-enrichment/scripts/**"] }
+    - { tool: archmax_run, paths: ["workflows/order-lookup/scripts/**"] }
 ```
 
-Classification goes through the **resolved skill registry**. So a workspace that
-serves its bundles from a mount of another name is confined just as tightly, and
-an empty registry blocks every `archmax_run`.
+Skill bundles are classified through the **resolved skill registry**. So a
+workspace that serves its bundles from a mount of another name is governed just
+as tightly. A host tool that declares an `execute` path argument is held to the
+same rule, except that a `workflows/` path is authored for `archmax_run` alone:
+any other tool would resolve it in the session.
 
 ## Configuring the authoring backend
 

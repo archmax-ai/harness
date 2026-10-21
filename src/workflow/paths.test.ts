@@ -5,6 +5,7 @@ import {
   runArtifactPaths,
   sessionPaths,
   specSnapshotPath,
+  workflowFileKind,
   workflowPaths,
 } from "./paths.js";
 
@@ -66,5 +67,54 @@ describe("runArtifactPaths", () => {
 describe("specSnapshotPath", () => {
   it("addresses the shared, session-agnostic snapshot prefix", () => {
     expect(specSnapshotPath("abc123")).toBe("_specs/abc123.json");
+  });
+});
+
+describe("workflowFileKind", () => {
+  it("is null off the authoring prefix", () => {
+    for (const path of ["skills/x/scripts/a.js", "scratchpad/a.js", "Workflows/p/hooks/a.js", "workflowsx/a.js"]) {
+      expect(workflowFileKind(path), path).toBeNull();
+    }
+  });
+
+  it("names every file under a workflow's hooks/ a hook, in any spelling a filesystem resolves", () => {
+    for (const path of [
+      "workflows/p/hooks",
+      "workflows/p/hooks/check.js",
+      "workflows/p/hooks/deep/er.mjs",
+      "workflows/p/HOOKS/check.js",
+      "workflows/p/hooks./check.js",
+      "workflows/p/hooks /check.js",
+      "workflows/p\\hooks\\check.js",
+    ]) {
+      expect(workflowFileKind(path), path).toBe("hook");
+    }
+  });
+
+  it("names a workflow's spec, prose addendum and cases governance", () => {
+    for (const path of [
+      "workflows/p/workflow.yaml",
+      "workflows/p/WORKFLOW.md",
+      "workflows/p/workflow.md",
+      "workflows/p/tests",
+      "workflows/p/tests/a.test.yaml",
+      "workflows/p/tests/fixtures/x.js",
+    ]) {
+      expect(workflowFileKind(path), path).toBe("governance");
+    }
+  });
+
+  it("names everything else authored", () => {
+    for (const path of [
+      "workflows",
+      "workflows/shared.js",
+      "workflows/p",
+      "workflows/p/scripts/tally.js",
+      "workflows/p/scripts/workflow.yaml",
+      "workflows/p/workflow.yaml/x.js",
+      "workflows/p/hooks.js",
+    ]) {
+      expect(workflowFileKind(path), path).toBe("authored");
+    }
   });
 });

@@ -191,6 +191,40 @@ describe("createScriptExecutor.runFile", () => {
     expect(outcome.error?.message).toContain("scripts/missing.js");
   });
 
+  it("reads a workflow's script from the authoring backend, never from the session", async () => {
+    // The agent workspace has no route to `workflows/`, so the same path there is
+    // a session file the agent could have written. Every spelling the kernel
+    // canonicalizes to the plane is read from the plane.
+    const workspace = workspaceWith({ "/workflows/w/scripts/x.js": "'written by the agent'" });
+    const authoring = workspaceWith({ "/workflows/w/scripts/x.js": "'authored'" });
+    const executor = createScriptExecutor({ workspace, authoring });
+    for (const path of ["workflows/w/scripts/x.js", "./workflows/w/scripts/x.js", "skills/../workflows/w/scripts/x.js"]) {
+      const outcome = await executor.runFile(path, { sessionId: "t-route", sessionNamespace: "agent" });
+      expect(outcome.value, path).toBe("authored");
+    }
+    executor.dispose("t-route");
+  });
+
+  it("names the authoring backend when a workflow's script is missing there", async () => {
+    const executor = createScriptExecutor({
+      workspace: workspaceWith({ "/workflows/w/scripts/x.js": "1" }),
+      authoring: workspaceWith({}),
+    });
+    const outcome = await executor.runFile("workflows/w/scripts/x.js", { sessionId: "t-miss", sessionNamespace: "agent" });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error?.message).toBe("cannot read script 'workflows/w/scripts/x.js' from the authoring backend.");
+  });
+
+  it("keeps reading every other path from the agent workspace", async () => {
+    const executor = createScriptExecutor({
+      workspace: workspaceWith({ "/skills/s/scripts/x.js": "'bundle'" }),
+      authoring: workspaceWith({ "/skills/s/scripts/x.js": "'wrong'" }),
+    });
+    const outcome = await executor.runFile("skills/s/scripts/x.js", { sessionId: "t-skill", sessionNamespace: "agent" });
+    executor.dispose("t-skill");
+    expect(outcome.value).toBe("bundle");
+  });
+
   it("reads and evaluates a script sourced from the backend, with its args", async () => {
     const executor = createScriptExecutor({
       workspace: workspaceWith({ "/scripts/add.js": "args.a + args.b + args.variables.c" }),

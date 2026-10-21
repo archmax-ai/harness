@@ -173,7 +173,7 @@ describe("the plane cannot be mounted back in", () => {
 
 const SPEC: MachineSpec = {
   // The bundle is enabled explicitly: these tests are about the authoring plane
-  // and `script.skill-only`, so the skill rule must not be what refuses first.
+  // and `script.authored-only`, so the skill rule must not be what refuses first.
   skills: { allow_always: ["cap"] },
   states: {
     work: {
@@ -250,19 +250,81 @@ describe("a script naming the plane is told why", () => {
   });
 });
 
-describe("archmax_run executes only skill-bundled scripts", () => {
+describe("archmax_run executes only authored scripts", () => {
+  const MOUNTS = { dirs: ["skills", "data"], files: ["AGENTS.md"], writable: [], governed: [], unsearchable: [] };
+  const refusal = (filePath: string, machine = WorkflowMachine.fromSpec(SPEC), tool = RUN_TOOL) =>
+    decide(machine, { kind: "tool-call", state: "work", tool, args: { file_path: filePath } }, [], MOUNTS, {}, SKILLS);
+
   it("permits a script inside a bundle", () => {
     expect(verdict(RUN_TOOL, "skills/cap/scripts/run.js").decision).toBe("allow");
+  });
+
+  it("permits a workflow's authored script, outside every bundle", () => {
+    // The authoring backend serves it to the executor; no skill has to be enabled.
+    for (const path of [
+      "workflows/p/scripts/tally.js",
+      "workflows/p/lib/format.mjs",
+      "workflows/other/scripts/shared.js",
+      "workflows/common.js",
+    ]) {
+      expect(refusal(path).decision, path).toBe("allow");
+    }
   });
 
   it("blocks a script the agent wrote into its own working area", () => {
     const v = verdict(RUN_TOOL, "scratchpad/exploit.js");
     expect(v.decision).toBe("block");
-    expect(v.ruleId).toBe("script.skill-only");
+    expect(v.ruleId).toBe("script.authored-only");
+    expect(v.reason).toContain("written during the session cannot run");
   });
 
-  it("blocks a hook script — the agent may not run its own guard", () => {
-    expect(verdict(RUN_TOOL, "workflows/p/hooks/gate.js").ruleId).toBe("script.skill-only");
+  it("blocks any other session path, a mount and an escape alike", () => {
+    for (const path of [
+      "notes/run.js",
+      "data/run.js",
+      "AGENTS.md",
+      "../outside.js",
+      "large_tool_results/x.js",
+      // A `\` is a separator to some backends: never classified, always refused.
+      "workflows/p\\hooks\\gate.js",
+      "workflows/p/scripts\\tally.js",
+      "skills/cap/scripts\\..\\..\\..\\workflows\\p\\hooks\\gate.js",
+    ]) {
+      const v = refusal(path);
+      expect(v.ruleId, path).toBe("script.authored-only");
+      expect(v.reason, path).toContain("is not one");
+    }
+  });
+
+  it("blocks a hook script — its own workflow's or another's — in every spelling", () => {
+    for (const path of [
+      "workflows/p/hooks/gate.js",
+      "workflows/other/hooks/nested/check.js",
+      "./workflows/p/hooks/gate.js",
+      "workflows/p/scripts/../hooks/gate.js",
+      "skills/../workflows/p/hooks/gate.js",
+      // A case-insensitive or Windows filesystem serves each of these from the hook.
+      "workflows/p/HOOKS/gate.js",
+      "workflows/p/hooks./gate.js",
+    ]) {
+      const v = refusal(path);
+      expect(v.ruleId, path).toBe("script.authored-only");
+      expect(v.reason, path).toContain("lifecycle hook script");
+    }
+  });
+
+  it("blocks a workflow's spec, prose addendum and cases", () => {
+    for (const path of [
+      "workflows/p/workflow.yaml",
+      "workflows/order-lookup/Workflow.yaml",
+      "workflows/p/WORKFLOW.md",
+      "workflows/p/tests/a.test.yaml",
+      "workflows/p/tests/fixtures/data.js",
+    ]) {
+      const v = refusal(path);
+      expect(v.ruleId, path).toBe("script.authored-only");
+      expect(v.reason, path).toContain("spec, prose addendum or case");
+    }
   });
 
   it("is not widened by a state that grants everything", () => {
@@ -272,31 +334,33 @@ describe("archmax_run executes only skill-bundled scripts", () => {
         work: { tools: { allow: [{ tool: RUN_TOOL, args: { file_path: ["**"] } }] } },
       },
     });
-    const v = decide(
-      wide,
-      {
-        kind: "tool-call",
-        state: "work",
-        tool: RUN_TOOL,
-        args: { file_path: "scratchpad/exploit.js" },
-      },
-      [],
-      { dirs: ["skills"], files: [], writable: [], governed: [], unsearchable: [] },
-      {},
-      SKILLS,
-    );
-    expect(v.ruleId).toBe("script.skill-only");
+    expect(refusal("scratchpad/exploit.js", wide).ruleId).toBe("script.authored-only");
+    expect(refusal("workflows/p/hooks/gate.js", wide).ruleId).toBe("script.authored-only");
+    expect(refusal("workflows/p/scripts/tally.js", wide).decision).toBe("allow");
   });
 
   it("is not widened by a custom rule", () => {
     const allowAll: GovernanceRule = () => ({ decision: "allow", ruleId: "custom.allow" });
     expect(verdict(RUN_TOOL, "scratchpad/exploit.js", "agent", [allowAll]).ruleId).toBe(
-      "script.skill-only",
+      "script.authored-only",
+    );
+    expect(verdict(RUN_TOOL, "workflows/p/hooks/gate.js", "agent", [allowAll]).ruleId).toBe(
+      "script.authored-only",
     );
   });
 
   it("binds a script's own PTC call to the same rule", () => {
-    expect(verdict(RUN_TOOL, "scratchpad/exploit.js", "script").ruleId).toBe("script.skill-only");
+    expect(verdict(RUN_TOOL, "scratchpad/exploit.js", "script").ruleId).toBe("script.authored-only");
+  });
+
+  it("still lets a state's entry narrow which authored scripts run", () => {
+    const narrow = WorkflowMachine.fromSpec({
+      skills: { allow_always: ["cap"] },
+      states: { work: { tools: { allow: [{ tool: RUN_TOOL, paths: ["workflows/p/scripts/**"] }] } } },
+    });
+    expect(refusal("workflows/p/scripts/tally.js", narrow).decision).toBe("allow");
+    expect(refusal("workflows/other/scripts/shared.js", narrow).ruleId).toBe("tool.not-allowed");
+    expect(refusal("skills/cap/scripts/run.js", narrow).ruleId).toBe("tool.not-allowed");
   });
 
   it("follows the resolved registry, not a literal skills/ prefix", () => {
@@ -317,18 +381,30 @@ describe("archmax_run executes only skill-bundled scripts", () => {
     expect(v.decision).toBe("allow");
   });
 
-  it("blocks everything when no bundle is registered", () => {
-    // With no skills there is no legal script, which is the honest answer rather
-    // than an accidental opening.
-    const v = decide(
-      WorkflowMachine.fromSpec(SPEC),
-      { kind: "tool-call", state: "work", tool: RUN_TOOL, args: { file_path: "skills/x.js" } },
-      [],
-      { dirs: ["skills"], files: [], writable: [], governed: [], unsearchable: [] },
-      {},
-      [],
-    );
-    expect(v.ruleId).toBe("script.skill-only");
+  it("refuses a bundle-shaped path when no bundle is registered, and still runs a workflow's script", () => {
+    // With no skills nothing under `skills/` is authored, which is the honest
+    // answer rather than an accidental opening.
+    const run = (filePath: string) =>
+      decide(
+        WorkflowMachine.fromSpec(SPEC),
+        { kind: "tool-call", state: "work", tool: RUN_TOOL, args: { file_path: filePath } },
+        [],
+        { dirs: ["skills"], files: [], writable: [], governed: [], unsearchable: [] },
+        {},
+        [],
+      );
+    expect(run("skills/x.js").ruleId).toBe("script.authored-only");
+    expect(run("workflows/p/scripts/tally.js").decision).toBe("allow");
+  });
+
+  it("confines a host tool's execute path to skill bundles", () => {
+    // Only `archmax_run` reads `workflows/` from the authoring backend. A host
+    // tool resolves the same path in the session, where the agent can write.
+    const machine = WorkflowMachine.fromSpec(SPEC).withToolPaths({ run_python: { file_path: "execute" } });
+    const v = refusal("workflows/p/scripts/tally.py", machine, "run_python");
+    expect(v.ruleId).toBe("script.authored-only");
+    expect(v.reason).toContain("'run_python' runs only authored scripts");
+    expect(refusal("skills/cap/scripts/run.py", machine, "run_python").ruleId).not.toBe("script.authored-only");
   });
 
   it("leaves inline evaluation alone", () => {

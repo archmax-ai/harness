@@ -1,7 +1,7 @@
 # Hook scripts and `archmax_run` scripts — contracts
 
-Load this when writing a `workflows/<slug>/hooks/*.js` gate or a
-`skills/<cap>/scripts/*.js` source. Worked examples and the sandbox details:
+Load this when writing a `workflows/<slug>/hooks/*.js` gate or an `archmax_run`
+source (`workflows/<slug>/scripts/*.js` or `skills/<cap>/scripts/*.js`). Worked examples and the sandbox details:
 [`hook-and-test-scripts.md`](hook-and-test-scripts.md) Part 1.
 
 ## Hook script contract
@@ -56,10 +56,21 @@ should not block into an explicit `ok()`.
 
 ## `archmax_run` script contract
 
-`skills/<cap>/scripts/<x>.js`: plain script, top-level `await`, `tools.*`,
-`console.log`; the **last expression** is the tool result. Input is the global
-`args`: the arguments the model passed plus `args.variables` (read-only snapshot).
-No `archmax_advance`, `archmax_set_variables` or `task`. Fan-out shape:
+`workflows/<slug>/scripts/<x>.js` (only this workflow runs it) or
+`skills/<cap>/scripts/<x>.js` (a capability several workflows share): plain
+script, top-level `await`, `tools.*`, `console.log`; the **last expression** is
+the tool result. Input is the global `args`: the arguments the model passed plus
+`args.variables` (read-only snapshot). No `archmax_advance`,
+`archmax_set_variables` or `task`.
+
+Where it may live is a non-overridable rule (`script.authored-only`):
+`archmax_run` executes a file in a skill bundle, or under `workflows/` outside
+every `hooks/`, `workflow.yaml`, `WORKFLOW.md` and `tests/`. A hook, a spec or
+case, anything in the session (`scratchpad/` included) and any other mount's
+file never run. A workflow's script is read from the authoring backend; the
+agent can run it but not read it, and its own `tools.*` calls cannot read
+`workflows/**` either, so its data lives in a bundle, a mount or the session.
+Fan-out shape:
 
 ```js
 /** One sub-run per requested order, all in flight at once; returns [{ order_id, ...returns }]. */

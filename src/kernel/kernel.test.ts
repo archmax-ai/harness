@@ -728,11 +728,13 @@ describe("decide — skill governance", () => {
     }
   });
 
-  it("runs no script at all where no skill is enabled", () => {
-    // `script.skill-only` confines `archmax_run` to a bundle, so a state with no
-    // enabled skill can execute nothing, whatever its `tools.allow` says.
+  it("runs no skill script where no skill is enabled, and a workflow's script still", () => {
+    // A bundle the state does not enable is unreachable, its scripts included;
+    // a workflow's authored script belongs to no bundle, so no skill gates it.
     const v = call("open", "archmax_run", { file_path: "skills/order-data/scripts/check.js" });
     expect(v.decision).toBe("block");
+    expect(v.ruleId).toBe("skill.not-allowed");
+    expect(call("open", "archmax_run", { file_path: "workflows/w/scripts/check.js" }).decision).toBe("allow");
   });
 });
 
@@ -783,14 +785,14 @@ describe("decide — mount governance", () => {
     }
   });
 
-  it("leaves archmax_run outside a bundle to `script.skill-only`, mount or not", () => {
-    // The earlier safety rule confines execution to a skill bundle, so a data
-    // mount is refused for the reason that actually applies to running a file.
+  it("leaves archmax_run on a mount to `script.authored-only`, granted or not", () => {
+    // The earlier safety rule runs only authored scripts, and a mount holds none,
+    // so it is refused for the reason that actually applies to running a file.
     expect(call("intake", "archmax_run", { file_path: "catalogs/eu/run.js" }).ruleId).toBe(
-      "script.skill-only",
+      "script.authored-only",
     );
     expect(call("triage", "archmax_run", { file_path: "catalogs/eu/run.js" }).ruleId).toBe(
-      "script.skill-only",
+      "script.authored-only",
     );
   });
 

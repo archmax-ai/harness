@@ -211,8 +211,8 @@ const hookScriptPath = z
   .refine(
     isConfinedHookScript,
     "must be a workflow-relative path inside 'hooks/' ending in .js or .mjs, with " +
-      "no '..' segment (e.g. 'hooks/check-requester.js'). Runtime scripts the agent " +
-      "runs with archmax_run live in a skill bundle instead.",
+      "no '..' segment (e.g. 'hooks/check-requester.js'). Scripts the agent runs with " +
+      "archmax_run live in a skill bundle or beside the workflow (e.g. 'scripts/'), never in 'hooks/'.",
   );
 
 /**

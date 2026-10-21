@@ -23,6 +23,7 @@ message alone. Migrations for removed keys in full:
 | `'*'` is not a tool name a grant may use | Move the wildcard to `forbid`/`forbid_always` |
 | allows `task` — not grantable | Delete the entry; declare a `rubric:` hook instead |
 | allows `archmax_run` on `skills/<x>/…` which the state does not enable | Add `x` to the state's `skills.allow` (or `allow_always`), or drop the entry |
+| allows `archmax_run` on `…`, which names no authored script / names lifecycle hook scripts / names a workflow's spec, prose addendum or cases (`script.authored-only`) | Scope the entry to authored scripts: `workflows/<slug>/scripts/**` or `skills/<x>/scripts/**`. A session or mount file, a hook, a spec or a case never runs; move a script the agent should run beside the workflow (`workflows/<slug>/scripts/`) |
 | `forbid_always` denies `archmax_advance` | Remove it |
 | not a skill slug (path/glob given) | Use the bundle directory name; narrow paths with a `tools.allow` entry |
 | `${{…}}` not a valid variable reference | `${{name}}` or `${{name.path}}`; snake_case names |
@@ -39,7 +40,7 @@ message alone. Migrations for removed keys in full:
 | `maxConcurrency` above 1 | Set to 1 or remove |
 | `WORKFLOW.md` has frontmatter | Strip it; the machine is `workflow.yaml` |
 | case: missing/over-long `title`/`description`; unknown key; assertion before action; `expect:` block; malformed regex; unknown trigger; `from:` missing | Fix the field named; assertions are steps; regexes are `"/p/f"` strings |
-| `agent cannot read workflows/**` (instructions/evidence/workspace path) | Move the text to a skill bundle or the path to `scratchpad/` |
+| `agent cannot read workflows/**` (instructions/evidence/workspace path), or an allow entry `names the authoring plane` | Move the text to a skill bundle or the path to `scratchpad/`. Only `archmax_run` may name `workflows/<slug>/scripts/…`, to run it |
 
 **Removed keys** you may meet (all load errors; details and migrations in
 `references/workflow-schema.md#removed-keys-you-may-meet-in-an-older-workflow`):

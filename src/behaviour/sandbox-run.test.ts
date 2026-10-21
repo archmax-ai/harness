@@ -1,7 +1,10 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tool } from "langchain";
 import { z } from "zod";
+import { FilesystemBackend } from "deepagents";
 import type { StructuredTool } from "@langchain/core/tools";
+import { createMemorySessionStore, defaultMounts } from "../index.js";
 import {
   assemble,
   blockedTools,
@@ -51,6 +54,115 @@ describe("archmax_run arguments", () => {
     expect(run?.status).not.toBe("error");
     expect(String(run?.content)).toContain('"n":2');
     expect(String(run?.content)).toContain('"extra":"x"');
+  });
+});
+
+/**
+ * `archmax_run` runs any authored script: a skill bundle's, or a workflow's own
+ * file on the authoring backend, which the agent can run but never read. It never
+ * runs a lifecycle hook, nor a file of the session or of a mount, so a script the
+ * agent wrote during the turn stays unrunnable wherever it put it.
+ */
+describe("archmax_run runs authored scripts", () => {
+  const SCRIPT = "workflows/w/scripts/tally.js";
+  const files = {
+    [SCRIPT]: "JSON.stringify({ n: (args.variables?.items ?? []).length, from: 'authored' });",
+    "workflows/w/hooks/gate.js": "export default () => ok();",
+    "data/run.js": "'from the mount'",
+  };
+  // The default tools, and no skill anywhere: a workflow's script needs neither a
+  // bundle nor a grant beyond `archmax_run` itself.
+  const spec = { runtime: RUNTIME, states: { start: { triggers: { manual: null } } } };
+  const run = (file_path: string) => ({ tool: "archmax_run", args: { file_path } });
+  const runResults = (messages: unknown[]) => toolResults(messages).filter((r) => r.name === "archmax_run");
+
+  it("runs a workflow's script from the authoring backend, outside every skill bundle", async () => {
+    const { agent, events } = await assemble(workspaceWith(spec, files), {
+      turns: [run(SCRIPT), { reply: "done" }],
+      params: { variables: { items: [1, 2, 3] } },
+    });
+    const { messages } = await turn(agent, freshSessionId(), "go");
+
+    expect(blockedTools(events)).toEqual([]);
+    expect(runResults(messages)[0]?.content).toContain('"n":3,"from":"authored"');
+  });
+
+  it("never runs a file the agent wrote at a workflows/ path in its session", async () => {
+    // The agent may write `workflows/w/scripts/own.js` into its session, where the
+    // path resolves. `archmax_run` reads the authoring backend, which has no such
+    // file, so the agent's code never runs.
+    const own = "workflows/w/scripts/own.js";
+    const sid = freshSessionId();
+    const { agent, store } = await assemble(workspaceWith(spec, files), {
+      turns: [
+        { tool: "write_file", args: { file_path: own, content: "'agent code ran'" } },
+        run(own),
+        { reply: "done" },
+      ],
+    });
+    const { messages } = await turn(agent, sid, "go");
+
+    expect(await storeFile(store, `/${sid}/${own}`)).toBe("'agent code ran'");
+    const [result] = runResults(messages);
+    expect(result?.content).toContain("cannot read script 'workflows/w/scripts/own.js' from the authoring backend");
+    expect(result?.content).not.toContain("agent code ran");
+  });
+
+  it("refuses a hook script and a scratchpad script, whatever the grant", async () => {
+    const { agent, events } = await assemble(workspaceWith(spec, files), {
+      turns: [
+        { tool: "write_file", args: { file_path: "scratchpad/x.js", content: "'agent code ran'" } },
+        run("scratchpad/x.js"),
+        run("workflows/w/hooks/gate.js"),
+        { reply: "done" },
+      ],
+    });
+    const { messages } = await turn(agent, freshSessionId(), "go");
+
+    expect(blockedTools(events)).toEqual(["archmax_run", "archmax_run"]);
+    const [scratch, hook] = runResults(messages);
+    expect(scratch?.content).toContain("a script written during the session cannot run");
+    expect(hook?.content).toContain("is a lifecycle hook script");
+    expect(runResults(messages).map((r) => r.content).join("\n")).not.toContain("agent code ran");
+  });
+
+  it("refuses a script under a mount", async () => {
+    const root = workspaceWith(spec, files);
+    const store = createMemorySessionStore();
+    const mounts = {
+      ...defaultMounts(root),
+      "/data/": new FilesystemBackend({ rootDir: join(root, "data"), virtualMode: true }),
+    };
+    const { agent, events } = await assemble(root, {
+      store,
+      turns: [{ tool: "read_file", args: { file_path: "data/run.js" } }, run("data/run.js"), { reply: "done" }],
+      params: { workspace: { rootDir: root, sessionStore: store, mounts } },
+    });
+    const { messages } = await turn(agent, freshSessionId(), "go");
+
+    // Readable, because the mount is; never executed, because it is not authored.
+    expect(toolResults(messages).find((r) => r.name === "read_file")?.content).toContain("from the mount");
+    expect(blockedTools(events)).toEqual(["archmax_run"]);
+    expect(runResults(messages)[0]?.content).toContain("runs only authored scripts");
+  });
+
+  it("is still narrowed by a state's own entry", async () => {
+    const narrowed = {
+      runtime: RUNTIME,
+      states: {
+        start: {
+          triggers: { manual: null },
+          tools: { allow: [{ tool: "archmax_run", paths: ["workflows/w/scripts/other.js"] }] },
+        },
+      },
+    };
+    const { agent, events } = await assemble(workspaceWith(narrowed, files), {
+      turns: [run(SCRIPT), { reply: "done" }],
+    });
+    await turn(agent, freshSessionId(), "go");
+
+    expect(eventsOf(events, "tool-blocked")).toMatchObject([{ tool: "archmax_run", state: "start" }]);
+    expect(eventsOf(events, "tool-blocked")[0]?.reason).toContain("is not allowed in state 'start'");
   });
 });
 

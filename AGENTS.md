@@ -123,8 +123,12 @@ safety rules and the workflow-wide `forbid_always` do). `task()` is available to
 an allow entry may narrow which files `archmax_run` may execute) and hook scripts share one QuickJS sandbox (`@langchain/quickjs`),
 one REPL session per session scope (`src/sessions/scope.ts`). Scripts get `args` (flat
 `args.variables` for `archmax_run`) and `tools.*`, the governed privileged tool-call bridge.
-`src/sandbox/`: `prelude.ts` + `assets/parts/*.js`, `executor.ts` (reads sources through the
-authoring backend), `tools.ts`, `bridge.ts` (`task()` ↔ subagents), `ptc-gateway.ts`. Cases do
+`archmax_run` executes only an authored script (safety rule `script.authored-only`): a file in a
+skill bundle, or under `workflows/` outside every workflow's `hooks/`, `workflow.yaml`, `WORKFLOW.md`
+and `tests/`; never a session file or another mount's. `src/sandbox/`: `prelude.ts` +
+`assets/parts/*.js`, `executor.ts` (a hook's source and a workflow's script come from the authoring
+backend, every other source from the agent workspace), `tools.ts`, `bridge.ts` (`task()` ↔
+subagents), `ptc-gateway.ts`. Cases do
 not run in the sandbox. `runtime.ts` holds each REPL as a lease: an eval takes the turn's abort
 signal (a cancelled turn's eval settles at once and its `tools.*` calls are refused), and `dispose`
 frees a REPL only once every host call made from it has settled. `@langchain/quickjs` cannot
