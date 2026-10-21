@@ -244,12 +244,14 @@ second reference to the former slug is left behind.
 
 ### Requirement: Transitions, terminal states and error routes
 
-A state's `transitions` SHALL be a list of `{ to, description, type? }` where `to` names a
-declared state, `description` is a **required non-empty string**, and `type` is one of `approve`,
-`reject`, `refine`, `none`. The `description` is the only thing the agent is told about where an
-edge leads — no attribute of the target state is disclosed — so a missing, blank or mistyped one
-SHALL be a load error addressed to `states.<slug>.transitions.<index>.description`, which names the
-edge, stating that the description is what the agent routes on and what to write instead. A state
+A state's `transitions` SHALL be a list of `{ to, description?, type? }` where `to` names a
+declared state, `description` is a string, and `type` is one of `approve`, `reject`, `refine`,
+`none`. An absent, empty or whitespace-only `description` SHALL mark the edge **undescribed**: the
+agent routes on the target state's `instructions` instead (see the `governance` capability). A
+non-string `description`, and an undescribed edge whose target has no non-blank `instructions`,
+SHALL each be a load error addressed to `states.<slug>.transitions.<index>.description`, which
+names the edge, stating that the agent routes on the description or else on the target's
+instructions, and what to write instead. A state
 with no transitions SHALL be terminal: the session completes when the agent finishes there and
 `archmax_advance` is not disclosed in it. `on_error`, when declared, SHALL name a declared
 state; a state's failure (an exhausted budget, a terminal hook rejection) routes there, and a
@@ -259,8 +261,9 @@ an edge is decided only by its existence, the state's `requires`, and the verdic
 
 #### Scenario: Missing description rejected
 
-- **WHEN** a state declares `transitions: [{ to: review }]`, or a `description` that is empty,
-  whitespace-only or not a string
+- **WHEN** a state declares `transitions: [{ to: review }]`, or a `description` that is empty or
+  whitespace-only, and `review` declares no `instructions` (or blank ones) — or a `description`
+  that is not a string, whatever the target
 - **THEN** loading fails with one error addressed to that transition's `description` field, saying
   what the description is for and what to write instead
 
@@ -275,6 +278,13 @@ an edge is decided only by its existence, the state's `requires`, and the verdic
   declares no transition to `x`
 - **THEN** `archmax validate` warns that the runtime will block the transition
 
+#### Scenario: An undescribed edge to an instructed state loads
+
+- **WHEN** an agent state declares `transitions: [{ to: lookup }]` and `lookup` declares non-blank
+  `instructions`
+- **THEN** the spec loads with no error and no warning about the edge, and `description: ""` on the
+  same edge loads the same way
+
 ### Requirement: Human-state rules are split between schema and lint
 
 A `type: human` state parks the session for a person's decision, so it SHALL declare
@@ -283,8 +293,10 @@ labeled `type` (`approve`/`reject`/`refine`), no transition to itself, and no `b
 hook (a human state runs no agent turn in which a hook could fire). These SHALL be **lint
 errors**: the runtime tolerates them and the spec still loads, while `archmax validate` fails on
 them. The shape rules a human state shares with every state — the `type` enum, the transition
-`type` enum, an existing `to`, a non-empty transition `description` — remain schema errors, so a
-human state's decision button labels are now guaranteed by the schema rather than by lint. The
+`type` enum, an existing `to` — remain schema errors, and so does a non-empty `description` on
+each of a human state's own transitions, which an agent state's edge may omit: there it is the
+decision's button label for a person, so a human state's decision button labels are guaranteed by
+the schema rather than by lint. The
 decision record SHALL be built from the state's `title`, `instructions`, declared `evidence`
 (leading, deduplicated with any evidence the advancing call attached) and its transitions'
 `to`/`description`/`type`.
@@ -292,8 +304,8 @@ decision record SHALL be built from the state's `title`, `instructions`, declare
 #### Scenario: Human state without a button label
 
 - **WHEN** a `type: human` state declares a transition with no `description`
-- **THEN** loading fails under the strict schema naming that transition's `description`, the same
-  way it does for an agent state
+- **THEN** loading fails under the strict schema naming that transition's `description` and saying
+  that it is the decision's button label, even though the target declares `instructions`
 
 #### Scenario: Hook on a human state
 
@@ -367,16 +379,26 @@ runtime preserves and does not read. In a **forbid** entry only, the tool MAY be
 tool: `{ tool: "*", paths: [logs/**] }` denies every tool on those globs, and `*` in an `allow`
 entry SHALL be a document-level error, since a wildcard grant is not a thing this governance has.
 
-A state with no `tools` block permits the always-on tools only. A state entry naming an always-on
-tool narrows it (`{ tool: archmax_run, paths: [skills/x/scripts/**] }`); an `allow_always` entry
-naming one is inert and SHALL draw a lint warning.
+`tools.allow_always` SHALL be the workflow-wide grant when it is declared, an empty list included:
+the tools it lists, with their guards, in every state, and nothing else. When the key is absent, the
+workflow-wide grant SHALL be the **default tools** (`ls`, `read_file`, `write_file`, `edit_file`,
+`glob`, `grep`, `copy_file`, `move_file`, `remove_file`, `write_todos`, `archmax_eval`,
+`archmax_run`), unconstrained. A declared list SHALL replace the default tools, never add to them.
+A state with no `tools` block permits the workflow-wide grant only. A state entry naming a tool the
+workflow grants narrows it there (`{ tool: archmax_run, paths: [skills/x/scripts/**] }`), and a state
+entry naming a default tool that a declared `allow_always` omits grants it in that state. A default
+tool listed in `allow_always`, bare or guarded, SHALL be an ordinary grant and draw no warning.
+
+A workflow that declares `tools.allow_always` and names none of the default tools there or in any
+state's `tools.allow` SHALL draw one lint warning. The warning SHALL name the default tools and say
+that a declared `allow_always` replaces them.
 
 **Denial and grant compose by one rule: deny beats allow, and no narrower level widens a denial.**
 `tools.forbid_always` SHALL block its entries in every state, ahead of every grant, consumer rule
 and argument guard. A state's `tools.forbid` SHALL block its entries in that state, subtracting from
-every grant that would otherwise reach it — the workflow's `allow_always`, the state's own `allow`,
-and the always-on surface alike. These four lists SHALL be the whole of tool governance: there SHALL be no `policy` block, and no
-other key SHALL grant or deny a tool.
+every grant that would otherwise reach it — the workflow-wide grant, the state's own `allow`, and
+the host's always-on tools alike. These four lists SHALL be the whole of tool governance: there
+SHALL be no `policy` block, and no other key SHALL grant or deny a tool.
 
 Every `${{…}}` reference in a guard SHALL be structurally valid — `${{name}}` or `${{name.path}}`
 with a valid variable name and no empty segment — as a document-level error. See the `governance`
@@ -391,9 +413,10 @@ capability for enforcement.
 #### Scenario: Scratchpad-only narrowing
 
 - **WHEN** a state allows `write_file` with `file_path: [scratchpad/refund.json]` and nothing
-  else
-- **THEN** the lint warns that `scratchpad/**` writes are permitted in every state, so the
-  entry governs nothing
+  else, or `tools.allow_always` lists the same entry
+- **THEN** the lint warns, at the entry's key path, that `scratchpad/**` writes are permitted
+  wherever the tool is granted, so the entry does not constrain where inside `scratchpad/` the write
+  lands
 
 #### Scenario: A state's forbid beats the workflow's grant
 
@@ -414,6 +437,26 @@ capability for enforcement.
   `tools: { allow: [send_email] }`
 - **THEN** the call is blocked in that state, and `validate` reports that the allow entry grants
   nothing
+
+#### Scenario: Absent allow_always grants the default tools
+
+- **WHEN** the root declares `tools: { forbid_always: [archmax_reset] }` and no `allow_always`
+- **THEN** every state is granted the default tools, unconstrained, and the lint reports nothing
+  about them
+
+#### Scenario: A default tool listed in allow_always is a grant, not a warning
+
+- **WHEN** the root declares `tools: { allow_always: [read_file, { tool: write_file, paths: ["reports/**"] }] }`
+- **THEN** `archmax validate` reports no warning for either entry, `read_file` is granted in every
+  state, and `write_file` is granted in every state on `reports/**` only (and in `scratchpad/`)
+
+#### Scenario: A declared allow_always that grants no default tool
+
+- **WHEN** the root declares `tools: { allow_always: [] }` and no state's `tools.allow` names a
+  default tool
+- **THEN** the lint warns once at `tools.allow_always`, naming the default tools and saying that a
+  declared list replaces them — and it does not warn once any state's `tools.allow` or the root list
+  names one of them
 
 ### Requirement: Skills blocks
 
@@ -436,15 +479,14 @@ follow without a second answer; a refusal caused by a forbid SHALL say so rather
 slug as merely not enabled.
 
 An absent list SHALL mean the same as an empty list at every level, so no skill is ever enabled
-without a list naming it, matching `tools.allow`, where a state without a list gets the essential
-surface only. An empty `allow` SHALL NOT act as a denial.
+without a list naming it, matching `tools.allow`, where a state without a list gets the workflow-wide
+grant only. An empty `allow` SHALL NOT act as a denial.
 
 `archmax validate` SHALL report a slug no source provides (error, naming the known slugs) under
 every key, and:
 
 - a slug named both in the root's `allow_always` and in a state's `allow` SHALL be a warning (the
-  state entry grants nothing the workflow had not already given — the skills analogue of an inert
-  `tools.allow_always` entry);
+  state entry grants nothing the workflow had not already given);
 - a state's `allow: []` beside a non-empty `allow_always` SHALL be a warning that an empty state
   list subtracts nothing and that `skills.forbid` is what subtracts;
 - a `forbid` entry for a slug nothing would have enabled where it applies SHALL be a warning that

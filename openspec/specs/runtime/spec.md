@@ -726,7 +726,8 @@ The model SHALL read the system prompt in this order: `AGENTS.md`; the consumer 
 platform prompt (compiled into the runtime, or `.platform/system/GRAPH_STATE.md` when the workspace
 serves it; absent for a plain agent); the workspace zones section; the workflow graph
 section; `WORKFLOW.md` with HTML comments stripped; the middleware's tool guidance (the
-`write_todos` section; Deep Agents 1.13 appends none for its file tools); and the volatile "Current
+`write_todos` section, present only when some state of the workflow is granted `write_todos`, a
+`forbid` subtracting as everywhere; Deep Agents 1.13 appends none for its file tools); and the volatile "Current
 state" block. Deep Agents' base prompt SHALL be dropped (`systemPrompt: { prefix, base: null }`).
 Layers one to six SHALL form the static prefix, identical on every model call of a session. Deep
 Agents offers no per-agent opt-out from a harness profile, so a model it keeps a profile for SHALL
@@ -734,7 +735,7 @@ also read that profile's suffix after layer six: Deep Agents looks the profile u
 provider and its `model_name` or `modelName`, so a LangChain `ConfigurableModel` is matched and a
 `ChatOpenAI` instance, which sets only `model`, is not.
 The workspace zones section SHALL be rendered from the resolved `MountPrefixes`: `scratchpad/` as
-the always-writable working area, the offload areas as readable only, then **one line per ungoverned
+the working area, readable and writable in every state with the file tools that state is granted, the offload areas as readable only, then **one line per ungoverned
 mount — its name as the agent addresses it (a directory with a trailing slash, a file by its exact
 path) followed by `read-only` or `read/write`** — read-only names before writable ones and
 alphabetically within each, any other root path governed by the state's tool rules, and dot-prefixed
@@ -762,6 +763,11 @@ the "Current state" block.
 - **WHEN** the table governs `reference` and two states enable different mount sets
 - **THEN** the static prefix is byte-identical for model calls in both states and names `reference`
   in neither
+
+#### Scenario: No write_todos guidance without the tool
+
+- **WHEN** a workflow declares `tools.allow_always: [read_file, ls]` and no state's `tools.allow` names `write_todos`
+- **THEN** the system prompt carries no `write_todos` section and `write_todos` is offered on no model call, while a workflow without `tools.allow_always` carries the section as before
 
 ### Requirement: The graph section is rendered from the spec
 

@@ -28,7 +28,19 @@ metadata: { canvas: {} }         # host data, never read; accepted at root, stat
 extensions: { hooks: [] }        # host-registered hook kinds; rarely authored
 
 tools:                           # tool governance, workflow level
-  allow_always: []               #   granted in EVERY state; a state's allow adds to it
+  allow_always:                  #   granted in EVERY state; a state's allow adds to or narrows it.
+    - ls                         #   The DEFAULT TOOLS: declared, this list REPLACES them (absent,
+    - read_file                  #   all twelve are granted), so a new workflow lists all twelve and
+    - write_file                 #   removes only what it must not have. Workflow-wide host tools
+    - edit_file                  #   go below them; state-specific ones under a state's tools.allow.
+    - glob
+    - grep
+    - copy_file
+    - move_file
+    - remove_file
+    - write_todos
+    - archmax_eval
+    - archmax_run
   forbid_always: [archmax_reset]  #   denied in EVERY state; beats every grant; "*" = every tool
 skills:                          # skill governance, workflow level — SLUGS, never paths
   allow_always: [order-data]     #   enabled in every state; [] = every capability is state-specific
@@ -68,10 +80,10 @@ states:
     tools:
       allow:                     # adds to allow_always; entry = name | { tool, args: {<arg>: [globs]} } | { tool, paths }
         - lookup_customer
-        - { tool: archmax_run, paths: ["skills/refund-policy/scripts/**"] }   # narrows an always-on tool, within an enabled skill
+        - { tool: archmax_run, paths: ["skills/refund-policy/scripts/**"] }   # narrows the workflow-wide grant, within an enabled skill
         - { tool: write_file, args: { file_path: ["reports/${{case_id}}/*.json"] } }  # variable-bound guard
         - archmax_workflow_enrich-order                                     # runs a sibling workflow
-      forbid: [archmax_wait]      # denies here; beats every grant incl. the always-on surface
+      forbid: [archmax_wait]      # denies here; beats every grant incl. allow_always
     skills:
       allow: [refund-policy]     # adds to allow_always (bundle readable + scripts runnable, no path entries)
       forbid: [order-data]       # subtracts, even from allow_always ([] never denies)
@@ -82,9 +94,10 @@ states:
     metadata: { x: 40, y: 180 }
     transitions:                 # none => terminal state
       - to: review               # slug; must exist
-        description: The decision is recorded and needs a person's approval.   # REQUIRED, non-empty:
-                                 #   the ONLY thing the agent knows about this edge (on a human
-                                 #   state, also the button label). Say WHEN, never where.
+        description: The decision is recorded and needs a person's approval.   # what the agent routes
+                                 #   on. Say WHEN, never where. Omit it to route on the target's
+                                 #   instructions instead (target must have some); REQUIRED on a
+                                 #   human state's transitions, where it is the button label.
         type: none               # approve | reject | refine | none — semantic on human states
 
   review:                        # human state: parks with a decision record; a PERSON picks the edge
@@ -254,14 +267,17 @@ no way to see more of the graph.
 
 Closed by default; **deny beats allow, and no narrower level widens a denial.**
 
-- **Always on, never declared**: `ls`, `read_file`, `write_file`,
-  `edit_file`, `copy_file`, `move_file`, `remove_file`, `glob`, `grep`,
-  `write_todos`, `archmax_eval`, `archmax_run`,
-  and the controls `archmax_advance`, `archmax_reset`, `archmax_wait`,
-  `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. Any other
-  tool needs an
-  `allow`/`allow_always` entry. An entry naming an always-on tool **narrows**
-  it. `task` is ungrantable (error).
+- **The workflow-wide grant**: `tools.allow_always`, in every state. Absent,
+  it is the **default tools**: `ls`, `read_file`, `write_file`, `edit_file`,
+  `copy_file`, `move_file`, `remove_file`, `glob`, `grep`, `write_todos`,
+  `archmax_eval`, `archmax_run`. Declared (`[]` included), it is exactly what it
+  lists and **replaces** the default tools, so a new workflow lists all twelve
+  (as in the skeleton) and removes only what it must not have. Never declared:
+  the controls `archmax_advance`, `archmax_reset`, `archmax_wait`,
+  `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, and a host's
+  `essentialTools`. Any other tool needs an `allow`/`allow_always` entry. A
+  state entry naming a granted tool **narrows** it there, and one naming a
+  default tool the list omits grants it there. `task` is ungrantable (error).
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches
   if any glob matches; `${{var}}` allowed); `{ tool, paths: [...] }`
   (guards every path argument the tool declares — all must match to grant,

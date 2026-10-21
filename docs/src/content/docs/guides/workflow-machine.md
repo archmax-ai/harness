@@ -144,14 +144,18 @@ Transitions — choose one with `archmax_advance` when this state's work is done
 
 Two consequences for authoring:
 
-- **Every transition needs a `description`, and the schema enforces it.** It is
-  the whole of what the agent knows about where an edge leads. Write it for a
+- **A transition's `description` is what the agent routes on.** Write it for a
   reader standing in the *source* state, which has no view of the target. Say
   *when* to take the edge: "The refund is over $50" routes, where "go to
   refund-review" leaves the agent guessing.
-- **Routing logic belongs upstream.** The target state's `summary` and
-  `instructions` stay invisible from the source, so the condition goes on the
-  edge.
+- **An undescribed edge routes on the target's instructions.** Leave
+  `description` out (or empty), and the edge's line carries the target state's
+  `instructions` instead, quoted and framed as what the agent will do once there.
+  The target's `title`, `summary` and hooks stay invisible. The schema refuses
+  an undescribed edge whose target has no instructions, and an undescribed
+  transition of a human state, where the description is the button label.
+- **Routing logic belongs upstream.** Put a condition the target's instructions
+  do not state on the edge, as its description.
 
 An edge's line marks a target that is a human decision node or terminal. Each
 marker changes the call or what follows it: `evidence` may be attached only when
@@ -191,26 +195,31 @@ Workflow state is checkpointed per session (the LangGraph `thread_id`):
 ## Tool governance
 
 Governance is **closed by default**: a grant has to be declared, and a denial
-beats every grant. Three things are present in every state without being asked
-for:
+beats every grant. Three things are present in every state:
 
-- **The always-on tools**: `ls`, `read_file`, `write_file`, `edit_file`,
-  `copy_file`, `move_file`, `remove_file`, `glob`, `grep`, `write_todos`,
-  `archmax_eval` and `archmax_run`.
+- **The workflow-wide grant.** This is what the root's `tools.allow_always`
+  lists. A workflow that does not declare the key gets the **default tools**
+  instead: `ls`, `read_file`, `write_file`, `edit_file`, `copy_file`,
+  `move_file`, `remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval` and
+  `archmax_run`. A declared list **replaces** the default tools rather than
+  adding to them, so it names each one the workflow wants. A new workflow lists
+  all twelve and removes only what it must not have.
 - **The runtime's own `archmax_*` controls**: `archmax_advance` in non-terminal
   states; `archmax_reset`, `archmax_wait`, `archmax_raise` and the variable tools
   everywhere.
-- **The workflow's `tools.allow_always` grants**, declared once at the root.
+- **Any tool the host passes as `essentialTools`**, whatever the workflow
+  declares.
 
 Every other tool has to be declared. A state with no `tools` block gets exactly
 that surface, and no declaration opens a state fully. A state's `tools.allow`
-list **grants** additional tools, and it **narrows** an always-on tool when an
+list **grants** additional tools, a default tool that a declared list leaves out
+among them, and it **narrows** a tool the workflow-wide grant includes when an
 entry names one.
 
 Denial is declared beside the grant, in the same two positions and with the same
 entries. `tools.forbid_always` at the root denies in every state. `tools.forbid`
-on a state denies while it is active, subtracting from the workflow's grant, the
-state's own `allow`, and the always-on surface alike.
+on a state denies while it is active, subtracting from the workflow-wide grant,
+the state's own `allow`, and the host's `essentialTools` alike.
 
 One rule covers both: **deny beats allow, and no narrower level widens a
 denial.** A forbid entry may name the tool `*`, meaning every tool, which is how
@@ -226,11 +235,11 @@ states:
     tools:
       allow:
         - { tool: write_file, args: { file_path: ["reports/answer.json"] } }
-        # write_file is always on (usable everywhere), but this state narrows
-        # it to reports/answer.json; the other always-on tools stay unconstrained.
-        # Note the path is NOT under scratchpad/: that area is permitted in
-        # every state, so an entry naming a path inside it would narrow
-        # nothing there (validate warns). Govern a result by naming an
+        # write_file is granted workflow-wide (usable everywhere), but this
+        # state narrows it to reports/answer.json; the other granted tools stay
+        # unconstrained. Note the path is NOT under scratchpad/: that area stays
+        # open to write_file wherever it is granted, so an entry naming a path
+        # inside it would narrow nothing there (validate warns). Govern a result by naming an
         # ordinary session path, as here.
 ```
 
@@ -264,19 +273,23 @@ paths too, and are governed by the same rules (see
 A host tool's argument may hold a list of paths, each governed like one, and a
 `paths:` guard tests every element.
 
-The scratchpad is open in every state to the always-on tools only. A host tool
-a state must grant gets nothing from it: declaring its paths narrows what it
-may do where it is granted, and it stays refused where it is not.
+The scratchpad is open in every state to each default file tool the state is
+granted, whatever the granting entry narrows, and to a host's `essentialTools`.
+A file tool the state is not granted gets nothing from it. Neither does a host
+tool the state must grant: declaring its paths narrows what it may do where it
+is granted, and it stays refused where it is not.
 
-`allow_always` entries are **grants** for tools that are not always on. A
-per-state entry for the same tool takes precedence, as in the example above.
-Listing an always-on tool in `allow_always` is inert, and `archmax validate` warns
-about it. The tool descriptions the agent sees are derived from exactly what is
-enforced.
+`allow_always` entries are ordinary **grants**, guards included, so an entry
+constraining a default tool (`{ tool: write_file, paths: [reports/**] }`) binds
+in every state that does not name the tool itself. A per-state entry for the
+same tool takes precedence, as in the example above. `archmax validate` warns
+when a declared `allow_always` grants none of the default tools and no state
+names one either. The tool descriptions the agent sees are derived from exactly
+what is enforced.
 
-The model **sees** exactly that surface. Each model call presents the always-on
-tools, the `allow_always` grants, the state's own entries, and `archmax_advance`
-outside terminal states, minus every tool denied there by name.
+The model **sees** exactly that surface. Each model call presents the
+workflow-wide grant, the host's `essentialTools`, the state's own entries, and
+`archmax_advance` outside terminal states, minus every tool denied there by name.
 
 Disclosure follows the state machine deterministically, and enforcement sits
 underneath it: a call to an undisclosed tool is still blocked by the kernel. A
@@ -414,7 +427,7 @@ What the agent may do in each session area:
 
 | Area | Agent access |
 | --- | --- |
-| `scratchpad/` | Read and write with the always-on file tools, in every state |
+| `scratchpad/` | Read and write in every state, with the file tools that state is granted |
 | `large_tool_results/`, `conversation_history/` | Read |
 | `checkpoints/`, `artifacts/` | None |
 
@@ -535,10 +548,10 @@ nor a seed, assembly warns that the guard rests on the agent having called
 has not.
 
 The agent reads the store with `archmax_get_variables({ name?, path? })` and
-writes it with `archmax_set_variables({ variables, lock? })`. Both are standard
-equipment, always permitted and always disclosed, like the other always-on
-tools. So a host's seeds are readable even by a workflow whose spec references no
-variable.
+writes it with `archmax_set_variables({ variables, lock? })`. Both are runtime
+controls, always permitted and always disclosed, like `archmax_advance` and the
+other `archmax_*` controls. So a host's seeds are readable even by a workflow
+whose spec references no variable.
 
 Lifecycle scripts get a read-only `args.variables` snapshot. They have no write
 path, so a hook cannot edit the governance inputs of the state it is judging.

@@ -282,28 +282,49 @@ export const transitionTypeSchema = z.enum(["approve", "reject", "refine", "none
 });
 
 /**
- * Why a `description` is required rather than advisory: the agent is disclosed
- * the active state's edges and nothing else of the graph, so this string is the
- * whole of what it knows about where an edge leads. A blank one hands it a bare
- * slug and asks it to route — an unnavigable graph, which is worse to warn about
- * than to refuse. One message covers missing, empty, blank and mistyped, and the
+ * The agent is disclosed the active state's edges and nothing else of the graph,
+ * so an edge must give it something to route on: its `description`, or — for an
+ * **undescribed** edge (absent, empty or blank) — the target state's own
+ * `instructions`, which the edge then discloses in its place. An edge with
+ * neither hands the agent a bare slug and asks it to route: an unnavigable graph,
+ * which is worse to warn about than to refuse, so {@link refineSpec} refuses it,
+ * and refuses an undescribed transition of a human state, where the description
+ * is the person's button label. A non-string is a typo and refused here. The
  * issue path (`states.<slug>.transitions.<index>.description`) names the edge.
  */
 const TRANSITION_DESCRIPTION =
-  `must be a non-empty string: it is the only thing the agent is told about this edge — no ` +
-  `attribute of the target state is disclosed to it — so an undescribed edge cannot be chosen. ` +
-  `Say when to take it (e.g. 'Refunds over $50'), not where it goes.`;
+  `must be a string: what the agent routes on when it considers this edge. Say when to take it ` +
+  `(e.g. 'Refunds over $50'), not where it goes — or omit it to route on the target state's ` +
+  `instructions instead.`;
+
+/** An undescribed edge whose target has no instructions: nothing to route on. */
+function undescribedEdgeMessage(target: string): string {
+  return (
+    `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
+    `none, on the target state's instructions — and '${target}' declares none. Say when to take ` +
+    `this edge (e.g. 'Refunds over $50'), or give '${target}' instructions.`
+  );
+}
+
+/** An undescribed transition on a human state: the decision's button has no label. */
+const HUMAN_TRANSITION_DESCRIPTION =
+  `must be a non-empty string on a human state's transition: it is the label of the decision's ` +
+  `button for the person deciding, and a target's instructions do not tell them what choosing it ` +
+  `means. Say what the choice is (e.g. 'Approve the refund').`;
 
 /** @see MachineTransition */
 export const machineTransitionSchema = z
   .object({
     to: nonEmptyString,
-    description: z
-      .string({ error: TRANSITION_DESCRIPTION })
-      .refine((value) => value.trim() !== "", TRANSITION_DESCRIPTION),
+    description: z.string({ error: TRANSITION_DESCRIPTION }).optional(),
     type: transitionTypeSchema.optional(),
   })
   .strict();
+
+/** Whether an edge carries no description the agent could route on: absent, empty or blank. */
+export function isUndescribed(transition: { description?: string }): boolean {
+  return !transition.description?.trim();
+}
 
 /** @see StateBudget */
 export const stateBudgetSchema = z
@@ -356,9 +377,11 @@ export const FORBID_ANY_TOOL = "*";
 /**
  * @see ToolsBlock — a **state's** tools block.
  *
- * `allow` adds to the workflow's `tools.allow_always`; `forbid` denies here,
- * beating every grant that would otherwise reach this state — the workflow's
- * always-on grant, this state's own `allow`, and the always-on surface alike.
+ * `allow` adds to the workflow-wide grant (the declared `tools.allow_always`, or
+ * the default tools when it is absent) and narrows a tool that grant names;
+ * `forbid` denies here, beating every grant that would otherwise reach this
+ * state — the workflow-wide grant, this state's own `allow`, and the host's
+ * `essentialTools` alike.
  * Deny beats allow, and no narrower level widens a denial.
  */
 export const toolsBlockSchema = z
@@ -648,7 +671,9 @@ const authoredStateSchema = z.preprocess((value) => value ?? {}, machineStateSch
 /**
  * @see WorkflowToolsConfig — the spec root's tools block.
  *
- * `allow_always` is granted in every state; `forbid_always` is denied in every
+ * `allow_always` is granted in every state, and declared (an empty list
+ * included) it *replaces* the default tools an absent one grants;
+ * `forbid_always` is denied in every
  * state and is **absolute** — no state grant, argument guard or consumer rule
  * reaches past it, and a sub-workflow inherits it from every ancestor. The
  * superseded `policy` block denies alongside it: denials union, because a denial
@@ -814,6 +839,13 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
           `${at}.transitions.${index}.to`,
           `State '${slug}' transitions to undefined state '${transition.to}'`,
         );
+        return;
+      }
+      if (!isUndescribed(transition)) return;
+      if (state.type === "human") {
+        issue(`${at}.transitions.${index}.description`, HUMAN_TRANSITION_DESCRIPTION);
+      } else if (!states[transition.to]?.instructions?.trim()) {
+        issue(`${at}.transitions.${index}.description`, undescribedEdgeMessage(transition.to));
       }
     });
     if (state.on_error !== undefined && !(state.on_error in states)) {

@@ -52,7 +52,7 @@ import { BUILTIN_HOOK_KINDS } from "../lifecycle/runner.js";
 import { workflowDenials, type GovernanceRule } from "../kernel/kernel.js";
 import { UNGRANTABLE_TOOLS, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
-import { workflowToolName } from "../machine/tool-names.js";
+import { TODO_TOOL, workflowToolName } from "../machine/tool-names.js";
 import type { ToolPaths, ToolPathTable } from "../machine/tool-paths.js";
 import { resolveTrigger, type TriggerInput } from "../machine/triggers.js";
 import { buildSeededVariables, unguaranteedReferenceWarnings } from "../machine/variables.js";
@@ -200,9 +200,11 @@ export function frameworkPassthrough(
 }
 
 /**
- * The planning scratchpad: `write_todos` is always-on and Deep Agents 1.13 does
- * not register it (only its Codex harness profile adds the middleware), so the
- * assembly installs langchain's `todoListMiddleware`.
+ * The planning scratchpad: `write_todos` is a default tool and Deep Agents 1.13
+ * does not register it (only its Codex harness profile adds the middleware), so
+ * the assembly installs langchain's `todoListMiddleware` — for a governed agent,
+ * only when some state of its workflow is granted `write_todos`, so the static
+ * prompt never carries guidance for a tool no state can call.
  * Must sit outermost among the runtime's own middleware so its guidance lands on
  * the system prompt **before** the workflow instrumentation splits it into
  * `[static, volatile]` blocks. On a model with the Codex profile, Deep Agents
@@ -592,7 +594,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   // router honours its jumps (see `WorkflowInstrumentation`).
   const agentMiddleware = [
     instrumentation.parkMiddleware,
-    todoMiddleware(),
+    // Decided once per composition: the guidance it adds is part of the static prefix.
+    ...(target.grantsAnywhere(TODO_TOOL) ? [todoMiddleware()] : []),
     interpreter.middleware,
     instrumentation.middleware,
     // Inside the workflow's own, so a governed read is decided before either acts.

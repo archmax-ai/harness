@@ -11,16 +11,37 @@ import type { Diagnostic } from "./diagnostic.js";
 import { guardReferences, normalizeAllowEntry } from "./allow.js";
 import { normalizeMountGrants } from "./mount-grants.js";
 import { triggerDeclarationSchema } from "./spec-schema.js";
-import { ADVANCE_TOOL, ESSENTIAL_TOOLS } from "./tool-names.js";
+import { ADVANCE_TOOL, DEFAULT_TOOLS } from "./tool-names.js";
 import { BUILT_IN_TOOL_PATHS, MUTATING_ACCESSES, SCRATCHPAD_ACCESSES } from "./tool-paths.js";
 import { declaredVariableNames } from "./triggers.js";
-import type { MachineSpec } from "./types.js";
+import type { AllowEntry, MachineSpec } from "./types.js";
 import { TRIGGER_VARIABLE } from "./variables.js";
 
 /** The block keys the SDK defines; anything else on a declaration is the host's. */
 const TRIGGER_KEYS = new Set(Object.keys(triggerDeclarationSchema.shape));
 
 const LABELED_TRANSITION_TYPES = ["approve", "reject", "refine"] as const;
+
+/**
+ * The tool and paths of an allow entry that narrows a mutating built-in to paths
+ * inside the always-open working area alone, or `null` for any other entry. Such
+ * an entry narrows nothing there: `tool.scratchpad` keeps the area open to the
+ * tool wherever it is granted, before the entry is consulted.
+ */
+function scratchpadOnlyNarrowing(entry: AllowEntry): { tool: string; paths: string[] } | null {
+  const normalized = normalizeAllowEntry(entry);
+  const { tool, argMatchers } = normalized;
+  if (!tool || !argMatchers) return null;
+  // A built-in that mutates, every path of which the scratchpad keeps open.
+  const declared = Object.entries(BUILT_IN_TOOL_PATHS[tool] ?? {});
+  const mutates = declared.some(([, access]) => MUTATING_ACCESSES.has(access));
+  if (!mutates || !declared.every(([, access]) => SCRATCHPAD_ACCESSES.has(access))) return null;
+  const paths = normalized.fromPaths
+    ? (argMatchers.file_path ?? [])
+    : declared.flatMap(([arg]) => argMatchers[arg] ?? []);
+  if (paths.length === 0 || !paths.every((path) => classifyWorkspacePath(path) === "run-open")) return null;
+  return { tool, paths };
+}
 
 /** Findings for a spec the schema has accepted. `file` is left to the caller. */
 export function lintSpec(spec: MachineSpec): Diagnostic[] {
@@ -50,17 +71,44 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
     );
   }
 
-  // Essential built-ins are always permitted, and only a state's own entry
-  // narrows them — so an `allow_always` entry naming one is inert. `task` is
-  // conditional, so an entry naming it can be what discloses it.
-  for (const entry of spec.tools?.allow_always ?? []) {
-    const { tool, argMatchers } = normalizeAllowEntry(entry);
-    if (!tool || !ESSENTIAL_TOOLS.has(tool)) continue;
+  // A declared `tools.allow_always` replaces the default tools rather than adding
+  // to them. One that names none of them — nor does any state's `tools.allow` —
+  // leaves an agent that cannot read a file, an offloaded tool result included:
+  // most often a workflow written as `allow_always: []` when the defaults were
+  // still implicit.
+  const declaredAlways = spec.tools?.allow_always;
+  if (declaredAlways !== undefined) {
+    const namesDefault = (entries: readonly AllowEntry[] | undefined) =>
+      (entries ?? []).some((entry) => {
+        const { tool } = normalizeAllowEntry(entry);
+        return tool !== undefined && DEFAULT_TOOLS.has(tool);
+      });
+    const grantsDefault =
+      namesDefault(declaredAlways) || Object.values(spec.states).some((state) => namesDefault(state?.tools?.allow));
+    if (!grantsDefault) {
+      warn(
+        "tools.allow_always",
+        `'tools.allow_always' is declared but grants none of the default tools ` +
+          `(${[...DEFAULT_TOOLS].join(", ")}), and no state's 'tools.allow' names one. A declared ` +
+          `'allow_always' replaces the default tools rather than adding to them, so this agent ` +
+          `cannot read a file, not even an offloaded tool result. List the default tools the ` +
+          `workflow needs under 'allow_always', or remove the key to grant them all.`,
+      );
+    }
+  }
+
+  // A guard on a workflow-wide grant binds, so one whose every path sits in the
+  // always-open working area reads as governance but narrows nothing there.
+  for (const [index, entry] of (spec.tools?.allow_always ?? []).entries()) {
+    const narrowed = scratchpadOnlyNarrowing(entry);
+    if (!narrowed) continue;
     warn(
-      "tools.allow_always",
-      argMatchers
-        ? `'tools.allow_always' constrains essential tool '${tool}', but essential tools are always permitted and the constraint is never enforced; narrow it per state with a 'tools.allow' entry instead`
-        : `'tools.allow_always' lists essential tool '${tool}', which is always permitted; the entry is redundant`,
+      `tools.allow_always.${index}`,
+      `'tools.allow_always' allows '${narrowed.tool}' on ${narrowed.paths.map((p) => `'${p}'`).join(", ")}, ` +
+        `which is in the always-open '${SESSION_OPEN_DIR}/' area: those writes are permitted wherever ` +
+        `the tool is granted, regardless of this entry, so it does not constrain where inside ` +
+        `'${SESSION_OPEN_DIR}/' the write may land. Name an ordinary run path if the write itself ` +
+        `should be governed.`,
     );
   }
 
@@ -247,8 +295,9 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
       );
     }
 
-    // No routing-context advisory here: every transition now carries a non-empty
-    // `description` by schema, and a state's `summary` reaches no model call.
+    // No routing-context advisory here: the schema refuses an edge with neither a
+    // `description` nor target `instructions` to route on, and a state's
+    // `summary` reaches no model call.
 
     if (state.type === "human") {
       if (!state.instructions?.trim()) {
@@ -264,7 +313,7 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
         );
       }
       // A missing button label is not checked here: the schema requires a
-      // non-empty `description` on every transition, human or not.
+      // non-empty `description` on every transition of a human state.
       transitions.forEach((transition, index) => {
         // A decision routes the run *out* of the state: a self-edge is offered as
         // a button and then ends the run instead of routing.
@@ -310,24 +359,13 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
 
     // An entry whose every path sits in the always-open working area reads as
     // governance but cannot act as one there: `tool.scratchpad` allows the write
-    // before the state's list is consulted, in every state.
+    // before the state's list is consulted, wherever the tool is granted.
     for (const entry of state.tools?.allow ?? []) {
-      const normalized = normalizeAllowEntry(entry);
-      const { tool, argMatchers } = normalized;
-      if (!tool || !argMatchers) continue;
-      // A built-in that mutates, every path of which the scratchpad keeps open.
-      const declared = Object.entries(BUILT_IN_TOOL_PATHS[tool] ?? {});
-      const mutates = declared.some(([, access]) => MUTATING_ACCESSES.has(access));
-      if (!mutates || !declared.every(([, access]) => SCRATCHPAD_ACCESSES.has(access))) continue;
-      const paths = normalized.fromPaths
-        ? (argMatchers.file_path ?? [])
-        : declared.flatMap(([arg]) => argMatchers[arg] ?? []);
-      if (paths.length === 0 || !paths.every((path) => classifyWorkspacePath(path) === "run-open")) {
-        continue;
-      }
+      const narrowed = scratchpadOnlyNarrowing(entry);
+      if (!narrowed) continue;
       warn(
         `${at}.tools.allow`,
-        `State '${slug}' allows '${tool}' on ${paths.map((p) => `'${p}'`).join(", ")}, which is in the always-open '${SESSION_OPEN_DIR}/' area: those writes are permitted in every state regardless of this entry, so it does not constrain where inside '${SESSION_OPEN_DIR}/' the write may land. Name an ordinary run path (e.g. '${slug}.json') if the write itself should be governed.`,
+        `State '${slug}' allows '${narrowed.tool}' on ${narrowed.paths.map((p) => `'${p}'`).join(", ")}, which is in the always-open '${SESSION_OPEN_DIR}/' area: those writes are permitted wherever the tool is granted, regardless of this entry, so it does not constrain where inside '${SESSION_OPEN_DIR}/' the write may land. Name an ordinary run path (e.g. '${slug}.json') if the write itself should be governed.`,
       );
     }
   }

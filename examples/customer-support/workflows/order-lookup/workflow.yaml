@@ -37,12 +37,27 @@ tests:
   caseTimeoutMs: 120000
   judge: {}
 
-# Tool governance, both directions, at the workflow level. `allow_always` would
-# grant in every state; `forbid_always` denies in every state and beats every
-# grant — a support run never restarts itself, whatever state it took a wrong
-# turn in. A state's own `tools.allow` adds, and its `tools.forbid` denies just
-# there.
+# Tool governance, both directions, at the workflow level. `allow_always` is the
+# workflow-wide grant: every state has what it lists. Declared, it replaces the
+# default tools rather than adding to them, so it lists every default tool this
+# workflow uses — here, all of them. `forbid_always` denies in every state and
+# beats every grant — a support run never restarts itself, whatever state it took
+# a wrong turn in. A state's own `tools.allow` adds (or narrows), and its
+# `tools.forbid` denies just there.
 tools:
+  allow_always:
+    - ls
+    - read_file
+    - write_file
+    - edit_file
+    - glob
+    - grep
+    - copy_file
+    - move_file
+    - remove_file
+    - write_todos
+    - archmax_eval
+    - archmax_run
   forbid_always: [archmax_reset]
 
 # Every capability here is state-specific — one path reads order records, another
@@ -199,8 +214,9 @@ states:
       script: hooks/check-refund.js
     skills:
       allow: [order-data, refund-policy]
-    # No `tools` block: refund.json lands in scratchpad/, writable in every
-    # state; what holds the agent to one correct file is the after hook.
+    # No `tools` block: refund.json lands in scratchpad/, writable wherever
+    # write_file is granted (here, every state); what holds the agent to one
+    # correct file is the after hook.
     # `budget` bounds the segment with headroom for a probe or a retry (the
     # shortest route is ~5 turns); a segment failure routes to `escalation`.
     budget:
@@ -350,8 +366,9 @@ states:
     requires:
       - enrichments
     tools:
-      # `archmax_run` is essential; the entry narrows it to this capability's
-      # scripts. The delegation tool is granted by name, never by default.
+      # `archmax_run` is granted workflow-wide; the entry narrows it here to this
+      # capability's scripts. The delegation tool is granted by name, never by
+      # default.
       allow:
         - { tool: archmax_run, paths: ["skills/order-enrichment/scripts/**"] }
         - archmax_workflow_enrich-order

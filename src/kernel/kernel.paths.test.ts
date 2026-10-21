@@ -174,6 +174,48 @@ describe("declared paths: a host tool a state must grant", () => {
   });
 });
 
+describe("the open areas under a declared allow_always", () => {
+  // The declared list replaces the default tools: `write_file` is granted only
+  // where a state names it, and `read_file` everywhere.
+  const DECLARED: MachineSpec = {
+    ...SPEC,
+    tools: { allow_always: ["read_file"] },
+    states: {
+      ...SPEC.states,
+      intake: { ...SPEC.states.intake!, tools: { allow: [{ tool: "write_file", paths: ["reports/**"] }] } },
+    },
+  };
+  const decideIn = (state: string, tool: string, args: Record<string, unknown>) =>
+    call(state, tool, args, { spec: DECLARED });
+
+  it("opens the scratchpad to a default file tool only where the state is granted it", () => {
+    // Granted by a narrowing entry: the scratchpad stays open to it there.
+    expect(decideIn("intake", "write_file", { file_path: "scratchpad/a.md" }).ruleId).toBe("tool.scratchpad");
+    // Not granted: the scratchpad does not make it callable.
+    expect(decideIn("reply", "write_file", { file_path: "scratchpad/a.md" })).toMatchObject({
+      decision: "block",
+      ruleId: "tool.not-allowed",
+    });
+    // The file operations are default tools the list omits, so they are closed too.
+    expect(decideIn("reply", "remove_file", { file_path: "scratchpad/a.md" }).ruleId).toBe("tool.not-allowed");
+  });
+
+  it("opens the offload areas to read_file only where it is granted", () => {
+    expect(decideIn("reply", "read_file", { file_path: "large_tool_results/x" }).ruleId).toBe("tool.offload-read");
+    const withheld: MachineSpec = { ...DECLARED, tools: { allow_always: ["ls"] } };
+    expect(call("reply", "read_file", { file_path: "large_tool_results/x" }, { spec: withheld })).toMatchObject({
+      decision: "block",
+      ruleId: "tool.not-allowed",
+    });
+  });
+
+  it("keeps the scratchpad open to an essential host tool", () => {
+    for (const state of ["intake", "reply", "done"]) {
+      expect(decideIn(state, "get_markdown", { path: "scratchpad/x.md" }).ruleId).toBe("tool.scratchpad");
+    }
+  });
+});
+
 describe("declared paths: an argument holding a list of paths", () => {
   const paths = resolveToolPaths({ pack_files: { files: "read" }, attach: { files: "read" } });
   const LISTS: MachineSpec = {

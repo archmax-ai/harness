@@ -100,7 +100,7 @@ All optional (`CreateAgentParams`, `src/assembly/index.ts`):
 | `sessionStore` | `SessionStore` | Physical storage for run state (checkpoints, artifacts, the per-session `scratchpad/`). Zero-config default: `createFilesystemSessionStore({ dir: "<rootDir>/sessions" })`. Required with a custom `backend` (else `SessionStoreRequiredError`). Build with `createBackendSessionStore({ backend, prefix? })` for S3-style storage or `createMemorySessionStore()` for ephemeral runs. |
 | `systemPrompt` | `string` | Appended after workspace `AGENTS.md`. |
 | `tools` | `StructuredTool[]` | Host tools, granted per state by `tools.allow`. Build them with `toolsFromMap` — see [host tools](#host-tools). A name starting `archmax_`, or naming a runtime file operation (`copy_file`, `move_file`, `remove_file`), throws `ReservedToolNameError`. |
-| `essentialTools` | `string[]` | Host tools treated as always on: disclosed and permitted in every state; a state's own entry still narrows one. |
+| `essentialTools` | `string[]` | Host tools treated as always on: disclosed and permitted in every state, whatever the workflow's `tools.allow_always` declares; a state's own entry still narrows one. |
 | `images` | `boolean \| ImageReadOptions` | Show a model with vision the images it reads: the model's `read_file` of a PNG/JPEG/GIF/WebP answers with one line and the image is added to each later request as a `user` message after that batch of tool results, read per request — no bytes in history, checkpoints, events or scripts. `{ maxBytes?, keep? }` (default 10 MB, every image). Off by default; every other binary stays refused. |
 | `toolPaths` | `Record<string, ToolPaths>` | Each host tool's path arguments and how a call uses each (`read`, `list`, `search`, `write`, `remove`, `execute`): `{ get_markdown: { path: "read" } }`. Every path rule then governs them like the built-ins'. Wins over a descriptor's `paths`; declaring a built-in's paths throws `ToolPathsError`. |
 | `checkpointer` | `BaseCheckpointSaver` | Custom-adapter escape hatch; takes precedence over the session store for checkpoint persistence. Defaults to a durable `BackendCheckpointSaver` writing through the session store. Use `MemorySaver` for ephemeral runs. |
@@ -681,7 +681,8 @@ const agent = await createAgent({ tools, essentialTools: ["get_markdown"] });
   never runs the handler. No declaration, no path rules. An argument may hold a
   list of paths (`files: string[]`), each governed; any other shape is refused.
   Declaring paths only narrows: `scratchpad/` is open in every state to the
-  always-on tools, so a tool a state must grant stays refused where it is not.
+  default file tools the state is granted and to `essentialTools`, so a tool a
+  state must grant stays refused where it is not.
 - `context.workspace` is the turn's workspace, bound to the session — the
   instance `read_file` uses — with `downloadFiles`, `uploadFiles` (when the
   session store has it) and `delete` besides the text methods. The plain agent

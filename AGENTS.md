@@ -119,8 +119,8 @@ safety rules and the workflow-wide `forbid_always` do). `task()` is available to
 
 ### Sandbox
 
-`archmax_eval`, `archmax_run` (always-on in every state; an allow entry may narrow which files
-`archmax_run` may execute) and hook scripts share one QuickJS sandbox (`@langchain/quickjs`),
+`archmax_eval`, `archmax_run` (default tools: granted wherever the workflow-wide grant includes them;
+an allow entry may narrow which files `archmax_run` may execute) and hook scripts share one QuickJS sandbox (`@langchain/quickjs`),
 one REPL session per session scope (`src/sessions/scope.ts`). Scripts get `args` (flat
 `args.variables` for `archmax_run`) and `tools.*`, the governed privileged tool-call bridge.
 `src/sandbox/`: `prelude.ts` + `assets/parts/*.js`, `executor.ts` (reads sources through the
@@ -136,7 +136,7 @@ The agent's workspace root **is the session**. The composite (`src/core/workspac
 routes its default to the session zone (`src/core/session-zone.ts`) and mounts authored content
 read-only at the keys of a consumer-composed table (`workspace.mounts`; `defaultMounts(rootDir)`
 is the conventional default; `mountSubtree` rebases; `MountCollisionError` on a shadowed area).
-Session areas (`src/core/zones.ts`): `scratchpad/` (always read/write, rule `tool.scratchpad`),
+Session areas (`src/core/zones.ts`): `scratchpad/` (read/write in every state for the file tools it grants, rule `tool.scratchpad`),
 offload `large_tool_results/` + `conversation_history/` (agent reads only), internal
 `checkpoints/`, `artifacts/`, `_specs/` (no agent access). Any other session path is governed by
 the state's `tools.allow`. Storage is the **session store** (`src/core/session-store.ts`):

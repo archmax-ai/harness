@@ -56,6 +56,44 @@ as it is today; the guides themselves describe only the present. Every release a
 - **A session read while its first checkpoint is being written reads as new.** A
   read in that window, such as the next `send` after a cancelled one, crashed
   with a `TypeError` from LangGraph's in-memory saver.
+- **Breaking: a declared `tools.allow_always` replaces the default tools.** Every
+  state used to have `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`,
+  `copy_file`, `move_file`, `remove_file`, `write_todos`, `archmax_eval` and
+  `archmax_run` without declaring them. These are now the **default tools**: the
+  workflow-wide grant of a workflow that does not declare `tools.allow_always`.
+  Such a workflow behaves exactly as before. A workflow that declares the key, an
+  empty list included, is granted exactly what it lists, and a state's own
+  `tools.allow` can still grant a default tool the list leaves out. A guard on a
+  default tool in `allow_always` (`{ tool: write_file, paths: [reports/**] }`) is
+  now enforced; `archmax validate` used to call such entries redundant or
+  unenforced, and no longer warns about them. **Migrate** each workflow that declares
+  `allow_always` (the authoring skill's old skeleton wrote `allow_always: []`):
+  list the default tools it needs there, or remove the key to keep all of them.
+  `archmax validate` now warns about a declared list that grants no default tool
+  anywhere. See [`tools.allow_always`](/reference/machine-spec/#toolsallow_always).
+- **The scratchpad and the offload areas follow the grant.** They stay open
+  whatever a state's narrowing entry says, but only to a default file tool the
+  state is granted (or a host's `essentialTools`), so they never make a withheld
+  tool callable. See
+  [tool governance](/reference/machine-spec/#toolsallow-closed-by-default-governance).
+- **The prompt follows the grant.** The `write_todos` guidance is in the system
+  prompt only when some state of the workflow is granted `write_todos`. The
+  platform prompt no longer promises `archmax_eval` in every state or a
+  `scratchpad/` that is always writable.
+- **Breaking: `ESSENTIAL_TOOLS` is now `DEFAULT_TOOLS`.** The export names the set
+  a workflow without `tools.allow_always` is granted. `createAgent({ essentialTools })`
+  is unchanged: those host tools stay always on, whatever the workflow declares.
+- New workflows list the default tools. The authoring skill's skeleton declares
+  all twelve under `tools.allow_always`, and so do the example workflows.
+- **A transition's `description` is optional.** An undescribed edge (no
+  description, or an empty or blank one) routes on the target state's
+  `instructions`. The edge's line carries them in place of a description, quoted
+  and introduced as what the agent will do once there, and discloses nothing else
+  of the target. Loading refuses an undescribed edge whose target has no
+  instructions, and an undescribed transition of a human state, where the
+  description is the decision's button label. Every spec that loaded before loads
+  and renders unchanged. See
+  [`transitions`](/reference/machine-spec/#transitions-the-only-part-of-the-graph-the-agent-sees).
 
 ## 0.7.1
 

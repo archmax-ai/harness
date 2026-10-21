@@ -105,7 +105,7 @@ here for the weight of the import.
 - **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
 - **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
-- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `ESSENTIAL_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
+- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `DEFAULT_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
 - **Tool paths:** `BUILT_IN_TOOL_PATHS` `PATH_ACCESSES` `ToolPaths` `PathAccess`.
 - **Binary types:** `BINARY_MIME_TYPES` `binaryMimeTypeOf`, Deep Agents' table of the
   extensions it treats as binary. A write to such a path carries base64, which a
@@ -834,7 +834,7 @@ Governance varies by area:
 
 | Area | Access |
 | --- | --- |
-| `scratchpad/**` | the session's one working area, open to the file tools in every state |
+| `scratchpad/**` | the session's one working area, open in every state to the file tools that state is granted |
 | any other session path | governed by the state's `tools.allow` |
 | the offload areas | readable, and agent writes are refused |
 | `checkpoints/`, `artifacts/`, `_specs/` | outside the agent's address space |
@@ -918,9 +918,9 @@ const agent = await createAgent({
   anything else (a number, an object, a list containing one) is refused
   (`tool.path-argument`), so no path inside it passes ungoverned.
 - **Declaring paths only narrows.** The scratchpad and the offload areas are
-  open in every state only to the essential tools, the built-ins and your
-  `essentialTools`. A tool a state must grant stays refused where it is not
-  granted, whatever its paths are.
+  open in every state only to the default file tools that state is granted and
+  to your `essentialTools`. A tool a state must grant stays refused where it is
+  not granted, whatever its paths are.
 - **`toolPaths`** on `createAgent` declares the same thing by tool name, for a
   tool not built with `toolsFromMap`: `toolPaths: { get_markdown: { path: "read" } }`.
   It wins over a descriptor's `paths`. Declaring a built-in tool's paths, or an
@@ -1438,10 +1438,11 @@ tool over it without running a suite:
   heads the rendered workflow header. A top-level `name` key is a load error
   under the strict schema. See the
   [changelog](/reference/changelog/).
-- **`MachineTransition.description` is required and non-empty.** It is all the
-  agent is told about an edge, and a spec constructed in TypeScript without it
-  fails to compile. See the
-  [changelog](/reference/changelog/).
+- **`MachineTransition.description` is optional.** It is what the agent routes
+  on. An undescribed edge (absent, empty or blank) routes on the target state's
+  `instructions` instead, and loading refuses one whose target has none, as well
+  as an undescribed transition of a human state. See
+  [`transitions`](/reference/machine-spec/#transitions-the-only-part-of-the-graph-the-agent-sees).
 - **`resolveSystemPrompt(workspace, options)`** assembles the layered system
   prompt. `options.platformBackendPath` is where a workspace may override the
   platform prompt (normally `PLATFORM_PROMPT_PATH`); the prompt that ships in

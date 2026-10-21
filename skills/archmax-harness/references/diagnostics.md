@@ -27,12 +27,14 @@ message alone. Migrations for removed keys in full:
 | not a skill slug (path/glob given) | Use the bundle directory name; narrow paths with a `tools.allow` entry |
 | `${{…}}` not a valid variable reference | `${{name}}` or `${{name.path}}`; snake_case names |
 | guards on `${{x}}` but no state requires it (warning) | Add `x` to an earlier state's `requires`, or seed it at assembly |
-| `allow` on a path in `scratchpad/` (warning) | Drop it, or govern a non-reserved run path instead |
-| `tools.allow_always` constrains essential tool (warning) | Narrow per state with `tools.allow` |
+| `allow` or `allow_always` on a path in `scratchpad/` (warning) | Drop it, or govern a non-reserved run path instead |
+| `tools.allow_always` is declared but grants none of the default tools (warning) | A declared list replaces the default tools: list the ones the workflow needs (`ls`, `read_file`, `write_file`, … as in the skeleton), or remove the key to grant them all |
 | state both allows and forbids / forbids what nothing enables / enables what allow_always already does / `skills: { allow: [] }` reads like a deny (warnings) | Drop the redundant entry; use `forbid` to subtract |
 | no top-level `instructions` (warning) | Add the standing block |
 | state has several transitions but no `instructions` (warning) | Add routing guidance so the agent classifies the request before it advances |
-| `transitions.<i>.description` must be a non-empty string (error) | Add the condition under which that edge is taken — it is the only thing the agent knows about it. Say *when*, not *where* |
+| `transitions.<i>.description` must be a non-empty string here: '<target>' declares none (error) | The edge is undescribed and its target has no `instructions` to route on. Add the condition under which the edge is taken (say *when*, not *where*), or give the target instructions |
+| `transitions.<i>.description` must be a non-empty string on a human state's transition (error) | It is the decision's button label: say what choosing it means |
+| `transitions.<i>.description` must be a string (error) | Quote it, or omit it to route on the target's instructions |
 | trigger declares unknown key (warning) | Keys read: `session`, `message`, `connection`, `requires`, `returns`; others are preserved |
 | `maxConcurrency` above 1 | Set to 1 or remove |
 | `WORKFLOW.md` has frontmatter | Strip it; the machine is `workflow.yaml` |
