@@ -88,6 +88,7 @@ states:
       allow: [refund-policy]     # adds to allow_always (bundle readable + scripts runnable, no path entries)
       forbid: [order-data]       # subtracts, even from allow_always ([] never denies)
     requires: [case_id]          # variables that must be set before this state may be left
+    locks: [case_id]             # variables only this state may write (change = come back here)
     model: claude-opus-5         # MODEL ID ONLY — this state's turns; beats settings.model
     budget: { maxTurns: 12, timeoutMs: 60000, maxParks: 5 }   # bounds the state's segment
     on_error: closed             # where a terminal failure of this segment routes
@@ -133,7 +134,10 @@ states:
 - **Variables.** One flat checkpointed `name → value` store, never declared.
   Host seeds (`--variables`, `createAgent({ variables })`, a delivery) are
   **locked**; the agent uses `archmax_get_variables`/`archmax_set_variables`
-  (`lock: true` to freeze). Reserved: `trigger` (current trigger id, always
+  (`lock: true` to freeze, until `archmax_reset` releases the agent's locks).
+  A value that must be decided in one place yet stay correctable belongs to a
+  state: `locks: [order_id]` lets only that state write it, so a change routes
+  back there. Reserved: `trigger` (current trigger id, always
   locked) and `title` (the run's one-line task label, agent-owned; a
   sub-workflow child is not asked for one). A
   `${{name}}` / `${{a.b.-1.c}}` reference works in `tools.allow` globs

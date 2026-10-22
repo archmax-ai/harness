@@ -1020,3 +1020,16 @@ describe("the model a state runs on", () => {
     );
   });
 });
+
+describe("ownerOf", () => {
+  it("names the state whose locks list a variable, and no state for any other", () => {
+    const machine = WorkflowMachine.fromSpec({
+      states: {
+        lookup: { triggers: { manual: null }, locks: ["order_id"], transitions: [{ to: "act", description: "Found." }] },
+        act: {},
+      },
+    });
+    expect(machine.ownerOf("order_id")).toBe("lookup");
+    expect(machine.ownerOf("note")).toBeUndefined();
+  });
+});

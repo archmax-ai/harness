@@ -185,8 +185,9 @@ de-duplicated, and carried into the park record after the state's declared `evid
 The runtime SHALL expose `archmax_reset({ reason })` in every state, requiring a non-empty `reason`.
 It SHALL move the position to the recorded `entryState` (else the trigger's start state), clear
 `iterations`, `beforeDone`, `rejected` and `stateTurns`, append a `reset` trail step with the
-reason, and re-enter through the entry state's `before` hook. It SHALL NOT touch messages, variables
-(locked seeds included), files or the recorded trail. `tools.forbid_always` MAY ban it.
+reason, and re-enter through the entry state's `before` hook. It SHALL release every lock the agent
+set with `archmax_set_variables`, keeping each value, and SHALL NOT touch any other variable (a
+host's locks included), messages, files or the recorded trail. `tools.forbid_always` MAY ban it.
 
 The platform prompt and the tool's description SHALL tell the model when to reset and when not to.
 A reset is for a new message the current state cannot serve (no transition reaches what was asked,
@@ -218,6 +219,11 @@ state.
   without a reset
 - **THEN** the terminal state the conversation began in is listed, beside a session parked with
   `archmax_wait` and a terminal state routed into this turn
+
+#### Scenario: The restarted run can decide again what the earlier run locked
+
+- **WHEN** the agent set `case_id` with `lock: true` and later calls `archmax_reset`
+- **THEN** `case_id` keeps its value, is no longer locked, and the next write of it succeeds
 
 ### Requirement: `archmax_wait` parks the session in place
 

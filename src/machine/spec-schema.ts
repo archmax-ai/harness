@@ -653,6 +653,8 @@ export const machineStateSchema = z
     skills: skillsBlockSchema.optional(),
     mounts: mountsBlockSchema.optional(),
     requires: z.array(variableName, { error: "must be a list of run-variable names" }).optional(),
+    /** Variables this state owns: only it may write them, on any visit. */
+    locks: z.array(variableName, { error: "must be a list of run-variable names" }).optional(),
     metadata: specMetadataSchema.optional(),
     transitions: z.array(machineTransitionSchema).optional(),
   })
@@ -819,6 +821,41 @@ export interface SpecSchemaIssue {
  * reference variables by a readable name. Runs after the shape has been
  * accepted. Defects the runtime tolerates are `lint-spec.ts` errors instead.
  */
+/**
+ * What `locks` may not say: a variable owned twice (ownership never moves), a
+ * reserved name (`trigger` refuses every write, `title` is never locked), the
+ * same name twice, or any name on a human state, which makes no tool calls.
+ */
+function lockIssues(states: Spec["states"]): SpecSchemaIssue[] {
+  const issues: SpecSchemaIssue[] = [];
+  const owners = new Map<string, string[]>();
+  for (const [slug, state] of Object.entries(states)) {
+    const locks = state?.locks;
+    if (!locks) continue;
+    const at = `states.${slug}.locks`;
+    if (state.type === "human") {
+      issues.push({ path: at, message: `State '${slug}' is a human state, which makes no tool calls, so it cannot own variables` });
+    }
+    locks.forEach((name, index) => {
+      if (name === TRIGGER_VARIABLE || name === TITLE_VARIABLE) {
+        issues.push({ path: `${at}.${index}`, message: `State '${slug}' cannot own the reserved variable '${name}'` });
+      } else if (locks.indexOf(name) !== index) {
+        issues.push({ path: `${at}.${index}`, message: `State '${slug}' lists '${name}' in 'locks' twice` });
+      }
+      if (locks.indexOf(name) === index) owners.set(name, [...(owners.get(name) ?? []), slug]);
+    });
+  }
+  for (const [name, slugs] of owners) {
+    if (slugs.length > 1) {
+      issues.push({
+        path: `states.${slugs[1]}.locks`,
+        message: `Variable '${name}' is owned by more than one state (${slugs.map((s) => `'${s}'`).join(", ")}); a variable has one owner`,
+      });
+    }
+  }
+  return issues;
+}
+
 export function refineSpec(spec: Spec): SpecSchemaIssue[] {
   const issues: SpecSchemaIssue[] = [];
   const issue = (path: string, message: string) => issues.push({ path, message });
@@ -874,6 +911,8 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
       }
     }
   }
+
+  for (const message of lockIssues(states)) issue(message.path, message.message);
 
   for (const [index, entry] of (spec.tools?.allow_always ?? []).entries()) {
     for (const message of guardReferenceIssues("tools.allow_always", entry)) {

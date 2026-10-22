@@ -397,6 +397,14 @@ describe("delivery re-seeding", () => {
     const store = { a: { value: 1, locked: true }, b: { value: 2, locked: false } };
     expect(mergeVariables(store, store)).toEqual(store);
   });
+
+  it("keeps who set a lock, until a host boundary's write replaces the entry", () => {
+    const agent = mergeVariables({}, { note: { value: "x", locked: true, lockedBy: "agent" } });
+    expect(agent.note).toEqual({ value: "x", locked: true, lockedBy: "agent" });
+    expect(mergeVariables(agent, agent)).toEqual(agent);
+    const host = mergeVariables(agent, { note: { value: "y", locked: true, reseed: true } });
+    expect(host.note).toEqual({ value: "y", locked: true });
+  });
 });
 
 describe("readReturns", () => {

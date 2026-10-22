@@ -558,6 +558,16 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   for (const message of unguaranteedReferenceWarnings(target, seededVariables)) {
     emit({ type: "warning", scope: "workflow", message });
   }
+  // A seed is the host's and final, so a state owning the same name can never write it.
+  for (const name of Object.keys(seededVariables)) {
+    const owner = target.ownerOf(name);
+    if (owner === undefined) continue;
+    emit({
+      type: "warning",
+      scope: "workflow",
+      message: `The host seeds '${name}', which state '${owner}' owns in 'locks'. A seed is locked, so '${owner}' can never change it.`,
+    });
+  }
 
   const instrumentation = createWorkflowInstrumentation({
     machine: target,

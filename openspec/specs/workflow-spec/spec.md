@@ -142,6 +142,7 @@ into no part of the prompt), `evidence` (list of paths),
 `triggers`, `before`, `after`, `budget`, `model` (a non-empty model id this state's turns run
 on), `on_error` (a state slug), `tools` (`allow`, `forbid`),
 `skills` (`allow`, `forbid`), `mounts` (`allow`, `forbid`), `requires` (list of variable names),
+`locks` (list of variable names the state owns),
 `metadata` (the loose, runtime-inert host slot), and `transitions`. A bare `done:` (YAML
 `null`) SHALL be read as an empty state — terminal, `agent`, always-on tools only.
 
@@ -1247,13 +1248,21 @@ construction, `buildSeededVariables`, whether it arrives as `createAgent`'s `var
 delivery's variables or a call's arguments, so a guard bound to a seed cannot be invalidated
 by the agent. A locked variable SHALL NOT be unlocked, deleted or rewritten by any tool, hook
 or script; only a host seeding boundary (a turn start or a delivery) replaces a locked entry,
-re-establishing the session's facts. Variables SHALL be checkpointed with the session and survive transitions,
+re-establishing the session's facts, and only `archmax_reset` unlocks one: the locks the agent
+set with `archmax_set_variables`, never a host's. A lock SHALL record whether the agent set it; a
+lock recorded without that is a host's. Variables SHALL be checkpointed with the session and survive transitions,
 parks and turn boundaries; successive writes in one state accumulate.
 
 #### Scenario: Delivery re-seeds a locked name
 
 - **WHEN** a delivery into a parked session carries `reply_body` again
 - **THEN** the new value replaces the old, stays locked, and the agent still cannot rewrite it
+
+#### Scenario: A reset frees the agent's locks and keeps the host's
+
+- **WHEN** a session seeded `customer_email` (locked by the host), the agent set `case_id` with
+  `lock: true`, and the agent then calls `archmax_reset`
+- **THEN** `case_id` keeps its value and can be written again, while `customer_email` stays locked
 
 ### Requirement: References
 
@@ -1291,7 +1300,8 @@ is an error rather than the whole value. `archmax_set_variables` SHALL take `var
 to whole value; any JSON value, no sub-path write) and optional `lock`; it creates or replaces
 each variable and locks them all when `lock` is true. A call SHALL be refused atomically —
 nothing written — when it names no variables, uses an invalid name, targets a locked variable,
-locks `title`, or writes a malformed `title`. Both tools SHALL be disclosed in every state,
+targets a variable another state owns (naming that state, so the agent can go back there), locks
+`title` or a variable a state owns, or writes a malformed `title`. Both tools SHALL be disclosed in every state,
 terminal states included.
 
 #### Scenario: Blank name reads everything
@@ -1303,6 +1313,49 @@ terminal states included.
 
 - **WHEN** one call writes `{ case_id: "K-9", title: "Refund" }` with `lock: true`
 - **THEN** neither is written and the reason names `title`
+
+#### Scenario: A write from outside the owner is refused naming it
+
+- **WHEN** state `lookup` declares `locks: [order_id]` and the agent calls
+  `archmax_set_variables({ variables: { order_id: "2" } })` in `act`
+- **THEN** nothing is written and the reason names `order_id` and `lookup` and says to go back
+  there to change it
+
+#### Scenario: An owned variable cannot be made final
+
+- **WHEN** the agent in `lookup`, which owns `order_id`, writes it with `lock: true`
+- **THEN** nothing is written and the reason says `lookup` owns `order_id`, so it stays
+  changeable there
+
+### Requirement: A state may own variables
+
+A state MAY declare `locks:`, a list of variable names it **owns**. Only the owning state SHALL
+write a variable it owns, on any of its visits and in any turn, before or after the variable is
+set; a write from any other state is refused (see "The variable tools"). Ownership SHALL apply to
+any variable, whether or not a guard reads it, and SHALL be read from the spec, never from the
+session. Loading SHALL fail when two states own the same variable, when `locks` names `trigger` or
+`title`, when it names a variable twice, or when it is declared on a human state, which makes no
+tool calls. A variable the host supplies (a seed, a trigger input, a delivered variable) stays
+locked and final although a state owns its name; assembly SHALL warn about a seed with an owned
+name, and the lint SHALL warn about a trigger's required input with one. A sub-workflow's states
+own variables of the child session only.
+
+#### Scenario: The owner decides again after the session goes back
+
+- **WHEN** `lookup` owns `order_id` and sets it to `1`, the session advances to `act`, the person
+  names order 2, and the agent advances back to `lookup`
+- **THEN** a write of `order_id` in `act` is refused naming `lookup`, the write in `lookup`
+  succeeds, and `act`'s guard on `${{order_id}}` admits order 2 once the session is there again
+
+#### Scenario: Two owners fail loading
+
+- **WHEN** `lookup` and `confirm` both declare `locks: [order_id]`
+- **THEN** loading fails naming `order_id` and both states
+
+#### Scenario: Ownership is not tied to guards
+
+- **WHEN** `draft` declares `locks: [summary]` and no guard references `summary`
+- **THEN** only `draft` may write `summary`, as for a guarded variable
 
 ### Requirement: A state's requires must be met before it is left
 

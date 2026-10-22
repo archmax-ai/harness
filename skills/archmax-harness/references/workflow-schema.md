@@ -276,6 +276,18 @@ states:
                                # reference GUARANTEED rather than dependent on agent
                                # behavior. Name here anything a downstream guard
                                # reads.
+    locks?: [string]           # RUN VARIABLES this state OWNS: only it may write them,
+                               # on any visit, before or after they are set; a write
+                               # from another state is refused naming the owner. To
+                               # change one (the person meant another order), the
+                               # session goes BACK to the owner, whose rules apply
+                               # again, and later guards re-read it — so give the
+                               # owner an edge back from the states that use it. Any
+                               # variable, guarded or not. One owner per variable;
+                               # never `trigger`/`title`; not on a human state.
+                               # `lock: true` is refused for an owned variable, and a
+                               # host-supplied value with the same name stays final.
+                               # Pair with `requires` to make the owner set it.
     title?: string             # HUMAN-READABLE label. Presentational only: carried
                                # in a human state's pending-decision record and shown
                                # in host surfaces. REACHES NO MODEL CALL. Never a

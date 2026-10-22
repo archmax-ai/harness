@@ -191,6 +191,25 @@ describe("createAgent workflow load enforcement", () => {
   });
 });
 
+describe("an owned variable the host seeds", () => {
+  it("is warned about at assembly", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": "states:\n  start:\n    triggers:\n      manual:\n    locks: [order_id]\n",
+    });
+    const warnings: string[] = [];
+    await createAgent({
+      workflow: "p",
+      model: stubModel,
+      variables: { order_id: "1" },
+      workspace: { rootDir: root },
+      onEvent: (event) => {
+        if (event.type === "warning") warnings.push(event.message);
+      },
+    });
+    expect(warnings).toContainEqual(expect.stringContaining("The host seeds 'order_id', which state 'start' owns"));
+  });
+});
+
 describe("createAgent clock", () => {
   const spec = "states:\n  start:\n    triggers:\n      manual:\n";
 

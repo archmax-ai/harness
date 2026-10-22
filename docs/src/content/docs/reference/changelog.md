@@ -90,6 +90,19 @@ as it is today; the guides themselves describe only the present. Every release a
   `resumeAt` and the sandbox's `Date` stay real. Without either, nothing
   changes. See [`clock`](/reference/public-api/#clock-pinning-the-date) and
   [cases and the date](/guides/testing/#cases-and-the-date).
+- **A state can own variables.** A lock makes a value final, so a session could
+  not follow a person who changed their mind about a value a guard reads (the
+  order to cancel), and an unlocked value meant nothing to a guard. A state's
+  new `locks: [order_id]` makes it the owner: only it may write the variable, so
+  changing it means going back there, where its rules apply again and every
+  later guard reads the new value. It works for any variable, guarded or not.
+  See [`locks`](/reference/machine-spec/#locks).
+- **Breaking: `archmax_reset` releases the agent's locks.** A lock the agent set
+  with `archmax_set_variables` used to survive a reset, so the restarted run
+  could not decide that value again. A reset now unlocks it, keeping its value,
+  and leaves every host lock alone. A lock the agent sets is recorded with
+  `lockedBy: "agent"` on the variable. **Migrate** a value that must survive a
+  reset by having the host seed it.
 
 ## 0.8.0
 

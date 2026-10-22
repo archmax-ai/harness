@@ -509,7 +509,9 @@ reuses it rather than carrying a sub-workflow trigger id of its own.
 
 A session's variables are also on its **summary**. `sessions.list()` and
 `sessions.get(sessionId)` carry `variables` as `name → { value, locked }`, read
-straight from the checkpoint.
+straight from the checkpoint. A lock the agent set with `archmax_set_variables`
+also carries `lockedBy: "agent"`: `archmax_reset` releases it, and a lock without
+it is the host's.
 
 So the record exists for every session that has run, even where artifacts were
 skipped (the CLI emits none). A checkpoint predating variables, or one holding a

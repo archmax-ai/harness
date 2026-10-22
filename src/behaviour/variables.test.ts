@@ -78,7 +78,7 @@ describe("archmax_set_variables and archmax_get_variables", () => {
     expect(eventsOf(events, "variables-set")).toMatchObject([{ names: ["decision"], locked: true }]);
     const writes = toolResults(messages).filter((r) => r.name === "archmax_set_variables");
     expect(writes[1]?.status).toBe("error");
-    expect((await agent.sessions.get("s1"))?.variables?.decision).toEqual({ value: "approved", locked: true });
+    expect((await agent.sessions.get("s1"))?.variables?.decision).toEqual({ value: "approved", locked: true, lockedBy: "agent" });
   });
 
   it("carries agent-set variables across a turn boundary", async () => {

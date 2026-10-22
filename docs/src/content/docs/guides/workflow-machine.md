@@ -60,7 +60,9 @@ session returns to the state it began in (the start state its trigger selected),
 with correction budgets cleared and that state's `before` hook re-run.
 
 The conversation, the files written so far, and the session's variables carry
-over untouched. The audit trail records the move as a `reset` step. Where a
+over. What the agent locked is unlocked, values kept, so the restarted run can
+decide it again; a host's lock stays. The audit trail records the move as a
+`reset` step. Where a
 model-initiated restart is unwanted, ban it with
 `tools: { forbid_always: [archmax_reset] }`.
 
@@ -533,7 +535,8 @@ Four rules make this safe to rely on:
   the guard at all.
 - **Locking is monotonic.** A locked variable refuses every later write, loudly,
   and host seeds are locked automatically. Lock anything else a guard depends
-  on: that is what settles the fact. A seed of one of the trigger's
+  on: that is what settles the fact. The one release is `archmax_reset`, which
+  unlocks what the agent locked (never a host's lock), keeping the values. A seed of one of the trigger's
   [returns](/guides/triggers/#a-return-is-owed-when-the-session-finishes) is
   the exception: it lands unlocked, so a guard should not rest on one until the
   agent locks it. Without a lock, any later state can
@@ -546,6 +549,15 @@ Four rules make this safe to rely on:
 nor a seed, assembly warns that the guard rests on the agent having called
 `archmax_set_variables` first. The turn then fails at the guarded call when it
 has not.
+
+A lock makes a value final. When a value has to stay correctable but must be
+decided in one place (an order the person may still change their mind about),
+let a state **own** it with
+[`locks: [order_id]`](/reference/machine-spec/#locks). Only that state may write
+it, so changing it means going back there: the value is decided again under that
+state's rules, and every later guard checks the new value on the way forward.
+`requires: [order_id]` beside it makes the owner set it before the session moves
+on.
 
 The agent reads the store with `archmax_get_variables({ name?, path? })` and
 writes it with `archmax_set_variables({ variables, lock? })`. Both are runtime

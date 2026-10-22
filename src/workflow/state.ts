@@ -206,6 +206,8 @@ export const variableEntrySchema = z.object({
   locked: z.boolean(),
   /** Host-boundary marker; see {@link mergeVariables}. Never persisted as meaningful state. */
   reseed: z.boolean().optional(),
+  /** Who set the lock: `agent` for `archmax_set_variables`, which a reset releases; absent for the host. */
+  lockedBy: z.literal("agent").optional(),
 });
 
 /** The run's usage as persisted — structurally identical to {@link UsageSummary} (guarded below). */
@@ -320,8 +322,8 @@ export function mergeVariables(acc: VariableStore, update: VariableStore): Varia
   for (const [name, entry] of Object.entries(update)) {
     const existing = merged[name];
     if (existing !== undefined && entry.reseed !== true && existing.locked) continue;
-    // The marker is an instruction to the merge, not part of the variable.
-    merged[name] = { value: entry.value, locked: entry.locked };
+    // The marker is an instruction to the merge, not part of the variable; who locked it is.
+    merged[name] = { value: entry.value, locked: entry.locked, ...(entry.lockedBy ? { lockedBy: entry.lockedBy } : {}) };
   }
   return merged;
 }

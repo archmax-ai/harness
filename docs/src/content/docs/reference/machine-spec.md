@@ -90,6 +90,7 @@ states:
       allow: [order-data]   # capability slugs THIS state adds (see skills.allow_always)
     mounts:
       allow: [catalogs/eu]  # mount names THIS state adds (see mounts.allow_always)
+    locks: [case_id]        # variables only THIS state may write (see locks)
     tools:
       allow:                # this state's grants; `forbid:` beside it denies
         - { tool: write_file, args: { file_path: [reports/answer.json] } }   # a governed session path;
@@ -933,6 +934,49 @@ A session that finishes **short of its trigger's
 see `on_error` either. A top-level session ends `rejected`, naming what it left
 unset. A sub-workflow child completes instead, and its caller gets the unset
 ones empty (`null`) plus a `note` naming them.
+
+### `locks`
+
+The variables this state **owns**. Only the owner may write a variable it owns,
+on any of its visits and in any turn, before or after the variable is set. A
+write from any other state is refused, naming the owner:
+
+```yaml
+states:
+  lookup:
+    locks: [order_id]      # decided here, and only here
+    transitions:
+      - to: act
+        description: The order is found.
+  act:
+    tools:
+      allow:
+        - { tool: cancel_order, args: { order_id: ["${{order_id}}"] } }
+    transitions:
+      - to: lookup
+        description: The person means a different order.
+```
+
+To change `order_id` once the session is in `act`, the agent goes back to
+`lookup`. The value is decided again under `lookup`'s tools, hooks and
+`requires`, and every later state and guard reads the new value on the way
+forward. So give an owner an edge back from the states that act on its
+variables.
+
+- **Any variable, guarded or not.** `locks` ties a variable to the state that
+  decides it.
+- **One owner.** Loading fails when two states own the same variable, when
+  `locks` names `trigger` or `title`, when it lists a name twice, or when it is on
+  a human state, which makes no tool calls.
+- **An owned variable stays changeable in its owner.** `archmax_set_variables`
+  with `lock: true` is refused for it.
+- **The host's value wins.** A variable the host supplies (a seed, a trigger
+  input, a delivered variable) stays locked although a state owns its name.
+  Assembly and `archmax validate` warn about the overlap.
+
+A lock the agent sets with `lock: true` is different: it is final until
+`archmax_reset`, which releases the locks the agent set and keeps their values.
+A host's lock is never released.
 
 ## `disabled`: take a workflow out of service
 

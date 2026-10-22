@@ -474,6 +474,16 @@ export class WorkflowMachine {
     return this.spec.budget?.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
   }
 
+  private owners?: Map<string, string>;
+
+  /** The state that owns `name` (lists it in `locks`), the only one that may write it; `undefined` when none does. */
+  ownerOf(name: string): string | undefined {
+    this.owners ??= new Map(
+      Object.entries(this.spec.states).flatMap(([slug, state]) => (state?.locks ?? []).map((v) => [v, slug] as const)),
+    );
+    return this.owners.get(name);
+  }
+
   /** The state a failed turn routes to (`on_error`), if declared and present. */
   onError(state: string): string | undefined {
     const target = this.spec.states[state]?.on_error;
