@@ -15,6 +15,7 @@ import { Command, isGraphBubbleUp } from "@langchain/langgraph";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
 import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
+import { readClockPin } from "../core/clock.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import { ADVANCE_TOOL, entryStateOf, RESET_TOOL, unresolvedArgumentMessage } from "./control-tools.js";
 import { resolveArguments, type VariableStore } from "../machine/variables.js";
@@ -95,6 +96,8 @@ export interface StateModels {
 export interface PromptShaping {
   cacheStrategy?: PromptCacheStrategy;
   cacheTtl?: CacheTtl;
+  /** The host's pinned "now" (`createAgent({ clock })`); a turn's own pin outranks it. */
+  clock?: Date;
 }
 
 export interface GovernanceContext {
@@ -250,12 +253,11 @@ function inZone(
  * runs there. Rounding is stated rather than hidden — a clock that may be ten
  * minutes behind and says so is usable, one that quietly is not.
  */
-function renderNow(now: Date): string {
+function renderNow(now: Date, zone: string | null): string {
   const bucketMs = CLOCK_BUCKET_MINUTES * 60_000;
   const at = new Date(Math.floor(now.getTime() / bucketMs) * bucketMs);
   const utc = at.toISOString().slice(0, 16).replace("T", " ");
   const weekday = inZone(at, "UTC", { weekday: "long" }, "en-GB");
-  const zone = hostTimeZone();
   let local = "";
   if (zone) {
     const day = inZone(at, zone, { year: "numeric", month: "2-digit", day: "2-digit" });
@@ -440,7 +442,9 @@ export function createGovernance(ctx: GovernanceContext): Governance {
   function volatileSection(request: ModelCallRequest, workflowState: string, replyOnly: boolean): string {
     // First, and outside either heading: the clock is true of the turn, not of
     // the state the turn is in, so a parked run reads it as well.
-    const clock = renderNow(new Date());
+    // A pin renders without the host's local time, which differs between machines.
+    const pin = readClockPin((request.runtime as RunnableConfig | undefined)?.configurable) ?? ctx.shaping.clock;
+    const clock = pin ? renderNow(pin, null) : renderNow(new Date(), hostTimeZone());
     if (replyOnly) {
       return `${clock}\n\n## This run is parked\n\n${replyOnlyDirective(machine, request.state)}`;
     }

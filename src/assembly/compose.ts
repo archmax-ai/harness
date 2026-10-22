@@ -83,6 +83,7 @@ import {
 import { createTurnRunner, type TurnRunner } from "../workflow/turn-runner.js";
 import { createDelegationTool } from "../workflow/workflow-tools.js";
 import type { CreateAgentParams } from "./index.js";
+import { parseClock } from "../core/clock.js";
 
 /**
  * Everything one assembly resolved once and every composition it makes shares.
@@ -573,7 +574,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     subWorkflows: dispatcher,
     ...(params.hookExecutors ? { hookExecutors: params.hookExecutors } : {}),
     onEvent: emit,
-    promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl },
+    // Validated by `createAgent`; a pin reaches every child composed from the same params.
+    promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl, clock: parseClock(params.clock ?? "") },
     stateModels,
     workspace,
     workflowName: input.workflow,

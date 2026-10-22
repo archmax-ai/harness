@@ -103,7 +103,7 @@ steps:
       atLeast: 0.7
 ```
 
-These are the eight top-level keys:
+These are the nine top-level keys:
 
 | Key | |
 | --- | --- |
@@ -114,6 +114,7 @@ These are the eight top-level keys:
 | `variables` | The session's input, seeded locked on every driven turn. |
 | `workspace` | Files seeded into the session workspace before any step. |
 | `mocks` | Tool-result mocks the driven session sees. |
+| `clock` | The date and time every model call of the case states as "now" (see [cases and the date](#cases-and-the-date)). |
 | `steps` | The flat list of actions and assertions. |
 
 The schema **fails closed**. An unknown top-level key or step key is an error,
@@ -480,6 +481,34 @@ still governed: the start state must allow the read tool the agent needs.
 Seeding goes through the target runtime's `sessions.seed` handle. A case
 declaring workspace files against a target without it fails before the agent
 runs.
+
+## Cases and the date
+
+Every model call states the current date and time. A case whose fixtures or
+prompts carry dates (an order placed on `2026-03-15`, a refund window of 30 days)
+would otherwise read a different "now" on every run, and its verdict would drift
+with the calendar. Pin it:
+
+```yaml
+title: Refund inside the window
+description: A delivered order placed five days ago is refunded.
+clock: 2026-03-20            # or "2026-03-20T14:30:00Z", "2026-03-20T16:30+02:00"
+```
+
+- **Forms:** an ISO 8601 date (midnight UTC) or a date-time with `Z` or an
+  offset. A date-time without a zone, a date that doesn't exist, or anything
+  else is a schema error naming `clock`. `clock: ""` pins nothing.
+- **Pin on a ten-minute mark.** The line is rounded down to ten minutes, as the
+  real one is, and it shows UTC only.
+- **Every action carries it:** `send`, `decide` and `deliver`, a park's handoff
+  message and a sub-workflow's calls included. It outranks the host's
+  [`clock` option](/reference/public-api/#clock-pinning-the-date) for this case,
+  and a case without one runs on the host's choice.
+- **Only the prompt is pinned.** Hook scripts and the sandbox's `Date`, recorded
+  timestamps and a park's `resumeAt` stay real. A script that needs the case's
+  "today" reads it from a variable the case seeds. An absolute `archmax_wait`
+  `until` the model derives from the pinned date may lie in the real past, so
+  resume such a wait with `deliver`.
 
 ## Authoring a case from a real session
 

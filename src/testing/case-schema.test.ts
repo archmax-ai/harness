@@ -84,6 +84,20 @@ description: >-
     );
   });
 
+  it("reads a case's clock as its instant, quoted or not", () => {
+    expect(parse(`{ title: t, description: x, clock: 2026-03-20 }`).clock).toBe("2026-03-20T00:00:00.000Z");
+    expect(parse(`{ title: t, description: x, clock: "2026-03-20T16:30+02:00" }`).clock).toBe("2026-03-20T14:30:00.000Z");
+    expect(parse(`{ title: t, description: x, clock: "" }`)).not.toHaveProperty("clock");
+  });
+
+  it.each([`"2026-03-20T10:00"`, `next tuesday`, `true`])("rejects clock: %s naming the accepted forms", (value) => {
+    expect(() => parse(`{ title: t, description: x, clock: ${value} }`)).toThrow(/'clock' takes an ISO 8601 date/);
+  });
+
+  it("lists clock among the known keys", () => {
+    expect(() => parse(`{ title: t, description: x, clocks: x }`)).toThrow(/known: .*clock/);
+  });
+
   it("rejects non-mapping documents and YAML parse errors", () => {
     expect(() => parse(`- just\n- a list`)).toThrow(/YAML mapping/);
     expect(() => parse(`description: "unterminated`)).toThrow(/YAML parse error/);

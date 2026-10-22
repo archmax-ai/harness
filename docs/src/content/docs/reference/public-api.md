@@ -977,6 +977,34 @@ const agent = await createAgent({ images: true });            // or { maxBytes, 
 - HEIC/HEIF, PDF, audio, video and every other binary stay refused, option on or
   off. Leave it off for a model without vision, which rejects an image.
 
+### `clock`: pinning the date
+
+Every model call of a governed agent opens with the current date and time. A case
+or an evaluation whose data carries dates (an order placed on `2026-03-15`, a
+ticket due in 30 days) needs the same "now" on every run, so a host can pin it:
+
+```ts
+const agent = await createAgent({ clock: "2026-03-20" });   // or "2026-03-20T14:30:00Z", "…T16:30+02:00"
+```
+
+- **Accepted forms:** an ISO 8601 date, read as midnight UTC, or a date-time
+  with `Z` or an offset. A date-time without a zone is refused, because it would
+  mean a different instant on each machine, and so is a date that doesn't exist
+  (`2026-02-30`). An invalid value fails assembly naming `clock`. An empty value
+  (`clock: process.env.EVAL_CLOCK` with the variable unset) means the real clock.
+- **The same line:** the pinned instant is rendered like the real one, in UTC
+  with its weekday and rounded down to ten minutes, so pin on a ten-minute mark.
+  It leaves out the host's local time, which differs between machines.
+- **Only the line is pinned.** Recorded timestamps, a park's `resumeAt` and the
+  sandbox's `Date` stay real. A script that needs the case's "today" reads it
+  from a variable the case seeds.
+- **Every model call:** a sub-workflow's child sessions and a park's handoff
+  message included. A case's [`clock:` key](/guides/testing/#cases-and-the-date)
+  outranks the option for that case.
+- **Not for production.** A pinned agent reasons as if no time passes, and that
+  matters most across a park: a session that resumes days later still thinks it
+  is the pinned day.
+
 ### `promptCache`, `pricing`: caching and cost
 
 ```ts

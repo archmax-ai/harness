@@ -1288,3 +1288,35 @@ describe("files across a delegation", () => {
     expect(resultOf(failed.messages).status).toBe("error");
   });
 });
+
+describe("a pinned clock in a child session", () => {
+  const child = workflowToolName("enrich");
+  const root = () =>
+    makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      "workflows/w/workflow.yaml": {
+        runtime: { engine: "archmax-harness", version: "2" },
+        states: { start: { triggers: { manual: null }, tools: { allow: [child] } } },
+      },
+      "workflows/enrich/workflow.yaml": {
+        runtime: { engine: "archmax-harness", version: "2" },
+        states: { work: { triggers: { manual: null } } },
+      },
+    });
+  const turns: ScriptedTurn[] = [{ tool: child, args: {} }, { reply: "enriched" }, { reply: "parent done" }];
+  const LINE = "Current date and time: 2026-03-20 00:00 UTC (Friday)";
+
+  it("reaches every model call of the child from the host's option", async () => {
+    const { agent, model } = await assemble(root(), { turns, params: { clock: "2026-03-20" } });
+    await agent.workflow.send("s1", { message: "go" });
+    expect(model.calls).toHaveLength(3);
+    for (const call of model.calls) expect(call.systemPrompt).toContain(LINE);
+  });
+
+  it("reaches every model call of the child from a turn's own pin", async () => {
+    const { agent, model } = await assemble(root(), { turns });
+    await agent.workflow.send("s1", { message: "go" }, { configurable: { __clock: "2026-03-20" } });
+    expect(model.calls).toHaveLength(3);
+    for (const call of model.calls) expect(call.systemPrompt).toContain(LINE);
+  });
+});

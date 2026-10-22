@@ -81,6 +81,15 @@ as it is today; the guides themselves describe only the present. Every release a
   admits a different spelling (a leading `/`, `//` or `./`). **Migrate** a host
   tool whose argument is a path by declaring it in `toolPaths`. See
   [tool governance](/reference/machine-spec/#toolsallow-closed-by-default-governance).
+- **The prompt's clock can be pinned.** Every model call states the real date
+  and time, so a case whose data carries dates drifted with the calendar, and a
+  simulation's own "today" was contradicted on every call. `createAgent({ clock })`
+  and a case's `clock:` key take an ISO 8601 date or a zoned date-time; every
+  model call then states that instant in UTC, a case's key outranking the
+  option. Only the prompt line is pinned: recorded timestamps, a park's
+  `resumeAt` and the sandbox's `Date` stay real. Without either, nothing
+  changes. See [`clock`](/reference/public-api/#clock-pinning-the-date) and
+  [cases and the date](/guides/testing/#cases-and-the-date).
 
 ## 0.8.0
 

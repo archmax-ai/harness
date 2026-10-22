@@ -191,6 +191,23 @@ describe("createAgent workflow load enforcement", () => {
   });
 });
 
+describe("createAgent clock", () => {
+  const spec = "states:\n  start:\n    triggers:\n      manual:\n";
+
+  it.each(["2026-03-20T10:00", "2026-02-30"])("refuses a clock of %s, naming the option", async (clock) => {
+    const root = makeWorkspace({ "workflows/p/workflow.yaml": spec });
+    await expect(createAgent({ workflow: "p", model: stubModel, clock, workspace: { rootDir: root } })).rejects.toThrow(
+      /'clock'.*ISO 8601 date/,
+    );
+  });
+
+  it("reads an empty clock as the real one", async () => {
+    const root = makeWorkspace({ "workflows/p/workflow.yaml": spec });
+    const agent = await createAgent({ workflow: "p", model: stubModel, clock: "", workspace: { rootDir: root } });
+    expect(agent.workflow).toBeDefined();
+  });
+});
+
 describe("createAgent model factory", () => {
   it("assembles without ARCHMAX_* variables when the factory supplies its own models", async () => {
     // A host resolving the model from its own configuration passes a factory

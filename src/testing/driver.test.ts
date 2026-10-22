@@ -474,3 +474,42 @@ describe("a decide that re-parks", () => {
     expect(view.parked).toBe(true);
   });
 });
+
+describe("a case's pinned clock", () => {
+  /** An agent whose `send` records the run configuration of every action. */
+  function recording() {
+    const configs: Array<{ configurable?: Record<string, unknown> }> = [];
+    const outcome = { kind: "completed", disposition: "turn", reply: "", messages: [], auditTrail: [], variables: {} };
+    const agent = {
+      workflow: {
+        resolveTrigger: () => undefined,
+        send: async (_id: string, _input: unknown, config: { configurable?: Record<string, unknown> }) => {
+          configs.push(config);
+          return outcome;
+        },
+      },
+    } as unknown as Agent & { workflow: WorkflowSurface };
+    return { agent, configs };
+  }
+
+  it("rides every action when the case declares one, and mocks ride only send", async () => {
+    const { agent, configs } = recording();
+    const engine = createSessionEngine({ agent, defaultSessionId: "c1" });
+    await engine.open(DEFAULT_SESSION_ID, { clock: "2026-03-20T00:00:00.000Z" });
+    await engine.send(DEFAULT_SESSION_ID, "go", []);
+    await engine.decide(DEFAULT_SESSION_ID, "done");
+    await engine.deliver(DEFAULT_SESSION_ID, "email_reply");
+    expect(configs.map((c) => c.configurable?.__clock)).toEqual(Array(3).fill("2026-03-20T00:00:00.000Z"));
+    expect(configs.map((c) => "__toolMocks" in (c.configurable ?? {}))).toEqual([true, false, false]);
+  });
+
+  it("rides no action when the case declares none", async () => {
+    const { agent, configs } = recording();
+    const engine = createSessionEngine({ agent, defaultSessionId: "c1" });
+    await engine.open(DEFAULT_SESSION_ID);
+    await engine.send(DEFAULT_SESSION_ID, "go", []);
+    await engine.decide(DEFAULT_SESSION_ID, "done");
+    await engine.deliver(DEFAULT_SESSION_ID, "email_reply");
+    expect(configs.some((c) => c.configurable?.__clock !== undefined)).toBe(false);
+  });
+});

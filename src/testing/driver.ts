@@ -9,6 +9,7 @@
 import type { Agent, WorkflowSurface } from "../agent.js";
 import { messagesToSessionView, type SessionView } from "../workflow/session-view.js";
 import type { Outcome } from "../sessions/resume.js";
+import { CLOCK_CONFIG_KEY } from "../core/clock.js";
 import type { ToolMockSpec } from "../core/tool-mocks.js";
 
 /** The session name steps without a `session:` key drive. */
@@ -26,6 +27,8 @@ export interface DriveSession {
   trigger?: { id: string };
   /** Variables seeded into every driven turn of this session, locked by the runtime. */
   variables?: Record<string, unknown>;
+  /** The "now" (an ISO instant) every action of this session's prompt states. */
+  clock?: string;
   /** The session's latest turn view (empty until it first drives). */
   lastView: SessionView;
 }
@@ -38,6 +41,8 @@ export interface SessionStartConditions {
    * ride the assembly-time `variables` seeds.
    */
   variables?: Record<string, unknown>;
+  /** The case's pinned "now", as an ISO instant, carried on every action's run configuration. */
+  clock?: string;
   /** Workspace files seeded into the session before any turn. */
   files?: Record<string, unknown>;
 }
@@ -60,6 +65,7 @@ async function applyStartConditions(
   if (input.variables && Object.keys(input.variables).length > 0) {
     session.variables = { ...input.variables };
   }
+  if (input.clock) session.clock = input.clock;
   const files = input.files ?? {};
   if (Object.keys(files).length > 0) {
     if (typeof agent.sessions?.seed !== "function") {
@@ -156,6 +162,18 @@ export function createSessionEngine(opts: {
     return session;
   }
 
+  /**
+   * One action's run configuration: the case's pin on every action, so none can
+   * drop it, and the case's mocks on `send` alone, as they always ride.
+   */
+  function actionConfig(session: DriveSession, toolMocks?: ToolMockSpec[]) {
+    const configurable = {
+      ...(session.clock ? { [CLOCK_CONFIG_KEY]: session.clock } : {}),
+      ...(toolMocks ? { __toolMocks: toolMocks } : {}),
+    };
+    return Object.keys(configurable).length > 0 ? { ...runConfig, configurable } : runConfig;
+  }
+
   async function settle(session: DriveSession, outcome: Promise<Outcome>): Promise<SessionView> {
     const view = viewOf(session, await outcome);
     session.lastView = view;
@@ -191,7 +209,7 @@ export function createSessionEngine(opts: {
             ...(session.trigger ? { trigger: session.trigger } : {}),
             ...(session.variables ? { variables: session.variables } : {}),
           },
-          { ...runConfig, configurable: { __toolMocks: toolMocks } },
+          actionConfig(session, toolMocks),
         ),
       );
     },
@@ -203,7 +221,7 @@ export function createSessionEngine(opts: {
         agent.workflow.send(
           session.sessionId,
           { delivery: { trigger: { id: trigger }, ...(variables ? { variables } : {}) } },
-          runConfig,
+          actionConfig(session),
         ),
       );
     },
@@ -215,7 +233,7 @@ export function createSessionEngine(opts: {
         agent.workflow.send(
           session.sessionId,
           { decision: { target: to, ...(comment ? { comment } : {}) } },
-          runConfig,
+          actionConfig(session),
         ),
       );
     },

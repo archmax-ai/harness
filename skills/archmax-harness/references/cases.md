@@ -19,6 +19,7 @@ it). Host-interpreted; no sandbox runs a case. **Unknown keys are errors.**
 | `variables` | `{ name: value }` seeded and **locked** every turn — the firing's payload; never seed what the agent must establish (assert it with `variables:` instead) |
 | `workspace` | `{ <run path>: content }` — strings verbatim, other YAML → JSON, `{ from: <tests-relative path> }` copies a file; only run-zone paths (`trigger.json`, `scratchpad/…`) |
 | `mocks` | `[{ tool, whenInput?, result }]` — intercepts agent and script calls alike (partial-input match) |
+| `clock` | ISO 8601 date (`2026-03-20`) or date-time with `Z`/offset — the "now" every model call of the case states; pin it whenever fixtures or prompts carry dates. Prompt only: scripts, the sandbox and recorded timestamps stay real |
 | `steps` | one flat list; actions and assertions are peers; an assertion evaluates against the nearest action above it |
 
 Actions: `send: "<message>"` (a new turn; against a parked run, a reply-only

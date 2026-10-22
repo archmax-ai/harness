@@ -104,7 +104,7 @@ note. A pin at `14:37` shows `14:30`; the docs advise pinning on a ten-minute ma
   stays true.
 
 **4. The instant is picked per call: the turn's pin, then the option's, then now.**
-`volatileSection` resolves `readClockPin(request.runtime?.configurable) ?? ctx.clock ?? null` and
+`volatileSection` resolves `readClockPin(request.runtime?.configurable) ?? ctx.shaping.clock` and
 renders the pin when there is one, else `new Date()` with the host zone. Both branches use that one
 value. A pinned line is a pure function of the configuration, so it is byte-stable across every call
 and turn. Prompt caching gets slightly better under a pin and never worse.
@@ -123,10 +123,11 @@ and turn. Prompt caching gets slightly better under a pin and never worse.
   use the case key.
 
 **6. The option reaches governance through the existing plumbing.** It goes from the validated
-`ctx.params.clock`, as a `Date` or nothing, through `composeGoverned` and
-`createWorkflowMiddleware`'s options, to `GovernanceContext.clock`. Children come from the same
-`AssemblyContext`, so they inherit it. `composePlain` ignores it, because a plain agent renders no
-clock.
+`params.clock`, parsed again where `composeGoverned` builds the middleware, into `PromptShaping.clock`:
+the record that already carries how the model-facing payload is shaped (the cache strategy and
+TTL) from the assembly into the `GovernanceContext`. A new field there needs no new plumbing.
+Children are composed from the same `AssemblyContext`, so they inherit it. `composePlain` ignores
+it, because a plain agent renders no clock.
 
 **7. The case's pin is a session start condition, applied on every action.** `clock` joins
 `trigger` and `variables` as something a case declares once for its session.

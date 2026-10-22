@@ -641,6 +641,7 @@ Unknown keys are validation **errors**. All keys except `title` and
 | `trigger`     | `{ id }`                                       | The trigger every driven turn of the case runs under. Carries **only an id**; `args` is rejected with a pointer to `variables:`. Validated against the workflow machine before any step — an unknown id fails the case (even with no steps), listing the workflow's declared triggers. Omitted ⇒ the manual trigger. See [Start conditions](#start-conditions-trigger-variables-and-workspace).                                              |
 | `workspace`   | `{ <path>: <content> }`                        | Files seeded into the case's run workspace **before any step**. Strings are written verbatim; non-string YAML values are JSON-serialized; a single-key `{ from: <tests/-relative path> }` mapping copies a file byte-for-byte. Only agent-visible run-zone paths are seedable (root-level files like `trigger.json`, or `scratchpad/…`); authored (`skills/…`), runtime-internal, and escaping paths are rejected before anything is written. |
 | `mocks`       | `[{ tool, whenInput?, result }]`               | Declarative tool mocks: when the driven agent calls `tool` with input partially matching `whenInput`, return `result` instead of executing. Intercepts **agent-initiated and PTC** (script `tools.*`) calls alike. See [the mocking section](#settle-the-mocking-depth-before-writing-a-case).                                        |
+| `clock`       | `"2026-03-20"` / `"…T14:30:00Z"` | The date and time every model call of the case states as "now": an ISO 8601 date (midnight UTC) or a date-time with `Z` or an offset; a zoneless or impossible value is a schema error. Carried on every action, a handoff and a child session included, and outranks the host's `clock` option. See [Start conditions](#start-conditions-trigger-variables-and-workspace). |
 | `steps`       | flat list of step entries      | The case script: actions and assertions as peers (below).                                                                                                                                                                                                                                                                                                          |
 
 There is **no multi-session surface** in test spec version 1 — no `sessions:`,
@@ -815,6 +816,15 @@ Two operational notes:
   runs: declared files are overwritten each run, but a file seeded by an
   _earlier_ run whose declaration was since removed can linger. The default
   (per-run unique sessions) starts clean.
+
+**Pin the date** with a case-level `clock:` whenever a fixture or a prompt
+carries a date (an order placed on `2026-03-15`, "refundable for 30 days"):
+without it the model reads the real "now" and the verdict drifts with the
+calendar. Pin on a ten-minute mark (the line is rounded down to ten minutes,
+UTC only). Only the prompt is pinned — hook scripts, the sandbox's `Date`, a
+park's `resumeAt` and every recorded timestamp stay real, so a script that needs
+the case's "today" reads it from a seeded variable, and a wait resumed in the
+case is resumed with `deliver`, not by its `until`.
 
 ### Recovering a case's inputs from previous runs
 

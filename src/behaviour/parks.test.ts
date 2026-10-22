@@ -318,6 +318,22 @@ describe("archmax_wait", () => {
     expect((await agent.sessions.get("conv-1"))?.resumeAt).toBe(parked?.resumeAt);
   });
 
+  it("keeps real timestamps under a pinned prompt clock", async () => {
+    const before = Date.now();
+    const { agent, events, model } = await assemble(workspaceWith(CLARIFY), {
+      turns: [{ tool: "archmax_wait", args: { reason: "waiting", until: "1d" } }],
+      params: { clock: "2020-01-01" },
+    });
+    await turn(agent, "conv-1", "help with my order");
+    expect(model.calls[0]!.systemPrompt).toContain("Current date and time: 2020-01-01 00:00 UTC");
+    const parked = eventsOf(events, "parked")[0]!;
+    // A day after now, not after the pinned 2020-01-01.
+    expect(Date.parse(parked.resumeAt!) - before).toBeGreaterThanOrEqual(24 * 3_600_000);
+    expect(Date.parse(parked.resumeAt!) - Date.now()).toBeLessThanOrEqual(24 * 3_600_000);
+    const { pendingInput } = await pending({ agent } as Assembled, "conv-1");
+    expect(Date.parse(pendingInput!.parkedAt!)).toBeGreaterThanOrEqual(before);
+  });
+
   it("resumes the same state on delivery, with the delivered variables locked and an event note", async () => {
     const { agent, events, model } = await parkWithWait();
     model.enqueue(advanceTo("answer", "the reply named the order"), { reply: "ORD-1 is shipped" });

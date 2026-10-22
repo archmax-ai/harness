@@ -18,6 +18,7 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 import { regexFromString } from "../core/match.js";
+import { CLOCK_FORMS, parseClock } from "../core/clock.js";
 import type { ToolMockSpec } from "../core/tool-mocks.js";
 import {
   CaseSchemaError,
@@ -401,6 +402,18 @@ const mockSchema = z
     result: m.result,
   }));
 
+const CLOCK_ERROR = `'clock' takes ${CLOCK_FORMS}`;
+
+/** A case's pinned "now", normalized to its ISO instant; `""` pins nothing. */
+const clockSchema = z.string({ error: CLOCK_ERROR }).transform((value, ctx): string | undefined => {
+  try {
+    return parseClock(value)?.toISOString();
+  } catch {
+    ctx.addIssue({ code: "custom", message: CLOCK_ERROR });
+    return z.NEVER;
+  }
+});
+
 const TITLE_REQUIRED =
   "'title' is required: a short one-line label for the case (e.g. 'Unknown requester is rejected at entry')";
 const DESCRIPTION_REQUIRED =
@@ -429,6 +442,7 @@ const documentSchema = z
       .record(z.string().min(1, "workspace paths must be non-empty"), workspaceEntry)
       .optional(),
     mocks: z.array(mockSchema, { error: "'mocks' must be a list" }).optional(),
+    clock: clockSchema.optional(),
     steps: z.array(stepSchema, { error: "'steps' must be a list" }).optional(),
   })
   .superRefine((doc, ctx) => {
@@ -527,6 +541,7 @@ export function parseCaseDocument(file: string, source: string, testsDir: string
     ...(doc.variables !== undefined && { variables: doc.variables }),
     workspace: doc.workspace ?? {},
     mocks: doc.mocks ?? [],
+    ...(doc.clock !== undefined && { clock: doc.clock }),
     steps: doc.steps ?? [],
   };
 }
@@ -602,7 +617,7 @@ function serializeStep(step: CaseStep): Record<string, unknown> {
 /**
  * The YAML of a {@link CaseDocument}: the inverse of {@link parseCaseDocument},
  * in the grammar's own key order (`title`, `description`, `skip`, `trigger`,
- * `variables`, `workspace`, `mocks`, `steps`), so an editor that parses a file,
+ * `variables`, `workspace`, `mocks`, `clock`, `steps`), so an editor that parses a file,
  * edits the document and writes it back changes only what it edited. `file` and
  * `id` are the file's, not the document's, and are not written. A reply token
  * keeps its `/pattern/flags` spelling.
@@ -633,6 +648,7 @@ export function serializeCaseDocument(doc: CaseDocument): string {
       result: m.result,
     }));
   }
+  if (doc.clock !== undefined) out.clock = doc.clock;
   if (doc.steps.length > 0) out.steps = doc.steps.map(serializeStep);
   // No line folding: a long `send` stays one line, as an author would write it.
   return stringifyYaml(out, { lineWidth: 0 });

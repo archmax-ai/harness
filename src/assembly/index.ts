@@ -86,6 +86,7 @@ import { createPlainTurnRunner } from "../workflow/turn-runner.js";
 import { composeGoverned, renderSystemPrompt, sessionBinder, type AssemblyContext } from "./compose.js";
 import { createDelegationRegistry } from "./delegation-registry.js";
 import { composePlain } from "./plain.js";
+import { parseClock } from "../core/clock.js";
 
 
 /**
@@ -285,6 +286,16 @@ export interface CreateAgentParams {
    * footer; without pricing, cost is omitted — never guessed.
    */
   pricing?: PricingTable;
+  /**
+   * Pins the date and time a governed agent's prompt states as "now", for cases
+   * and evaluations whose data carries dates: an ISO 8601 date (`2026-03-20`,
+   * midnight UTC) or a date-time with `Z` or an offset. Every model call renders
+   * that instant, in UTC, in place of the real time; recorded timestamps, a
+   * park's `resumeAt` and the sandbox's `Date` stay real. Absent or empty, the
+   * prompt shows the real time. A pinned production agent reasons as if no time
+   * passes, which matters most across a park. A case's `clock:` key outranks it.
+   */
+  clock?: string;
 }
 
 /** Assemble an agent. See the module note. */
@@ -294,6 +305,12 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   // The namespace is a guarantee, not a convention: a host tool wearing it is
   // refused before anything is assembled, on both paths.
   assertNoReservedToolNames(params.tools);
+  // A pin that cannot be read fails assembly, before anything is composed.
+  try {
+    parseClock(params.clock ?? "");
+  } catch (err) {
+    throw new Error(`createAgent: 'clock' ${(err as Error).message}`, { cause: err });
+  }
   // `false` declares the agent ungoverned: nothing is looked for. Otherwise a
   // named workflow — or the default — is read off the authoring backend.
   const governed = params.workflow !== false;
