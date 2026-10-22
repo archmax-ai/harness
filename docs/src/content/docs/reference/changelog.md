@@ -71,6 +71,16 @@ as it is today; the guides themselves describe only the present. Every release a
   from `messages` to `toolCalls({ name })`, and a hook that read an earlier
   state's messages to a variable, a file or `toolCalls`. See
   [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
+- **An `args` guard matches a non-path argument as written.** Every argument
+  value was cleaned up as a workspace path before matching, so no URL guard
+  could ever match (`https://…` became `https:/…`), a stored value could fail to
+  match itself, and a guard resolving to an empty value failed the turn. Only an
+  argument the tool declares as a path (else `file_path`) is canonicalized now;
+  any other is matched as written, a denial on it also catches its path form, and
+  `""` matches only an empty value. A grant on a non-path argument no longer
+  admits a different spelling (a leading `/`, `//` or `./`). **Migrate** a host
+  tool whose argument is a path by declaring it in `toolPaths`. See
+  [tool governance](/reference/machine-spec/#toolsallow-closed-by-default-governance).
 
 ## 0.8.0
 

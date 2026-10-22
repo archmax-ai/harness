@@ -22,6 +22,7 @@ import {
   malformedPathArgs,
   MUTATING_ACCESSES,
   OFFLOAD_ACCESSES,
+  pathArgNamesOf,
   pathValuesOf,
   SCRATCHPAD_ACCESSES,
   type DeclaredPath,
@@ -1034,9 +1035,16 @@ function denialMatches(entry: NormalizedAllowEntry, action: ToolCallAction, api:
     return pathGuardMatches(entry, values, "any", variables) ?? true;
   }
   let unresolved = false;
-  const satisfied = argsSatisfy(entry.argMatchers, action.args, variables, () => {
-    unresolved = true;
-  });
+  const kinds = { pathArgs: pathArgNamesOf(action.tool, toolPathsOf(action.tool, api)), side: "deny" } as const;
+  const satisfied = argsSatisfy(
+    entry.argMatchers,
+    action.args,
+    variables,
+    () => {
+      unresolved = true;
+    },
+    kinds,
+  );
   return satisfied || unresolved;
 }
 

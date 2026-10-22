@@ -1194,3 +1194,33 @@ describe("forbid argument guards resolve like allow argument guards", () => {
     expect(v.decision).toBe("block");
   });
 });
+
+describe("an argument guard on a tool's text arguments", () => {
+  const spec = (tools: MachineSpec["tools"], allow: unknown[]): MachineSpec => ({
+    tools,
+    states: { work: { triggers: { manual: null }, tools: { allow: allow as never } } },
+  });
+  const call = (tool: string, args: Record<string, unknown>) => ({ kind: "tool-call", state: "work", tool, args }) as const;
+
+  it("grants a URL matched as written", () => {
+    const m = WorkflowMachine.fromSpec(spec(undefined, [{ tool: "fetch", args: { url: ["https://api.example.com/**"] } }]));
+    expect(decide(m, call("fetch", { url: "https://api.example.com/v1/orders" })).decision).toBe("allow");
+    expect(decide(m, call("fetch", { url: "https://evil.example.com/v1" })).decision).toBe("block");
+  });
+
+  it("grants an empty value its guard resolves to, and goes on", () => {
+    const m = WorkflowMachine.fromSpec(spec(undefined, [{ tool: "update_address", args: { address2: ["${{p.address2}}"] } }]));
+    const variables = { p: { value: { address2: "" }, locked: true } };
+    expect(decide(m, call("update_address", { address2: "" }), [], undefined, variables).decision).toBe("allow");
+    expect(decide(m, call("update_address", { address2: "Suite 4" }), [], undefined, variables).decision).toBe("block");
+  });
+
+  it("denies either form of an undeclared tool's argument", () => {
+    const m = WorkflowMachine.fromSpec(
+      spec({ forbid_always: [{ tool: "sync", args: { target: ["secrets/**"] } }] }, ["sync"]),
+    );
+    expect(decide(m, call("sync", { target: "secrets/k" })).ruleId).toBe("tool.forbidden");
+    expect(decide(m, call("sync", { target: "./secrets/k" })).ruleId).toBe("tool.forbidden");
+    expect(decide(m, call("sync", { target: "reports/k" })).decision).toBe("allow");
+  });
+});

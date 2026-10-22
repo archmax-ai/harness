@@ -279,7 +279,11 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   state entry naming a granted tool **narrows** it there, and one naming a
   default tool the list omits grants it there. `task` is ungrantable (error).
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches
-  if any glob matches; `${{var}}` allowed); `{ tool, paths: [...] }`
+  if any glob matches; `${{var}}` allowed). An argument the tool declares as a
+  path (else `file_path`) is canonicalized first; any other argument (a URL, an
+  address, an email) is matched **as written**, and a denial also catches its
+  path form. `""` matches only an empty value. `*` never crosses `/` (`**` does).
+  `{ tool, paths: [...] }`
   (guards every path argument the tool declares — all must match to grant,
   any matching denies). `"*"` as the tool is legal only in a
   forbid list. Globs match dot-segments (`secrets/**` covers `secrets/.env`).

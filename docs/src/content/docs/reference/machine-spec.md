@@ -371,6 +371,20 @@ tools:
     - { tool: microsoft-outlook__reply-email, connection: outlook-support }
 ```
 
+An `args` glob matches an argument according to what the argument is. An
+argument the tool declares as a **path** (`file_path`, `path`, `source`,
+`destination`, or a host's declared ones; for a tool that declares none,
+`file_path`) is canonicalized before it is matched: a leading `/`, `./`, `//` and
+`..` are resolved, so a different spelling cannot dodge a guard. Every **other**
+argument is matched **as written**: a grant on
+`url: ["https://api.example.com/**"]` admits that API's URLs, and a stored value
+matches itself exactly. A denial on such an argument also catches its path form,
+so `./secrets/k` cannot dodge `target: ["secrets/**"]`. The glob syntax is the
+same for both: `*` stops at `/`, and `**` crosses it. An empty pattern (`""`,
+written or resolved from a variable) matches only an empty value. To have a host
+tool's argument matched as a path, declare it with
+[`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
+
 Globs match **dot-prefixed segments** like any other: `scratchpad/**` covers
 `scratchpad/.cache/x`, and a denial of `secrets/**` covers `secrets/.env`. A
 workspace path is a path, not a shell word, and a wildcard that skipped dotfiles

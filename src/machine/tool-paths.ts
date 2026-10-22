@@ -171,6 +171,17 @@ export function pathArgsOf(paths: ToolPaths | undefined): string[] {
 }
 
 /**
+ * The arguments of `tool` an `args` guard matches as paths: those {@link pathArgsOf}
+ * names, plus the built-in aliases the tool reads them by. Any other argument
+ * is text.
+ */
+export function pathArgNamesOf(tool: string, paths: ToolPaths | undefined): string[] {
+  const names = pathArgsOf(paths);
+  const aliases = BUILT_IN_PATH_ALIASES[tool] ?? {};
+  return [...names, ...names.flatMap((arg) => (aliases[arg] === undefined ? [] : [aliases[arg]!]))];
+}
+
+/**
  * The values a `paths:` guard on `tool` tests: every path of every argument it
  * matches ({@link pathArgsOf}), read through the built-in aliases as the path
  * rules read them — one value for an argument holding a path, one per element

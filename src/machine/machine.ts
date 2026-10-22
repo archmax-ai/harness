@@ -36,6 +36,7 @@ import {
 import {
   BUILT_IN_TOOL_PATH_TABLE,
   pathArgsOf,
+  pathArgNamesOf,
   pathValuesOf,
   type ToolPathTable,
   type ToolPaths,
@@ -647,7 +648,10 @@ export class WorkflowMachine {
       (entry) => {
         if (entry.tool !== tool) return false;
         const onUnresolved = (failure: GuardResolutionFailure) => ctx?.onUnresolved?.(failure);
-        if (!entry.fromPaths) return argsSatisfy(entry.argMatchers, args, ctx?.variables, onUnresolved);
+        if (!entry.fromPaths) {
+          const kinds = { pathArgs: pathArgNamesOf(tool, this.toolPaths(tool)), side: "grant" } as const;
+          return argsSatisfy(entry.argMatchers, args, ctx?.variables, onUnresolved, kinds);
+        }
         // An unresolvable reference grants nothing.
         return pathGuardMatches(entry, this.pathValues(tool, args), "every", ctx?.variables, onUnresolved) === true;
       },

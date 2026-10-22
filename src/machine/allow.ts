@@ -36,11 +36,26 @@ export interface NormalizedAllowEntry {
  * would miss `secrets/.env` on the deny side while `scratchpad/**` would refuse
  * `scratchpad/.cache` on the allow side.
  */
-export function valueMatches(value: unknown, globs: string[]): boolean {
+export function valueMatches(value: unknown, globs: string[], as: MatchAs = "path"): boolean {
   if (value == null || globs.length === 0) return false;
-  return picomatch.isMatch(canonicalizeRelPath(String(value)).path, globs.map(normalizeRelPath), {
-    dot: true,
-  });
+  const raw = String(value);
+  const asPath = () => globsMatch(canonicalizeRelPath(raw).path, globs.map(normalizeRelPath));
+  if (as === "path") return asPath();
+  return globsMatch(raw, globs) || (as === "text-or-path" && asPath());
+}
+
+/**
+ * How an argument is matched: as a workspace path (canonicalized), as text (as
+ * written), or — for a denial on a text argument — as either, so treating an
+ * argument as text never makes a denial easier to dodge.
+ */
+export type MatchAs = "path" | "text" | "text-or-path";
+
+/** An empty pattern matches only an empty value: picomatch would throw on one. */
+function globsMatch(subject: string, globs: string[]): boolean {
+  if (subject === "" && globs.includes("")) return true;
+  const patterns = globs.filter((glob) => glob !== "");
+  return patterns.length > 0 && picomatch.isMatch(subject, patterns, { dot: true });
 }
 
 /**
@@ -92,12 +107,24 @@ export function argsSatisfy(
   args: Record<string, unknown>,
   variables?: VariableStore,
   onUnresolved?: (failure: GuardResolutionFailure) => void,
+  kinds: ArgKinds = { pathArgs: [DEFAULT_PATH_ARG], side: "grant" },
 ): boolean {
   if (!argMatchers) return true;
   return Object.entries(argMatchers).every(([name, globs]) => {
     const resolved = resolveGlobs(globs, variables, onUnresolved);
-    return resolved !== null && valueMatches(resolvePath(args, name.split(".")), resolved);
+    const as: MatchAs = kinds.pathArgs.includes(name) ? "path" : kinds.side === "deny" ? "text-or-path" : "text";
+    return resolved !== null && valueMatches(resolvePath(args, name.split(".")), resolved, as);
   });
+}
+
+/**
+ * Which of a call's arguments are workspace paths (the tool's declared ones, see
+ * `pathArgNamesOf`), and whether a grant or a denial is being decided. Omitted,
+ * `file_path` is the one path argument of a grant, as for a tool that declares none.
+ */
+export interface ArgKinds {
+  pathArgs: readonly string[];
+  side: "grant" | "deny";
 }
 
 /** A guard's globs with every `${{…}}` resolved, or `null` (reported) when one cannot be. */
