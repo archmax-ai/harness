@@ -534,7 +534,8 @@ into a verdict **fails closed** (veto with a snippet of the raw output). A rubri
 receives a compact JSON payload (`userRequest`, `history`, `state`, `phase`) —
 its `instructions` are written against that, not against a hook's `messages`.
 `history` is the visit the hook gates, tool results in full; `userRequest` is the
-message that opened the session, which an earlier state usually received.
+person's latest message (what the reply answers), which an earlier state usually
+received.
 
 ---
 

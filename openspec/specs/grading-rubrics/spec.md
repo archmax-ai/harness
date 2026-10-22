@@ -161,8 +161,9 @@ vocabulary is `ok` and `veto` only.
 ### Requirement: A rubric is shown the visit
 
 A rubric hook's grader SHALL be shown the transcript of the visit the hook sees (as a script hook
-does: see the runtime's "A hook sees its visit"), with every tool result in full, and the session's
-opening request as `userRequest`. It SHALL NOT be shown messages from earlier visits, and SHALL
+does: see the runtime's "A hook sees its visit"), with every tool result in full, and as `userRequest` the person's latest message in the session —
+the last user message, which is what the reply answers — so a grader judges a later turn against
+the question asked in that turn. It SHALL NOT be shown messages from earlier visits, and SHALL
 NOT be shown a fixed number of trailing messages instead. The transcript SHALL be read from the
 session's own messages, never from a summarized request prepared for the model.
 
@@ -177,7 +178,13 @@ session's own messages, never from a summarized request prepared for the model.
 - **WHEN** the person's request opened `identify-case`, the agent advanced to `orders-question` and
   answered there, and `orders-question`'s `after` rubric runs
 - **THEN** the grader's history starts at the entry into `orders-question`, and `userRequest` is the
-  person's opening message
+  person's message
+
+#### Scenario: A later turn is judged against its own question
+
+- **WHEN** turn 1 asked "Which of my orders are delayed?", turn 2 asks "Can I get a refund for
+  ORD-4?", and the rubric of the state that answers turn 2 runs
+- **THEN** its `userRequest` is "Can I get a refund for ORD-4?"
 
 ### Requirement: A rubric is invisible to the run it grades
 

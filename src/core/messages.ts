@@ -102,16 +102,17 @@ function historyEntry(m: unknown): HistoryEntry {
 
 /**
  * Build the view a rubric grader reads: the messages from `visitStart` on (the
- * visit its hook sees) plus the request that opened the session.
+ * visit its hook sees) plus the person's latest message.
  *
- * `userRequest` is derived from the **whole** list, not the visit: a grader
- * asked whether the reply satisfies the request must see the request, which an
- * earlier state usually received (issue #61).
+ * `userRequest` is read from the **whole** list, not the visit: a grader asked
+ * whether the reply satisfies the request must see the request, which an
+ * earlier state usually received (issue #61). It is the latest user message,
+ * not the first: a later turn is answering the question asked in that turn.
  */
 export function runContextFromMessages(messages: unknown[], visitStart = 0): RunContext {
   const all = Array.isArray(messages) ? messages : [];
   const history = all.slice(visitStart).map(historyEntry);
-  const opening = all.find((m) => (ROLE_BY_TYPE[messageTypeOf(m) || "?"] ?? "") === "user");
-  const userRequest = opening !== undefined ? contentToString((opening as Record<string, unknown>).content) : "";
+  const latest = [...all].reverse().find((m) => (ROLE_BY_TYPE[messageTypeOf(m) || "?"] ?? "") === "user");
+  const userRequest = latest !== undefined ? contentToString((latest as Record<string, unknown>).content) : "";
   return { history, userRequest };
 }

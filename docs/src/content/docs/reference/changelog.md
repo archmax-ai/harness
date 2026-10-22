@@ -103,6 +103,11 @@ as it is today; the guides themselves describe only the present. Every release a
   and leaves every host lock alone. A lock the agent sets is recorded with
   `lockedBy: "agent"` on the variable. **Migrate** a value that must survive a
   reset by having the host seed it.
+- **A rubric judges a turn against that turn's question.** A rubric's
+  `userRequest` was the session's first message, so in a later turn the grader
+  read turn 1's question and could refuse a correct answer to the current one.
+  It is now the person's latest message, the one the reply answers. See
+  [grading rubrics](/guides/grading-rubrics/).
 
 ## 0.8.0
 

@@ -54,13 +54,14 @@ describe("runContextFromMessages", () => {
     expect(ctx.history.some((h) => h.role === "user")).toBe(false);
   });
 
-  it("reads the first user message, not the latest one", () => {
+  it("reads the latest user message, which a later turn's reply answers", () => {
     const ctx = runContextFromMessages([
       { role: "human", content: "first" },
       { role: "ai", content: "working" },
       { role: "human", content: "second" },
+      { role: "ai", content: "answering the second" },
     ]);
-    expect(ctx.userRequest).toBe("first");
+    expect(ctx.userRequest).toBe("second");
   });
 });
 

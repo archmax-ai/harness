@@ -227,7 +227,7 @@ Gotchas:
   state's messages are not in it, so what a hook needs from there is stored (a
   variable, a file) or read with `toolCalls`. (A grading rubric receives the
   compact `userRequest`/`history` payload its rubric is written against: `history`
-  is the same visit, `userRequest` the *first* user message of the session.)
+  is the same visit, `userRequest` the person's *latest* message.)
 - **A definition edit is adopted, not refused.** A session takes its next turn
   under the `workflow.yaml` in force now; the recorded `specHash` says which
   definition each turn ran under but gates nothing. A turn positioned in a state

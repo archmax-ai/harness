@@ -249,6 +249,32 @@ describe("what a hook's messages hold", () => {
 });
 
 describe("what a rubric is shown", () => {
+  it("judges a later turn against the question asked in that turn", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        identify: { triggers: { manual: null }, transitions: [edge("answer")] },
+        answer: { after: { rubric: rubricDeclaration() }, transitions: [edge("identify")] },
+      },
+    };
+    const judge = new JudgeModel([]);
+    const { agent } = await assemble(workspaceWith(spec), {
+      turns: [
+        { reply: "ORD-1 and ORD-4 are delayed." },
+        advanceTo("answer"),
+        advanceTo("identify"),
+        { reply: "Your refund is approved." },
+      ],
+      rubricModel: judge,
+    });
+    await agent.workflow.send("s1", { message: "FIRST-QUESTION: which orders are delayed?" });
+    await agent.workflow.send("s1", { message: "SECOND-QUESTION: refund ORD-4?" });
+
+    expect(judge.prompts).toHaveLength(1);
+    expect(judge.prompts[0]).toContain("SECOND-QUESTION");
+    expect(judge.prompts[0]).not.toContain("FIRST-QUESTION");
+  });
+
   it("is the visit it gates, tool results in full, and the session's opening request", async () => {
     const marked = tool(async () => JSON.stringify({ id: "42", status: "MARKER-STATUS" }), {
       name: "lookup",
