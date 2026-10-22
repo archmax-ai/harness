@@ -1,9 +1,9 @@
 # Runtime bugs found while benchmarking (ticket)
 
-> **Temporary.** This is a bug ticket, not a proposal. It records runtime defects found while
-> running governed agents on τ²-bench (the `harness-benchmark` repo). Replace it with the real
-> proposal (or split it into one change per bug) once the fixes are designed. Line numbers are
-> at `cc59261` (0.7.1).
+> **Closed.** This was a bug ticket, not a proposal. It records runtime defects found while
+> running governed agents on τ²-bench (the `harness-benchmark` repo). Each one was split into its
+> own change and shipped in 0.9.0; see [Resolution](#resolution). Line numbers are at `cc59261`
+> (0.7.1).
 
 ## 1. Hooks lose sight of tool results
 
@@ -149,3 +149,28 @@ state's `maxTurns` reset when the state is entered again?
   path-canonicalized too. To recreate: guard `address2: "${{p.address2}}"` with
   `p.address2 = ""`. Expected: `""` admits only an empty argument, and a value that isn't a path
   matches literally.
+
+## Resolution
+
+Every item was confirmed, then fixed in its own change (archived under `openspec/changes/archive/`),
+all shipping in 0.9.0:
+
+| Item | Change | What was done |
+|---|---|---|
+| 1. Hooks lose sight of tool results | `2026-10-21-scope-hooks-to-visit` | A hook sees its **visit** (everything since the session entered the state), with no window, and queries the session's tool results with `toolCalls`, filtered outside the sandbox. A `before` hook no longer reads the summarized request. |
+| 2. `dispose` leaks the session's checkpoints | `2026-10-20-fix-dispose-eviction` | `dispose` evicts the session and its children from the default checkpointer; a host's own checkpointer is left alone. |
+| 3. A turn has no defined reply | `2026-10-20-fix-turn-reply` | `reply` is every text of the turn, starting over at an `after` revision note, and `""` when the turn said nothing. A case's grade is given the action's own reply. |
+| 4. Unbounded state cycling within a turn | `2026-10-20-bound-turn-budget` | A root `budget.maxModelCalls` (default 50) bounds a turn across states and routes through `on_error`; the step limit follows it; a turn that throws ends the session `failed` instead of stranding it. Loop detection was dropped as too open to interpretation. |
+| 5a. The prompt clock can't be set | `2026-10-22-pin-prompt-clock` | `createAgent({ clock })` and a case's `clock:` pin the prompt's "now". A clock line that can be switched off was not added: a pin covers what was reported. |
+| 5b. The lock description pushes the model to lock | `2026-10-22-lock-by-owning-state` | A state may own variables (`locks:`): only it writes them, so a value changes by going back there. `archmax_reset` releases the agent's locks. The tool's description and the agent's `lock` were kept. |
+| 5c. A guard on an empty value fails the turn | `2026-10-22-fix-guard-literal-args` | Only an argument the tool declares as a path is canonicalized; others match as written (a denial also catches the path form), and an empty pattern matches only an empty value. |
+
+Found along the way and fixed in the same branch:
+
+- A cancelled turn could crash a concurrent read inside `MemorySaver` (fixed in `bound-turn-budget`).
+- A rubric's `userRequest` was the session's first message, so a later turn was judged against
+  turn 1's question (`2026-10-22-rubric-current-request`).
+
+Not built, by decision: guards reading tool results directly. A `before` hook reads the real
+result through `toolCalls` before a state's tools unlock, and a guard binds to a variable the
+deciding state owns.
