@@ -15,6 +15,7 @@ import { Command, isGraphBubbleUp } from "@langchain/langgraph";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
 import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
+import { readClockPin } from "../core/clock.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import { ADVANCE_TOOL, entryStateOf, RESET_TOOL, unresolvedArgumentMessage } from "./control-tools.js";
 import { resolveArguments, type VariableStore } from "../machine/variables.js";
@@ -28,7 +29,7 @@ import {
   type PendingDecision,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
-import { CALLING_STATE_KEY, releaseScopes } from "../sessions/scope.js";
+import { CALLING_STATE_KEY, invocationOf, releaseScopes } from "../sessions/scope.js";
 import { isWorkflowToolName, workflowSlugFromToolName } from "../machine/tool-names.js";
 import { toolOutputPreview } from "../core/tool-telemetry.js";
 import { decide, type GovernanceRule } from "../kernel/kernel.js";
@@ -58,6 +59,7 @@ import { replyOnlyDirective } from "./parks.js";
 import { renderStateGraph } from "./render-prompt.js";
 import { blockedMessage, createToolService } from "./tool-service.js";
 import { buildRunnableConfig } from "./runtime-config.js";
+import { messagesIn, visitSpans } from "./visits.js";
 
 export { buildRunnableConfig } from "./runtime-config.js";
 
@@ -94,6 +96,8 @@ export interface StateModels {
 export interface PromptShaping {
   cacheStrategy?: PromptCacheStrategy;
   cacheTtl?: CacheTtl;
+  /** The host's pinned "now" (`createAgent({ clock })`); a turn's own pin outranks it. */
+  clock?: Date;
 }
 
 export interface GovernanceContext {
@@ -131,12 +135,7 @@ export interface Governance {
    */
   dispatchCount(sessionId: string, state: unknown): number;
   /** A hook context for one request, from the model context captured for the session. */
-  lifecycleCtx(
-    sessionId: string,
-    state: unknown,
-    messages: unknown[],
-    signal?: AbortSignal,
-  ): LifecycleContext;
+  lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext;
   reportMove(sessionId: string, moved: { from: string; to: string; park?: PendingDecision }): void;
   /** End the session's turn: drop its model context and return the `beforeDone` entries staged this turn. */
   endTurn(sessionId: string): Record<string, boolean> | undefined;
@@ -254,12 +253,11 @@ function inZone(
  * runs there. Rounding is stated rather than hidden — a clock that may be ten
  * minutes behind and says so is usable, one that quietly is not.
  */
-function renderNow(now: Date): string {
+function renderNow(now: Date, zone: string | null): string {
   const bucketMs = CLOCK_BUCKET_MINUTES * 60_000;
   const at = new Date(Math.floor(now.getTime() / bucketMs) * bucketMs);
   const utc = at.toISOString().slice(0, 16).replace("T", " ");
   const weekday = inZone(at, "UTC", { weekday: "long" }, "en-GB");
-  const zone = hostTimeZone();
   let local = "";
   if (zone) {
     const day = inZone(at, zone, { year: "numeric", month: "2-digit", day: "2-digit" });
@@ -407,18 +405,16 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     }) as T;
   }
 
-  function lifecycleCtx(
-    sessionId: string,
-    state: unknown,
-    messages: unknown[],
-    signal?: AbortSignal,
-  ): LifecycleContext {
+  function lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext {
     const context = modelContexts.get(sessionId);
     const fields = readWorkflowState(state);
+    // The session's own transcript, never the request prepared for the model, which summarization may have shortened.
+    const messages = messagesIn(state);
     return {
       sessionId,
       tools: context?.tools ?? [],
       messages,
+      visits: visitSpans(messages, state),
       taskTool: context?.taskTool,
       config: context?.config ?? {},
       iterations: { ...(fields.iterations ?? {}) },
@@ -431,11 +427,24 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     };
   }
 
+  /**
+   * The model calls this turn has left, this one included, while its budget is
+   * being counted and not yet spent; `beforeModel` has already counted this call.
+   */
+  function turnCallsLeft(request: ModelCallRequest): number | undefined {
+    const calls = readWorkflowState(request.state).turnCalls;
+    const invocation = invocationOf(request.runtime as RunnableConfig | undefined);
+    if (!calls || calls.exhausted || invocation === undefined || calls.invocation !== invocation) return undefined;
+    return machine.maxModelCalls - calls.count + 1;
+  }
+
   /** The volatile prompt section: what the model is told about where the run stands right now. */
   function volatileSection(request: ModelCallRequest, workflowState: string, replyOnly: boolean): string {
     // First, and outside either heading: the clock is true of the turn, not of
     // the state the turn is in, so a parked run reads it as well.
-    const clock = renderNow(new Date());
+    // A pin renders without the host's local time, which differs between machines.
+    const pin = readClockPin((request.runtime as RunnableConfig | undefined)?.configurable) ?? ctx.shaping.clock;
+    const clock = pin ? renderNow(pin, null) : renderNow(new Date(), hostTimeZone());
     if (replyOnly) {
       return `${clock}\n\n## This run is parked\n\n${replyOnlyDirective(machine, request.state)}`;
     }
@@ -485,6 +494,12 @@ export function createGovernance(ctx: GovernanceContext): Governance {
           "Enforced tool argument constraints in this state (a call with any other value is blocked):",
           ...argConstraints,
         ].join("\n"),
+      );
+    }
+    const left = turnCallsLeft(request);
+    if (left !== undefined && left * 5 <= machine.maxModelCalls) {
+      sections.push(
+        `This turn has ${left} model call${left === 1 ? "" : "s"} left. Finish what you are doing and answer the person.`,
       );
     }
     // Last, immediately before the model acts: choosing the edge is the decision
@@ -573,7 +588,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       const veto = await lifecycle.runPhase(
         workflowState,
         "before",
-        lifecycleCtx(sessionId, request.state, request.messages ?? [], request.runtime?.signal),
+        lifecycleCtx(sessionId, request.state, request.runtime?.signal),
       );
       if (veto) {
         // The refusal is the person's answer *and* a rejection: the text is the

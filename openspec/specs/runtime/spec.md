@@ -185,8 +185,9 @@ de-duplicated, and carried into the park record after the state's declared `evid
 The runtime SHALL expose `archmax_reset({ reason })` in every state, requiring a non-empty `reason`.
 It SHALL move the position to the recorded `entryState` (else the trigger's start state), clear
 `iterations`, `beforeDone`, `rejected` and `stateTurns`, append a `reset` trail step with the
-reason, and re-enter through the entry state's `before` hook. It SHALL NOT touch messages, variables
-(locked seeds included), files or the recorded trail. `tools.forbid_always` MAY ban it.
+reason, and re-enter through the entry state's `before` hook. It SHALL release every lock the agent
+set with `archmax_set_variables`, keeping each value, and SHALL NOT touch any other variable (a
+host's locks included), messages, files or the recorded trail. `tools.forbid_always` MAY ban it.
 
 The platform prompt and the tool's description SHALL tell the model when to reset and when not to.
 A reset is for a new message the current state cannot serve (no transition reaches what was asked,
@@ -218,6 +219,11 @@ state.
   without a reset
 - **THEN** the terminal state the conversation began in is listed, beside a session parked with
   `archmax_wait` and a terminal state routed into this turn
+
+#### Scenario: The restarted run can decide again what the earlier run locked
+
+- **WHEN** the agent set `case_id` with `lock: true` and later calls `archmax_reset`
+- **THEN** `case_id` keeps its value, is no longer locked, and the next write of it succeeds
 
 ### Requirement: `archmax_wait` parks the session in place
 
@@ -251,7 +257,7 @@ state's model call against a timer; on expiry the runtime substitutes a budget-e
 removes it from the transcript and routes the failure through `on_error`, without aborting the
 in-flight request. `budget.maxParks` SHALL cap `archmax_wait` parks per state within a turn, checked
 before the park is committed; an exceeded bound refuses the wait and commits `rejected` naming the
-state and the bound. A delegated child's park SHALL NOT count. Every exhaustion SHALL route through
+state and the bound. A delegated child's park SHALL NOT count. The workflow's `budget.maxModelCalls` SHALL be an exact count of the model calls one turn makes across every state, where a turn is one invocation (a message, a decision, a reply or a delivery); a park's single reply-only call is not counted, and an invocation the runtime's turn runner did not drive (a host invoking the graph directly) is not bounded by it: the call that would exceed it is not made and the exhaustion is routed as a failure of the current state, naming the bound. A turn SHALL route a turn-budget exhaustion at most once; after it, the error handler's calls are bounded by its own `maxTurns` and the turn's step limit, not by the turn budget again. While a fifth of the turn budget or less remains, every model call's "Current state" block SHALL state how many calls the turn has left and tell the agent to finish its work and answer the person. A delegated child's turn SHALL count against its own workflow's budget, never its caller's. Every exhaustion SHALL route through
 `on_error` when declared, else end the turn rejected.
 
 #### Scenario: Turn budget is exact
@@ -263,6 +269,64 @@ state and the bound. A delegated child's park SHALL NOT count. Every exhaustion 
 
 - **WHEN** a model call in a state with `timeoutMs: 1000` has not returned after one second
 - **THEN** the failure is routed through `on_error` and the request itself is not aborted
+
+#### Scenario: A cycle between states exhausts the turn budget
+
+- **WHEN** a workflow declares `budget: { maxModelCalls: 10 }` and the agent advances back and forth between two states on every call
+- **THEN** the eleventh call is not made, the failure routes through the current state's `on_error` when declared, else the turn ends rejected naming `maxModelCalls: 10`, and no `GraphRecursionError` is thrown
+
+#### Scenario: The budget is counted per invocation
+
+- **WHEN** a turn makes 30 calls and parks with `archmax_wait`, and a delivery resumes it under `maxModelCalls: 50`
+- **THEN** the delivery may make 50 calls of its own
+
+#### Scenario: The agent is warned before the budget runs out
+
+- **WHEN** a turn under `maxModelCalls: 50` is about to make its forty-first call
+- **THEN** that call's "Current state" block says the turn has ten model calls left and to finish and answer the person, and its fortieth call carried no such line
+
+#### Scenario: The error handler is not starved by the budget it was routed for
+
+- **WHEN** the turn budget is exhausted in `a`, whose `on_error` is `handle`
+- **THEN** `handle` makes its model calls and the turn ends there, and the turn budget does not route a second time
+
+### Requirement: A turn's step limit follows its budget
+
+When the caller supplies no `recursionLimit`, every invocation of a governed session (a turn, a decision, a reply, a delivery, and a delegated child's run) SHALL run under a step limit derived from its workflow's `budget.maxModelCalls`, large enough that the turn budget and the error handler it routes to are exhausted before the step limit is reached, and never below the 400 steps a turn runs under today. A `recursionLimit` the caller supplies in the invoke config SHALL take precedence.
+
+#### Scenario: A raised budget raises the step limit
+
+- **WHEN** a workflow declares `budget: { maxModelCalls: 200 }` and a turn makes 150 model calls while moving forward through its states
+- **THEN** the turn completes without a `GraphRecursionError`
+
+#### Scenario: The caller's limit wins
+
+- **WHEN** a host calls `send(id, input, { recursionLimit: 30 })`
+- **THEN** the turn runs under a step limit of 30
+
+### Requirement: A turn that throws ends the session failed
+
+When an invocation of a governed session throws (the step limit, a model failure, a cancellation, any other error) and the session's checkpointed status is still `running`, the runtime SHALL commit `status: failed` with an exit record before the error leaves `send`, `decide`, `reply` or `deliver`: code `recursion-limit` for a `GraphRecursionError`, `turn-cancelled` for an aborted invocation, and `turn-error` otherwise, with the error's message as the reason. It SHALL then rethrow the original error. A session whose status is not `running` (parked, or never checkpointed) SHALL be left as it is. The next message to a session failed this way SHALL resolve as a fresh turn from its retained position, as for any finished session, and its summary SHALL report the exit.
+
+#### Scenario: A model failure does not strand the session
+
+- **WHEN** the model endpoint fails mid-stream during a turn on session `s1`
+- **THEN** `send` rejects with the endpoint's error, `sessions.get("s1")` reports `status: failed` with `exit.code: "turn-error"`, and the next `send("s1", …)` runs a fresh turn instead of throwing `SessionNotResumableError`
+
+#### Scenario: The step limit ends the session failed
+
+- **WHEN** a turn reaches its step limit
+- **THEN** `send` rejects with the `GraphRecursionError`, and the session is `failed` with `exit.code: "recursion-limit"`
+
+#### Scenario: A cancelled turn ends the session failed
+
+- **WHEN** the host aborts a turn mid-run
+- **THEN** `send` rejects with the abort, and the session is `failed` with `exit.code: "turn-cancelled"`
+
+#### Scenario: A park is not overwritten
+
+- **WHEN** a turn has committed a park and then throws
+- **THEN** the session stays parked
 
 ### Requirement: `on_error` routing
 
@@ -519,8 +583,10 @@ unrecognized key, and the upgrade is documented rather than suggested in the err
 
 A script hook SHALL be a JavaScript module whose default export is a function receiving one object:
 `state`, `phase`, `trigger` (the id), `variables` (a read-only name-to-value map), `messages` (the
-recent transcript as plain data, runtime notes as `role: "runtime"`), `tools` (the privileged
-tool-call bridge), and on an advance `from`, `to`, `reason`. It SHALL return `ok()`, `veto(reason)`,
+transcript of the current visit as plain data, runtime notes as `role: "runtime"`, a tool result as
+the tool's name and the call's `id` without its text), `toolCalls` (the query over the session's
+tool results), `tools` (the privileged tool-call bridge), and on an advance `from`, `to`, `reason`.
+It SHALL return `ok()`, `veto(reason)`,
 `correct(reason)` or nothing (ok); throwing SHALL veto. A bare `false` and an `{ ok: false }` object
 SHALL NOT be read as verdicts — a hook returns the verdict vocabulary or it has returned no verdict.
 `import { ok, veto, correct,
@@ -530,8 +596,9 @@ own governance does not bind their `tools.*` calls — neither its allow lists n
 since a hook sits outside that surface in both directions — but the safety rules, the workflow's
 `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`, the workflow's mount grants
 (read on workflow scope: a governed mount some state or `allow_always` grants), and consumer rules
-do, and each call emits tool telemetry with `origin: "lifecycle"`. `task()` SHALL be available to hook
-scripts and never to `archmax_eval`/`archmax_run`.
+do, and each call emits tool telemetry with `origin: "lifecycle"`. No sandbox context, a hook
+script's included, SHALL have `task()`: a model's verdict on a state is a `rubric` hook declared
+beside the script.
 
 #### Scenario: Hook reads the transcript and vetoes
 
@@ -561,6 +628,85 @@ scripts and never to `archmax_eval`/`archmax_run`.
 - **WHEN** the table governs `ledger`, no grant of the workflow names it, and a hook calls
   `tools.readFile("ledger/2026.csv")`
 - **THEN** the call throws a governance error with `mount.not-allowed`, and the hook can catch it
+
+#### Scenario: A tool result is read through toolCalls, not messages
+
+- **WHEN** the agent calls `lookup` and then advances, and the leaving state's `after` hook reads
+  both inputs
+- **THEN** `messages` holds a `tool` entry naming `lookup` with the call's `id` and no result text,
+  and `await toolCalls({ name: "lookup" })` returns that call with its arguments and its result
+
+### Requirement: A hook sees its visit
+
+A **visit** SHALL be the span of a session from its entry into a state until it next enters one.
+Entering a state by an advance, a person's decision, an `on_error` route or `archmax_reset` SHALL
+start a new visit, also when the state entered is the one the session was in. A turn that opens a
+state its session was not in, the session's first turn included, SHALL start a new visit that
+begins with the turn's opening message. A turn, a reply, a delivery or a sub-workflow's return
+that continues in the state the session is in SHALL continue its visit, so a visit can span turns.
+Visits SHALL be numbered from 1 in the order they start.
+
+A hook SHALL see the visit of the state the session is in when the hook runs: on an advance from
+`S`, `S`'s `after` hook and the target's `before` hook both see `S`'s visit; a terminal state's
+`after` hook sees that state's visit; a `before` hook run at the start of a turn sees the visit that
+turn opened, or the one it continues. `messages` SHALL be that visit's whole transcript, with no other bound: control calls
+and runtime notes stay in it and take nothing else out of it. `messages` SHALL be read from the
+session's own transcript in every phase, never from a summarized request prepared for the model.
+
+`toolCalls(filter?)` SHALL resolve to the session's domain tool calls in the order they were made,
+across every visit, each as `{ id, name, args, result, status, state, visit }`: `result` the tool's
+result (parsed when it is JSON text), `status` one of `completed`, `failed`, `rejected` (refused by
+governance) or `pending` (no result yet), `state` and `visit` where the call was made. The runtime's
+control tools (`archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`,
+`archmax_get_variables`, `archmax_set_variables`) and runtime notes SHALL NOT appear in it. The
+filter SHALL accept `name`, `state`, `visit` (a number or `"current"`), `status` and `last` (only
+the last _n_ matches), every given key narrowing the result; only the matching calls SHALL be
+copied into the sandbox. A result too large for the transcript is the transcript's pointer to its
+offloaded file, as the agent saw it. Calls a script makes through `tools.*` are not tool calls of
+the session's transcript and SHALL NOT appear.
+
+#### Scenario: Control calls do not hide a tool result
+
+- **WHEN** in one turn the agent calls `lookup`, makes twelve `archmax_get_variables` calls and then
+  advances, and the leaving state's `after` hook vetoes unless it finds the `lookup` call
+- **THEN** the hook finds it in `messages` and in `toolCalls`, and the advance commits
+
+#### Scenario: A visit spans turns
+
+- **WHEN** the agent calls `lookup` in state `confirm`, the turn ends there, and in the next turn the
+  person writes "yes, go ahead" and the agent advances
+- **THEN** `confirm`'s `after` hook sees the person's message and the `lookup` entry in `messages`,
+  and `toolCalls({ visit: "current" })` returns the `lookup` call
+
+#### Scenario: Re-entering a state starts a new visit
+
+- **WHEN** the session moves `a` → `b` → `a`, calling `lookup` in each visit of `a`, and then
+  advances out of `a`
+- **THEN** `a`'s `after` hook sees in `messages` only the second visit of `a`, and
+  `toolCalls({ name: "lookup" })` returns both calls with `state: "a"` and different `visit` numbers
+
+#### Scenario: Both hooks of an advance see the visit being left
+
+- **WHEN** the agent advances from `S` to `T` and both `S`'s `after` hook and `T`'s `before` hook
+  read `messages`
+- **THEN** both see the same transcript: `S`'s visit up to the advance
+
+#### Scenario: A before hook at the start of a turn sees the person's message
+
+- **WHEN** a session's first turn opens `identify-case`, whose `before` hook reads the first `user`
+  entry of `messages`
+- **THEN** that entry is the turn's opening message
+
+#### Scenario: A summary is never the person speaking
+
+- **WHEN** the session's transcript has been summarized for the model and a `before` hook runs
+- **THEN** `messages` holds the visit's messages from the session's transcript, and no summary
+  entry
+
+#### Scenario: Control tools are not tool calls
+
+- **WHEN** a visit made `archmax_set_variables`, `archmax_advance` and `lookup` calls
+- **THEN** `toolCalls()` returns the `lookup` call and neither control call
 
 ### Requirement: Hook sequencing and phases
 

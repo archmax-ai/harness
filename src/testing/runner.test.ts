@@ -261,7 +261,9 @@ function withSend(agent: Agent & { workflow: WorkflowSurface }): Agent & { workf
       },
       { ...config, configurable: { thread_id: sessionId, ...(config?.configurable ?? {}) } },
     )) as Record<string, unknown>;
-    return remember(sessionId, outcomeOf(settle(result), "turn"));
+    // The turn starts at the message it sent, as `send` anchors it before the invoke.
+    const sent = ((result.messages ?? []) as { content?: unknown }[]).map((m) => m.content).lastIndexOf(input.message);
+    return remember(sessionId, outcomeOf(settle(result, { count: sent }), "turn"));
   }) as never;
   return agent;
 }

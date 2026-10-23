@@ -79,6 +79,8 @@ export interface CaseDocument {
   variables?: Record<string, unknown>;
   workspace: Record<string, CaseWorkspaceEntry>;
   mocks: ToolMockSpec[];
+  /** The "now" every action's prompt states, as an ISO instant; absent, the real time. */
+  clock?: string;
   steps: CaseStep[];
 }
 

@@ -13,6 +13,7 @@ import { normalizeMountGrants } from "./mount-grants.js";
 import { triggerDeclarationSchema } from "./spec-schema.js";
 import { ADVANCE_TOOL, DEFAULT_TOOLS } from "./tool-names.js";
 import { BUILT_IN_TOOL_PATHS, MUTATING_ACCESSES, SCRATCHPAD_ACCESSES } from "./tool-paths.js";
+import { normalizeSignature } from "./signature.js";
 import { declaredVariableNames } from "./triggers.js";
 import type { AllowEntry, MachineSpec } from "./types.js";
 import { TRIGGER_VARIABLE } from "./variables.js";
@@ -373,6 +374,25 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
   // A declaration is loose, so a host may decorate it; the SDK reads the keys it
   // knows and says so about the rest. There is nothing left to warn about an
   // orphaned declaration: writing one is what makes its state a start state.
+  // A firing seeds what its trigger requires, locked: the host's value is final,
+  // so a state that owns the same name can never write it.
+  const owners = new Map(
+    Object.entries(spec.states).flatMap(([slug, state]) => (state?.locks ?? []).map((name) => [name, slug] as const)),
+  );
+  for (const [slug, state] of Object.entries(spec.states)) {
+    for (const [id, decl] of Object.entries(state?.triggers ?? {})) {
+      for (const { name } of normalizeSignature(decl?.requires)) {
+        const owner = owners.get(name);
+        if (owner === undefined) continue;
+        warn(
+          `states.${slug}.triggers.${id}.requires`,
+          `Trigger '${id}' requires '${name}', which state '${owner}' owns in 'locks'. A firing seeds it ` +
+            `locked, so '${owner}' can never change it; drop it from one of the two.`,
+        );
+      }
+    }
+  }
+
   for (const [slug, state] of Object.entries(spec.states)) {
     for (const [id, decl] of Object.entries(state.triggers ?? {})) {
       for (const key of Object.keys(decl ?? {})) {

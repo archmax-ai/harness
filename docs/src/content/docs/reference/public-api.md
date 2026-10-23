@@ -100,7 +100,7 @@ the notes below.
 Several of these names are also on the root. They are the same bindings, exported
 here for the weight of the import.
 
-- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
+- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `workflowBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `WorkflowBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
 - **Validation:** `validateSpec` `lintSpec` `schemaIssueDiagnostic` `SpecValidation` `Diagnostic` `DiagnosticSeverity`.
 - **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
@@ -274,7 +274,7 @@ const agent = await createAgent({ workflow: "order-lookup" });
 
 // Operations on every agent (workflow-governed or plain):
 agent.graph;                        // the runnable LangGraph graph
-agent.dispose(sessionId);           // release per-session resources
+agent.dispose(sessionId);           // release per-session resources, its checkpoints in memory included
 agent.workflow?.name;               // the workflow slug (undefined if ungoverned)
 agent.runtimeContract;              // resolved (and enforced) runtime contract
 agent.toolMocks;                    // whether declared tool mocks intercept the agent's own calls
@@ -297,7 +297,7 @@ if (agent.workflow) {
   outcome.state;         // where the session is — for a park, the state it is parked at
   outcome.pending;       // the park record, when parked
   outcome.delegation;    // when the pending decision is a delegated child's: which child, which call
-  outcome.reply;         // what the session said
+  outcome.reply;         // what the agent said this turn, each text in order ("" when it said nothing)
   outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed hook)
   outcome.exit;          // SessionExit on a turn the agent ended: { success: true } when "completed",
                          // { success: false, code, reason } when "failed" (the agent called archmax_raise)
@@ -315,6 +315,16 @@ if (agent.workflow) {
   const answer = await agent.workflow.reply(sessionId, "Any news?"); // parked session, still parked
 }
 ```
+
+**What a turn said.** `reply`, on an `Outcome` and on what `decide`, `reply` and
+`deliver` return, is every text the agent wrote during this turn, in order, joined
+by a blank line. Text written next to an `archmax_advance`, `archmax_wait` or
+`archmax_raise` is part of it, because the agent is told to write what a person
+should read in that same message. A park's handoff message is part of it too. When
+a terminal state's completion check asks for a revision, the text before that
+request is dropped, so the person gets the revised answer and not the draft. A
+turn that said nothing has `reply: ""`, not the previous turn's text. For the last
+thing the session ever said, read `lastAgentText(outcome.messages)`.
 
 **Handing a turn files.** `TurnInput.files` maps a variable to a `TurnFile`,
 `{ name, content }`, where `content` is the file's exact bytes. Before the turn
@@ -353,11 +363,28 @@ error rather than a runtime throw. Session-level members stay on the agent eithe
 way: `sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `toolMocks` and
 `dispose`.
 
+### A turn that throws
+
+`send`, `decide`, `reply` and `deliver` reject with the original error when a turn
+throws: a model provider failing, a cancellation, the step limit. Before the error
+leaves, the runtime ends the session `failed` with an exit record, as
+`archmax_raise` would, unless the turn had already parked it. The code is
+`recursion-limit` for LangGraph's `GraphRecursionError`, `turn-cancelled` for an
+aborted turn, and `turn-error` for anything else, with the error's message as the
+reason. `sessions.get` reports it as `exit`, and the session's next message
+starts a fresh turn from where it stood.
+
+The step limit a governed turn runs under follows the workflow's turn budget:
+`(budget.maxModelCalls + 10) × 8` graph steps, and never fewer than 400. So the
+budget, which ends a runaway turn through `on_error`, runs out first. A
+`recursionLimit` the host passes in the invoke config takes precedence.
+
 ### Cancelling a turn
 
 Pass an `AbortSignal` as `config.signal` and abort it to cancel the turn. `send`
-rejects with the abort, and every script of the turn stops with it, in the
-session and in its child sessions. A script's pending `tools.*` call fails, and a
+rejects with the abort, the session ends `failed` with the code `turn-cancelled`
+(see [a turn that throws](#a-turn-that-throws)), and every script of the turn
+stops with it, in the session and in its child sessions. A script's pending `tools.*` call fails, and a
 call it makes afterwards is refused before it reaches the tool. See
 [a script lives as long as its turn](/guides/code-interpreter/#a-script-lives-as-long-as-its-turn).
 
@@ -424,9 +451,12 @@ await agent.invoke(
 
 Three things to know:
 
-- **A hook reads the transcript from `messages`, newest last.** A hook that
-  keys off "the current request" should take the *last* `user` entry. The
-  first is the message that opened the session.
+- **A hook reads its visit from `messages`, newest last**: the conversation
+  since the session entered the state it is in, which can span turns. A hook
+  that keys off "the current request" should take the *last* `user` entry. A
+  message from an earlier state is not in it: what a hook needs from there is
+  stored in a variable, a file, or a tool result `toolCalls` returns. See
+  [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
 - **A definition edit is adopted.** A session takes its next turn under the
   `workflow.yaml` in force now. The recorded `specHash` is a record of which
   definition each turn ran under, resolvable via `getSpecSnapshot`, and it binds
@@ -479,7 +509,9 @@ reuses it rather than carrying a sub-workflow trigger id of its own.
 
 A session's variables are also on its **summary**. `sessions.list()` and
 `sessions.get(sessionId)` carry `variables` as `name → { value, locked }`, read
-straight from the checkpoint.
+straight from the checkpoint. A lock the agent set with `archmax_set_variables`
+also carries `lockedBy: "agent"`: `archmax_reset` releases it, and a lock without
+it is the host's.
 
 So the record exists for every session that has run, even where artifacts were
 skipped (the CLI emits none). A checkpoint predating variables, or one holding a
@@ -817,6 +849,16 @@ Governance varies by area:
 configured session store. A caller-provided LangGraph `checkpointer` still takes
 precedence, as the custom-adapter escape hatch.
 
+**`dispose` frees a session's checkpoints from memory.** The default checkpointer
+also keeps every checkpoint of every session it has seen in memory, so a
+long-running host should call `agent.dispose(sessionId)` once a session's turn
+settles. It drops the session and every child session under it (`<sessionId>~1`,
+…) from memory. Their records stay in the store, so the session's next turn, or
+any read of it, loads it back from the store, as after a restart. A
+caller-provided `checkpointer` is left alone, since it may hold the only copy. A
+host with its own checkpointer frees a session's memory through
+`sessions.delete` or through that checkpointer.
+
 The agent exposes session handles over the same store:
 
 - `sessions.list()` returns `SessionSummary[]`, or `[]` on configurations that
@@ -936,6 +978,34 @@ const agent = await createAgent({ images: true });            // or { maxBytes, 
   named as no longer available, and the call goes ahead.
 - HEIC/HEIF, PDF, audio, video and every other binary stay refused, option on or
   off. Leave it off for a model without vision, which rejects an image.
+
+### `clock`: pinning the date
+
+Every model call of a governed agent opens with the current date and time. A case
+or an evaluation whose data carries dates (an order placed on `2026-03-15`, a
+ticket due in 30 days) needs the same "now" on every run, so a host can pin it:
+
+```ts
+const agent = await createAgent({ clock: "2026-03-20" });   // or "2026-03-20T14:30:00Z", "…T16:30+02:00"
+```
+
+- **Accepted forms:** an ISO 8601 date, read as midnight UTC, or a date-time
+  with `Z` or an offset. A date-time without a zone is refused, because it would
+  mean a different instant on each machine, and so is a date that doesn't exist
+  (`2026-02-30`). An invalid value fails assembly naming `clock`. An empty value
+  (`clock: process.env.EVAL_CLOCK` with the variable unset) means the real clock.
+- **The same line:** the pinned instant is rendered like the real one, in UTC
+  with its weekday and rounded down to ten minutes, so pin on a ten-minute mark.
+  It leaves out the host's local time, which differs between machines.
+- **Only the line is pinned.** Recorded timestamps, a park's `resumeAt` and the
+  sandbox's `Date` stay real. A script that needs the case's "today" reads it
+  from a variable the case seeds.
+- **Every model call:** a sub-workflow's child sessions and a park's handoff
+  message included. A case's [`clock:` key](/guides/testing/#cases-and-the-date)
+  outranks the option for that case.
+- **Not for production.** A pinned agent reasons as if no time passes, and that
+  matters most across a park: a session that resumes days later still thinks it
+  is the pinned day.
 
 ### `promptCache`, `pricing`: caching and cost
 
@@ -1334,9 +1404,9 @@ argument.
 A grader whose reply cannot be read as JSON is asked once more, JSON only, before
 its turn scores 0.
 
-What the grader scores is the turn's `JudgeEvidence`. That is its final reply,
-plus a bounded chronological record of the assistant messages and tool calls
-behind it (see [what the grader sees](/guides/testing/#what-the-grader-sees)).
+What the grader scores is the turn's `JudgeEvidence`. That is the action's
+`reply`, what the agent said during that turn, plus a bounded chronological record
+of the session's assistant messages and tool calls so far (see [what the grader sees](/guides/testing/#what-the-grader-sees)).
 
 ```ts
 const judged = results[0].records.filter((r) => r.threshold != null);
@@ -1565,13 +1635,14 @@ package `exports`):
 
 - **`@archmax-ai/harness/sandbox`** holds the verdict helpers `ok` / `veto` /
   `correct`, `defineHook`, and the types `HookInput`, `HookArgs`, `HookMessage`,
-  `HookVerdict`, `SandboxTools`, `TrailStep`, for hook scripts:
+  `HookVerdict`, `SandboxTools`, `ToolCallRecord`, `ToolCallFilter`, `TrailStep`,
+  for hook scripts:
 
   ```js
   import { ok, veto } from "@archmax-ai/harness/sandbox";
 
   /** Vetoes a refund the policy forbids. */
-  export default async function hook({ variables, messages, tools }) {
+  export default async function hook({ variables, messages, toolCalls, tools }) {
     // …
     return ok();
   }

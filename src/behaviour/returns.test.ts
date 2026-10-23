@@ -320,7 +320,7 @@ describe("a child's returns, written as its work settles them", () => {
     const outcome = await agent.workflow.send("s1", { message: "revise it" });
 
     expect(handed(outcome.messages).returns).toEqual({ summary: "final" });
-    expect((await agent.sessions.get("s1~1"))?.variables?.summary).toEqual({ value: "final", locked: true });
+    expect((await agent.sessions.get("s1~1"))?.variables?.summary).toEqual({ value: "final", locked: true, lockedBy: "agent" });
   });
 
   it("rewrites a return its caller seeded, which lands unlocked", async () => {

@@ -154,6 +154,19 @@ describe("judgeEvidenceFromView", () => {
     expect(evidence.record).toEqual([]);
   });
 
+  it("does not repeat the closing message of a reply that joins several", () => {
+    const evidence = judgeEvidenceFromView(
+      view({
+        reply: "Here is the plan.\n\nI'll wait for your confirmation.",
+        events: [
+          { type: "message.completed", data: { message: "Here is the plan." } },
+          { type: "message.completed", data: { message: "I'll wait for your confirmation." } },
+        ],
+      }),
+    );
+    expect(evidence.record).toEqual([{ kind: "message", text: "Here is the plan." }]);
+  });
+
   it("keeps the reply message in place when tool calls followed it", () => {
     // `reply` is the last assistant *text*; a message that both spoke and
     // called a tool stays in the record, because "said this, then did that" is

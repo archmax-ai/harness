@@ -101,6 +101,7 @@ All optional (`CreateAgentParams`, `src/assembly/index.ts`):
 | `systemPrompt` | `string` | Appended after workspace `AGENTS.md`. |
 | `tools` | `StructuredTool[]` | Host tools, granted per state by `tools.allow`. Build them with `toolsFromMap` — see [host tools](#host-tools). A name starting `archmax_`, or naming a runtime file operation (`copy_file`, `move_file`, `remove_file`), throws `ReservedToolNameError`. |
 | `essentialTools` | `string[]` | Host tools treated as always on: disclosed and permitted in every state, whatever the workflow's `tools.allow_always` declares; a state's own entry still narrows one. |
+| `clock` | `string` | Pins the "now" every model call states, for cases and evaluations: an ISO 8601 date (`2026-03-20`, midnight UTC) or a date-time with `Z`/an offset; zoneless or impossible values fail assembly, `""` means the real clock. Rendered in UTC, rounded to ten minutes, no local time. Recorded timestamps, `resumeAt` and the sandbox's `Date` stay real. Not for production: a pinned session resumed days later still thinks it is the pinned day. A case's `clock:` outranks it. |
 | `images` | `boolean \| ImageReadOptions` | Show a model with vision the images it reads: the model's `read_file` of a PNG/JPEG/GIF/WebP answers with one line and the image is added to each later request as a `user` message after that batch of tool results, read per request — no bytes in history, checkpoints, events or scripts. `{ maxBytes?, keep? }` (default 10 MB, every image). Off by default; every other binary stays refused. |
 | `toolPaths` | `Record<string, ToolPaths>` | Each host tool's path arguments and how a call uses each (`read`, `list`, `search`, `write`, `remove`, `execute`): `{ get_markdown: { path: "read" } }`. Every path rule then governs them like the built-ins'. Wins over a descriptor's `paths`; declaring a built-in's paths throws `ToolPathsError`. |
 | `checkpointer` | `BaseCheckpointSaver` | Custom-adapter escape hatch; takes precedence over the session store for checkpoint persistence. Defaults to a durable `BackendCheckpointSaver` writing through the session store. Use `MemorySaver` for ephemeral runs. |
@@ -153,7 +154,7 @@ try {
     return lastAssistantText(result.messages);
   }
 } finally {
-  agent.dispose(sessionId);   // cleans up sandbox/PTC state for the session
+  agent.dispose(sessionId);   // frees the session's sandbox/PTC state and its checkpoints in memory; the next turn reloads them from the store
 }
 ```
 
@@ -220,11 +221,13 @@ await agent.invoke(
 
 Gotchas:
 
-- **A hook reads the transcript from `messages`, newest last.** A hook that keys
-  off "the current request" should take the *last* `user` entry, not the first —
-  the first is the message that opened the session. (A grading rubric still
-  receives the compact `userRequest`/`history` payload its rubric is written
-  against; there `userRequest` is the *first* user message.)
+- **A hook reads its visit from `messages`, newest last** — the conversation since
+  the session entered the state it is in, which can span turns. A hook that keys
+  off "the current request" should take the *last* `user` entry; an earlier
+  state's messages are not in it, so what a hook needs from there is stored (a
+  variable, a file) or read with `toolCalls`. (A grading rubric receives the
+  compact `userRequest`/`history` payload its rubric is written against: `history`
+  is the same visit, `userRequest` the person's *latest* message.)
 - **A definition edit is adopted, not refused.** A session takes its next turn
   under the `workflow.yaml` in force now; the recorded `specHash` says which
   definition each turn ran under but gates nothing. A turn positioned in a state

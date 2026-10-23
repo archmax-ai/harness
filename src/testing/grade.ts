@@ -99,12 +99,12 @@ export function judgeEvidenceFromView(view: SessionView): JudgeEvidence {
   }
 
   const reply = view.reply ?? "";
-  // The closing message is the graded reply; it gets its own section, so
-  // carrying it in the record too would spend budget saying it twice. Only
+  // The closing message is the end of the graded reply; it gets its own section,
+  // so carrying it in the record too would spend budget saying it twice. Only
   // when it *closed* the turn — a reply followed by tool calls stays in place,
   // because "said this, then did that" is the ordering the judge needs.
   const last = record[record.length - 1];
-  if (reply && last?.kind === "message" && last.text === reply) record.pop();
+  if (reply && last?.kind === "message" && reply.endsWith(last.text.trim())) record.pop();
 
   return { reply, record };
 }

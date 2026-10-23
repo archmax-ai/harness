@@ -194,3 +194,21 @@ describe("mount governance lints", () => {
     expect(withMounts({}).filter((f) => (f.field ?? "").includes("mounts"))).toEqual([]);
   });
 });
+
+describe("an owned variable the host supplies", () => {
+  it("warns when a trigger requires a variable a state owns", () => {
+    const diagnostics = lintSpec(
+      specWith({
+        states: {
+          triage: {
+            triggers: { manual: { requires: ["order_id"] } },
+            locks: ["order_id"],
+            transitions: [{ to: "done", description: "Test edge to done." }],
+          },
+          done: {},
+        },
+      }),
+    );
+    expect(diagnostics.map((d) => d.message)).toContainEqual(expect.stringContaining("which state 'triage' owns in 'locks'"));
+  });
+});

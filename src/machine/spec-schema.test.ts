@@ -708,3 +708,43 @@ describe("typed trigger signatures", () => {
     }
   });
 });
+
+describe("a state's locks", () => {
+  const spec = (states: Record<string, unknown>) => ({
+    states: {
+      start: { triggers: { manual: null }, transitions: [{ to: "done", description: "Test edge to done." }] },
+      done: null,
+      ...states,
+    },
+  });
+
+  it("loads a state owning variables, guarded or not", () => {
+    expect(issuesFor(spec({ start: { triggers: { manual: null }, locks: ["order_id", "summary"] } }))).toEqual([]);
+  });
+
+  it("refuses a variable owned by two states, naming both", () => {
+    const issues = issuesFor(spec({ start: { triggers: { manual: null }, locks: ["order_id"] }, done: { locks: ["order_id"] } }));
+    expect(issues).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/'order_id' is owned by more than one state \('start', 'done'\)/) }),
+    ]);
+  });
+
+  it("refuses the reserved variables and a name listed twice", () => {
+    const messages = issuesFor(spec({ start: { triggers: { manual: null }, locks: ["trigger", "title", "a", "a"] } })).map((i) => i.message);
+    expect(messages).toEqual([
+      "State 'start' cannot own the reserved variable 'trigger'",
+      "State 'start' cannot own the reserved variable 'title'",
+      "State 'start' lists 'a' in 'locks' twice",
+    ]);
+  });
+
+  it("refuses locks on a human state", () => {
+    const issues = issuesFor(
+      spec({
+        start: { triggers: { manual: null }, transitions: [{ to: "review", description: "Hand it over." }] },
+        review: { type: "human", locks: ["x"], transitions: [{ to: "done", type: "approve", description: "Approve." }] },
+      }),
+    );
+    expect(issues.map((i) => i.message)).toContain("State 'review' is a human state, which makes no tool calls, so it cannot own variables");
+  });
+});

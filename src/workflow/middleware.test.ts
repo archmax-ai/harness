@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { GraphInterrupt } from "@langchain/langgraph";
 import type { BackendProtocolV2 } from "deepagents";
 import { runtimeNote } from "../core/messages.js";
@@ -167,6 +167,42 @@ describe("workflow middleware tool governance", () => {
   });
 });
 
+describe("a before hook's transcript", () => {
+  it("is the session's own, not the request a summary shortened for the model", async () => {
+    const machine = await WorkflowMachine.load(
+      machineWorkspace(STATE_YAML.replace("after: { script: hooks/after.js }", "before: { script: hooks/before.js }")),
+      SPEC_PATHS,
+    );
+    let seen: unknown;
+    const executor: ScriptExecutor = {
+      async runFile(_path, params) {
+        seen = (params.args as { messages?: unknown }).messages;
+        return passOutcome;
+      },
+      async runCode() {
+        return passOutcome;
+      },
+      dispose() {},
+    };
+    const instrumentation = createWorkflowInstrumentation({ machine: machine!, executor, ptcNames: [], onEvent: () => {} });
+    const wrapModelCall = (
+      instrumentation.middleware as unknown as {
+        wrapModelCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
+      }
+    ).wrapModelCall;
+    await wrapModelCall(
+      {
+        runtime: { configurable: { thread_id: "t1" } },
+        tools: [],
+        messages: [new HumanMessage("SUMMARY of the conversation so far")],
+        state: { messages: [new HumanMessage({ id: "m1", content: "cancel order 42" })] },
+      },
+      () => new AIMessage("AI"),
+    );
+    expect(seen).toEqual([{ role: "user", text: "cancel order 42" }]);
+  });
+});
+
 describe("workflow middleware progressive tool disclosure", () => {
   function fakeTool(name: string) {
     return { name } as unknown as import("@langchain/core/tools").StructuredTool;
@@ -270,13 +306,17 @@ describe("workflow middleware progressive tool disclosure", () => {
   });
 
   /** Drive one model call and return the volatile system block. */
-  async function volatileBlock(state: Record<string, unknown>): Promise<string> {
+  async function volatileBlock(
+    state: Record<string, unknown>,
+    pins: { clock?: Date; configurable?: Record<string, unknown> } = {},
+  ): Promise<string> {
     const machine = await loadMachine();
     const instrumentation = createWorkflowInstrumentation({
       machine,
       executor: trackingExecutor(passOutcome).executor,
       ptcNames: [],
       onEvent: () => {},
+      ...(pins.clock ? { promptShaping: { clock: pins.clock } } : {}),
     });
     const wrapModelCall = (
       instrumentation.middleware as unknown as {
@@ -286,7 +326,7 @@ describe("workflow middleware progressive tool disclosure", () => {
     let blocks: { type: string; text: string }[] = [];
     await wrapModelCall(
       {
-        runtime: { configurable: { thread_id: "tv" } },
+        runtime: { configurable: { thread_id: "tv", ...pins.configurable } },
         tools: [fakeTool("write_file")],
         messages: [],
         state: { messages: [], ...state },
@@ -427,6 +467,48 @@ describe("workflow middleware progressive tool disclosure", () => {
 
       vi.setSystemTime(new Date("2026-09-10T14:40:00Z"));
       expect((await volatileBlock({})).split("\n")[0]).toContain("2026-09-10 14:40 UTC");
+    });
+
+    describe("pinned", () => {
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+      const PINNED =
+        "Current date and time: 2026-03-20 14:30 UTC (Friday), rounded down to the nearest 10 minutes — it can be that much behind.";
+      const firstLine = async (...args: Parameters<typeof volatileBlock>) => (await volatileBlock(...args)).split("\n")[0];
+
+      it("renders the host's pin exactly, with no local time even in a non-UTC zone", async () => {
+        vi.stubEnv("TZ", "Europe/Berlin");
+        expect(await firstLine({}, { clock: new Date("2026-03-20T14:30:00Z") })).toBe(PINNED);
+      });
+
+      it("rounds a pin off a ten-minute mark down, like the real clock", async () => {
+        expect(await firstLine({}, { clock: new Date("2026-03-20T14:37:00Z") })).toBe(PINNED);
+      });
+
+      it("holds still while real time passes", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2026-09-10T08:00:00Z"));
+        const pin = { clock: new Date("2026-03-20T14:30:00Z") };
+        const before = await firstLine({}, pin);
+        vi.setSystemTime(new Date("2026-09-10T19:00:00Z"));
+        expect(await firstLine({}, pin)).toBe(before);
+      });
+
+      it("carries the pin into a reply-only call", async () => {
+        expect(await firstLine({ replyOnly: true }, { clock: new Date("2026-03-20T14:30:00Z") })).toBe(PINNED);
+      });
+
+      it("lets a turn's own pin outrank the host's, and stands in for none", async () => {
+        const turn = { configurable: { __clock: "2026-03-20T14:30:00Z" } };
+        expect(await firstLine({}, turn)).toBe(PINNED);
+        expect(await firstLine({}, { ...turn, clock: new Date("2027-01-01T00:00:00Z") })).toBe(PINNED);
+      });
+
+      it("falls back to the host's pin when the turn's is not a string", async () => {
+        const pins = { clock: new Date("2026-03-20T14:30:00Z"), configurable: { __clock: 42 } };
+        expect(await firstLine({}, pins)).toBe(PINNED);
+      });
     });
 
     it("names the host's zone when it is not UTC, so business hours mean something", async () => {
@@ -775,7 +857,11 @@ describe("workflow middleware session isolation and dispose", () => {
     await mw.wrapToolCall(advanceRequest("t1"), () => "OK");
     await mw.wrapToolCall(advanceRequest("t2"), () => "OK");
 
-    expect(toolsSeen).toEqual([["alpha"], ["beta"]]);
+    // Beside the session's own surface, every hook is handed its `toolCalls` query.
+    expect(toolsSeen).toEqual([
+      ["alpha", "archmax_tool_calls"],
+      ["beta", "archmax_tool_calls"],
+    ]);
   });
 
   it("clears segment context on dispose, including mid-segment aborts", async () => {
@@ -791,7 +877,7 @@ describe("workflow middleware session isolation and dispose", () => {
 
     // A later lifecycle hook on the same session sees no stale tool surface.
     await mw.wrapToolCall(advanceRequest("t1"), () => "OK");
-    expect(toolsSeen).toEqual([[]]);
+    expect(toolsSeen).toEqual([["archmax_tool_calls"]]);
   });
 
   it("is idempotent on double dispose", async () => {

@@ -31,6 +31,7 @@ import {
   asDecisionGraph,
   asModelCallResult,
   asStructuredTools,
+  turnStepLimit,
   type AnyModelCallHandler,
   type AnyModelCallRequest,
   type CompiledAgentGraph,
@@ -82,6 +83,7 @@ import {
 import { createTurnRunner, type TurnRunner } from "../workflow/turn-runner.js";
 import { createDelegationTool } from "../workflow/workflow-tools.js";
 import type { CreateAgentParams } from "./index.js";
+import { parseClock } from "../core/clock.js";
 
 /**
  * Everything one assembly resolved once and every composition it makes shares.
@@ -556,6 +558,16 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   for (const message of unguaranteedReferenceWarnings(target, seededVariables)) {
     emit({ type: "warning", scope: "workflow", message });
   }
+  // A seed is the host's and final, so a state owning the same name can never write it.
+  for (const name of Object.keys(seededVariables)) {
+    const owner = target.ownerOf(name);
+    if (owner === undefined) continue;
+    emit({
+      type: "warning",
+      scope: "workflow",
+      message: `The host seeds '${name}', which state '${owner}' owns in 'locks'. A seed is locked, so '${owner}' can never change it.`,
+    });
+  }
 
   const instrumentation = createWorkflowInstrumentation({
     machine: target,
@@ -572,7 +584,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     subWorkflows: dispatcher,
     ...(params.hookExecutors ? { hookExecutors: params.hookExecutors } : {}),
     onEvent: emit,
-    promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl },
+    // Validated by `createAgent`; a pin reaches every child composed from the same params.
+    promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl, clock: parseClock(params.clock ?? "") },
     stateModels,
     workspace,
     workflowName: input.workflow,
@@ -660,7 +673,10 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     resumable: {
       getState: (config) => asDecisionGraph(graph).getState(config),
       invoke: (resumeInput, config) =>
-        driver.invoke(resumeInput, mergeConfigs(AGENT_DEFAULT_CONFIG, config as never)),
+        driver.invoke(
+          resumeInput,
+          mergeConfigs(AGENT_DEFAULT_CONFIG, { recursionLimit: turnStepLimit(target.maxModelCalls) }, config as never),
+        ),
     },
   };
 }

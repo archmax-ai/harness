@@ -103,7 +103,7 @@ steps:
       atLeast: 0.7
 ```
 
-These are the eight top-level keys:
+These are the nine top-level keys:
 
 | Key | |
 | --- | --- |
@@ -114,6 +114,7 @@ These are the eight top-level keys:
 | `variables` | The session's input, seeded locked on every driven turn. |
 | `workspace` | Files seeded into the session workspace before any step. |
 | `mocks` | Tool-result mocks the driven session sees. |
+| `clock` | The date and time every model call of the case states as "now" (see [cases and the date](#cases-and-the-date)). |
 | `steps` | The flat list of actions and assertions. |
 
 The schema **fails closed**. An unknown top-level key or step key is an error,
@@ -244,7 +245,7 @@ carries. A failure in one of them [halts the case](#which-assertions-halt-a-case
 | `noTraversal: true` | **Structural.** The trail holds only trigger arrivals: a veto at entry committed no transition. |
 | `triggerArrival: <trigger-id>` | **Structural.** Some trail step has `kind: trigger` and that reason, confirming the session started from the declared trigger. |
 | `variables: { expect, path?, locked? }` | **Structural.** Every named variable is set to the expected value, by deep equality, so structured values compare by value. `path` addresses into a value per name: `items.-1.sku` is the last element. `locked` asserts the lock state. |
-| `grade: { closedQA: <criterion>, atLeast: <0..1> }` | A model scores the turn's **evidence** against a yes/no criterion: its final reply *and* the record of what it did to get there (see [What the grader sees](#what-the-grader-sees)). **`atLeast` decides the outcome**: at or above it passes, below it fails the case. The model's own boolean never overrides your bar. Requires `tests: { judge: … }` in `workflow.yaml`; without it, a `grade` entry records an actionable failure. `judge:` is accepted as a deprecated alias for one release. |
+| `grade: { closedQA: <criterion>, atLeast: <0..1> }` | A model scores the turn's **evidence** against a yes/no criterion: what the action's turn said *and* the record of what the session did to get there (see [What the grader sees](#what-the-grader-sees)). **`atLeast` decides the outcome**: at or above it passes, below it fails the case. The model's own boolean never overrides your bar. Requires `tests: { judge: … }` in `workflow.yaml`; without it, a `grade` entry records an actionable failure. `judge:` is accepted as a deprecated alias for one release. |
 
 A case seeds the session's input with a top-level `variables:` block. The block
 is supplied as the runtime's `variables`, and is therefore locked for every
@@ -295,13 +296,16 @@ A `grade` criterion scores the turn's **evidence**. The grading input has two
 labelled sections:
 
 1. **What the assistant did, in order**: every assistant message and every
-   tool call of the turn, interleaved as they happened, with the runtime's own
+   tool call of the session so far, earlier turns included, interleaved as they
+   happened, with the runtime's own
    notes among them (a person's decision, a delivered event, an error route).
    Each call carries its input, its output, and its status (`completed`,
    `failed`, `rejected`, `pending`). A call answered by a declared
    [mock](#mocking-tool-results) appears like any other, carrying the mocked
    value, so the grader scores the turn the agent actually experienced.
-2. **The final reply to the user**: the turn's last assistant message.
+2. **The final reply to the user**: what the agent said during this step's
+   action, every text of its turn in order. A turn that said nothing has an empty
+   reply, never an earlier turn's.
 
 The two are weighed differently, and the prompt says so. A criterion about what
 the user was *told* is met only by the final reply, while a criterion about what
@@ -477,6 +481,34 @@ still governed: the start state must allow the read tool the agent needs.
 Seeding goes through the target runtime's `sessions.seed` handle. A case
 declaring workspace files against a target without it fails before the agent
 runs.
+
+## Cases and the date
+
+Every model call states the current date and time. A case whose fixtures or
+prompts carry dates (an order placed on `2026-03-15`, a refund window of 30 days)
+would otherwise read a different "now" on every run, and its verdict would drift
+with the calendar. Pin it:
+
+```yaml
+title: Refund inside the window
+description: A delivered order placed five days ago is refunded.
+clock: 2026-03-20            # or "2026-03-20T14:30:00Z", "2026-03-20T16:30+02:00"
+```
+
+- **Forms:** an ISO 8601 date (midnight UTC) or a date-time with `Z` or an
+  offset. A date-time without a zone, a date that doesn't exist, or anything
+  else is a schema error naming `clock`. `clock: ""` pins nothing.
+- **Pin on a ten-minute mark.** The line is rounded down to ten minutes, as the
+  real one is, and it shows UTC only.
+- **Every action carries it:** `send`, `decide` and `deliver`, a park's handoff
+  message and a sub-workflow's calls included. It outranks the host's
+  [`clock` option](/reference/public-api/#clock-pinning-the-date) for this case,
+  and a case without one runs on the host's choice.
+- **Only the prompt is pinned.** Hook scripts and the sandbox's `Date`, recorded
+  timestamps and a park's `resumeAt` stay real. A script that needs the case's
+  "today" reads it from a variable the case seeds. An absolute `archmax_wait`
+  `until` the model derives from the pinned date may lie in the real past, so
+  resume such a wait with `deliver`.
 
 ## Authoring a case from a real session
 

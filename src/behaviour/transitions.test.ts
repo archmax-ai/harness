@@ -339,3 +339,21 @@ describe("where a turn begins", () => {
     expect((await agent.sessions.get("s1"))).toMatchObject({ status: "rejected", classification: "finished" });
   });
 });
+
+describe("what a turn says", () => {
+  it("replies with the text written next to an advance and the text after it", async () => {
+    const { agent } = await assemble(workspaceWith(linearSpec()), {
+      turns: [{ ...advanceTo("done"), text: "Here is the plan: X." }, { reply: "Y" }],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "go" });
+    expect(outcome.reply).toBe("Here is the plan: X.\n\nY");
+  });
+
+  it("replies with nothing on a turn that said nothing, whatever the last turn said", async () => {
+    const { agent, model } = await assemble(workspaceWith(linearSpec()), { turns: [{ reply: "first answer" }] });
+    await agent.workflow.send("s1", { message: "go" });
+    model.enqueue({ reply: "" });
+    const outcome = await agent.workflow.send("s1", { message: "again" });
+    expect(outcome.reply).toBe("");
+  });
+});

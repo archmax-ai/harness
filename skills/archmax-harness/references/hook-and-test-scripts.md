@@ -161,9 +161,40 @@ export default async function hook({ state, phase, trigger, variables, messages,
 | `state`, `phase` | The state whose hook is running; `"before"` or `"after"`. |
 | `trigger` | The trigger **id string** the run started from. It carries no payload — the run's input is in `variables`. |
 | `variables` | The run's variables as a plain `name → value` map, including the built-in `trigger`. Structured values are present whole (`variables.order.items[0].sku`). **Read-only**: assigning changes nothing, and the variable tools are absent from `tools.*` — a hook that could write variables would be editing the governance inputs of the state it judges. |
-| `messages` | The recent transcript (last 24 messages), newest last, as `{ role, text, toolCalls? }`. `role` is `user`, `assistant`, `tool` (with `tool: <name>`), `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, a completion check; `note` names the kind). A hook that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. |
+| `messages` | The transcript of the **current visit**, newest last, as `{ role, text, toolCalls? }`: everything since the session entered the state it is in. On an advance that is the state being left, for its `after` hook and the target's `before` hook alike; a visit spans turns, and entering a state again starts a new one. `role` is `user`, `assistant`, `tool`, `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, a completion check; `note` names the kind). A `tool` entry carries `tool` and the call's `id` with an empty `text`: its result comes from `toolCalls`. A hook that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. |
+| `toolCalls(filter?)` | **Async.** The session's tool calls with their results, across every visit, oldest first: `{ id, name, args, result, status, state, visit }` (`result` parsed when it is JSON; `status` `completed`, `failed`, `rejected` by governance, or `pending`). `filter` narrows by `name`, `state`, `visit` (a number or `"current"`), `status` and `last`; an unknown key throws. The control tools are not in it, nor are calls a script or hook made through `tools.*`. Only the records it returns are copied into the sandbox. |
 | `from`, `to`, `reason` | Present on `after` hooks: the transition the agent is attempting (`reason` is the agent's `archmax_advance` reason). |
 | `tools` | The privileged tool-call bridge (async), camelCased: `await tools.readFile({ file_path: "skills/order-data/assets/orders.json" })` → file text, or the binary notice for a binary file (see below). See [Governance](#governance-of-tools-calls). |
+
+**What a hook checks.** The conversation is the model's memory, not evidence: a
+hook checks its own visit and the session's records — `variables`, files, and
+the tool results `toolCalls` keeps as the tools returned them. Check a result
+itself, never a copy the model wrote into a variable, and never call a tool
+again just to see its result (for a host whose tools reach an external system,
+that is a second action):
+
+```js
+/**
+ * Cancel gate — an order may be cancelled only while it is pending.
+ *
+ * Finds the latest get_order call for the order being cancelled and vetoes
+ * unless its result says pending.
+ */
+export default async function hook({ toolCalls }) {
+  const [cancel] = await toolCalls({ name: "cancel_order", visit: "current", last: 1 });
+  if (!cancel) return ok();
+  const lookups = await toolCalls({ name: "get_order", status: "completed" });
+  const order = lookups.findLast((c) => c.args.id === cancel.args.id);
+  if (!order) return veto(`Look order ${cancel.args.id} up with get_order before cancelling it.`);
+  if (order.result.status !== "pending") return veto(`Order ${cancel.args.id} is ${order.result.status}, not pending.`);
+  return ok();
+}
+```
+
+What a later state or turn needs from the conversation (the person's words, a
+decision) is stored in a variable or a file by the state that has it. A `before`
+hook re-run by `archmax_reset` starts a new visit and no longer sees the
+session's opening request.
 
 **The verdict** — the three helpers are globals:
 
@@ -502,6 +533,9 @@ get the exact same flow when they return `correct(reason)` under a
 into a verdict **fails closed** (veto with a snippet of the raw output). A rubric
 receives a compact JSON payload (`userRequest`, `history`, `state`, `phase`) —
 its `instructions` are written against that, not against a hook's `messages`.
+`history` is the visit the hook gates, tool results in full; `userRequest` is the
+person's latest message (what the reply answers), which an earlier state usually
+received.
 
 ---
 
@@ -608,6 +642,7 @@ Unknown keys are validation **errors**. All keys except `title` and
 | `trigger`     | `{ id }`                                       | The trigger every driven turn of the case runs under. Carries **only an id**; `args` is rejected with a pointer to `variables:`. Validated against the workflow machine before any step — an unknown id fails the case (even with no steps), listing the workflow's declared triggers. Omitted ⇒ the manual trigger. See [Start conditions](#start-conditions-trigger-variables-and-workspace).                                              |
 | `workspace`   | `{ <path>: <content> }`                        | Files seeded into the case's run workspace **before any step**. Strings are written verbatim; non-string YAML values are JSON-serialized; a single-key `{ from: <tests/-relative path> }` mapping copies a file byte-for-byte. Only agent-visible run-zone paths are seedable (root-level files like `trigger.json`, or `scratchpad/…`); authored (`skills/…`), runtime-internal, and escaping paths are rejected before anything is written. |
 | `mocks`       | `[{ tool, whenInput?, result }]`               | Declarative tool mocks: when the driven agent calls `tool` with input partially matching `whenInput`, return `result` instead of executing. Intercepts **agent-initiated and PTC** (script `tools.*`) calls alike. See [the mocking section](#settle-the-mocking-depth-before-writing-a-case).                                        |
+| `clock`       | `"2026-03-20"` / `"…T14:30:00Z"` | The date and time every model call of the case states as "now": an ISO 8601 date (midnight UTC) or a date-time with `Z` or an offset; a zoneless or impossible value is a schema error. Carried on every action, a handoff and a child session included, and outranks the host's `clock` option. See [Start conditions](#start-conditions-trigger-variables-and-workspace). |
 | `steps`       | flat list of step entries      | The case script: actions and assertions as peers (below).                                                                                                                                                                                                                                                                                                          |
 
 There is **no multi-session surface** in test spec version 1 — no `sessions:`,
@@ -666,7 +701,7 @@ failure in one of them **halts the case** — see
 | `raised: true` / `raised: <code>` / `raised: { code?, reason? }` | **Structural.** The agent ended the turn with `archmax_raise({ code, reason })`. A string pins the code exactly; the mapping pins the code and matches the reason — exactly, or as a regex when written `"/pattern/flags"`. A miss names the code that was raised, or says the run did not raise.                                  |
 | `variables: { expect, path?, locked? }`  | Every named variable is set to the expected value — deep equality, so a structured expectation compares by value. `path` addresses into a value per name (`items.-1.sku` is the last element); `locked` asserts the lock state. |
 | `reachedState: <slug>`                   | **Structural.** A **committed** (non-trigger) audit-trail step entered the state — agent `archmax_advance`, human decision, `archmax_reset`, or `on_error` route. The trigger-arrival step never counts (it is recorded before the entry state's `before` gate runs, so a vetoed-entry run never "reaches" its start state).                        |
-| `reply: { includes?, excludes? }`        | `includes`: substrings or `/pattern/flags` regex strings that must **all** match; `excludes`: none may match (leak checks — a refusal that quotes the data it refuses still leaks it). Each accepts a **single token or a list** (`includes: "ORD-1003"` works). Matched against the turn's **whole assistant transcript**, not just the final message (a parked run often closes with a short "moving on" message while the substantive answer came earlier). |
+| `reply: { includes?, excludes? }`        | `includes`: substrings or `/pattern/flags` regex strings that must **all** match; `excludes`: none may match (leak checks — a refusal that quotes the data it refuses still leaks it). Each accepts a **single token or a list** (`includes: "ORD-1003"` works). Matched against **every assistant message of the session so far** (earlier turns included), not just the final message (a parked run often closes with a short "moving on" message while the substantive answer came earlier). |
 | `calledTool: { name, input? }`           | The turn recorded a call to tool `name`; `input` is a **partial** match — mappings match on the declared keys (nested mappings partially), arrays by deep equality, and `/pattern/flags` string values match as **regexes** (recommended for file paths, so the model's exact spelling doesn't matter).                        |
 | `notCalledTool: { name, input? }`        | No matching call occurred.                                                                                                                                                                                                                                                                                                    |
 | `blockedTool: { name, input? }`          | A matching call was made **and refused by governance** — the assertion for testing a guard. Distinct from `notCalledTool` (nothing was tried, which proves nothing about the guard) and from a tool that ran and errored (only a policy rejection counts). Use it to test a state's `tools.allow` narrowing or its `skills.allow` set. |
@@ -674,7 +709,7 @@ failure in one of them **halts the case** — see
 | `trail: { to?, kind?, reason?, count }`  | **Structural.** The number of audit-trail steps matching **all** given fields equals `count` (declare at least one of `to`/`kind`/`reason`). `kind`: `trigger` \| `agent` \| `human` \| `on_error` \| `branch` \| `join`. The trail accumulates across turns — each turn starts with a `trigger` step.                                        |
 | `noTraversal: true`                      | **Structural.** The trail holds nothing but trigger arrivals — a veto at entry committed no transitions.                                                                                                                                                                                                                                      |
 | `triggerArrival: <trigger-id>`           | **Structural.** Some trail step has `kind: trigger` and that trigger id as its reason — the run really started from the declared trigger.                                                                                                                                                                                                     |
-| `grade: { closedQA, atLeast }`           | LLM-grade the turn's **run evidence** against the `closedQA` criterion — its final reply *plus* a bounded chronological record of the assistant messages and tool calls behind it (each call with input, output, and status; mocked calls appear like real ones). The two are weighed differently: a criterion about what the user was **told** is met only by the reply, one about what the agent **did** may be met by the record — so `closedQA: looked the order up before answering` is a legitimate criterion, not only phrasing checks. **`atLeast` decides the outcome** — score ≥ `atLeast` passes, below it **fails the case**; the judge model's own opinion never overrides your declared bar, so the record can't disagree with the verdict. The judge is instructed to keep its reason to 1–3 sentences, so it fits on the verdict line. Requires `tests.judge` in `workflow.yaml`.                                            |
+| `grade: { closedQA, atLeast }`           | LLM-grade the turn's **run evidence** against the `closedQA` criterion — what the action's turn said (every text of that turn, empty when it said nothing) *plus* a bounded chronological record of the session's assistant messages and tool calls so far (each call with input, output, and status; mocked calls appear like real ones). The two are weighed differently: a criterion about what the user was **told** is met only by the reply, one about what the agent **did** may be met by the record — so `closedQA: looked the order up before answering` is a legitimate criterion, not only phrasing checks. **`atLeast` decides the outcome** — score ≥ `atLeast` passes, below it **fails the case**; the judge model's own opinion never overrides your declared bar, so the record can't disagree with the verdict. The judge is instructed to keep its reason to 1–3 sentences, so it fits on the verdict line. Requires `tests.judge` in `workflow.yaml`.                                            |
 
 **Regex form**: a string shaped `/pattern/flags` is compiled as a regular
 expression; anything else matches as a plain substring (in `reply` tokens) or
@@ -782,6 +817,15 @@ Two operational notes:
   runs: declared files are overwritten each run, but a file seeded by an
   _earlier_ run whose declaration was since removed can linger. The default
   (per-run unique sessions) starts clean.
+
+**Pin the date** with a case-level `clock:` whenever a fixture or a prompt
+carries a date (an order placed on `2026-03-15`, "refundable for 30 days"):
+without it the model reads the real "now" and the verdict drifts with the
+calendar. Pin on a ten-minute mark (the line is rounded down to ten minutes,
+UTC only). Only the prompt is pinned — hook scripts, the sandbox's `Date`, a
+park's `resumeAt` and every recorded timestamp stay real, so a script that needs
+the case's "today" reads it from a seeded variable, and a wait resumed in the
+case is resumed with `deliver`, not by its `until`.
 
 ### Recovering a case's inputs from previous runs
 

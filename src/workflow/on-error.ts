@@ -15,6 +15,7 @@ import {
   type TrailStep,
   type WorkflowUpdate,
 } from "./state.js";
+import { messagesIn, visitStart } from "./visits.js";
 
 /** Which hook is routing: decides how the loop continues after the update. */
 export type HookSite = "before-model" | "after-model";
@@ -70,6 +71,7 @@ export function routeFailure(
     auditTrail: [
       { to: errorTarget, kind: "on_error", reason, ts: Date.now() } satisfies TrailStep,
     ],
+    visits: visitStart(errorTarget, messagesIn(state)),
     ...(site === "after-model" ? { jumpTo: "model" } : {}),
   };
   if (!ctx.machine.isHumanState(errorTarget)) return routed;

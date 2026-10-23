@@ -271,6 +271,58 @@ describe("BackendCheckpointSaver — session listing and deletion", () => {
   });
 });
 
+describe("BackendCheckpointSaver — eviction", () => {
+  /** The thread ids the saver's in-memory maps hold anything for. */
+  const heldThreads = (saver: BackendCheckpointSaver) => [
+    ...new Set([
+      ...Object.keys(saver.storage),
+      ...Object.keys(saver.writes).map((key) => String((JSON.parse(key) as unknown[])[0])),
+    ]),
+  ];
+
+  async function saverWith(...threads: string[]) {
+    const { backend } = memoryBackend();
+    const saver = new BackendCheckpointSaver(new Workspace(backend));
+    for (const thread of threads) {
+      const config = { configurable: { thread_id: thread, checkpoint_ns: "" } };
+      const next = await saver.put(config, checkpointWith("0001", { at: thread }), META);
+      await saver.putWrites(next, [["messages", "hi"]], "task-1");
+    }
+    return saver;
+  }
+
+  it("drops a session and its child sessions from memory, and nothing else", async () => {
+    const saver = await saverWith("t1", "t1~1", "t1~1~2", "t1-2");
+    saver.evict("t1");
+    expect(heldThreads(saver)).toEqual(["t1-2"]);
+  });
+
+  it("replays an evicted session from the store on its next access", async () => {
+    const saver = await saverWith("t1~1");
+    saver.evict("t1~1");
+    const tuple = await saver.getTuple({ configurable: { thread_id: "t1~1" } });
+    expect(tuple?.checkpoint.id).toBe("0001");
+    expect((tuple?.checkpoint.channel_values as Record<string, unknown>).at).toBe("t1~1");
+    expect(tuple?.pendingWrites).toEqual([["task-1", "messages", "hi"]]);
+  });
+
+  it("reads a session whose checkpoint is still being written as having none", async () => {
+    const saver = await saverWith();
+    saver.storage["t1"] = { "": {} };
+    expect(await saver.getTuple({ configurable: { thread_id: "t1" } })).toBeUndefined();
+  });
+
+  it("is a no-op for an unknown id and safe to repeat", async () => {
+    const saver = await saverWith("t1");
+    saver.evict("nobody");
+    expect(heldThreads(saver)).toEqual(["t1"]);
+    saver.evict("t1");
+    saver.evict("t1");
+    expect(heldThreads(saver)).toEqual([]);
+    expect((await saver.getTuple({ configurable: { thread_id: "t1" } }))?.checkpoint.id).toBe("0001");
+  });
+});
+
 describe("BackendCheckpointSaver — graph restart", () => {
   it("resumes an interrupted graph across a fresh saver over the same backend", async () => {
     const StateAnnotation = Annotation.Root({

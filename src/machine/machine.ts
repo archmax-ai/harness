@@ -36,11 +36,13 @@ import {
 import {
   BUILT_IN_TOOL_PATH_TABLE,
   pathArgsOf,
+  pathArgNamesOf,
   pathValuesOf,
   type ToolPathTable,
   type ToolPaths,
 } from "./tool-paths.js";
 import {
+  DEFAULT_MAX_MODEL_CALLS,
   specDisabled,
   type AllowEntry,
   type ForbidEntry,
@@ -467,6 +469,21 @@ export class WorkflowMachine {
     return this.spec.states[from]?.transitions?.find((t) => t.to === to);
   }
 
+  /** The model calls one turn may make across every state: `budget.maxModelCalls`, else the default. */
+  get maxModelCalls(): number {
+    return this.spec.budget?.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
+  }
+
+  private owners?: Map<string, string>;
+
+  /** The state that owns `name` (lists it in `locks`), the only one that may write it; `undefined` when none does. */
+  ownerOf(name: string): string | undefined {
+    this.owners ??= new Map(
+      Object.entries(this.spec.states).flatMap(([slug, state]) => (state?.locks ?? []).map((v) => [v, slug] as const)),
+    );
+    return this.owners.get(name);
+  }
+
   /** The state a failed turn routes to (`on_error`), if declared and present. */
   onError(state: string): string | undefined {
     const target = this.spec.states[state]?.on_error;
@@ -641,7 +658,10 @@ export class WorkflowMachine {
       (entry) => {
         if (entry.tool !== tool) return false;
         const onUnresolved = (failure: GuardResolutionFailure) => ctx?.onUnresolved?.(failure);
-        if (!entry.fromPaths) return argsSatisfy(entry.argMatchers, args, ctx?.variables, onUnresolved);
+        if (!entry.fromPaths) {
+          const kinds = { pathArgs: pathArgNamesOf(tool, this.toolPaths(tool)), side: "grant" } as const;
+          return argsSatisfy(entry.argMatchers, args, ctx?.variables, onUnresolved, kinds);
+        }
         // An unresolvable reference grants nothing.
         return pathGuardMatches(entry, this.pathValues(tool, args), "every", ctx?.variables, onUnresolved) === true;
       },

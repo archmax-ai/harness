@@ -45,6 +45,14 @@ states:
             Always include a concise `reason`.
 ```
 
+The payload's `history` is the visit the hook gates: the conversation since the
+session entered the state, tool results in full, however long. It holds nothing
+from an earlier state. `userRequest` is the person's latest message, the one the
+reply answers, so a grader judges a reply against the request even when an
+earlier state received it, and a later turn against the question asked in that
+turn. See
+[what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
+
 `instructions` is the only required key. It is the same word a state uses for
 the prose telling a model what to do. The rest is optional:
 

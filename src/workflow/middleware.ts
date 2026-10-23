@@ -38,7 +38,7 @@ import {
   type WorkflowUpdate,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
-import { sessionScopeFrom } from "../sessions/scope.js";
+import { invocationOf, sessionScopeFrom } from "../sessions/scope.js";
 import { contentToString, isAiMessage, isRuntimeNote, lastMessageIsHuman, runtimeNote } from "../core/messages.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
 import { NO_MOUNTS, type MountPrefixes } from "../core/mounts.js";
@@ -56,6 +56,7 @@ import {
   type PromptShaping,
   type StateModels,
 } from "./governance.js";
+import { visitStart } from "./visits.js";
 
 export type { PromptShaping, StateModels } from "./governance.js";
 export { resolveToolName } from "./governance.js";
@@ -224,6 +225,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     configOf,
   };
   const failureCtx = { machine, emit, sessionIdOf };
+  /** The model calls `invocation` has made so far, across every state. */
+  const turnCallsOf = (fields: WorkflowStateFields, invocation: string) =>
+    fields.turnCalls?.invocation === invocation ? fields.turnCalls : { invocation, count: 0 };
   /** The state's `budget.maxTurns`, and the model calls this visit has made against it. */
   const turnBudget = (fields: WorkflowStateFields, workflowState: string) => ({
     maxTurns: machine.spec.states[workflowState]?.budget?.maxTurns,
@@ -296,6 +300,26 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           return asHookResult(lastMessageIsHuman(state.messages ?? []) ? undefined : { jumpTo: "end" });
         }
 
+        // The workflow's turn budget: model calls this invocation, across every state.
+        // Routed once; the error handler it routes to is then bounded by its own budget
+        // and the step limit. An invocation the runner did not stamp is not counted.
+        const invocation = invocationOf(runtime as RunnableConfig);
+        const calls = invocation === undefined ? undefined : turnCallsOf(fields, invocation);
+        if (calls && !calls.exhausted && calls.count + 1 > machine.maxModelCalls) {
+          const routed = routeFailure(
+            failureCtx,
+            state,
+            runtime,
+            workflowState,
+            `the turn exhausted its budget (maxModelCalls: ${machine.maxModelCalls})`,
+            "before-model",
+          );
+          routed.turnCalls = { ...calls, count: calls.count + 1, exhausted: true };
+          if (routed.workflowState) routed.stateTurns = { state: routed.workflowState, count: 1 };
+          return asHookResult(routed);
+        }
+        const turnCalls = calls ? { turnCalls: { ...calls, count: calls.count + 1 } } : {};
+
         // The exact per-state turn budget: this call would be one too many.
         const { maxTurns, spent } = turnBudget(fields, workflowState);
         if (maxTurns != null && spent + 1 > maxTurns) {
@@ -309,9 +333,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           );
           // The error handler's first call is the one about to be made.
           if (routed.workflowState) routed.stateTurns = { state: routed.workflowState, count: 1 };
-          return asHookResult(routed);
+          return asHookResult({ ...routed, ...turnCalls });
         }
-        return asHookResult({ stateTurns: { state: workflowState, count: spent + 1 } });
+        return asHookResult({ stateTurns: { state: workflowState, count: spent + 1 }, ...turnCalls });
       },
     },
 
@@ -367,6 +391,8 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           return asHookResult({
             ...update,
             ...routed,
+            // The marker is removed, so the handler's visit starts after the message before it.
+            ...(routed.visits ? { visits: visitStart(routed.visits[0]!.state, messages.slice(0, -1)) } : {}),
             messages: [new RemoveMessage({ id: last.id }), ...(routed.messages ?? [])],
           });
         }
@@ -410,12 +436,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         // runs at completion: `correct` hands the state back with a note, a
         // terminal failure routes through `on_error`.
         if (machine.isTerminal(workflowState) && lifecycleHooks[workflowState]?.after?.length) {
-          const ctx = governance.lifecycleCtx(
-            sessionIdOf(runtime),
-            state,
-            messages,
-            runtime.signal,
-          );
+          const ctx = governance.lifecycleCtx(sessionIdOf(runtime), state, runtime.signal);
           const reject = await lifecycle.runPhase(workflowState, "after", ctx, undefined, true);
           commitDispatches();
           if (reject) {

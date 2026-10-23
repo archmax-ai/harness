@@ -60,7 +60,9 @@ session returns to the state it began in (the start state its trigger selected),
 with correction budgets cleared and that state's `before` hook re-run.
 
 The conversation, the files written so far, and the session's variables carry
-over untouched. The audit trail records the move as a `reset` step. Where a
+over. What the agent locked is unlocked, values kept, so the restarted run can
+decide it again; a host's lock stays. The audit trail records the move as a
+`reset` step. Where a
 model-initiated restart is unwanted, ban it with
 `tools: { forbid_always: [archmax_reset] }`.
 
@@ -85,6 +87,17 @@ When the session is waiting for a *time*, the call says so:
 A state that polls can bound its own loop with `budget.maxParks`. Exhausting that
 budget is a budget failure, routed by `on_error`. See [sessions and parked
 sessions](/guides/sessions/#waiting-for-a-time-not-a-reply).
+
+One turn is bounded as a whole. The workflow's
+[`budget.maxModelCalls`](/reference/machine-spec/#budget-the-turn-budget)
+(default 50) counts the model calls of a turn across every state, so an agent
+that moves back and forth between two states without answering is stopped, which
+a state's own `maxTurns` cannot do, since it starts over on every entry. The
+exhaustion routes through `on_error` like any budget failure, and near the end the
+agent is told how many calls it has left. A turn that throws instead (a model
+provider failing, the step limit, a cancelled turn) ends the session `failed`
+with an exit code, so the next message starts a fresh turn rather than finding
+the session stuck.
 
 `archmax_wait` is available in every state, terminal ones included. A session
 that has answered and now awaits a reply parks where it answered and stays open.
@@ -176,6 +189,7 @@ Workflow state is checkpointed per session (the LangGraph `thread_id`):
 | `messages` | Conversation history |
 | `workflowState` | Current YAML state |
 | `stateTurns` | Model calls made in the current state, against `budget.maxTurns` |
+| `turnCalls` | Model calls made in the current invocation across every state, against the workflow's `budget.maxModelCalls` |
 | `pendingDecision` / `pendingInput` | The park record a suspended session presents |
 | `beforeDone` | Lifecycle `before` hooks already executed |
 | `iterations` | Grade-and-retry attempts per state |
@@ -521,7 +535,8 @@ Four rules make this safe to rely on:
   the guard at all.
 - **Locking is monotonic.** A locked variable refuses every later write, loudly,
   and host seeds are locked automatically. Lock anything else a guard depends
-  on: that is what settles the fact. A seed of one of the trigger's
+  on: that is what settles the fact. The one release is `archmax_reset`, which
+  unlocks what the agent locked (never a host's lock), keeping the values. A seed of one of the trigger's
   [returns](/guides/triggers/#a-return-is-owed-when-the-session-finishes) is
   the exception: it lands unlocked, so a guard should not rest on one until the
   agent locks it. Without a lock, any later state can
@@ -534,6 +549,15 @@ Four rules make this safe to rely on:
 nor a seed, assembly warns that the guard rests on the agent having called
 `archmax_set_variables` first. The turn then fails at the guarded call when it
 has not.
+
+A lock makes a value final. When a value has to stay correctable but must be
+decided in one place (an order the person may still change their mind about),
+let a state **own** it with
+[`locks: [order_id]`](/reference/machine-spec/#locks). Only that state may write
+it, so changing it means going back there: the value is decided again under that
+state's rules, and every later guard checks the new value on the way forward.
+`requires: [order_id]` beside it makes the owner set it before the session moves
+on.
 
 The agent reads the store with `archmax_get_variables({ name?, path? })` and
 writes it with `archmax_set_variables({ variables, lock? })`. Both are runtime
@@ -738,6 +762,49 @@ a caller can tell a governed refusal from a finished run.
 Argument-shape restrictions belong in `tools.allow`, or in a `forbid` entry's own
 guards. *Semantic* validation of a permitted call belongs in the state's `after`
 hook, which can veto the transition after inspecting what was actually written.
+
+### What a hook sees: its visit, and the session's records
+
+A **visit** is the span of a session from its entry into a state until it next
+enters one. An advance, a person's decision, an `on_error` route and
+`archmax_reset` each start one, and so does a turn that opens a state (the
+session's first turn): that visit begins with the person's message. A turn that
+continues in the state the session is in continues its visit, and so do a
+delivery after `archmax_wait` and a sub-workflow's return. So a visit can span
+turns, and a state entered again starts a new one.
+
+```text
+ … | entered S ──────────────────────────────────────── advance → T
+     │ user "cancel 42"                                  │ S's after hook
+     │ get_order(42) → pending                           │ T's before hook
+     │ (the turn ends; the person answers)               │   both see this visit
+     │ user "yes, do it"                                 │
+     │ cancel_order(42) → ok                             │
+     └───────────────────────────────────────────────────┘
+```
+
+A hook sees the visit of the state the session is in when it runs. On an advance
+from `S`, that is `S`'s visit for both `S`'s `after` hook and the target's
+`before` hook. A script reads it as `messages`, all of it, however many control
+calls it holds. A rubric's grader is shown the same visit, plus the request that
+opened the session.
+
+Beside the visit, a hook reads the session's **records**: `variables`, the files,
+and the tool results `toolCalls` returns. The runtime keeps those results as the
+tools returned them, across every visit, each marked with the state and visit
+that made the call. So the rule for authoring is:
+
+- **The conversation is the model's memory, not evidence.** A hook checks its
+  own visit and the records, never what an earlier state said.
+- **What a later state or turn depends on is stored**: in a variable, in a file,
+  or in a tool result the runtime already keeps. A check compares against the
+  result itself, not a copy the model made.
+- **A reset starts a new visit.** A `before` hook re-run by `archmax_reset` does
+  not see the request that opened the session; what it gates on belongs in a
+  variable.
+
+The fields are listed under
+[lifecycle hooks](/guides/code-interpreter/#lifecycle-hooks).
 
 ### Script hooks are hand-authored
 

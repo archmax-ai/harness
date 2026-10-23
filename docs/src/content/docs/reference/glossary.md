@@ -50,6 +50,7 @@ the concepts below is a defect. Please report it.
 | --- | --- | --- |
 | **session** | The durable conversation a workflow runs in, and the folder that holds it under `sessions/<id>/`. | run, thread, conversation |
 | **turn** | One invocation on a session: a prompt, a decision, a reply, or a delivery. | segment, step |
+| **visit** | The span of a session from its entry into a state until it next enters one. It can span turns; entering the state again starts a new one. What a hook sees of the conversation. | segment, stay |
 | **session store** | Where sessions physically live: the filesystem by default, any Deep Agents backend, or memory. | run store |
 | **mount** | A route in the agent's workspace composite: a key at the root served by a backend, read-only by default. Where the host declares it `governed`, each state reaches it through `mounts.allow` / `mounts.forbid`, read or read/write per the grant's `access`. | zone (for a mount), plane |
 | **zone** | The kernel's classification of a path: a mount, the working area, an offload area, a runtime-internal area, or the authoring backend. | area |

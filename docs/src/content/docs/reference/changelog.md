@@ -9,6 +9,106 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 0.9.0
+
+- **Breaking: an outcome's `reply` is what the agent said this turn.** `reply` was
+  the last assistant text in the session's whole history. Text the agent wrote next
+  to an `archmax_advance` was lost whenever it wrote more in the next state, though
+  the agent is told to put what a person should read in that message. A turn that
+  said nothing repeated the previous turn's text. `reply` on an `Outcome` and on what
+  `decide`, `reply` and `deliver` return is now every text of the turn, in order,
+  joined by a blank line, and `""` when the turn said nothing. When a terminal
+  state's completion check asks for a revision, the draft before it is dropped.
+  `archmax decide` and `archmax deliver` print this reply. **Migrate** a host that
+  wants the last thing the session ever said to `lastAgentText(outcome.messages)`.
+  See [`Agent`, in detail](/reference/public-api/#agent-in-detail).
+- **A case's `grade` is given the action's own reply.** The grader's reply section
+  was the session's last text, so a step whose turn said nothing was graded on an
+  earlier turn's answer. It is now what that step's action said. The record beside
+  it still covers the session so far. See
+  [what the grader sees](/guides/testing/#what-the-grader-sees).
+- **`dispose` frees a session's checkpoints from memory.** The default checkpointer
+  writes every checkpoint to the session store and also kept it in memory. Only
+  `sessions.delete` cleared that copy, so a long-running host that disposed its
+  finished sessions still grew with every session until it ran out of memory.
+  `agent.dispose(sessionId)` now drops the session and every child session under
+  it from memory, on a governed and a plain agent alike. The records stay in the
+  store, and the session's next turn loads them back from there, as after a
+  restart. A caller-provided `checkpointer` is left alone. See
+  [session storage](/reference/public-api/#session-storage-sessionstore-and-the-sessions-handles).
+- **Breaking: a turn is bounded as a whole.** A state's `maxTurns` starts over on
+  every entry, so an agent cycling between two states never exhausted it and ran
+  until LangGraph's recursion limit threw. A new root `budget: { maxModelCalls }`,
+  50 by default, counts the model calls of one turn across every state. Its
+  exhaustion routes through `on_error`, else ends the turn rejected. Near the end,
+  the agent is told how many calls are left. The turn's step limit now follows the
+  budget, so the budget runs out first. **Migrate** a workflow whose turns
+  legitimately make more than 50 model calls by raising `budget.maxModelCalls`.
+  See [the turn budget](/reference/machine-spec/#budget-the-turn-budget).
+- **A turn that throws no longer strands its session.** A turn that threw (a model
+  provider failing, the step limit, a cancellation) left the session `running`, and
+  every later message was refused with `SessionNotResumableError`. The session now
+  ends `failed` with the exit code `turn-error`, `recursion-limit` or
+  `turn-cancelled`, the original error still reaches the caller, and the next
+  message starts a fresh turn. A session already stranded by an earlier version
+  stays so until `sessions.delete`. See
+  [a turn that throws](/reference/public-api/#a-turn-that-throws).
+- **A session read while its first checkpoint is being written reads as new.** A
+  read in that window, such as the next `send` after a cancelled one, crashed
+  with a `TypeError` from LangGraph's in-memory saver.
+- **Breaking: a hook sees its visit.** A hook's `messages` was the last 24
+  entries of the transcript. Every control call costs two, so a few of them
+  pushed a tool result, or the person's confirmation, out of sight, and hooks
+  vetoed valid moves. `messages` is now the **visit**: everything since the
+  session entered the state it is in, which can span turns, with no other bound.
+  A tool entry in it carries its tool and call `id` with an empty `text`. The
+  new `toolCalls(filter?)` resolves to the session's tool calls with their
+  results, across every visit, each marked with its state and visit, and copies
+  into the sandbox only what it returns. A rubric's `history` is the same visit,
+  tool results in full; `userRequest` is unchanged. A `before` hook no longer
+  reads the summarized request prepared for the model, so a summary never looks
+  like the person speaking. **Migrate** a hook that read a tool result's text
+  from `messages` to `toolCalls({ name })`, and a hook that read an earlier
+  state's messages to a variable, a file or `toolCalls`. See
+  [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
+- **An `args` guard matches a non-path argument as written.** Every argument
+  value was cleaned up as a workspace path before matching, so no URL guard
+  could ever match (`https://…` became `https:/…`), a stored value could fail to
+  match itself, and a guard resolving to an empty value failed the turn. Only an
+  argument the tool declares as a path (else `file_path`) is canonicalized now;
+  any other is matched as written, a denial on it also catches its path form, and
+  `""` matches only an empty value. A grant on a non-path argument no longer
+  admits a different spelling (a leading `/`, `//` or `./`). **Migrate** a host
+  tool whose argument is a path by declaring it in `toolPaths`. See
+  [tool governance](/reference/machine-spec/#toolsallow-closed-by-default-governance).
+- **The prompt's clock can be pinned.** Every model call states the real date
+  and time, so a case whose data carries dates drifted with the calendar, and a
+  simulation's own "today" was contradicted on every call. `createAgent({ clock })`
+  and a case's `clock:` key take an ISO 8601 date or a zoned date-time; every
+  model call then states that instant in UTC, a case's key outranking the
+  option. Only the prompt line is pinned: recorded timestamps, a park's
+  `resumeAt` and the sandbox's `Date` stay real. Without either, nothing
+  changes. See [`clock`](/reference/public-api/#clock-pinning-the-date) and
+  [cases and the date](/guides/testing/#cases-and-the-date).
+- **A state can own variables.** A lock makes a value final, so a session could
+  not follow a person who changed their mind about a value a guard reads (the
+  order to cancel), and an unlocked value meant nothing to a guard. A state's
+  new `locks: [order_id]` makes it the owner: only it may write the variable, so
+  changing it means going back there, where its rules apply again and every
+  later guard reads the new value. It works for any variable, guarded or not.
+  See [`locks`](/reference/machine-spec/#locks).
+- **Breaking: `archmax_reset` releases the agent's locks.** A lock the agent set
+  with `archmax_set_variables` used to survive a reset, so the restarted run
+  could not decide that value again. A reset now unlocks it, keeping its value,
+  and leaves every host lock alone. A lock the agent sets is recorded with
+  `lockedBy: "agent"` on the variable. **Migrate** a value that must survive a
+  reset by having the host seed it.
+- **A rubric judges a turn against that turn's question.** A rubric's
+  `userRequest` was the session's first message, so in a later turn the grader
+  read turn 1's question and could refuse a correct answer to the current one.
+  It is now the person's latest message, the one the reply answers. See
+  [grading rubrics](/guides/grading-rubrics/).
+
 ## 0.8.0
 
 - **Breaking: a declared `tools.allow_always` replaces the default tools.** Every

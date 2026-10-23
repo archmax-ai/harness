@@ -23,6 +23,7 @@ tests:                           # case suite config (no tests.config.js exists)
   maxConcurrency: 1              # only 1 accepted
   caseTimeoutMs: 120000          # per-case wall clock, distinct from settings.timeoutMs
   judge: {}                      # required for grade:; {} = env default model, or { model, modelOptions }
+budget: { maxModelCalls: 50 }    # model calls one turn may make across ALL states (default 50); raise for long turns
 metadata: { canvas: {} }         # host data, never read; accepted at root, state, rubric — leave as found
 extensions: { hooks: [] }        # host-registered hook kinds; rarely authored
 
@@ -87,6 +88,7 @@ states:
       allow: [refund-policy]     # adds to allow_always (bundle readable + scripts runnable, no path entries)
       forbid: [order-data]       # subtracts, even from allow_always ([] never denies)
     requires: [case_id]          # variables that must be set before this state may be left
+    locks: [case_id]             # variables only this state may write (change = come back here)
     model: claude-opus-5         # MODEL ID ONLY — this state's turns; beats settings.model
     budget: { maxTurns: 12, timeoutMs: 60000, maxParks: 5 }   # bounds the state's segment
     on_error: closed             # where a terminal failure of this segment routes
@@ -132,7 +134,10 @@ states:
 - **Variables.** One flat checkpointed `name → value` store, never declared.
   Host seeds (`--variables`, `createAgent({ variables })`, a delivery) are
   **locked**; the agent uses `archmax_get_variables`/`archmax_set_variables`
-  (`lock: true` to freeze). Reserved: `trigger` (current trigger id, always
+  (`lock: true` to freeze, until `archmax_reset` releases the agent's locks).
+  A value that must be decided in one place yet stay correctable belongs to a
+  state: `locks: [order_id]` lets only that state write it, so a change routes
+  back there. Reserved: `trigger` (current trigger id, always
   locked) and `title` (the run's one-line task label, agent-owned; a
   sub-workflow child is not asked for one). A
   `${{name}}` / `${{a.b.-1.c}}` reference works in `tools.allow` globs
@@ -187,7 +192,8 @@ states:
   bind them; `forbid_always`, safety rules and the workflow's mount grants
   (any state's) do. Human states may not declare hooks.
 - **Budgets and `on_error`.** `budget.maxTurns`/`timeoutMs`/`maxParks` bound
-  a state's segment. A terminal failure (hook execution error, exhausted
+  a state's segment; the root `budget.maxModelCalls` (default 50) bounds a whole
+  turn across states, so a cycle between states ends there. A terminal failure (hook execution error, exhausted
   corrections, exhausted budget, exhausted parks) routes to `on_error`
   instead of failing the run; recoverable rejections (invalid edge, veto,
   in-budget correct) keep the agent in place. Declare `on_error` on states
@@ -277,7 +283,11 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   state entry naming a granted tool **narrows** it there, and one naming a
   default tool the list omits grants it there. `task` is ungrantable (error).
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches
-  if any glob matches; `${{var}}` allowed); `{ tool, paths: [...] }`
+  if any glob matches; `${{var}}` allowed). An argument the tool declares as a
+  path (else `file_path`) is canonicalized first; any other argument (a URL, an
+  address, an email) is matched **as written**, and a denial also catches its
+  path form. `""` matches only an empty value. `*` never crosses `/` (`**` does).
+  `{ tool, paths: [...] }`
   (guards every path argument the tool declares — all must match to grant,
   any matching denies). `"*"` as the tool is legal only in a
   forbid list. Globs match dot-segments (`secrets/**` covers `secrets/.env`).

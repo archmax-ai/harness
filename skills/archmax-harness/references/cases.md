@@ -19,6 +19,7 @@ it). Host-interpreted; no sandbox runs a case. **Unknown keys are errors.**
 | `variables` | `{ name: value }` seeded and **locked** every turn — the firing's payload; never seed what the agent must establish (assert it with `variables:` instead) |
 | `workspace` | `{ <run path>: content }` — strings verbatim, other YAML → JSON, `{ from: <tests-relative path> }` copies a file; only run-zone paths (`trigger.json`, `scratchpad/…`) |
 | `mocks` | `[{ tool, whenInput?, result }]` — intercepts agent and script calls alike (partial-input match) |
+| `clock` | ISO 8601 date (`2026-03-20`) or date-time with `Z`/offset — the "now" every model call of the case states; pin it whenever fixtures or prompts carry dates. Prompt only: scripts, the sandbox and recorded timestamps stay real |
 | `steps` | one flat list; actions and assertions are peers; an assertion evaluates against the nearest action above it |
 
 Actions: `send: "<message>"` (a new turn; against a parked run, a reply-only
@@ -31,10 +32,10 @@ reported `not-executed`): `succeeded: true`ˢ (fails on a raise too) · `parked:
 `reachedState: <slug>`ˢ (a committed non-trigger trail step) ·
 `trail: { to?, kind?, reason?, count }`ˢ (`kind`: trigger/agent/human/on_error) ·
 `noTraversal: true`ˢ · `triggerArrival: <id>`ˢ ·
-`reply: { includes?, excludes? }` (token or list; `"/regex/flags"` strings are regexes; matched against the whole turn's assistant text) ·
+`reply: { includes?, excludes? }` (token or list; `"/regex/flags"` strings are regexes; matched against every assistant message of the session so far, earlier turns included) ·
 `calledTool` / `notCalledTool` / `blockedTool: { name, input? }` (partial input; `blockedTool` = governance refused it — the assertion that tests a guard) ·
 `ranWorkflow: { workflow, status?, count? }` · `usedNoTools: true` (whole conversation) ·
-`variables: { expect, path?, locked? }` · `grade: { closedQA, atLeast }` (LLM grades the reply plus the tool record; `atLeast` is a hard bar; needs `tests.judge`).
+`variables: { expect, path?, locked? }` · `grade: { closedQA, atLeast }` (LLM grades what the action's turn said plus the session's tool record so far; `atLeast` is a hard bar; needs `tests.judge`).
 
 Put the structural assertion right after the action that should satisfy it,
 before content assertions that only make sense in that state:

@@ -162,6 +162,21 @@ describe("validateWorkflow", () => {
     );
   });
 
+  it("checks the workflow's turn budget, and keeps state budget keys out of it", async () => {
+    const declaring = async (budget: string) => {
+      const root = makeWorkspace({
+        "workflows/p/workflow.yaml": workflowFile(
+          [`budget: ${budget}`, "states:", "  poll:", "    triggers: { manual: }", "    summary: Check the bank."].join("\n"),
+        ),
+      });
+      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+      return { valid: result.valid, errors: result.diagnostics.map((d) => d.message).join(" | ") };
+    };
+    expect(await declaring("{ maxModelCalls: 80 }")).toMatchObject({ valid: true });
+    expect((await declaring("{ maxModelCalls: 0 }")).errors).toContain("'budget.maxModelCalls': must be a positive number");
+    expect((await declaring("{ maxTurns: 8 }")).errors).toContain("maxTurns");
+  });
+
   it("accepts a positive park budget", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(

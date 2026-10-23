@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { AGENT_DEFAULT_CONFIG } from "../agent.js";
+import { turnStepLimit } from "../core/deepagents.js";
 import { assertNoReservedToolNames, ReservedToolNameError } from "../machine/tool-names.js";
 import { createAgent } from "./index.js";
 import { resolveTrigger, UnknownTriggerError } from "../machine/triggers.js";
@@ -187,6 +188,42 @@ describe("createAgent workflow load enforcement", () => {
       name: "triggers",
       path: ["-1", "text"],
     });
+  });
+});
+
+describe("an owned variable the host seeds", () => {
+  it("is warned about at assembly", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": "states:\n  start:\n    triggers:\n      manual:\n    locks: [order_id]\n",
+    });
+    const warnings: string[] = [];
+    await createAgent({
+      workflow: "p",
+      model: stubModel,
+      variables: { order_id: "1" },
+      workspace: { rootDir: root },
+      onEvent: (event) => {
+        if (event.type === "warning") warnings.push(event.message);
+      },
+    });
+    expect(warnings).toContainEqual(expect.stringContaining("The host seeds 'order_id', which state 'start' owns"));
+  });
+});
+
+describe("createAgent clock", () => {
+  const spec = "states:\n  start:\n    triggers:\n      manual:\n";
+
+  it.each(["2026-03-20T10:00", "2026-02-30"])("refuses a clock of %s, naming the option", async (clock) => {
+    const root = makeWorkspace({ "workflows/p/workflow.yaml": spec });
+    await expect(createAgent({ workflow: "p", model: stubModel, clock, workspace: { rootDir: root } })).rejects.toThrow(
+      /'clock'.*ISO 8601 date/,
+    );
+  });
+
+  it("reads an empty clock as the real one", async () => {
+    const root = makeWorkspace({ "workflows/p/workflow.yaml": spec });
+    const agent = await createAgent({ workflow: "p", model: stubModel, clock: "", workspace: { rootDir: root } });
+    expect(agent.workflow).toBeDefined();
   });
 });
 
@@ -1219,9 +1256,10 @@ describe("Deep Agents parity", () => {
     await agent.invoke({ messages: [] } as never, session);
     expect((seen[0]?.metadata as Record<string, unknown>)?.ls_integration).toBe( "archmax-harness");
     // A turn runs under a generous default bound: one invoke is one whole turn
-    // across states, and the authored budgets are the real limit.
+    // across states, and the authored budgets are the real limit. A governed
+    // agent's bound follows its turn budget, the default 50 calls here.
     expect(AGENT_DEFAULT_CONFIG.recursionLimit).toBe(400);
-    expect(seen[0]?.recursionLimit).toBe(400);
+    expect(seen[0]?.recursionLimit).toBe(turnStepLimit(50));
     // The runner drives the graph's native stream in values+messages mode.
     expect(seen[0]?.streamMode).toEqual(["values", "messages"]);
 

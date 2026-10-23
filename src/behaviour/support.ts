@@ -27,6 +27,7 @@ import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseChatModelCallOptions } from "@langchain/core/language_models/chat_models";
 import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
 import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
+import type { MemorySaver } from "@langchain/langgraph-checkpoint";
 import { ReplSession } from "@langchain/quickjs";
 import { vi } from "vitest";
 import {
@@ -58,8 +59,8 @@ export type ScriptedModelName = string;
 
 /** One scripted model turn. */
 export type ScriptedTurn =
-  /** A single tool call. */
-  | { tool: string; args: Record<string, unknown>; usage?: ScriptedUsage; reports?: ScriptedModelName }
+  /** A single tool call, with `text` the message says beside it (what a person reads next to an advance). */
+  | { tool: string; args: Record<string, unknown>; text?: string; usage?: ScriptedUsage; reports?: ScriptedModelName }
   /** Several tool calls issued in one assistant message (a tool batch). */
   | {
       batch: Array<{ tool: string; args: Record<string, unknown> }>;
@@ -205,8 +206,9 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
       this.issued.push({ name: c.tool, args: c.args });
       return { id: `call-${++this.seq}`, name: c.tool, args: c.args };
     });
-    const message = new AIMessage({ content: "", tool_calls: toolCalls, ...usage });
-    return { generations: [{ text: "", message }] };
+    const text = "text" in turn ? (turn.text ?? "") : "";
+    const message = new AIMessage({ content: text, tool_calls: toolCalls, ...usage });
+    return { generations: [{ text, message }] };
   }
 }
 
@@ -533,8 +535,12 @@ export class JudgeModel extends BaseChatModel<BaseChatModelCallOptions> {
     return this as unknown as BaseChatModel;
   }
 
-  async _generate(): Promise<ChatResult> {
+  /** The text of everything each dispatch was shown, one entry per dispatch. */
+  readonly prompts: string[] = [];
+
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
     this.calls += 1;
+    this.prompts.push(messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n"));
     if (this.failWith) throw new Error(this.failWith);
     const verdict = this.verdicts[this.cursor++] ?? this.fallback;
     const extract = this.lastBound.find((name) => name.startsWith("extract-"));
@@ -557,6 +563,20 @@ export async function storeFile(store: SessionStore, path: string): Promise<stri
   const result = await store.backend.readRaw(path);
   const data = (result as { data?: { content?: string } }).data;
   return typeof data?.content === "string" ? data.content : undefined;
+}
+
+/**
+ * The session ids the agent's checkpointer holds in memory: the keys of
+ * LangGraph's public `MemorySaver` maps, read off the compiled graph.
+ */
+export function heldSessions(agent: Agent): string[] {
+  const saver = (agent.graph as unknown as { checkpointer: MemorySaver }).checkpointer;
+  return [
+    ...new Set([
+      ...Object.keys(saver.storage),
+      ...Object.keys(saver.writes).map((key) => String((JSON.parse(key) as unknown[])[0])),
+    ]),
+  ].sort();
 }
 
 // --- Session ids ---------------------------------------------------------------

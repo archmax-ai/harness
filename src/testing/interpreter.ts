@@ -130,6 +130,7 @@ export async function executeCase(opts: ExecuteCaseOptions): Promise<ExecuteCase
     await engine.open(DEFAULT_SESSION_ID, {
       ...(doc.trigger !== undefined ? { trigger: doc.trigger } : {}),
       ...(doc.variables !== undefined ? { variables: doc.variables } : {}),
+      ...(doc.clock !== undefined ? { clock: doc.clock } : {}),
       files: seeds,
     });
 

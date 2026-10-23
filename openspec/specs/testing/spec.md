@@ -32,7 +32,7 @@ The engine SHALL discover cases under `workflows/<slug>/tests/` by recursively c
 
 ### Requirement: A case is one YAML document
 
-A case SHALL be a YAML mapping with a mandatory `title` (a single line of at most `CASE_TITLE_MAX_LENGTH` = 60 characters) and a mandatory `description` (at most `CASE_DESCRIPTION_MAX_LENGTH` = 200 characters), both measured and stored on whitespace-collapsed text so folded and literal blocks of the same prose score alike, and MAY carry `skip` (a non-empty reason string), `trigger`, `variables`, `workspace`, `mocks` and `steps`. A case carries no version of its own. Unknown top-level keys SHALL be rejected with a message naming the unknown key and listing the known ones; every rejection names the file and the offending location.
+A case SHALL be a YAML mapping with a mandatory `title` (a single line of at most `CASE_TITLE_MAX_LENGTH` = 60 characters) and a mandatory `description` (at most `CASE_DESCRIPTION_MAX_LENGTH` = 200 characters), both measured and stored on whitespace-collapsed text so folded and literal blocks of the same prose score alike, and MAY carry `skip` (a non-empty reason string), `trigger`, `variables`, `workspace`, `mocks`, `clock` and `steps`. A case carries no version of its own. Unknown top-level keys SHALL be rejected with a message naming the unknown key and listing the known ones; every rejection names the file and the offending location.
 
 #### Scenario: Missing or over-long prose rejected
 
@@ -48,6 +48,35 @@ A case SHALL be a YAML mapping with a mandatory `title` (a single line of at mos
 
 - **WHEN** a case declares `skip: "pending fixture"`
 - **THEN** its result is `skipped` with `skipReason` set, no records, no `sessionId`, and no turn is driven
+
+### Requirement: Case-level clock
+
+A case MAY declare `clock:` as a string in the forms the `clock` option accepts, or empty. Any other value SHALL fail parsing naming `clock` and the accepted forms. A non-empty `clock` SHALL be carried in the run configuration of every action of the case (`send`, `decide` and `deliver`), so it outranks the target's `clock` option for that case alone. A case with no `clock`, or an empty one, SHALL run under the target's option.
+
+#### Scenario: A case runs on a pinned date
+
+- **WHEN** a case declares `clock: 2026-03-20` against a target assembled without `clock`
+- **THEN** every model call of every one of its turns shows `Current date and time: 2026-03-20 00:00 UTC (Friday)`
+
+#### Scenario: Every action carries it
+
+- **WHEN** a case declares `clock: 2026-03-20`, and its `send` parks at a human state that a later `decide` resumes
+- **THEN** the park's handoff call and every model call after the `decide` show the pinned date
+
+#### Scenario: Other cases keep the target's clock
+
+- **WHEN** one case declares `clock: 2026-03-20` and the next case on the same target declares nothing
+- **THEN** the next case's model calls show the real time
+
+#### Scenario: An empty clock is no clock
+
+- **WHEN** a case declares `clock: ""`
+- **THEN** it parses, and runs under the target's option
+
+#### Scenario: An invalid value is rejected
+
+- **WHEN** a case declares `clock: "2026-03-20T10:00"`, `clock: "next tuesday"` or `clock: true`
+- **THEN** parsing fails naming `clock` and the accepted forms
 
 ### Requirement: Steps are a flat list of actions and assertions
 
@@ -265,7 +294,7 @@ The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each 
 
 ### Requirement: The grader and its evidence
 
-The grader SHALL be the model factory's `judge` role (default: the env-configured model) handed the environment with `tests.judge.model` and `tests.judge.modelOptions` (`temperature`, `maxTokens`; any other key fails the spec load) applied over it; the environment is loaded lazily so a factory carrying its own credentials needs no `ARCHMAX_*` variables. Its evidence is derived from the same view the step's other assertions read: the turn's final reply, and a chronological record of every assistant message, runtime note (`[runtime:<kind>]`) and tool call with name, input, output and status (`completed`, `failed`, `rejected`, `pending`) — a mocked call appearing with its mocked output. The final reply is not repeated in the record when it closed the turn. Each rendered input, output or message is capped at `MAX_VALUE_CHARS` (800) with a marker naming the dropped characters; the record is capped at `MAX_RECORD_CHARS` (12000), dropping the oldest entries first behind one marker naming how many were omitted; an empty record says so explicitly; the reply is never capped. The prompt labels the two sections and instructs the model that a criterion about what the user was told is met only by the reply while one about behaviour may be met by the record, asks for JSON `{ score, pass, reason }` with a 1–3 sentence reason, and tolerates prose or fences around the JSON by taking the first balanced `{...}` block that parses; when none parses the grader is asked once more for JSON only, and if that also fails the score is 0 with the reason "grader returned no readable JSON verdict".
+The grader SHALL be the model factory's `judge` role (default: the env-configured model) handed the environment with `tests.judge.model` and `tests.judge.modelOptions` (`temperature`, `maxTokens`; any other key fails the spec load) applied over it; the environment is loaded lazily so a factory carrying its own credentials needs no `ARCHMAX_*` variables. Its evidence is derived from the same view the step's other assertions read: the action's `reply` (what the agent said during the action's turn, as its outcome carries it), and a chronological record, covering the session so far, of every assistant message, runtime note (`[runtime:<kind>]`) and tool call with name, input, output and status (`completed`, `failed`, `rejected`, `pending`) — a mocked call appearing with its mocked output. The reply's closing message is not repeated in the record when it closed the turn. Each rendered input, output or message is capped at `MAX_VALUE_CHARS` (800) with a marker naming the dropped characters; the record is capped at `MAX_RECORD_CHARS` (12000), dropping the oldest entries first behind one marker naming how many were omitted; an empty record says so explicitly; the reply is never capped. The prompt labels the two sections and instructs the model that a criterion about what the user was told is met only by the reply while one about behaviour may be met by the record, asks for JSON `{ score, pass, reason }` with a 1–3 sentence reason, and tolerates prose or fences around the JSON by taking the first balanced `{...}` block that parses; when none parses the grader is asked once more for JSON only, and if that also fails the score is 0 with the reason "grader returned no readable JSON verdict".
 
 #### Scenario: A person's decision is evidence
 
@@ -281,6 +310,16 @@ The grader SHALL be the model factory's `judge` role (default: the env-configure
 
 - **WHEN** the grader answers with unparseable text twice
 - **THEN** the record scores 0 and the case continues
+
+#### Scenario: The grader reads this action's reply
+
+- **WHEN** a case's first `send` ends with the agent saying "ORD-1001 is shipped", and a second `send` is answered with a proposal written next to an advance followed by "I'll wait for your confirmation", and a `grade` follows it
+- **THEN** the grader's reply section holds the proposal and the confirmation line, not "ORD-1001 is shipped"
+
+#### Scenario: A silent action is graded as silent
+
+- **WHEN** an action's turn adds no assistant text and a `grade` follows it
+- **THEN** the grader's reply section is empty, not the previous turn's text
 
 ### Requirement: Assertion records are step-attributed and status-bearing
 

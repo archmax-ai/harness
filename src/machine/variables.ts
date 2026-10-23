@@ -116,6 +116,8 @@ export interface VariableEntry {
    * agent-reachable path can bypass a lock.
    */
   reseed?: boolean;
+  /** `agent` on a lock `archmax_set_variables` set, which `archmax_reset` releases; absent on a host's lock. */
+  lockedBy?: "agent";
 }
 
 /** The checkpointed variable store, keyed by name. */

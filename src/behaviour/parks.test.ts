@@ -144,6 +144,25 @@ describe("a human node", () => {
     expect((await agent.sessions.get("s1"))?.status).toBe("completed");
   });
 
+  it("replies with what the agent said before it parked and the handoff after it", async () => {
+    const { agent } = await assemble(workspaceWith(REVIEW), {
+      turns: [{ ...advanceTo("review", "ready"), text: "Your draft is ready." }, { reply: "A reviewer will check it." }],
+    });
+    const outcome = await agent.workflow.send("s1", { message: "please review" });
+    expect(outcome).toMatchObject({ kind: "parked", state: "review" });
+    expect(outcome.reply).toBe("Your draft is ready.\n\nA reviewer will check it.");
+  });
+
+  it("replies with nothing when a decision ends the session without the agent speaking", async () => {
+    const { agent, model } = await parkAtReview();
+    model.enqueue({ reply: "" });
+    const outcome = await agent.workflow.decide("s1", { target: "approved" });
+    expect(outcome).toMatchObject({ status: "completed", workflowState: "approved" });
+    // Not the park's handoff message, which the turn before it said.
+    expect(lastAgentText(outcome.messages)).not.toBe("");
+    expect(outcome.reply).toBe("");
+  });
+
   it("records the decision in the transcript as a runtime note, not as a person's message", async () => {
     const { agent, model } = await parkAtReview();
     model.enqueue({ reply: "closing" });
@@ -297,6 +316,22 @@ describe("archmax_wait", () => {
     expect(typeof parked?.resumeAt).toBe("string");
     expect(Number.isNaN(Date.parse(parked!.resumeAt!))).toBe(false);
     expect((await agent.sessions.get("conv-1"))?.resumeAt).toBe(parked?.resumeAt);
+  });
+
+  it("keeps real timestamps under a pinned prompt clock", async () => {
+    const before = Date.now();
+    const { agent, events, model } = await assemble(workspaceWith(CLARIFY), {
+      turns: [{ tool: "archmax_wait", args: { reason: "waiting", until: "1d" } }],
+      params: { clock: "2020-01-01" },
+    });
+    await turn(agent, "conv-1", "help with my order");
+    expect(model.calls[0]!.systemPrompt).toContain("Current date and time: 2020-01-01 00:00 UTC");
+    const parked = eventsOf(events, "parked")[0]!;
+    // A day after now, not after the pinned 2020-01-01.
+    expect(Date.parse(parked.resumeAt!) - before).toBeGreaterThanOrEqual(24 * 3_600_000);
+    expect(Date.parse(parked.resumeAt!) - Date.now()).toBeLessThanOrEqual(24 * 3_600_000);
+    const { pendingInput } = await pending({ agent } as Assembled, "conv-1");
+    expect(Date.parse(pendingInput!.parkedAt!)).toBeGreaterThanOrEqual(before);
   });
 
   it("resumes the same state on delivery, with the delivered variables locked and an event note", async () => {
@@ -634,7 +669,8 @@ describe("the park budget", () => {
     expect(eventsOf(events, "state-error-routed")).toMatchObject([{ state: "clarify", to: "escalate" }]);
     expect(eventsOf(events, "state-error-routed")[0]?.reason).toMatch(/maxParks: 1/);
     expect(outcome).toMatchObject({ workflowState: "escalate", status: "completed", reparked: false });
-    expect(outcome.reply).toBe("escalated");
+    // An error route takes nothing back: the turn said both, in order.
+    expect(outcome.reply).toBe("cannot wait again\n\nescalated");
   });
 
   it("ends the turn rejected when the budgeted state declares no on_error", async () => {

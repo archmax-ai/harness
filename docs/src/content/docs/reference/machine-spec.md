@@ -8,7 +8,7 @@ sidebar:
 `workflows/<name>/workflow.yaml` is the enforced state machine, a pure YAML
 mapping with these top-level keys:
 
-`title`, `instructions`, `disabled`, `runtime`, `settings`, `tests`, `tools`,
+`title`, `instructions`, `disabled`, `runtime`, `budget`, `settings`, `tests`, `tools`,
 `skills`, `mounts`, `extensions`, `metadata`, `states`.
 
 This page documents the schema fields, focusing on those added by the core
@@ -90,6 +90,7 @@ states:
       allow: [order-data]   # capability slugs THIS state adds (see skills.allow_always)
     mounts:
       allow: [catalogs/eu]  # mount names THIS state adds (see mounts.allow_always)
+    locks: [case_id]        # variables only THIS state may write (see locks)
     tools:
       allow:                # this state's grants; `forbid:` beside it denies
         - { tool: write_file, args: { file_path: [reports/answer.json] } }   # a governed session path;
@@ -370,6 +371,20 @@ tools:
   allow:
     - { tool: microsoft-outlook__reply-email, connection: outlook-support }
 ```
+
+An `args` glob matches an argument according to what the argument is. An
+argument the tool declares as a **path** (`file_path`, `path`, `source`,
+`destination`, or a host's declared ones; for a tool that declares none,
+`file_path`) is canonicalized before it is matched: a leading `/`, `./`, `//` and
+`..` are resolved, so a different spelling cannot dodge a guard. Every **other**
+argument is matched **as written**: a grant on
+`url: ["https://api.example.com/**"]` admits that API's URLs, and a stored value
+matches itself exactly. A denial on such an argument also catches its path form,
+so `./secrets/k` cannot dodge `target: ["secrets/**"]`. The glob syntax is the
+same for both: `*` stops at `/`, and `**` crosses it. An empty pattern (`""`,
+written or resolved from a variable) matches only an empty value. To have a host
+tool's argument matched as a path, declare it with
+[`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
 
 Globs match **dot-prefixed segments** like any other: `scratchpad/**` covers
 `scratchpad/.cache/x`, and a denial of `secrets/**` covers `secrets/.env`. A
@@ -784,7 +799,7 @@ Per-state execution budget bounding the turn:
 states:
   research:
     budget:
-      maxTurns: 8       # overrides the default recursion limit (50) for this state
+      maxTurns: 8       # model calls this state may make per visit
       timeoutMs: 30000  # time budget per model call; the failure routes through on_error
       maxParks: 5       # how many times this state may park itself with archmax_wait
 ```
@@ -800,8 +815,9 @@ states:
   Parks are counted per state in the checkpoint, so the count survives restarts,
   and the park that would exceed the bound is refused.
 - Any exhaustion is treated as a **turn failure**, subject to `on_error`
-  routing. A state with no `budget` runs under the default recursion limit (50)
-  and may park any number of times.
+  routing. A state with no `budget` may make any number of model calls per visit,
+  within the workflow's [turn budget](#budget-the-turn-budget), and may park any
+  number of times.
 
 `archmax validate` checks that `maxTurns`, `timeoutMs` and `maxParks` are
 positive numbers.
@@ -918,6 +934,49 @@ A session that finishes **short of its trigger's
 see `on_error` either. A top-level session ends `rejected`, naming what it left
 unset. A sub-workflow child completes instead, and its caller gets the unset
 ones empty (`null`) plus a `note` naming them.
+
+### `locks`
+
+The variables this state **owns**. Only the owner may write a variable it owns,
+on any of its visits and in any turn, before or after the variable is set. A
+write from any other state is refused, naming the owner:
+
+```yaml
+states:
+  lookup:
+    locks: [order_id]      # decided here, and only here
+    transitions:
+      - to: act
+        description: The order is found.
+  act:
+    tools:
+      allow:
+        - { tool: cancel_order, args: { order_id: ["${{order_id}}"] } }
+    transitions:
+      - to: lookup
+        description: The person means a different order.
+```
+
+To change `order_id` once the session is in `act`, the agent goes back to
+`lookup`. The value is decided again under `lookup`'s tools, hooks and
+`requires`, and every later state and guard reads the new value on the way
+forward. So give an owner an edge back from the states that act on its
+variables.
+
+- **Any variable, guarded or not.** `locks` ties a variable to the state that
+  decides it.
+- **One owner.** Loading fails when two states own the same variable, when
+  `locks` names `trigger` or `title`, when it lists a name twice, or when it is on
+  a human state, which makes no tool calls.
+- **An owned variable stays changeable in its owner.** `archmax_set_variables`
+  with `lock: true` is refused for it.
+- **The host's value wins.** A variable the host supplies (a seed, a trigger
+  input, a delivered variable) stays locked although a state owns its name.
+  Assembly and `archmax validate` warn about the overlap.
+
+A lock the agent sets with `lock: true` is different: it is final until
+`archmax_reset`, which releases the locks the agent set and keeps their values.
+A host's lock is never released.
 
 ## `disabled`: take a workflow out of service
 
@@ -1305,6 +1364,36 @@ caller's. A block from an inherited rule names the workflow that declared it.
 A child can narrow what is permitted, and re-granting is closed to it. The
 per-state `allow` and `forbid` lists stay local, inherited in neither
 direction.
+
+### `budget`: the turn budget
+
+The model calls one turn may make, counted across every state:
+
+```yaml
+budget:
+  maxModelCalls: 80   # default 50
+```
+
+A turn is one invocation: a message, a decision, a reply or a delivery. Each
+counts from zero. A state's `maxTurns` starts over every time the state is
+entered, so an agent moving back and forth between states never exhausts it.
+This bound is the one that ends such a turn.
+
+- The call that would exceed `maxModelCalls` is not made. The exhaustion is a
+  failure of the current state: it routes through that state's `on_error`, else
+  the turn ends rejected. It routes once per turn. The error handler then runs
+  under its own `maxTurns`.
+- While a fifth of the budget or less is left, every model call is told how many
+  calls the turn has left, and to finish its work and answer the person.
+- The turn's step limit (LangGraph's `recursionLimit`) follows the budget, so the
+  budget runs out first: `(maxModelCalls + 10) × 8` graph steps, never fewer
+  than 400. A host's own `recursionLimit` in the invoke config takes precedence.
+- A delegated child counts against its own workflow's budget, not its caller's.
+- A park's single reply-only call is not counted.
+
+Raise it for a workflow whose turns legitimately take more calls, such as a long
+chain of states or a review cycle the agent repeats on its own. `archmax validate`
+checks that it is a positive number.
 
 ### `tests`
 

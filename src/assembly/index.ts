@@ -23,7 +23,7 @@ import {
   type TurnInput,
   type WorkflowSurface,
 } from "../agent.js";
-import type { CompiledAgentGraph } from "../core/deepagents.js";
+import { turnStepLimit, type CompiledAgentGraph } from "../core/deepagents.js";
 import { consoleEventHandler, createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
 import type { MountSpec } from "../core/mounts.js";
 import type { SessionStore } from "../core/session-store.js";
@@ -78,6 +78,7 @@ import {
   settle,
 } from "../sessions/resume.js";
 import { createSessionFiles, isPlainFileName } from "../core/attachments.js";
+import { turnAnchorOf } from "../core/messages.js";
 import { BackendCheckpointSaver } from "../workflow/checkpointer.js";
 import { DEFAULT_WORKFLOW, workflowPaths } from "../workflow/paths.js";
 import type { PromptCacheOptions } from "../workflow/prompt-cache.js";
@@ -85,6 +86,7 @@ import { createPlainTurnRunner } from "../workflow/turn-runner.js";
 import { composeGoverned, renderSystemPrompt, sessionBinder, type AssemblyContext } from "./compose.js";
 import { createDelegationRegistry } from "./delegation-registry.js";
 import { composePlain } from "./plain.js";
+import { parseClock } from "../core/clock.js";
 
 
 /**
@@ -284,6 +286,16 @@ export interface CreateAgentParams {
    * footer; without pricing, cost is omitted — never guessed.
    */
   pricing?: PricingTable;
+  /**
+   * Pins the date and time a governed agent's prompt states as "now", for cases
+   * and evaluations whose data carries dates: an ISO 8601 date (`2026-03-20`,
+   * midnight UTC) or a date-time with `Z` or an offset. Every model call renders
+   * that instant, in UTC, in place of the real time; recorded timestamps, a
+   * park's `resumeAt` and the sandbox's `Date` stay real. Absent or empty, the
+   * prompt shows the real time. A pinned production agent reasons as if no time
+   * passes, which matters most across a park. A case's `clock:` key outranks it.
+   */
+  clock?: string;
 }
 
 /** Assemble an agent. See the module note. */
@@ -293,6 +305,12 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   // The namespace is a guarantee, not a convention: a host tool wearing it is
   // refused before anything is assembled, on both paths.
   assertNoReservedToolNames(params.tools);
+  // A pin that cannot be read fails assembly, before anything is composed.
+  try {
+    parseClock(params.clock ?? "");
+  } catch (err) {
+    throw new Error(`createAgent: 'clock' ${(err as Error).message}`, { cause: err });
+  }
   // `false` declares the agent ungoverned: nothing is looked for. Otherwise a
   // named workflow — or the default — is read off the authoring backend.
   const governed = params.workflow !== false;
@@ -441,14 +459,22 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   if (skillRegistry.size > 0) emit({ type: "skills-loaded", names: [...skillRegistry.keys()] });
 
   // The session-level members every agent carries, governed or plain.
-  const members = (graph: CompiledAgentGraph, dispose: (sessionId: string) => void, toolMocks: boolean): AgentMembers => ({
-    dispose,
-    runtimeContract,
-    toolMocks,
-    emitRunArtifacts: createArtifactEmitter({ graph, machine, workspace, workflowName, runtimeContract, usage, emit }),
-    sessions: createSessionOperations({ checkpointer, sessionStore, workspace, mountPrefixes, dispose }),
-    getSpecSnapshot: createSpecSnapshotReader(workspace),
-  });
+  const members = (graph: CompiledAgentGraph, release: (sessionId: string) => void, toolMocks: boolean): AgentMembers => {
+    // The default saver also frees the session's checkpoints, which the store still holds; a
+    // host's own checkpointer may hold the only copy, so it is left alone.
+    const dispose = (sessionId: string) => {
+      release(sessionId);
+      if (checkpointer instanceof BackendCheckpointSaver) checkpointer.evict(sessionId);
+    };
+    return {
+      dispose,
+      runtimeContract,
+      toolMocks,
+      emitRunArtifacts: createArtifactEmitter({ graph, machine, workspace, workflowName, runtimeContract, usage, emit }),
+      sessions: createSessionOperations({ checkpointer, sessionStore, workspace, mountPrefixes, dispose }),
+      getSpecSnapshot: createSpecSnapshotReader(workspace),
+    };
+  };
 
   if (!machine) {
     const plain = composePlain(ctx, systemPrompt);
@@ -501,6 +527,8 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     return seeded;
   };
 
+  // The step limit follows the turn budget, so the budget ends a runaway turn first; a caller's own limit wins.
+  const stepLimit: RunnableConfig = { recursionLimit: turnStepLimit(machine.maxModelCalls) };
   const workflow: WorkflowSurface = {
     name: workflowName,
     machine,
@@ -560,7 +588,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       // Validated here, so a bad name is refused before anything runs.
       if (turn.variables) buildSeededVariables(turn.variables);
       const seeds = { ...(turn.variables ?? {}), ...(hasFiles ? await placeTurnFiles(sessionId, turn) : {}) };
-      const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, config, {
+      const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, stepLimit, config, {
         configurable: {
           thread_id: sessionId,
           // Seeded per turn, locked, through the per-invocation seed channel the
@@ -569,8 +597,11 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
           ...(Object.keys(seeds).length > 0 ? { [SEED_VARIABLES_KEY]: seeds } : {}),
         },
       });
+      // Where this turn begins, so the outcome's reply is what this turn said.
+      const before = await checkpointer.getTuple({ configurable: { thread_id: sessionId } });
+      const anchor = turnAnchorOf((before?.checkpoint.channel_values as { messages?: unknown } | undefined)?.messages);
       const result = await driver.invoke({ messages: [{ role: "user", content: message }], trigger }, turnConfig);
-      return outcomeOf(settle(result, sessionId), "turn");
+      return outcomeOf(settle(result, anchor, sessionId), "turn");
     },
   };
 
@@ -579,5 +610,6 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     members: agentMembers,
     driver,
     workflow,
+    config: stepLimit,
   });
 }

@@ -314,3 +314,50 @@ describe("parseCaseDocument", () => {
     expect(() => parseCaseDocument("workflows/w/tests/bad.test.yaml", bad, "workflows/w/tests")).toThrow(/bogus/);
   });
 });
+
+describe("a case's clock", () => {
+  it("pins every model call of its own case, the handoff and the resumed calls included, and no other case's", async () => {
+    const root = makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      "workflows/w/workflow.yaml": {
+        runtime: { engine: "archmax-harness", version: "2" },
+        tests: { maxConcurrency: 1 },
+        states: {
+          work: { triggers: { manual: null }, transitions: [{ to: "review", description: "Hand it over." }] },
+          review: { type: "human", transitions: [{ to: "done", type: "approve", description: "Approve it." }] },
+          done: {},
+        },
+      },
+      "workflows/w/tests/a-pinned.test.yaml": [
+        "title: Pinned",
+        "description: Parks at review on send and is resumed by a decision, all on the pinned date.",
+        "clock: 2026-03-20",
+        "steps:",
+        "  - send: go",
+        "  - decide: { to: done }",
+        "  - reachedState: done",
+      ].join("\n"),
+      "workflows/w/tests/b-real.test.yaml": [
+        "title: Real",
+        "description: Declares no clock, so it runs on the real date.",
+        "steps:",
+        "  - send: hello",
+      ].join("\n"),
+    });
+    const { results, model } = await run(root, [
+      { tool: "archmax_advance", args: { to: "review", reason: "ready" } },
+      { reply: "Over to the reviewer." },
+      { reply: "Approved and closed." },
+      { reply: "Hello." },
+    ]);
+
+    expect(results.map((r) => [r.verdict.status, failures(r.records)])).toEqual([
+      ["passed", []],
+      ["passed", []],
+    ]);
+    const PINNED = "Current date and time: 2026-03-20 00:00 UTC (Friday)";
+    expect(model.calls).toHaveLength(4);
+    for (const call of model.calls.slice(0, 3)) expect(call.systemPrompt).toContain(PINNED);
+    expect(model.calls[3]!.systemPrompt).not.toContain("2026-03-20");
+  });
+});

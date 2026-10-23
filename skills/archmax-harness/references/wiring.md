@@ -13,7 +13,7 @@ const agent = await createAgent({
   workspace: { rootDir, /* mounts?, sessionStore? */ },
   onEvent: (e) => { usage.handler(e); publish(e); },   // omit for the console subscriber
   // model | modelFactory, tools, systemPrompt, middleware, backend, checkpointer,
-  // trigger, variables, promptCache, pricing, hookExecutors …
+  // trigger, variables, promptCache, pricing, clock, hookExecutors …
 });
 const sessionId = `run-${runId}`;
 const result = await agent.invoke(

@@ -96,3 +96,43 @@ describe("argsSatisfy", () => {
     expect(argsSatisfy({ "a.constructor": ["*"] }, { a: {} })).toBe(false);
   });
 });
+
+describe("an argument matched as text", () => {
+  // `file_path` is the only path argument of a tool that declares none.
+  const grant = { pathArgs: ["file_path"], side: "grant" } as const;
+  const deny = { pathArgs: ["file_path"], side: "deny" } as const;
+  const vars = (value: unknown) => ({ p: { value, locked: true } });
+
+  it("admits an empty value against a guard that resolves to it, and nothing else", () => {
+    const guard = { address2: ["${{p}}"] };
+    expect(argsSatisfy(guard, { address2: "" }, vars(""), undefined, grant)).toBe(true);
+    expect(argsSatisfy(guard, { address2: "Suite 4" }, vars(""), undefined, grant)).toBe(false);
+    expect(argsSatisfy({ address2: [""] }, { address2: "" }, undefined, undefined, grant)).toBe(true);
+  });
+
+  it("matches a URL and a stored value as written", () => {
+    expect(
+      argsSatisfy({ url: ["https://api.example.com/**"] }, { url: "https://api.example.com/v1/orders" }, undefined, undefined, grant),
+    ).toBe(true);
+    expect(argsSatisfy({ url: ["https://api.example.com/**"] }, { url: "https://evil.example.com/v1" }, undefined, undefined, grant)).toBe(false);
+    expect(argsSatisfy({ url: ["${{p}}"] }, { url: "https://x.com/a?b=1" }, vars("https://x.com/a?b=1"), undefined, grant)).toBe(true);
+    expect(argsSatisfy({ line: ["${{p}}"] }, { line: "Unit 4//B" }, vars("Unit 4//B"), undefined, grant)).toBe(true);
+    expect(argsSatisfy({ line: ["${{p}}"] }, { line: "Unit 4/B" }, vars("Unit 4//B"), undefined, grant)).toBe(false);
+  });
+
+  it("does not admit a different spelling in a grant", () => {
+    expect(argsSatisfy({ name: ["abs"] }, { name: "/abs" }, undefined, undefined, grant)).toBe(false);
+    expect(argsSatisfy({ name: ["x"] }, { name: "./x" }, undefined, undefined, grant)).toBe(false);
+  });
+
+  it("is caught by a denial in either form", () => {
+    expect(argsSatisfy({ target: ["secrets/**"] }, { target: "secrets/k" }, undefined, undefined, deny)).toBe(true);
+    expect(argsSatisfy({ target: ["secrets/**"] }, { target: "./secrets/k" }, undefined, undefined, deny)).toBe(true);
+    expect(argsSatisfy({ target: ["https://evil.com/**"] }, { target: "https://evil.com/x" }, undefined, undefined, deny)).toBe(true);
+  });
+
+  it("leaves a path argument canonicalized", () => {
+    expect(argsSatisfy({ file_path: ["reports/**"] }, { file_path: "./reports/q3.md" }, undefined, undefined, grant)).toBe(true);
+    expect(argsSatisfy({ file_path: ["reports/**"] }, { file_path: "reports/../secrets/k" }, undefined, undefined, grant)).toBe(false);
+  });
+});

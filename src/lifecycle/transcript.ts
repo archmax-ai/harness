@@ -8,11 +8,14 @@ import { contentToString, messageTypeOf, runtimeNoteKind } from "../core/message
  */
 export interface HookMessage {
   role: string;
+  /** The message's text; empty on a tool result, whose result `toolCalls` returns. */
   text: string;
   /** Assistant messages only: the tool calls the message made. */
-  toolCalls?: { name: string; args: unknown }[];
-  /** Tool results only: the tool that produced the text. */
+  toolCalls?: { id?: string; name: string; args: unknown }[];
+  /** Tool results only: the tool that answered. */
   tool?: string;
+  /** Tool results only: the id of the call it answers. */
+  id?: string;
   /** Runtime notes only: which kind of note this is. */
   note?: string;
 }
@@ -25,15 +28,14 @@ const ROLE_BY_TYPE: Record<string, string> = {
   function: "tool",
 };
 
-/** How much of the transcript a hook is handed: the most recent messages. */
-export const HOOK_TRANSCRIPT_LIMIT = 24;
-
 /**
- * The recent transcript as a hook receives it in `messages`, newest last. A
+ * A visit's transcript as a hook receives it in `messages`, newest last. A
  * runtime note is carried in the transcript as a tool-call pair; only the half
- * holding the text is kept, as one `runtime` entry.
+ * holding the text is kept, as one `runtime` entry. A tool result names its
+ * tool and call but carries no text: results are read through `toolCalls`, so
+ * the hook input stays small however large they are.
  */
-export function hookTranscript(messages: unknown[], limit = HOOK_TRANSCRIPT_LIMIT): HookMessage[] {
+export function hookTranscript(messages: unknown[]): HookMessage[] {
   const out: HookMessage[] = [];
   for (const raw of Array.isArray(messages) ? messages : []) {
     const msg = raw as Record<string, unknown>;
@@ -45,16 +47,20 @@ export function hookTranscript(messages: unknown[], limit = HOOK_TRANSCRIPT_LIMI
       out.push({ role: "runtime", text, note });
       continue;
     }
-    const entry: HookMessage = { role: ROLE_BY_TYPE[type] ?? (type || "unknown"), text };
+    const role = ROLE_BY_TYPE[type] ?? (type || "unknown");
+    const entry: HookMessage = { role, text: role === "tool" ? "" : text };
     const calls = msg.tool_calls;
     if ((type === "ai" || type === "assistant") && Array.isArray(calls) && calls.length > 0) {
       entry.toolCalls = calls.map((c) => {
         const call = c as Record<string, unknown>;
-        return { name: String(call.name ?? ""), args: call.args ?? {} };
+        return { ...(call.id == null ? {} : { id: String(call.id) }), name: String(call.name ?? ""), args: call.args ?? {} };
       });
     }
-    if (entry.role === "tool" && typeof msg.name === "string") entry.tool = msg.name;
+    if (role === "tool") {
+      if (typeof msg.name === "string") entry.tool = msg.name;
+      if (msg.tool_call_id != null) entry.id = String(msg.tool_call_id);
+    }
     out.push(entry);
   }
-  return out.slice(-limit);
+  return out;
 }

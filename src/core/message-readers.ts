@@ -62,6 +62,54 @@ export function lastAgentText(messages: unknown[]): string {
 }
 
 /**
+ * Where a turn starts, recorded before it runs: the id of the transcript's last
+ * message and the transcript's length. The id outlives a rewrite of the list
+ * ahead of it (Deep Agents' tool-call patching inserts and drops tool messages
+ * but keeps every other message, id included); the length is the fallback.
+ */
+export interface TurnAnchor {
+  id?: string;
+  count: number;
+}
+
+/** The {@link TurnAnchor} of a transcript as it stands before a turn. */
+export function turnAnchorOf(messages: unknown): TurnAnchor {
+  const list = Array.isArray(messages) ? messages : [];
+  const id = messageIdOf(list[list.length - 1]);
+  return { ...(id ? { id } : {}), count: list.length };
+}
+
+/** Where the messages after `anchor` begin in `messages`: after its id, else at its clamped count. */
+export function anchorIndex(messages: readonly unknown[], anchor: TurnAnchor): number {
+  const at = anchor.id === undefined ? -1 : messages.findIndex((m) => messageIdOf(m) === anchor.id);
+  return at >= 0 ? at + 1 : Math.min(Math.max(0, anchor.count), messages.length);
+}
+
+function messageIdOf(message: unknown): string | undefined {
+  const msg = message as { id?: unknown; kwargs?: { id?: unknown } } | undefined;
+  const id = msg?.id ?? msg?.kwargs?.id;
+  return typeof id === "string" && id !== "" ? id : undefined;
+}
+
+/**
+ * What the agent said during the turn that began at `anchor`: each assistant
+ * text, in order, joined by a blank line. A completion check's revision request
+ * (an `after` note) takes back what came before it, so a rejected draft never
+ * reaches the person; no other note does. Empty when the turn said nothing.
+ */
+export function turnReply(messages: unknown[], anchor: TurnAnchor): string {
+  const start = anchorIndex(messages, anchor);
+  let said: string[] = [];
+  for (const message of messages.slice(start)) {
+    if (runtimeNoteKind(message) === "after") said = [];
+    if (!isAiMessage(message) || isRuntimeNote(message)) continue;
+    const text = contentToString((message as { content?: unknown }).content).trim();
+    if (text) said.push(text);
+  }
+  return said.join("\n\n");
+}
+
+/**
  * What the runtime wrote into a transcript, and why.
  *
  *  - `decision` — a person picked an edge at a human state and the session was routed

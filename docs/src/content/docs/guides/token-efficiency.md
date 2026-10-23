@@ -93,6 +93,10 @@ local time follow when that zone is not UTC. Two things there are deliberate:
 A parked run reads the clock too. The handoff message is written now, and "now"
 may be days after the run started.
 
+A pinned clock (the [`clock` option](/reference/public-api/#clock-pinning-the-date)
+or a case's `clock:` key) replaces the instant and leaves out the local time. Its
+line is the same on every call and every turn, so it never costs the cache.
+
 **The graph is disclosed per state, not per workflow.** Listing every state in
 the cached prefix would make it grow with the graph, while the agent can act on
 exactly one state's edges. So layer 5 is a function of the workflow header alone. A one-state and a

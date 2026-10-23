@@ -23,7 +23,8 @@ import {
   WAIT_TOOL,
 } from "./control-tools.js";
 import { SET_VARIABLES_TOOL } from "../machine/tool-names.js";
-import type { WorkflowStateFields } from "./state.js";
+import { mergeVariables, type WorkflowStateFields } from "./state.js";
+import type { VariableStore } from "../machine/variables.js";
 
 function commandUpdate(result: unknown): Record<string, unknown> {
   expect(result).toBeInstanceOf(Command);
@@ -626,10 +627,32 @@ describe("handleReset", () => {
     expect(trail[0]).toMatchObject({ to: "identify-case", kind: "reset", reason: "wrong branch" });
   });
 
-  it("leaves variables and messages alone", () => {
+  it("leaves the host's variables and messages alone", () => {
     const u = commandUpdate(reset(parked).message);
     expect(u.variables).toBeUndefined();
     expect((u.messages as unknown[]).length).toBe(1);
+  });
+
+  it("releases the locks the agent set, keeping their values, and no other lock", () => {
+    const u = commandUpdate(
+      reset({
+        ...parked,
+        variables: {
+          from_email: { value: "a@b.com", locked: true },
+          case_id: { value: "K-9", locked: true, lockedBy: "agent" },
+          note: { value: "n", locked: false },
+        },
+      }).message,
+    );
+    expect(u.variables).toEqual({ case_id: { value: "K-9", locked: false, reseed: true } });
+    const reply = String(((u.messages as unknown[])[0] as ToolMessage).content);
+    expect(reply).toContain("'case_id' can be written again");
+    // Folded into the store, the agent's lock is gone and the host's is not.
+    const held = mergeVariables(
+      { from_email: { value: "a@b.com", locked: true }, case_id: { value: "K-9", locked: true, lockedBy: "agent" } },
+      u.variables as VariableStore,
+    );
+    expect(held).toEqual({ from_email: { value: "a@b.com", locked: true }, case_id: { value: "K-9", locked: false } });
   });
 
   it("rejects an empty or missing reason without moving the run", () => {
@@ -739,7 +762,9 @@ describe("handleSetVariables — a return's lock is the agent's call", () => {
   });
 
   it("locks a return when asked, after which a write of it is refused", () => {
-    expect(set({ summary: "final" }, { lock: true }).delta).toEqual({ summary: { value: "final", locked: true } });
+    expect(set({ summary: "final" }, { lock: true }).delta).toEqual({
+      summary: { value: "final", locked: true, lockedBy: "agent" },
+    });
     const held = { summary: { value: "final", locked: true } };
     expect(set({ summary: "other" }, { held }).delta).toBeUndefined();
   });
@@ -762,5 +787,52 @@ describe("set-variables tool declaration", () => {
   it("asks a child session for none, and is otherwise the same", () => {
     expect(description({ child: true })).not.toMatch(/title/);
     expect(description().startsWith(description({ child: true }))).toBe(true);
+  });
+});
+
+describe("handleSetVariables — a variable a state owns", () => {
+  const machine = WorkflowMachine.fromSpec({
+    states: {
+      lookup: { triggers: { manual: null }, locks: ["order_id"], transitions: [{ to: "act", description: "Found." }] },
+      act: {},
+    },
+  } as MachineSpec);
+  const set = (at: string, variables: Record<string, unknown>, opts: { lock?: boolean; held?: object } = {}) =>
+    handleSetVariables(
+      {
+        toolCallId: "c1",
+        args: { variables, ...(opts.lock !== undefined ? { lock: opts.lock } : {}) },
+        state: { workflowState: at, variables: opts.held ?? {} },
+      },
+      machine,
+    );
+
+  it("is written, and rewritten, in its owner", () => {
+    expect(set("lookup", { order_id: "1" }).delta).toEqual({ order_id: { value: "1", locked: false } });
+    const held = { order_id: { value: "1", locked: false } };
+    expect(set("lookup", { order_id: "2" }, { held }).delta).toEqual({ order_id: { value: "2", locked: false } });
+  });
+
+  it("is refused anywhere else, atomically, naming the owner to go back to", () => {
+    const outcome = set("act", { order_id: "2", note: "x" });
+    expect(outcome.delta).toBeUndefined();
+    expect(String(outcome.message.content)).toContain(
+      "'order_id' belongs to state 'lookup': only 'lookup' can change it. Go back to 'lookup' to change it.",
+    );
+  });
+
+  it("cannot be locked, even in its owner", () => {
+    const outcome = set("lookup", { order_id: "1" }, { lock: true });
+    expect(outcome.delta).toBeUndefined();
+    expect(String(outcome.message.content)).toContain("cannot be locked");
+  });
+
+  it("stays the host's when the host seeded it", () => {
+    const held = { order_id: { value: "9", locked: true } };
+    expect(String(set("lookup", { order_id: "1" }, { held }).message.content)).toContain("'order_id' is locked");
+  });
+
+  it("leaves an unowned lock final, recording that the agent set it", () => {
+    expect(set("act", { note: "x" }, { lock: true }).delta).toEqual({ note: { value: "x", locked: true, lockedBy: "agent" } });
   });
 });

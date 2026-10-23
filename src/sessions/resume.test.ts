@@ -240,13 +240,13 @@ describe("how a settled session ended", () => {
   const raised = { code: "orders-unavailable", reason: "The orders API is down.", state: "lookup" };
 
   it("settles a completed session as a success", () => {
-    const outcome = outcomeOf(settle({ status: WORKFLOW_STATUSES.completed, workflowState: "done" }), "turn");
+    const outcome = outcomeOf(settle({ status: WORKFLOW_STATUSES.completed, workflowState: "done" }, { count: 0 }), "turn");
     expect(outcome.kind).toBe("completed");
     expect(outcome.exit).toEqual({ success: true });
   });
 
   it("settles a raise as failed, with the agent's code and reason", () => {
-    const settled = settle({ status: WORKFLOW_STATUSES.failed, workflowState: "lookup", raised });
+    const settled = settle({ status: WORKFLOW_STATUSES.failed, workflowState: "lookup", raised }, { count: 0 });
     expect(settled.exit).toEqual({ success: false, code: "orders-unavailable", reason: "The orders API is down." });
     const outcome = outcomeOf(settled, "turn");
     expect(outcome).toMatchObject({ kind: "failed", status: "failed", state: "lookup" });
@@ -256,13 +256,13 @@ describe("how a settled session ended", () => {
 
   it("gives a rejected or parked session no exit", () => {
     const rejected = outcomeOf(
-      settle({ status: WORKFLOW_STATUSES.rejected, rejected: "a hook failed", workflowState: "lookup", raised }),
+      settle({ status: WORKFLOW_STATUSES.rejected, rejected: "a hook failed", workflowState: "lookup", raised }, { count: 0 }),
       "turn",
     );
     expect(rejected.kind).toBe("rejected");
     expect(rejected).not.toHaveProperty("exit");
     const parked = outcomeOf(
-      settle({ status: WORKFLOW_STATUSES.awaitingInput, pendingInput: { state: "clarify", reason: "a reply" } }),
+      settle({ status: WORKFLOW_STATUSES.awaitingInput, pendingInput: { state: "clarify", reason: "a reply" } }, { count: 0 }),
       "turn",
     );
     expect(parked.kind).toBe("parked");

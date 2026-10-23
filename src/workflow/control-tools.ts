@@ -42,6 +42,7 @@ import {
 } from "../machine/variables.js";
 import { decisionRecordFor, inputRecordFor } from "./parks.js";
 import { fileValueIssues, type FileValueCheck } from "./signature-checks.js";
+import { messagesIn, visitStart } from "./visits.js";
 import {
   currentWorkflowState,
   NO_PENDING_FAILURE,
@@ -372,6 +373,7 @@ export async function handleAdvance(
     ...NO_PENDING_FAILURE,
     stateTurns: null,
     auditTrail: [step],
+    visits: visitStart(result.to, messagesIn(request.state)),
     messages: [
       toolReply(
         ADVANCE_TOOL,
@@ -564,6 +566,11 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
   }
   const from = currentWorkflowState(request.state, machine.entry);
   const entry = entryStateOf(readWorkflowState(request.state), machine);
+  // The locks this run set are released, each value kept; the host's stay. A
+  // boundary write is the only one the merge accepts over a lock.
+  const released = Object.entries(readVariables(request.state)).filter(
+    ([, held]) => held.locked && held.lockedBy === "agent",
+  );
   return {
     message: commit({
       workflowState: entry,
@@ -572,12 +579,23 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
       ...NO_PENDING_FAILURE,
       stateTurns: null,
       auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
+      visits: visitStart(entry, messagesIn(request.state)),
+      ...(released.length > 0
+        ? {
+            variables: Object.fromEntries(
+              released.map(([name, held]) => [name, { value: held.value, locked: false, reseed: true }]),
+            ),
+          }
+        : {}),
       messages: [
         toolReply(
           RESET_TOOL,
           request.toolCallId,
           `Reset to state '${entry}'. Correction budgets are cleared and its entry gate runs ` +
-            `again; earlier work in the conversation and in scratchpad/ is untouched.`,
+            `again; earlier work in the conversation and in scratchpad/ is untouched.` +
+            (released.length > 0
+              ? ` The locks you set are released: ${released.map(([name]) => `'${name}'`).join(", ")} can be written again.`
+              : ""),
         ),
       ],
     }),
@@ -754,6 +772,20 @@ export function handleSetVariables(
           `(current value: ${JSON.stringify(store[name]?.value)}). Nothing was written.`,
       );
     }
+    // An owned variable is decided in its owner alone, and stays changeable there.
+    const owner = machine?.ownerOf(name);
+    if (owner !== undefined && owner !== currentWorkflowState(request.state, machine!.entry)) {
+      return refuse(
+        `${SET_VARIABLES_TOOL} rejected: '${name}' belongs to state '${owner}': only '${owner}' can ` +
+          `change it. Go back to '${owner}' to change it. Nothing was written.`,
+      );
+    }
+    if (owner !== undefined && lock === true) {
+      return refuse(
+        `${SET_VARIABLES_TOOL} rejected: '${name}' belongs to this state, '${owner}', so it stays ` +
+          `changeable here and cannot be locked. Retry without \`lock\`. Nothing was written.`,
+      );
+    }
     if (name === TITLE_VARIABLE) {
       // Refused, not silently dropped: an agent that believes it locked the title must not be lied to.
       if (lock === true) {
@@ -778,7 +810,7 @@ export function handleSetVariables(
     delta[name] =
       name === TITLE_VARIABLE
         ? { value: normalizeTitle(value as string), locked: false }
-        : { value, locked };
+        : { value, locked, ...(locked ? { lockedBy: "agent" as const } : {}) };
   }
   return {
     message: toolReply(

@@ -11,6 +11,7 @@ import {
 } from "@langchain/langgraph-checkpoint";
 import type { Workspace } from "../core/workspace.js";
 import { isReservedRootName } from "../core/zones.js";
+import { isChildSessionOf } from "../sessions/scope.js";
 import { sessionPaths } from "./paths.js";
 
 /** Persisted record (one immutable file each): a checkpoint (`cp`) or a write (`w`). */
@@ -143,6 +144,13 @@ export class BackendCheckpointSaver extends MemorySaver {
   async getTuple(config: RunnableConfig): Promise<CheckpointTuple | undefined> {
     const sessionId = config.configurable?.thread_id as string | undefined;
     if (sessionId !== undefined) await this.ensureLoaded(sessionId);
+    // `MemorySaver.put` creates the namespace before it stores the checkpoint, across an
+    // await; read in that window, the parent takes the newest of no checkpoints and throws.
+    if (sessionId !== undefined && config.configurable?.checkpoint_id === undefined) {
+      const ns = (config.configurable?.checkpoint_ns as string | undefined) ?? "";
+      const held = this.storage[sessionId]?.[ns];
+      if (held !== undefined && Object.keys(held).length === 0) return undefined;
+    }
     return super.getTuple(config);
   }
 
@@ -215,5 +223,20 @@ export class BackendCheckpointSaver extends MemorySaver {
     await super.deleteThread(sessionId);
     // Marked as replayed (with nothing to replay) so a later access does not resurrect the files.
     this.loading.set(sessionId, Promise.resolve());
+  }
+
+  /**
+   * Drop a session and every child session under it from memory, leaving their
+   * record files in the store: unlike {@link deleteThread} nothing is marked, so
+   * the next access replays them as after a restart. Synchronous, because
+   * `dispose` is.
+   */
+  evict(sessionId: string): void {
+    const covered = (id: string) => id === sessionId || isChildSessionOf(id, sessionId);
+    for (const id of Object.keys(this.storage)) if (covered(id)) delete this.storage[id];
+    for (const key of Object.keys(this.writes)) {
+      if (covered(String((JSON.parse(key) as unknown[])[0]))) delete this.writes[key];
+    }
+    for (const id of [...this.loading.keys()]) if (covered(id)) this.loading.delete(id);
   }
 }

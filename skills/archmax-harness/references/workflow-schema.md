@@ -115,6 +115,17 @@ runtime?:
   engine?: string             # "archmax-harness"
   version?: string | number   # target contract — use "2"
 
+budget?:
+  maxModelCalls?: number      # default 50 — model calls ONE TURN may make across EVERY
+                              # state (a turn = one message, decision, reply or delivery;
+                              # each counts from zero). A state's maxTurns restarts on
+                              # every entry, so only this ends an agent cycling between
+                              # states. Exhaustion routes once through the current
+                              # state's on_error, else the turn ends rejected; the agent
+                              # is warned once a fifth is left. The step limit follows
+                              # it. RAISE it for turns that legitimately run long (a long
+                              # state chain, a self-driven review cycle).
+
 settings?:
   model?: string              # MODEL ID ONLY — the id every state of this workflow runs
                               # on, over the endpoint/credentials the assembly already
@@ -265,6 +276,18 @@ states:
                                # reference GUARANTEED rather than dependent on agent
                                # behavior. Name here anything a downstream guard
                                # reads.
+    locks?: [string]           # RUN VARIABLES this state OWNS: only it may write them,
+                               # on any visit, before or after they are set; a write
+                               # from another state is refused naming the owner. To
+                               # change one (the person meant another order), the
+                               # session goes BACK to the owner, whose rules apply
+                               # again, and later guards re-read it — so give the
+                               # owner an edge back from the states that use it. Any
+                               # variable, guarded or not. One owner per variable;
+                               # never `trigger`/`title`; not on a human state.
+                               # `lock: true` is refused for an owned variable, and a
+                               # host-supplied value with the same name stays final.
+                               # Pair with `requires` to make the owner set it.
     title?: string             # HUMAN-READABLE label. Presentational only: carried
                                # in a human state's pending-decision record and shown
                                # in host surfaces. REACHES NO MODEL CALL. Never a
@@ -1296,6 +1319,12 @@ states:
     on_error: escalation   # terminal-failure target
   escalation: { instructions: "Explain the failure and hand off." }  # terminal
 ```
+
+The workflow's root `budget: { maxModelCalls }` (default 50) bounds a whole
+turn across states, beside each state's own `maxTurns`; its exhaustion routes the
+same way. A turn that throws (model failure, cancellation, the step limit) ends
+the session `failed` with exit code `turn-error`, `turn-cancelled` or
+`recursion-limit`; the next message starts a fresh turn.
 
 Two failure classes, routed differently:
 
