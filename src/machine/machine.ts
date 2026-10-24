@@ -20,15 +20,7 @@ import {
   type SessionPath,
   type TriggerBinding,
 } from "./triggers.js";
-import {
-  ADVANCE_TOOL,
-  NOT_OFFERED_TO_AUTOMATED,
-  ALWAYS_ALLOWED_TOOLS,
-  AUTOMATED_STATE_CONTROL_TOOLS,
-  UNGRANTABLE_TOOLS,
-  DEFAULT_TOOLS,
-  workflowSlugFromToolName,
-} from "./tool-names.js";
+import { ADVANCE_TOOL, DEFAULT_TOOLS, STATE_TYPE_TOOLS, TASK_TOOL, workflowSlugFromToolName } from "./tool-names.js";
 import {
   BUILT_IN_TOOL_PATH_TABLE,
   pathArgsOf,
@@ -47,7 +39,7 @@ import {
   type StateType,
 } from "./types.js";
 
-export { ALWAYS_ALLOWED_TOOLS, DEFAULT_TOOLS, UNGRANTABLE_TOOLS };
+export { DEFAULT_TOOLS, STATE_TYPE_TOOLS, TASK_TOOL };
 
 /**
  * A declared list, or nothing. `validate` builds a machine from a spec whose
@@ -516,13 +508,12 @@ export class WorkflowMachine {
   }
 
   /**
-   * The control tools `state` is offered, by its type — the one answer the
-   * kernel's grant, disclosure and an automated state's tool list read. An agent
-   * or human state has every control but the history; an automated state reads
-   * the history and cannot park or reset.
+   * The control tools `state` is offered, by its type ({@link STATE_TYPE_TOOLS})
+   * — the one answer the kernel's grant, disclosure and an automated state's tool
+   * list read.
    */
   controlTools(state: string): ReadonlySet<string> {
-    return this.isAutomatedState(state) ? AUTOMATED_STATE_CONTROL_TOOLS : ALWAYS_ALLOWED_TOOLS;
+    return STATE_TYPE_TOOLS[this.stateType(state)].controls;
   }
 
   /**
@@ -587,7 +578,7 @@ export class WorkflowMachine {
    * {@link DEFAULT_TOOLS}, unconstrained. A declared list *replaces* the default
    * tools; it never adds to them. A non-list (a spec whose schema failed, which
    * only `validate` builds a machine from) counts as absent. `task` is in it
-   * under no circumstances (see {@link UNGRANTABLE_TOOLS}).
+   * under no circumstances (see {@link TASK_TOOL}).
    */
   private workflowGrant(): NormalizedAllowEntry[] {
     const declared = this.spec.tools?.allow_always;
@@ -637,13 +628,12 @@ export class WorkflowMachine {
    * workflow-wide grant ({@link workflowGrant}); else the host's
    * `essentialTools`, unconstrained. The last two never name the same tool — a
    * workflow-wide entry for a host tool is inert — so their order is only the
-   * order a block message lists them in. An automated state is never offered an
-   * agent-only tool, parking or resetting ({@link NOT_OFFERED_TO_AUTOMATED}), so
-   * an own or workflow-wide entry naming one grants it nothing there.
+   * order a block message lists them in. A tool the state's type withholds
+   * ({@link STATE_TYPE_TOOLS}) is granted by no entry, own or workflow-wide.
    */
   private effectiveEntries(state: string): NormalizedAllowEntry[] {
-    const offered = (tool: string | undefined) =>
-      !(tool && this.isAutomatedState(state) && NOT_OFFERED_TO_AUTOMATED.has(tool));
+    const withheld = STATE_TYPE_TOOLS[this.stateType(state)].withheld;
+    const offered = (tool: string | undefined) => !(tool && withheld.has(tool));
     const own = this.allowEntries(state).map(normalizeAllowEntry).filter((e) => offered(e.tool));
     const mentioned = new Set(own.map((e) => e.tool));
     const workflow = this.workflowGrant().filter(

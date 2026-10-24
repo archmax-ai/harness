@@ -94,10 +94,10 @@ has happened, and nothing it says selects an edge. The decision is still the
 reviewer's, and the pending record it will decide on is untouched by the whole
 exchange.
 
-`refund-request` also demonstrates the safety net: its `budget` bounds the agent
-loop (`maxTurns`), and its `on_error` routes an outright failure — an exhausted
-execution budget, a failed tool the agent cannot recover from — to the terminal
-`escalation` state instead of ending the run rejected. The automated states route
+`refund-request` also demonstrates the safety net: its `on_error` routes an
+outright failure — a model call past its time budget, a failed tool the agent
+cannot recover from — to the terminal `escalation` state instead of ending the
+run rejected. The automated states route
 there too: `screen-request` and `check-refund` when the order database cannot be
 read, `review-enrichment` when the grader itself fails.
 -->

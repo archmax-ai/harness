@@ -3,9 +3,10 @@
  * carries the reserved `archmax_` prefix, so a host-bound or MCP tool can never
  * shadow (or be shadowed by) a runtime control, and a reader can tell the
  * runtime's controls from the workspace's integrations. Deep Agents' built-ins
- * (`read_file`, `task`, …) keep their names. Disclosure, the always-allowed set,
- * the PTC exclusion set and governance matching all derive from this one list.
+ * (`read_file`, `task`, …) keep their names. Disclosure, each state type's
+ * controls, the PTC exclusion set and governance matching all derive from here.
  */
+import type { StateType } from "./types.js";
 
 /** Reserved prefix for harness-owned agent tools. Host tools may not use it. */
 export const ARCHMAX_TOOL_PREFIX = "archmax_";
@@ -89,54 +90,10 @@ export function isWorkflowToolName(name: string): boolean {
  */
 export const NOTE_TOOL = "archmax_note";
 
-/** Every harness-owned control tool, by canonical name. */
-export const HARNESS_CONTROL_TOOLS: ReadonlySet<string> = new Set([
-  ADVANCE_TOOL,
-  RESET_TOOL,
-  WAIT_TOOL,
-  RAISE_TOOL,
-  EVAL_TOOL,
-  RUN_TOOL,
-  GET_VARIABLES_TOOL,
-  SET_VARIABLES_TOOL,
-  GET_HISTORY_TOOL,
-]);
-
 /** Whether a name is reserved for harness-owned controls. */
 export function isReservedToolName(name: string): boolean {
   return name.startsWith(ARCHMAX_TOOL_PREFIX);
 }
-
-/**
- * The controls an **agent** or **human** state is offered regardless of its
- * `tools` governance. `archmax_advance`'s target is still checked against the
- * state's `transitions`, and a variable write is decided by whether the target
- * is locked. `tools.forbid_always` (or a state's `tools.forbid`) can still block
- * any of them.
- */
-export const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
-  ADVANCE_TOOL,
-  RESET_TOOL,
-  WAIT_TOOL,
-  RAISE_TOOL,
-  GET_VARIABLES_TOOL,
-  SET_VARIABLES_TOOL,
-]);
-
-/**
- * The controls an **automated** state (a grader or a code state) is offered: it
- * moves (`archmax_advance`), fails (`archmax_raise`), keeps the session's
- * variables, and reads the session it checks (`archmax_get_history`). It never
- * parks — a script frame is not durable, and a grader judges rather than waits —
- * and never resets, so `archmax_wait` and `archmax_reset` are not among them.
- */
-export const AUTOMATED_STATE_CONTROL_TOOLS: ReadonlySet<string> = new Set([
-  ADVANCE_TOOL,
-  RAISE_TOOL,
-  GET_VARIABLES_TOOL,
-  SET_VARIABLES_TOOL,
-  GET_HISTORY_TOOL,
-]);
 
 /**
  * The default tools: the workflow-wide grant of a workflow that does not declare
@@ -162,22 +119,62 @@ export const DEFAULT_TOOLS: ReadonlySet<string> = new Set([
   RUN_TOOL,
 ]);
 
-/**
- * The always-on tools an **automated** state (a grader or a code state) is never
- * offered, whatever its grants: the planning scratchpad, which only a model's
- * own loop reads back, and the two sandbox entry points — a code state *is* a
- * script, and a grader judges rather than computes. A `tools.allow` entry naming
- * one in such a state is a `validate` error.
- */
-export const AGENT_ONLY_TOOLS: ReadonlySet<string> = new Set([TODO_TOOL, EVAL_TOOL, RUN_TOOL]);
+/** The controls an agent or a human state always has. */
+const AGENT_CONTROLS: ReadonlySet<string> = new Set([
+  ADVANCE_TOOL,
+  RESET_TOOL,
+  WAIT_TOOL,
+  RAISE_TOOL,
+  GET_VARIABLES_TOOL,
+  SET_VARIABLES_TOOL,
+]);
+
+/** The controls a grader or a code state always has. */
+const AUTOMATED_CONTROLS: ReadonlySet<string> = new Set([
+  ADVANCE_TOOL,
+  RAISE_TOOL,
+  GET_VARIABLES_TOOL,
+  SET_VARIABLES_TOOL,
+  GET_HISTORY_TOOL,
+]);
+
+/** The tools no grader or code state is offered, whatever a grant names. */
+const AUTOMATED_WITHHELD: ReadonlySet<string> = new Set([TODO_TOOL, EVAL_TOOL, RUN_TOOL, WAIT_TOOL, RESET_TOOL]);
+
+/** What a state type is offered beyond its grants, and what no grant can give it. */
+export interface StateTypeTools {
+  /** The harness tools the type always has, whatever its `tools` governance; a `forbid` can still block one. */
+  controls: ReadonlySet<string>;
+  /** The tools the type is never offered, whatever its own or the workflow-wide grant names. */
+  withheld: ReadonlySet<string>;
+}
 
 /**
- * Every tool an automated state is never offered, whatever its own or the
- * workflow-wide grant names: the agent-only tools, and parking and resetting —
- * an automated state cannot park, and a reset is the agent's way back. The one
- * set the machine filters a grant by and `validate` reports a grant against.
+ * The tools of each state type — the one table the machine's surface, the
+ * kernel's grant and `validate` read.
+ *
+ * An agent or a human state moves, parks, resets, fails and keeps the session's
+ * variables. A grader or a code state moves, fails, keeps the variables and
+ * reads the history it checks; it never parks — a script frame is not durable,
+ * and a grader judges rather than waits — never resets, and is never offered the
+ * planning list or the sandbox entry points: a code state *is* a script, and a
+ * grader judges rather than computes. `archmax_advance`'s target is checked
+ * against the state's transitions whatever the table says.
  */
-export const NOT_OFFERED_TO_AUTOMATED: ReadonlySet<string> = new Set([...AGENT_ONLY_TOOLS, WAIT_TOOL, RESET_TOOL]);
+export const STATE_TYPE_TOOLS: Readonly<Record<StateType, StateTypeTools>> = {
+  agent: { controls: AGENT_CONTROLS, withheld: new Set() },
+  human: { controls: AGENT_CONTROLS, withheld: new Set() },
+  grader: { controls: AUTOMATED_CONTROLS, withheld: AUTOMATED_WITHHELD },
+  code: { controls: AUTOMATED_CONTROLS, withheld: AUTOMATED_WITHHELD },
+};
+
+/** Every harness-owned control tool, by canonical name: every type's controls and the two sandbox tools. */
+export const HARNESS_CONTROL_TOOLS: ReadonlySet<string> = new Set([
+  ...AGENT_CONTROLS,
+  ...AUTOMATED_CONTROLS,
+  EVAL_TOOL,
+  RUN_TOOL,
+]);
 
 /**
  * Deep Agents' subagent-dispatch tool, which Deep Agents registers whatever the
@@ -189,7 +186,7 @@ export const NOT_OFFERED_TO_AUTOMATED: ReadonlySet<string> = new Set([...AGENT_O
  * call to it in every state, whatever an entry discloses — withholding it is
  * enforced rather than incidental.
  */
-export const UNGRANTABLE_TOOLS: ReadonlySet<string> = new Set(["task"]);
+export const TASK_TOOL = "task";
 
 /**
  * Thrown when a host-bound tool claims the reserved `archmax_` prefix or a

@@ -468,22 +468,17 @@ describe("a grader state", () => {
     });
   });
 
-  it("is bounded by its own turn budget", async () => {
-    const grader = new ScriptedModel([
-      { tool: "archmax_get_history", args: {} },
-      { tool: "archmax_get_history", args: {} },
-      { tool: "archmax_get_history", args: {} },
-    ]);
+  it("is bounded by its own time budget, routing through on_error", async () => {
+    const grader = new ScriptedModel([{ tool: "archmax_get_history", args: {}, delayMs: 150 }]);
     const agentModel = new ScriptedModel([advanceTo("review", "replied"), { reply: "escalated" }]);
-    const { agent, events } = await assemble(workspaceWith(spec({ budget: { maxTurns: 2 } }), files), {
+    const { agent, events } = await assemble(workspaceWith(spec({ budget: { timeoutMs: 50 } }), files), {
       model: agentModel,
       graderModel: grader,
     });
     await agent.workflow.send(freshSessionId(), { message: "hello" });
 
-    expect(grader.calls).toHaveLength(2);
     expect(eventsOf(events, "state-error-routed")[0]).toMatchObject({
-      reason: "grader state 'review' exhausted its turn budget (maxTurns: 2)",
+      reason: "grader state 'review' exceeded its time budget (timeoutMs: 50)",
     });
   });
 
