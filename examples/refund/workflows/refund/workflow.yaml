@@ -1,0 +1,50 @@
+title: Refund request
+instructions: Decide only from what lookup_customer returns; never guess an order.
+
+states:
+  decide:
+    triggers:
+      manual:
+        requires: [email]          # the host passes the customer's email with the message
+    tools:
+      allow: [lookup_customer]
+    instructions: >-
+      Look the customer up with lookup_customer, using the `email` variable. A
+      refund is approved only when their order is delivered; otherwise it is
+      denied. Record the decision with archmax_set_variables as `decision`
+      (approved or denied), write the email to the customer in
+      scratchpad/email.md, then advance to check-decision. If you are sent
+      back, fix what the note says and advance again.
+    transitions:
+      - to: check-decision
+        description: The decision is recorded and the email is drafted.
+
+  check-decision:                  # a code state: a deterministic check, no model call
+    type: code
+    script: scripts/check-decision.js
+    tools:
+      allow: [lookup_customer]
+    transitions:
+      - to: review-email
+        description: The decision matches the refund policy.
+      - to: decide
+        description: The decision contradicts the refund policy.
+
+  review-email:                    # a grader state: judges the customer communication
+    type: grader
+    instructions: >-
+      Read scratchpad/email.md and the `decision` variable. Approve the email
+      when it is polite, states the decision plainly and names the order.
+      Otherwise send it back, saying exactly what to change.
+    transitions:
+      - to: send
+        description: The email is ready to send.
+      - to: decide
+        description: The email needs changes.
+
+  send:
+    tools:
+      allow: [send_email]
+    instructions: >-
+      Send scratchpad/email.md to the customer at `email` with send_email, then
+      say in one sentence that it was sent.
