@@ -25,7 +25,8 @@ import { defineCodeState } from "@archmax-ai/harness/sandbox";
 /** How many times this check may send a decision back before it escalates. */
 const MAX_SEND_BACKS = 2;
 
-export default defineCodeState(async ({ trail, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { trail } = JSON.parse(await tools.archmax_get_history());
   const sentBack = trail.filter((step) => step.kind === "code" && step.to === "refund-request").length;
   const sendBack = (reason) =>
     sentBack >= MAX_SEND_BACKS

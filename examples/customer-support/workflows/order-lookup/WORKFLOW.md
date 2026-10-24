@@ -28,9 +28,7 @@ user request
 screen-request (code) ──┬──▶ decline (terminal)
                         │
                         ▼
-                  identify-case ──┬──▶ orders-question ──▶ review-reply (grader) ──▶ answered (code, terminal)
-                                  │          ▲                    │
-                                  │          └──── send back ─────┘
+                  identify-case ──┬──▶ orders-question (terminal)
                                   │
                                   ├──▶ refund-request ──▶ check-refund (code) ──▶ refund-review (human) ──▶ refund-closed
                                   │          ▲                    │                        │
@@ -41,18 +39,27 @@ screen-request (code) ──┬──▶ decline (terminal)
                                   │
                                   └──▶ clarify (parks itself) ──┬──▶ orders-question
                                                                 └──▶ closed-unanswered (terminal)
+
+report_requested trigger
+  │
+  ▼
+report-requested ──▶ review-report (grader) ──▶ report-delivered (terminal)
+       ▲                    │
+       └──── send back ─────┘   (the grader raises after two send-backs)
 ```
 
 Every conversation enters through `screen-request`, a **code state**: before any
 model call, its script checks that the requester is known and reaches only their
 own company's orders, then moves the session itself — on to `identify-case`, or
-to `decline` with the reason the agent there explains. Two more automated states
-hold the agent to the work: `check-refund` re-derives the refund policy before a
-person sees the decision and sends a contradicting one back with the fix, and
-`review-reply`, a **grader state**, reads the session's history and approves the
-answer's tone or sends it back — giving up with `archmax_raise` once it has sent
-it back twice. An approved answer ends in `answered`, a terminal code state that
-records it, so approving costs no further model call.
+to `decline` with the reason the agent there explains. A live answer ends where
+it is given: `orders-question` and `general-question` are terminal. Checks sit
+where the agent hands work on. `check-refund`, another code state, re-derives the
+refund policy before a person sees the decision and sends a contradicting one
+back with the fix. On the triggered report path, which no person is waiting on,
+`review-report`, a **grader state**, checks the report against the order records
+with its own state's tools, and approves it into `report-delivered` or sends it
+back naming what to fix — giving up with `archmax_raise` once it has sent it back
+twice.
 
 `clarify` parks **itself**. Once it has asked its question there is nothing more
 to do until the customer answers, so it calls `archmax_wait({ reason })`: the run
@@ -70,8 +77,7 @@ the question. An event that must never start a run — a closed ticket, say — 
 not declared here at all; the host names the session it belongs to when it
 delivers it.
 
-`identify-case` routes the screened request. `general-question` is directly
-terminal. `refund-request` transitions through `check-refund` into
+`identify-case` routes the screened request. `refund-request` transitions through `check-refund` into
 `refund-review`, a **human state** where a person reviews the recorded decision
 and picks an outgoing edge: the `approve` transition routes to the terminal
 `refund-closed`, while the `refine` transition routes back to `refund-request`
@@ -93,5 +99,5 @@ loop (`maxTurns`), and its `on_error` routes an outright failure — an exhauste
 execution budget, a failed tool the agent cannot recover from — to the terminal
 `escalation` state instead of ending the run rejected. The automated states route
 there too: `screen-request` and `check-refund` when the order database cannot be
-read, `review-reply` when the grader itself fails.
+read, `review-report` when the grader itself fails.
 -->

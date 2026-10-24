@@ -20,8 +20,9 @@ steps:
       to: refund-review
       kind: code
       count: 1
+  # Parked, the decision is not final yet: the reply may call it approved or eligible.
   - reply:
-      includes: ["ORD-1001", "/approv/i"]
+      includes: ["ORD-1001", "/approv|eligib/i"]
   - decide:
       to: refund-closed
       comment: "Verified against refund policy, looks correct."

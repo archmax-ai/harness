@@ -89,13 +89,6 @@ export function isWorkflowToolName(name: string): boolean {
  */
 export const NOTE_TOOL = "archmax_note";
 
-/**
- * The host function behind a code state's `toolCalls`, handed to its sandbox
- * only and hidden from its `tools`. **Not a tool** the agent can see or call;
- * reserved-prefixed so no host tool can claim the name.
- */
-export const TOOL_CALLS_QUERY = "archmax_tool_calls";
-
 /** Every harness-owned control tool, by canonical name. */
 export const HARNESS_CONTROL_TOOLS: ReadonlySet<string> = new Set([
   ADVANCE_TOOL,
@@ -131,21 +124,17 @@ export const ALWAYS_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The controls a **code** state is offered: it moves (`archmax_advance`), fails
- * (`archmax_raise`) and keeps the session's variables. It never parks — a script
- * frame is not durable — and never resets, so `archmax_wait` and
- * `archmax_reset` are not among them.
+ * The controls an **automated** state (a grader or a code state) is offered: it
+ * moves (`archmax_advance`), fails (`archmax_raise`), keeps the session's
+ * variables, and reads the session it checks (`archmax_get_history`). It never
+ * parks — a script frame is not durable, and a grader judges rather than waits —
+ * and never resets, so `archmax_wait` and `archmax_reset` are not among them.
  */
-export const CODE_STATE_CONTROL_TOOLS: ReadonlySet<string> = new Set([
+export const AUTOMATED_STATE_CONTROL_TOOLS: ReadonlySet<string> = new Set([
   ADVANCE_TOOL,
   RAISE_TOOL,
   GET_VARIABLES_TOOL,
   SET_VARIABLES_TOOL,
-]);
-
-/** The controls a **grader** state is offered: a code state's, plus the history it judges. */
-export const GRADER_STATE_CONTROL_TOOLS: ReadonlySet<string> = new Set([
-  ...CODE_STATE_CONTROL_TOOLS,
   GET_HISTORY_TOOL,
 ]);
 

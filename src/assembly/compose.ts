@@ -31,7 +31,6 @@ import {
   asDecisionGraph,
   asModelCallResult,
   asStructuredTools,
-  turnStepLimit,
   type AnyModelCallHandler,
   type AnyModelCallRequest,
   type CompiledAgentGraph,
@@ -656,7 +655,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
       invoke: (resumeInput, config) =>
         driver.invoke(
           resumeInput,
-          mergeConfigs(AGENT_DEFAULT_CONFIG, { recursionLimit: turnStepLimit(target.maxModelCalls) }, config as never),
+          mergeConfigs(AGENT_DEFAULT_CONFIG, config as never),
         ),
     },
   };

@@ -162,19 +162,18 @@ describe("validateWorkflow", () => {
     );
   });
 
-  it("checks the workflow's turn budget, and keeps state budget keys out of it", async () => {
-    const declaring = async (budget: string) => {
-      const root = makeWorkspace({
-        "workflows/p/workflow.yaml": workflowFile(
-          [`budget: ${budget}`, "states:", "  poll:", "    triggers: { manual: }", "    summary: Check the bank."].join("\n"),
+  // A turn is bounded by LangGraph's recursion limit; there is no workflow-wide budget to declare.
+  it("refuses a root budget as an unknown key", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": workflowFile(
+        ["budget: { maxModelCalls: 80 }", "states:", "  poll:", "    triggers: { manual: }", "    summary: Check the bank."].join(
+          "\n",
         ),
-      });
-      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-      return { valid: result.valid, errors: result.diagnostics.map((d) => d.message).join(" | ") };
-    };
-    expect(await declaring("{ maxModelCalls: 80 }")).toMatchObject({ valid: true });
-    expect((await declaring("{ maxModelCalls: 0 }")).errors).toContain("'budget.maxModelCalls': must be a positive number");
-    expect((await declaring("{ maxTurns: 8 }")).errors).toContain("maxTurns");
+      ),
+    });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.valid).toBe(false);
+    expect(result.diagnostics.map((d) => d.message).join(" | ")).toContain('Unrecognized key: "budget"');
   });
 
   it("accepts a positive park budget", async () => {

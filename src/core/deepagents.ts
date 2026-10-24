@@ -230,27 +230,12 @@ function describeModelResult(result: unknown): string {
 
 /**
  * The `recursionLimit` a turn runs under when the caller names none. One invoke
- * is one whole turn across states — every hook, model call and tool batch is a
- * super-step — so this is generous by design: the authored budgets
- * (`budget.maxModelCalls`, `maxTurns`, `maxParks`) are the real bound, and
- * this only stops a run nothing else bounds. A governed invocation runs under
- * {@link turnStepLimit} of its workflow's turn budget, never below this.
+ * is one whole turn across states — every model call, tool batch and automated
+ * state is a super-step — so this is LangGraph's bound on a whole turn: a
+ * caller's own `recursionLimit` replaces it, and a state's `maxTurns` and
+ * `maxParks` bound the states that declare them.
  */
 export const DEFAULT_RECURSION_LIMIT = 400;
-
-/** Graph steps one model call takes, with a step to spare (an advance cycle measures about 7). */
-const STEPS_PER_MODEL_CALL = 8;
-/** Model calls past the turn budget an `on_error` handler may make before the step limit stops it. */
-const HANDLER_CALLS = 10;
-
-/**
- * The step limit an invocation runs under when the caller names none: enough that
- * a workflow's turn budget, and the error handler it routes to, run out first, so
- * the governed bound ends the turn and the step limit only stops what it missed.
- */
-export function turnStepLimit(maxModelCalls: number): number {
-  return Math.max(DEFAULT_RECURSION_LIMIT, (maxModelCalls + HANDLER_CALLS) * STEPS_PER_MODEL_CALL);
-}
 
 // --- The compiled graph an assembly wraps ----------------------------------
 

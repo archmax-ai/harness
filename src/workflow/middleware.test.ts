@@ -3080,28 +3080,27 @@ describe("workflow middleware — automated states", () => {
       "archmax_raise",
       "archmax_get_variables",
       "archmax_set_variables",
+      "archmax_get_history",
     ]);
     expect(params.surface).toContain("read_file");
-    for (const absent of ["write_todos", "archmax_eval", "archmax_run", "archmax_wait", "archmax_reset", "archmax_get_history", "web_fetch"]) {
+    for (const absent of ["write_todos", "archmax_eval", "archmax_run", "archmax_wait", "archmax_reset", "web_fetch"]) {
       expect(params.surface).not.toContain(absent);
     }
-    expect(params.args).toMatchObject({
-      state: "screen",
-      variables: {},
-      messages: [{ role: "user", text: "refund order 1042" }],
-      trail: [{ to: "screen", kind: "trigger" }],
-    });
+    expect(params.args).toEqual({ state: "screen", variables: {} });
   });
 
   it("reads the session's own transcript, not the request a summary shortened for the model", async () => {
-    const { step, runs } = await automatedRunner(advancing("answer"));
+    let history: unknown;
+    const { step } = await automatedRunner(async (tools) => {
+      history = JSON.parse(String(await tools.archmax_get_history!.invoke({})));
+      await advancing("answer")(tools);
+    });
     await step("screen", [new HumanMessage("SUMMARY of the conversation so far")]);
 
-    const [{ params }] = runs as [(typeof runs)[number]];
-    expect(params.args.messages).toEqual([{ role: "user", text: "refund order 1042" }]);
-    // Its `toolCalls` query is handed beside its tools, never among them.
-    expect(params.toolCalls?.name).toBe("archmax_tool_calls");
-    expect(params.tools.map((tool) => tool.name)).not.toContain("archmax_tool_calls");
+    expect(history).toMatchObject({
+      messages: [{ role: "user", text: "refund order 1042" }],
+      trail: [{ to: "screen", kind: "trigger" }],
+    });
   });
 
   it("narrates the move once the run has settled, under the call that made it", async () => {

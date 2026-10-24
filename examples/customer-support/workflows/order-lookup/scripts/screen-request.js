@@ -3,7 +3,7 @@
  * company's orders.
  *
  * The entry state of every conversation, run before any model call. Takes the
- * first user message from `messages`, extracts the first email address in it,
+ * first user message from the session's history, extracts the first email address in it,
  * then reads skills/order-data/assets/orders.json — this state enables the
  * `order-data` skill, so the read is granted like any other — and binds the
  * address, case-insensitively, to the customers whose orders carry it.
@@ -17,7 +17,8 @@
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ messages, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
   const orders = JSON.parse(await tools.read_file({ file_path: "skills/order-data/assets/orders.json" }));
   if (!Array.isArray(orders)) throw new Error("skills/order-data/assets/orders.json is not a list of orders");
 

@@ -41,7 +41,7 @@ import {
   type WorkflowUpdate,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
-import { invocationOf, sessionScopeFrom } from "../sessions/scope.js";
+import { sessionScopeFrom } from "../sessions/scope.js";
 import { contentToString, isAiMessage, isRuntimeNote, lastMessageIsHuman, runtimeNote } from "../core/messages.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
 import { NO_MOUNTS, type MountPrefixes } from "../core/mounts.js";
@@ -58,7 +58,6 @@ import {
   type PromptShaping,
   type StateModels,
 } from "./governance.js";
-import { messagesIn, visitStart } from "./visits.js";
 
 export type { PromptShaping, StateModels } from "./governance.js";
 export { resolveToolName } from "./governance.js";
@@ -207,9 +206,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     configOf,
   };
   const failureCtx = { machine, emit, sessionIdOf };
-  /** The model calls `invocation` has made so far, across every state. */
-  const turnCallsOf = (fields: WorkflowStateFields, invocation: string) =>
-    fields.turnCalls?.invocation === invocation ? fields.turnCalls : { invocation, count: 0 };
   /** The state's `budget.maxTurns`, and the model calls this visit has made against it. */
   const turnBudget = (fields: WorkflowStateFields, workflowState: string) => ({
     maxTurns: machine.spec.states[workflowState]?.budget?.maxTurns,
@@ -285,25 +281,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         // An automated state makes no call of the agent's model, so no agent turn
         // budget applies there; a grader's own calls are bounded inside its run.
         if (machine.isAutomatedState(workflowState)) return asHookResult(undefined);
-        // The workflow's turn budget: model calls this invocation, across every state.
-        // Routed once; the error handler it routes to is then bounded by its own budget
-        // and the step limit. An invocation the runner did not stamp is not counted.
-        const invocation = invocationOf(runtime as RunnableConfig);
-        const calls = invocation === undefined ? undefined : turnCallsOf(fields, invocation);
-        if (calls && !calls.exhausted && calls.count + 1 > machine.maxModelCalls) {
-          const routed = routeFailure(
-            failureCtx,
-            state,
-            runtime,
-            workflowState,
-            `the turn exhausted its budget (maxModelCalls: ${machine.maxModelCalls})`,
-            "before-model",
-          );
-          routed.turnCalls = { ...calls, count: calls.count + 1, exhausted: true };
-          if (routed.workflowState) routed.stateTurns = { state: routed.workflowState, count: 1 };
-          return asHookResult(routed);
-        }
-        const turnCalls = calls ? { turnCalls: { ...calls, count: calls.count + 1 } } : {};
 
         // The exact per-state turn budget: this call would be one too many.
         const { maxTurns, spent } = turnBudget(fields, workflowState);
@@ -318,9 +295,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           );
           // The error handler's first call is the one about to be made.
           if (routed.workflowState) routed.stateTurns = { state: routed.workflowState, count: 1 };
-          return asHookResult({ ...routed, ...turnCalls });
+          return asHookResult(routed);
         }
-        return asHookResult({ stateTurns: { state: workflowState, count: spent + 1 }, ...turnCalls });
+        return asHookResult({ stateTurns: { state: workflowState, count: spent + 1 } });
       },
     },
 
@@ -373,8 +350,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           return asHookResult({
             ...update,
             ...routed,
-            // The marker is removed, so the handler's visit starts after the message before it.
-            ...(routed.visits ? { visits: visitStart(routed.visits[0]!.state, messages.slice(0, -1)) } : {}),
             messages: [new RemoveMessage({ id: last.id }), ...(routed.messages ?? [])],
           });
         }
@@ -387,15 +362,13 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         const step = automatedOutcomeOf(last);
         let completedVariables: VariableStore | undefined;
         if (step && typeof last?.id === "string") {
-          const committed = commitAutomated(step, last.id, state, runtime);
+          const committed = commitAutomated(step, last.id, state);
           if (step.result.kind === "failed") {
             const routed = routeFailure(failureCtx, state, runtime, workflowState, step.result.reason, "after-model");
             return asHookResult({
               ...update,
               ...committed,
               ...routed,
-              // The marker is removed, so the handler's visit starts after the message before it.
-              ...(routed.visits ? { visits: visitStart(routed.visits[0]!.state, messages.slice(0, -1)) } : {}),
               messages: [...(committed.messages ?? []), ...(routed.messages ?? [])],
             });
           }
@@ -467,16 +440,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
    * next state reads. A move jumps back to the model, which skips the
    * `beforeModel` site, so what that site would do for the next call is done
    * here: into a human state the park opens straight in its closing turn, and
-   * into an agent state the call is counted against the turn's budget — routed
-   * through the target's `on_error` once that budget is spent, as `beforeModel`
-   * routes it.
+   * into an agent state the call is counted as the state's first.
    */
-  function commitAutomated(
-    step: AutomatedOutcome,
-    markerId: string,
-    state: WorkflowRequestState,
-    runtime: FrameworkRuntime,
-  ): WorkflowUpdate {
+  function commitAutomated(step: AutomatedOutcome, markerId: string, state: WorkflowRequestState): WorkflowUpdate {
     const note = automatedNoteText(step);
     const notes = note ? runtimeNote(step.type, note) : [];
     const committed: WorkflowUpdate = {
@@ -495,13 +461,10 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
       };
     }
     if (result.kind !== "advanced") return committed;
-    // The marker is removed, so the target's visit starts after the message before it.
-    const anchor = messagesIn(state).slice(0, -1);
     const { update: moved, park } = transitionUpdate(machine, state, {
       to: result.to,
       kind: step.type,
       reason: result.reason,
-      anchor,
       ...(result.evidence ? { evidence: result.evidence } : {}),
     });
     const landed: WorkflowUpdate = {
@@ -511,35 +474,8 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     };
     if (park) return { ...landed, ...closingTurn(), jumpTo: "model" };
     if (machine.isAutomatedState(result.to)) return { ...landed, jumpTo: "model" };
-
-    // The agent's call about to be made is its state's first, and one more of the turn's.
-    const invocation = invocationOf(runtime as RunnableConfig);
-    const calls = invocation === undefined ? undefined : turnCallsOf(readWorkflowState(state), invocation);
-    if (calls && !calls.exhausted && calls.count + 1 > machine.maxModelCalls) {
-      const routed = routeFailure(
-        failureCtx,
-        state,
-        runtime,
-        result.to,
-        `the turn exhausted its budget (maxModelCalls: ${machine.maxModelCalls})`,
-        "after-model",
-      );
-      return {
-        ...landed,
-        ...routed,
-        auditTrail: [...(landed.auditTrail ?? []), ...(routed.auditTrail ?? [])],
-        ...(routed.visits ? { visits: [...(landed.visits ?? []), ...visitStart(routed.visits[0]!.state, anchor)] } : {}),
-        messages: [...(landed.messages ?? []), ...(routed.messages ?? [])],
-        turnCalls: { ...calls, count: calls.count + 1, exhausted: true },
-        ...(routed.workflowState ? { stateTurns: { state: routed.workflowState, count: 1 } } : {}),
-      };
-    }
-    return {
-      ...landed,
-      stateTurns: { state: result.to, count: 1 },
-      ...(calls ? { turnCalls: { ...calls, count: calls.count + 1 } } : {}),
-      jumpTo: "model",
-    };
+    // The agent's call about to be made is its state's first.
+    return { ...landed, stateTurns: { state: result.to, count: 1 }, jumpTo: "model" };
   }
 
   return {

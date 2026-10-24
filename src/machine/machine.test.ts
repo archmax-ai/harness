@@ -4,10 +4,9 @@ import { Workspace } from "../core/workspace.js";
 import { ALWAYS_ALLOWED_TOOLS, DEFAULT_TOOLS, WorkflowMachine } from "./machine.js";
 import {
   ADVANCE_TOOL,
-  CODE_STATE_CONTROL_TOOLS,
+  AUTOMATED_STATE_CONTROL_TOOLS,
   GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
-  GRADER_STATE_CONTROL_TOOLS,
   RAISE_TOOL,
   SET_VARIABLES_TOOL,
 } from "./tool-names.js";
@@ -827,26 +826,24 @@ describe("tool surfaces by state type", () => {
   it("gives each type its control set", () => {
     expect(machine.controlTools("draft")).toBe(ALWAYS_ALLOWED_TOOLS);
     expect(machine.controlTools("approve")).toBe(ALWAYS_ALLOWED_TOOLS);
-    expect(machine.controlTools("screen")).toBe(CODE_STATE_CONTROL_TOOLS);
-    expect(machine.controlTools("review")).toBe(GRADER_STATE_CONTROL_TOOLS);
-    expect([...CODE_STATE_CONTROL_TOOLS].sort()).toEqual([
+    expect(machine.controlTools("screen")).toBe(AUTOMATED_STATE_CONTROL_TOOLS);
+    expect(machine.controlTools("review")).toBe(AUTOMATED_STATE_CONTROL_TOOLS);
+    expect([...AUTOMATED_STATE_CONTROL_TOOLS].sort()).toEqual([
       ADVANCE_TOOL,
+      GET_HISTORY_TOOL,
       GET_VARIABLES_TOOL,
       RAISE_TOOL,
       SET_VARIABLES_TOOL,
     ]);
-    expect([...GRADER_STATE_CONTROL_TOOLS].sort()).toEqual(
-      [...CODE_STATE_CONTROL_TOOLS, GET_HISTORY_TOOL].sort(),
-    );
   });
 
   it("offers a code state its controls and file tools, and nothing an agent's loop uses", () => {
     const disclosed = machine.disclosedTools("screen");
-    for (const tool of [ADVANCE_TOOL, RAISE_TOOL, GET_VARIABLES_TOOL, SET_VARIABLES_TOOL]) {
+    for (const tool of [ADVANCE_TOOL, RAISE_TOOL, GET_VARIABLES_TOOL, SET_VARIABLES_TOOL, GET_HISTORY_TOOL]) {
       expect(disclosed.has(tool)).toBe(true);
       expect(machine.checkAllowed("screen", tool, {})).toBe(true);
     }
-    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET, GET_HISTORY_TOOL]) {
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) {
       expect(disclosed.has(tool)).toBe(false);
       // Not even through the state's own entries naming them.
       expect(machine.checkAllowed("screen", tool, { file_path: "skills/x/scripts/a.js" })).toBe(false);
@@ -866,11 +863,10 @@ describe("tool surfaces by state type", () => {
     for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) expect(disclosed.has(tool)).toBe(false);
   });
 
-  it("offers a grader the code set plus the history it judges", () => {
+  it("offers a grader the same controls as a code state", () => {
     const disclosed = machine.disclosedTools("review");
-    expect(disclosed.has(GET_HISTORY_TOOL)).toBe(true);
     expect(machine.checkAllowed("review", GET_HISTORY_TOOL, {})).toBe(true);
-    for (const tool of CODE_STATE_CONTROL_TOOLS) expect(disclosed.has(tool)).toBe(true);
+    for (const tool of AUTOMATED_STATE_CONTROL_TOOLS) expect(disclosed.has(tool)).toBe(true);
     for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) {
       expect(disclosed.has(tool)).toBe(false);
       expect(machine.checkAllowed("review", tool, {})).toBe(false);
@@ -896,7 +892,8 @@ describe("tool surfaces by state type", () => {
     expect(code).toContain(ADVANCE_TOOL);
     expect(code).toContain(RAISE_TOOL);
     expect(code).toContain("search");
-    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET, GET_HISTORY_TOOL]) {
+    expect(code).toContain(GET_HISTORY_TOOL);
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) {
       expect(code).not.toContain(tool);
     }
     const grader = machine.describeAllowed("review");

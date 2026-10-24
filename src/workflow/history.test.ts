@@ -22,7 +22,7 @@ describe("historyMessages", () => {
       text: "",
       toolCalls: [{ id: "c1", name: "read_file", args: { file_path: "a.json" } }],
     });
-    expect(history[3]).toEqual({ role: "tool", text: "", tool: "read_file", id: "c1" });
+    expect(history[3]).toEqual({ role: "tool", text: "{}", tool: "read_file", id: "c1" });
     expect(history.at(-1)).toEqual({ role: "assistant", text: "reply 39" });
   });
 
@@ -39,7 +39,7 @@ describe("historyMessages", () => {
 });
 
 describe("sessionHistory", () => {
-  it("pairs the transcript with the committed trail and the tool calls with their results", () => {
+  it("pairs the transcript, tool results inline, with the committed trail", () => {
     const trail = [
       { to: "answer", kind: "trigger" as const, reason: "manual", ts: 1 },
       { to: "review", kind: "agent" as const, reason: "replied", ts: 2 },
@@ -53,14 +53,15 @@ describe("sessionHistory", () => {
       entryState: "answer",
       auditTrail: trail,
     });
-    expect(history.messages[0]).toEqual({ role: "user", text: "hi" });
-    expect(history.trail).toEqual(trail);
-    expect(history.toolCalls).toEqual([
-      { id: "c1", name: "lookup", args: { id: "1" }, result: { ok: true }, status: "completed", state: "answer", visit: 1 },
+    expect(history.messages).toEqual([
+      { role: "user", text: "hi" },
+      { role: "assistant", text: "", toolCalls: [{ id: "c1", name: "lookup", args: { id: "1" } }] },
+      { role: "tool", text: '{"ok":true}', tool: "lookup", id: "c1" },
     ]);
+    expect(history.trail).toEqual(trail);
   });
 
   it("is empty for a session with nothing in it", () => {
-    expect(sessionHistory({})).toEqual({ messages: [], trail: [], toolCalls: [] });
+    expect(sessionHistory({})).toEqual({ messages: [], trail: [] });
   });
 });

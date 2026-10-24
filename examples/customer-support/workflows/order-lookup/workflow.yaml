@@ -119,9 +119,9 @@ states:
       allow: []
     instructions: >-
       The request was declined before any order was looked up; the note above
-      says why. Tell the person, politely and in one or two sentences, that the
-      request was rejected and why, using that reason. Do not look up, name or
-      describe any order. This state is terminal.
+      says why. Tell the person, politely and in one or two sentences, that
+      their request is declined, in those words, and why, using that reason.
+      Do not look up, name or describe any order. This state is terminal.
 
   identify-case:
     metadata: { x: 40, y: 180 }
@@ -165,6 +165,8 @@ states:
   orders-question:
     title: Answer order question
     summary: Answer an order/status question from the order data.
+    # Terminal: a live answer ends here. Checks belong where the agent hands
+    # work on — see review-report for a grader on the report path.
     instructions: >-
       Find the orders matching the user's request by customer name, order id,
       and/or status (delivered, shipped, processing, delayed). The
@@ -173,73 +175,10 @@ states:
       you disclose. Open your reply by naming the requester's company and
       directly answering the question they asked, then include every matching
       order id explicitly with its relevant fields (status, placed date,
-      total). Send the reply in a message that also calls archmax_advance to
-      review-reply, which grades its tone. If the review sends the reply back,
-      its note names what to change: write a corrected reply that addresses it
-      and advance again.
+      total). This state is terminal - once you have answered, stop.
     # Enabling the skill is the grant: reading skills/order-data/** needs no `tools.allow` entry.
     skills:
       allow: [order-data]
-    transitions:
-      - to: review-reply
-        description: >-
-          The reply answering the question has been sent to the customer.
-
-  review-reply:
-    title: Review the reply's tone
-    summary: Grade the order answer's tone; approve it or send it back.
-    # A grader state: an isolated grader subagent reads the session with
-    # archmax_get_history and decides with archmax_advance — or ends the session
-    # with archmax_raise. There is no retry budget: the instructions say when to
-    # give up, and the grader counts the rounds on the trail.
-    type: grader
-    # Reading the history and deciding is two model calls; this leaves headroom.
-    budget:
-      maxTurns: 4
-    on_error: escalation
-    skills:
-      allow: []
-    instructions: |-
-      You are a customer support reply tone judge.
-
-      Judge only the **tone** of the reply. Do not read the order records or any
-      other file, and do not verify order IDs, totals, dates, or any factual
-      content — another check owns correctness. Your sole job is whether the
-      reply *sounds* friendly and professional.
-
-      ## Steps
-
-      1. Call `archmax_get_history`. The reply to judge is the **last assistant
-         message** with text in `messages`.
-      2. Decide whether it is friendly and professional:
-         - Polite and courteous, with a warm, helpful tone.
-         - No rude, dismissive, curt, or robotic phrasing.
-         - Reads like a considerate human support agent, not a raw data dump.
-
-      ## Decision
-
-      - Friendly and professional: advance to `answered`.
-      - Understandable but the tone is off (curt, cold or blunt): advance back to
-        `orders-question`, saying exactly what to change.
-      - Count the steps in `trail` with `kind: "grader"` and `to:
-        "orders-question"`: if there are already two, the reply has been sent
-        back twice — raise `reply-tone` instead of sending it back again.
-      - Rude, hostile, or otherwise unacceptable in tone: raise `reply-tone`.
-    transitions:
-      - to: answered
-        description: >-
-          The reply is friendly and professional.
-      - to: orders-question
-        description: >-
-          The reply's tone is off: send it back, naming exactly what to change.
-
-  answered:
-    title: Record the approved reply
-    summary: Record the approved answer and complete the session.
-    # Terminal code state: the session completes when its script returns, so
-    # approving a reply costs no further model call.
-    type: code
-    script: scripts/answered.js
 
   refund-request:
     # Per-state host data lives on the state, so renaming the slug carries it along.
@@ -263,7 +202,8 @@ states:
       the policy check hands the recorded decision to a human reviewer, or
       sends it back to you naming what is wrong. A message holding the decision
       and no archmax_advance call ends the conversation with nothing reviewed,
-      however it is worded.
+      however it is worded - after a send-back too: the corrected decision is
+      reviewed only once you call archmax_advance to check-refund again.
     skills:
       allow: [order-data, refund-policy]
     # No `tools` block: refund.json lands in scratchpad/, writable in every
@@ -342,9 +282,10 @@ states:
       allow: []
     instructions: >-
       The human reviewer has confirmed the recorded refund decision. Give the
-      customer a brief, clear closing confirmation that restates the decision
-      with the order id, the order's exact status, and the reason. This state is
-      terminal.
+      customer a brief, clear closing confirmation that states the final
+      decision in so many words - the refund is approved, or it is denied -
+      with the order id, the order's exact status, and the reason. This state
+      is terminal.
 
   clarify:
     title: Ask a clarifying question
@@ -413,10 +354,68 @@ states:
       user. Read trigger.json from the workspace root for the request payload
       (the company the report is for). Then read skills/order-data/assets/orders.json and collect
       that company's delayed orders. Write the report to scratchpad/report.json as
-      { "company": "<name>", "delayedOrderIds": ["<id>", ...] } and reply with
-      a one-paragraph summary naming the company and each delayed order id.
-      Answer only from orders.json - never fabricate order data. This state is
-      terminal - stop once the report is written and summarized.
+      { "company": "<name>", "delayedOrderIds": ["<id>", ...] } - write_file
+      creates it; if review-report sent it back, read it and fix what the note
+      names with edit_file. Answer only from orders.json - never fabricate order
+      data. Once the report is written, call archmax_advance to review-report:
+      that call hands the report in.
+    transitions:
+      - to: review-report
+        description: >-
+          scratchpad/report.json is written for the requested company.
+
+  review-report:
+    title: Review the report
+    summary: Check the report against the order records; approve it or send it back.
+    # A grader state: an isolated grader subagent judges the report with its
+    # state's own tools — here the order records its skill grants — reads the
+    # session with archmax_get_history, and decides with archmax_advance or
+    # archmax_raise. There is no retry budget: the instructions say when to give
+    # up, and the grader counts the rounds on the trail.
+    type: grader
+    # Reading the report, the records and the history, then deciding; this leaves headroom.
+    budget:
+      maxTurns: 6
+    on_error: escalation
+    skills:
+      allow: [order-data]
+    instructions: |-
+      You check a delayed-orders report before it is delivered.
+
+      ## Steps
+
+      1. Read the requested `company` with `archmax_get_variables`.
+      2. Read `scratchpad/report.json` and `skills/order-data/assets/orders.json`.
+      3. The report is correct when its `company` is the requested company and
+         its `delayedOrderIds` are exactly that company's orders whose status is
+         `delayed` — none missing, none extra.
+
+      ## Decision
+
+      - Correct: advance to `report-delivered`.
+      - Wrong or unreadable: advance back to `report-requested`, naming exactly
+        what to fix (the missing or extra ids, the wrong company).
+      - Before sending it back, call `archmax_get_history` and count the steps
+        in `trail` with `kind: "grader"` and `to: "report-requested"`: if there
+        are already two, raise `report-incorrect` instead.
+    transitions:
+      - to: report-delivered
+        description: >-
+          The report lists exactly the company's delayed orders.
+      - to: report-requested
+        description: >-
+          The report is wrong: send it back, naming exactly what to fix.
+
+  report-delivered:
+    title: Deliver the report
+    summary: Summarize the approved report.
+    # Terminal; reports from scratchpad/report.json alone, so no skill is enabled.
+    skills:
+      allow: []
+    instructions: >-
+      The report in scratchpad/report.json has been checked. Read it and reply
+      with a one-paragraph summary naming the company and each delayed order id.
+      This state is terminal - stop once the summary is written.
 
   enrich-order:
     title: Enrich the requested orders

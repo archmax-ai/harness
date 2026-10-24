@@ -135,14 +135,14 @@ function alreadyDecided(name: string, decision: AutomatedDecision): Error {
 
 /**
  * The control tools for one automated run, bound to its recorder — in the order
- * `controlTools(state)` names them, so the surface and the tools agree. A grader
- * gets `archmax_get_history` over `history`; a code state receives the same
- * history as its input and has no such tool.
+ * `controlTools(state)` names them, so the surface and the tools agree.
+ * `archmax_get_history` answers with `history`: the session as it stood when the
+ * state was entered.
  */
 export function createAutomatedControls(
   ctx: AutomatedControlsContext,
   recorder: MutableRecorder,
-  opts: { history?: SessionHistory } = {},
+  history: SessionHistory,
 ): StructuredTool[] {
   const { machine, emit } = ctx;
   const { state } = recorder;
@@ -258,16 +258,15 @@ export function createAutomatedControls(
     );
   }
 
-  if (offered.has(GET_HISTORY_TOOL) && opts.history) {
-    const history = opts.history;
+  if (offered.has(GET_HISTORY_TOOL)) {
     tools.push(
       tool(async () => JSON.stringify(history, null, 2), {
         name: GET_HISTORY_TOOL,
         description:
-          "Read the session's whole history: `messages` (every message so far, oldest first — " +
-          "`role` is user, assistant, tool, system or runtime; a tool result's text is in `toolCalls`), " +
-          "`trail` (every state the session entered, with how and why) and `toolCalls` (every tool call " +
-          "with its arguments, result, status, and the state and visit that made it).",
+          "Read the session's whole history as JSON: `messages` (every message so far, oldest " +
+          "first — `role` is user, assistant, tool, system or runtime; an assistant message lists " +
+          "the tool calls it made, and a tool message carries that call's result) and `trail` " +
+          "(every state the session entered, with how and why).",
         schema: z.object({}),
       }) as unknown as StructuredTool,
     );

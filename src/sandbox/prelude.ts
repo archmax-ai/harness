@@ -31,6 +31,8 @@ function readPart(name: string): string {
  * its camelCase name, but a model writes the name it calls the tool by
  * (`tools.read_file`), so the executor also hands over each tool's own name →
  * its key, and every lookup resolves through that; the listing stays the keys.
+ * A call without an input passes `{}`: the session reads its argument handle
+ * unconditionally, so a bare `tools.archmax_get_history()` would otherwise fail.
  * An IIFE: the evaluation hoists top-level declarations onto `globalThis`.
  */
 const SCOPED_TOOLS_VIEW = `(() => {
@@ -42,16 +44,19 @@ const SCOPED_TOOLS_VIEW = `(() => {
   const keyOf = (name) =>
     !injected(name) && typeof name === "string" && Object.prototype.hasOwnProperty.call(keys, name) ? keys[name] : name;
   const visible = (name) => injected(name) && (surface === null || surface.has(name));
+  const callers = {};
+  const caller = (key) =>
+    (callers[key] ??= (input, ...rest) => all[key](input === undefined ? {} : input, ...rest));
   const view = new Proxy({}, {
     get: (_target, name) => {
       const key = keyOf(name);
-      return visible(key) ? all[key] : undefined;
+      return visible(key) ? caller(key) : undefined;
     },
     has: (_target, name) => visible(keyOf(name)),
     ownKeys: () => Object.keys(all).filter(visible),
     getOwnPropertyDescriptor: (_target, name) => {
       const key = keyOf(name);
-      return visible(key) ? { value: all[key], writable: false, enumerable: true, configurable: true } : undefined;
+      return visible(key) ? { value: caller(key), writable: false, enumerable: true, configurable: true } : undefined;
     },
   });
   Object.defineProperty(globalThis, "__archmaxScope", {

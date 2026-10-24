@@ -21,46 +21,23 @@
  * A code state moves the session itself: `tools.archmax_advance({ to, reason })`
  * along one of its transitions, or `tools.archmax_raise({ code, reason })` to end
  * the session as failed. Nothing the script returns is read. A non-terminal code
- * state that finishes without either call fails, as does one that throws.
+ * state that finishes without either call fails, as does one that throws. It
+ * reads the session it checks with `tools.archmax_get_history()`.
  */
 
 /** One transcript message, as plain data. `role` is `user`, `assistant`, `tool`, `system`, or `runtime`. */
 export interface HistoryMessage {
   role: string;
-  /** The message's text; empty on a tool result, whose result `toolCalls` returns. */
+  /** The message's text; on a tool result, the result. */
   text: string;
+  /** Assistant messages: the tool calls the message made. */
   toolCalls?: { id?: string; name: string; args: unknown }[];
   /** Tool results: the tool that answered. */
   tool?: string;
-  /** Tool results: the id of the call answered, as `toolCalls` records carry it. */
+  /** Tool results: the id of the call answered. */
   id?: string;
   /** Runtime notes: which kind of note (an arrival, a decision, an error route, an automated state's move). */
   note?: string;
-}
-
-/** One tool call of the session, as `toolCalls` returns it. */
-export interface ToolCallRecord {
-  id?: string;
-  name: string;
-  args: unknown;
-  /** The tool's result, parsed when it is JSON text; absent while `pending`. */
-  result?: unknown;
-  /** `rejected` is a call governance refused; `pending` has no result yet. */
-  status: "completed" | "pending" | "failed" | "rejected";
-  /** The state and visit (numbered from 1) of the message that made the call. */
-  state: string;
-  visit: number;
-}
-
-/** What `toolCalls` narrows by; every given key must match, and an unknown key is refused. */
-export interface ToolCallFilter {
-  name?: string;
-  state?: string;
-  /** A visit's number, as the records carry it. */
-  visit?: number;
-  status?: ToolCallRecord["status"];
-  /** Only the last `last` matches. */
-  last?: number;
 }
 
 /**
@@ -89,18 +66,22 @@ export interface CodeStateArgs {
   trigger?: string;
   /** The session's variables as a plain `name → value` map. Read-only: assigning changes nothing — write with `tools.archmax_set_variables`. */
   variables: Record<string, unknown>;
-  /** The session's whole transcript, oldest first. A tool result's text is in `toolCalls`, not here. */
+}
+
+/**
+ * What `tools.archmax_get_history()` answers, as JSON: the session's whole
+ * transcript and its whole trail, oldest first — the same history a grader reads.
+ * `const { messages, trail } = JSON.parse(await tools.archmax_get_history())`.
+ */
+export interface SessionHistory {
   messages: HistoryMessage[];
-  /** The session's whole trail, oldest first. */
   trail: TrailStep[];
-  /** The session's domain tool calls with their results, across every visit, oldest first. */
-  toolCalls(filter?: ToolCallFilter): Promise<ToolCallRecord[]>;
 }
 
 /**
  * The code state's tools (`tools.*`): exactly its state's surface — its grants,
- * the file tools, and its controls (`archmax_advance`, `archmax_raise`,
- * `archmax_get_variables`, `archmax_set_variables`) — as async functions, by
+ * the workflow-wide grant, and its controls (`archmax_advance`, `archmax_raise`,
+ * `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`) — as async functions, by
  * their own name (`tools.read_file`) or camelCase (`tools.readFile`). A tool the
  * state does not offer is `undefined`. Every call is governed against the code
  * state as a model's would be; a refused call rejects with the governance reason.

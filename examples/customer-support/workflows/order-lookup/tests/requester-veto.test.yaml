@@ -19,7 +19,7 @@ steps:
       to: identify-case
       count: 0
   - reply:
-      includes: "/not in the order|(doesn't|does not) match|not recognized|unknown|rejected|declined|can(no|')t process/i"
+      includes: "/not in the order|(doesn['’]t|does not) match|not (recognized|listed)|isn['’]t listed|unknown|rejected|declin|can(no|['’])t (process|show|help)/i"
   - grade:
       closedQA: >-
         clearly explains that the request was rejected because the requester

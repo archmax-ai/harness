@@ -11,7 +11,6 @@
  * graph's shape.
  */
 import { SESSION_ORIGIN, type WorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
-import { lastTurn } from "../core/messages.js";
 import type { Workspace } from "../core/workspace.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { MANUAL_TRIGGER } from "../machine/triggers.js";
@@ -22,7 +21,6 @@ import {
   type VariableStore,
 } from "../machine/variables.js";
 import { decisionRecordFor } from "./parks.js";
-import { messagesIn, visitStart } from "./visits.js";
 import { requiresFileIssues, requiresRefusal, type FileValueCheck } from "./signature-checks.js";
 import { writeSpecSnapshotIfAbsent } from "./snapshot.js";
 import {
@@ -189,13 +187,6 @@ export async function openTurn(
     trigger,
     variables: openingVariables,
     auditTrail: [{ to: position, kind: "trigger", reason: trigger.id, ts: Date.now() } satisfies TrailStep],
-    // A turn that opens a state starts its visit with what the turn was told; one that continues adds none.
-    ...(reopening ? { visits: visitStart(position, openingAnchorOf(messagesIn(state))) } : {}),
     ...reparked,
   };
-}
-
-/** The transcript up to the turn's opening messages, so a visit the turn opens begins with them. */
-function openingAnchorOf(messages: unknown[]): unknown[] {
-  return messages.slice(0, messages.length - lastTurn(messages).length);
 }

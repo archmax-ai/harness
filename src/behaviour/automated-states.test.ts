@@ -26,7 +26,10 @@ const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /** A code-state script file for the workspace. */
 function script(body: string): string {
-  return `/** A test code state. */\nexport default async function ({ state, variables, messages, trail, tools }) {\n${body}\n}\n`;
+  return (
+    `/** A test code state. */\nexport default async function ({ state, variables, tools }) {\n` +
+    `  const { messages, trail } = JSON.parse(await tools.archmax_get_history());\n${body}\n}\n`
+  );
 }
 
 /** The runtime notes a transcript carries, as `kind: text`. */
@@ -119,14 +122,15 @@ describe("a code state", () => {
     expect(listed).toEqual(
       expect.arrayContaining(["readFile", "writeFile", "ls", "archmaxAdvance", "archmaxRaise", "archmaxSetVariables"]),
     );
-    for (const name of ["writeTodos", "archmaxEval", "archmaxRun", "archmaxWait", "archmaxReset", "grep", "archmaxGetHistory", "task"]) {
+    expect(listed).toContain("archmaxGetHistory");
+    for (const name of ["writeTodos", "archmaxEval", "archmaxRun", "archmaxWait", "archmaxReset", "grep", "task"]) {
       expect(listed).not.toContain(name);
     }
     expect(outcome.variables.absent?.value).toEqual(["undefined", "undefined", "undefined", "undefined"]);
     expect(outcome.variables.both?.value).toBe(true);
   });
 
-  it("queries the session's tool calls with their results, which its messages carry by id", async () => {
+  it("reads the agent's tool calls and their results inline in the history", async () => {
     const spec = {
       runtime: RUNTIME,
       states: {
@@ -137,13 +141,11 @@ describe("a code state", () => {
     };
     const root = workspaceWith(spec, {
       "workflows/w/scripts/check.js":
-        `export default async function ({ messages, toolCalls, tools }) {\n` +
-        `  const [write] = await toolCalls({ name: "write_file", status: "completed" });\n` +
-        `  const answered = messages.find((m) => m.role === "tool" && m.tool === "write_file");\n` +
-        `  await tools.archmax_set_variables({ variables: {\n` +
-        `    made: write.state + ":" + write.visit, linked: answered.id === write.id, text: answered.text,\n` +
-        `    later: (await toolCalls({ visit: 2 })).length,\n` +
-        `  } });\n` +
+        `export default async function ({ tools }) {\n` +
+        `  const { messages } = JSON.parse(await tools.archmax_get_history());\n` +
+        `  const call = messages.flatMap((m) => m.toolCalls ?? []).find((c) => c.name === "write_file");\n` +
+        `  const answered = messages.find((m) => m.role === "tool" && m.id === call.id);\n` +
+        `  await tools.archmax_set_variables({ variables: { path: call.args.file_path, answered: answered.tool, text: answered.text } });\n` +
         `  await tools.archmax_advance({ to: "done", reason: "checked" });\n` +
         `}\n`,
     });
@@ -157,10 +159,9 @@ describe("a code state", () => {
     const outcome = await agent.workflow.send(freshSessionId(), { message: "go" });
 
     expect(outcome).toMatchObject({ kind: "completed", state: "done" });
-    expect(outcome.variables.made?.value).toBe("work:1");
-    expect(outcome.variables.linked?.value).toBe(true);
-    expect(outcome.variables.text?.value).toBe("");
-    expect(outcome.variables.later?.value).toBe(0);
+    expect(outcome.variables.path?.value).toBe("scratchpad/note.txt");
+    expect(outcome.variables.answered?.value).toBe("write_file");
+    expect(String(outcome.variables.text?.value)).toMatch(/note\.txt/);
   });
 
   it("can catch a refused advance and take a declared edge instead", async () => {
@@ -434,12 +435,9 @@ describe("a grader state", () => {
     const history = JSON.parse(grader.calls[1]!.toolAnswers[0]!.content) as {
       messages: Array<{ role: string; text: string }>;
       trail: Array<{ kind: string; to: string }>;
-      toolCalls: unknown[];
     };
     expect(history.messages[0]).toMatchObject({ role: "user", text: "where is my order?" });
     expect(history.trail.map((step) => step.kind)).toEqual(["trigger", "agent"]);
-    // Control calls are not domain calls: the agent made none of those.
-    expect(history.toolCalls).toEqual([]);
     // Nothing the grader said reached the session's transcript, and a decision ends its run.
     expect(grader.calls).toHaveLength(4);
     expect(eventsOf(events, "grader-result").map((e) => e.status)).toEqual(["ok", "ok"]);

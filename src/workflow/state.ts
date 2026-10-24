@@ -162,26 +162,6 @@ export const parkPhaseSchema = z.enum(["closing", "suspend"]);
 /** Model calls made in `state` since it was entered; `budget.maxTurns` is enforced against the visit. */
 export const stateTurnsSchema = z.object({ state: z.string(), count: z.number() });
 
-/**
- * Model calls made in the current invocation, across every state; the workflow's
- * `budget.maxModelCalls` is enforced against it. `exhausted` once that budget has
- * been routed, so the error handler it routed to is not routed again.
- */
-export const turnCallsSchema = z.object({ invocation: z.string(), count: z.number(), exhausted: z.boolean().optional() });
-
-/**
- * Where a visit began: the state entered and where the transcript stood at the
- * entry (a turn anchor), so the visit's messages are those after it. Appended on
- * every entry into a state; a turn, reply, delivery or sub-workflow return that
- * continues in the same state appends nothing.
- */
-export const visitStartSchema = z.object({
-  state: z.string(),
-  from: z.object({ id: z.string().optional(), count: z.number() }),
-});
-
-export type VisitStart = z.infer<typeof visitStartSchema>;
-
 // --- Trail --------------------------------------------------------------------
 
 /**
@@ -308,11 +288,9 @@ const workflowStateFields = {
   /** Parks per state, keyed by slug — what `budget.maxParks` is enforced against. */
   parkCounts: z.record(z.string(), z.number()).optional(),
   stateTurns: stateTurnsSchema.nullable().optional(),
-  turnCalls: turnCallsSchema.nullable().optional(),
   /** Ordered audit trail. Accumulates: a writer sends only the steps it adds. */
   auditTrail: z.array(trailStepSchema).optional(),
   /** Where each visit began, in order. Accumulates: a writer sends only the visit it starts. */
-  visits: z.array(visitStartSchema).optional(),
   /**
    * Cumulative token usage (and cost). A last-value channel: the one writer adds
    * its delta to the total it reads, because an additive reducer cannot tell a
@@ -373,21 +351,12 @@ export function foldTrail(
   acc: TrailStep[] | undefined,
   update: TrailStep[] | undefined,
 ): TrailStep[] {
-  return foldLog(acc, update, sameStep);
-}
-
-/** The visit log's fold, the trail's rule: an echo is a no-op, a writer's own visit is appended. */
-export function foldVisits(acc: VisitStart[] | undefined, update: VisitStart[] | undefined): VisitStart[] {
-  return foldLog(acc, update, deepEqual);
-}
-
-function foldLog<T>(acc: T[] | undefined, update: T[] | undefined, same: (a: T, b: T) => boolean): T[] {
   const current = acc ?? [];
   if (!update || update.length === 0) return current;
-  if (update.length === current.length && update.every((s, i) => same(s, current[i]!))) {
+  if (update.length === current.length && update.every((s, i) => sameStep(s, current[i]!))) {
     return current;
   }
-  if (update.length > current.length && current.every((s, i) => same(s, update[i]!))) {
+  if (update.length > current.length && current.every((s, i) => sameStep(s, update[i]!))) {
     return [...update];
   }
   const fresh = update.filter((step) => !current.includes(step));
@@ -513,12 +482,6 @@ export const workflowStateSchema = z.object({
     workflowStateFields.auditTrail,
     (acc, update) => foldTrail(acc as TrailStep[] | undefined, update as TrailStep[] | undefined),
     (): TrailStep[] => [],
-  ),
-  visits: reduced(
-    workflowStateFields.visits,
-    workflowStateFields.visits,
-    (acc, update) => foldVisits(acc as VisitStart[] | undefined, update as VisitStart[] | undefined),
-    (): VisitStart[] => [],
   ),
   // The wrap widens the reduced fields; what a hook reads and writes is the field's own shape.
 }) as unknown as z.ZodObject<typeof workflowStateFields>;

@@ -23,14 +23,12 @@ export interface CodeStateRun {
   state: string;
   /** The state's declared `script`. */
   script: string;
-  /** The script's input: `{ state, trigger?, variables, messages, trail }`. */
+  /** The script's input: `{ state, trigger?, variables }`. */
   input: Record<string, unknown>;
   /** The code state's tools, governed. */
   tools: StructuredTool[];
   /** The names those tools are listed and reached by. */
   surface: readonly string[];
-  /** The host function behind the script's `toolCalls(filter)`: not one of its tools. */
-  toolCalls?: StructuredTool;
   signal?: AbortSignal;
 }
 
@@ -48,7 +46,6 @@ export async function runCodeState(run: CodeStateRun): Promise<{ error?: string 
     args: run.input,
     tools: run.tools,
     surface: run.surface,
-    ...(run.toolCalls ? { toolCalls: run.toolCalls } : {}),
     ...(run.signal ? { signal: run.signal } : {}),
   });
   for (const line of outcome.logs) {

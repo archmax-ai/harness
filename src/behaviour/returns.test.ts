@@ -103,7 +103,8 @@ describe("returns beside a code state that gates the finish", () => {
   /** Sends the work back until the agent's advance says "revised", then finishes. */
   const checkScript = [
     "/** Requires the answer to be a revision. */",
-    "export default async function ({ trail, tools }) {",
+    "export default async function ({ tools }) {",
+    "  const { trail } = JSON.parse(await tools.archmax_get_history());",
     "  const reason = trail[trail.length - 1].reason || '';",
     "  if (reason.indexOf('revised') >= 0) await tools.archmax_advance({ to: 'done', reason: 'the answer is revised' });",
     "  else await tools.archmax_advance({ to: 'work', reason: 'reply revised' });",

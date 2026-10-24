@@ -178,6 +178,20 @@ describe("a script's tools, scoped to a surface", () => {
     ]);
   });
 
+  it("calls a tool with no input as with an empty one, and keeps each tool's identity", async () => {
+    const executor = createScriptExecutor({ workspace: workspaceWith({}) });
+    const outcome = await executor.runCode("[await tools.read_file(), tools.read_file === tools.readFile]", {
+      sessionId: "s6b",
+      sessionNamespace: "agent",
+      prelude: true,
+      tools: STUB_TOOLS,
+      surface: ["read_file"],
+    });
+    executor.dispose("s6b");
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(outcome.value).toEqual(["read_file:done", true]);
+  });
+
   it("leaves a tool outside the surface undefined, and typeof, in and Object.keys agree", async () => {
     // The view is the surface: a name outside it is unreachable however it is
     // spelled or asked about. The kernel still decides every call that is made,

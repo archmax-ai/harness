@@ -32,7 +32,6 @@ import { createAutomatedControls, createStepRecorder, type AutomatedDecision } f
 import { runCodeState, type CodeScriptResolver } from "./code-state.js";
 import { runGraderState } from "./grader-state.js";
 import { sessionHistory } from "./history.js";
-import { toolCallQuery } from "./tool-calls.js";
 import { reportAdvance } from "./move-events.js";
 import type { FileValueCheck } from "./signature-checks.js";
 import { currentWorkflowState, readVariables, readWorkflowState, type TrailStep } from "./state.js";
@@ -162,7 +161,7 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
   const controls = machine.controlTools(state);
   const own = request.tools.filter((tool) => surface.has(tool.name) && !controls.has(tool.name));
   const tools = ctx.ptcGateway.wrap(
-    [...own, ...createAutomatedControls(ctx, recorder, type === "grader" ? { history } : {})],
+    [...own, ...createAutomatedControls(ctx, recorder, history)],
     { origin: type === "grader" ? "agent" : "script", sessionId },
   );
 
@@ -172,13 +171,7 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
   if (type === "code") {
     emit({ type: "code-start", state, script: declared?.script ?? "" });
     const trigger = readWorkflowState(session).trigger?.id;
-    const input = {
-      state,
-      ...(trigger ? { trigger } : {}),
-      variables: flatVariables(recorder.store()),
-      messages: history.messages,
-      trail: history.trail,
-    };
+    const input = { state, ...(trigger ? { trigger } : {}), variables: flatVariables(recorder.store()) };
     ({ error } = await runCodeState({
       emit,
       executor: ctx.codeExecutor,
@@ -189,7 +182,6 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
       input,
       tools,
       surface: [...surface],
-      toolCalls: toolCallQuery(session),
       ...(request.signal ? { signal: request.signal } : {}),
     }));
   } else {

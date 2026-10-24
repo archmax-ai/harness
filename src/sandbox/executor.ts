@@ -4,7 +4,6 @@ import type { Workspace } from "../core/workspace.js";
 import { normalizeRelPath } from "../core/workspace.js";
 import { readPrelude } from "./prelude.js";
 import { prepareScriptSource } from "./imports.js";
-import { TOOL_CALLS_QUERY } from "../machine/tool-names.js";
 import { DEFAULT_SANDBOX_VERSION } from "../runtime/contract.js";
 import { createQuickJsSandboxRuntime, type SandboxRuntime } from "./runtime.js";
 
@@ -67,12 +66,6 @@ export interface CodeStateRunParams {
   tools: StructuredTool[];
   /** The names `tools` lists and reaches — the code state's surface. */
   surface: readonly string[];
-  /**
-   * The host function behind the script's `toolCalls(filter)`, named
-   * {@link TOOL_CALLS_QUERY}: injected beside `tools`, never listed among them.
-   * Absent, `toolCalls` answers with no records.
-   */
-  toolCalls?: StructuredTool;
   /** The turn's abort signal: once it aborts, the run settles with an error. */
   signal?: AbortSignal;
 }
@@ -132,31 +125,19 @@ function ownNames(tools: readonly StructuredTool[]): Record<string, string> {
  * The code a code state's script runs as. The body is evaluated as its own
  * async IIFE (`transformForEval`) — a bare-body script simply runs — and a
  * registered `export default` function is then called with the state's input:
- * the arguments, the `toolCalls` query and the scoped `tools`. The value is
- * `undefined` either way: a code state moves the session through its tools,
- * never through a return.
- *
- * The query is a host function injected beside the state's tools under
- * {@link TOOL_CALLS_QUERY}: taken off `tools` before the scoped view is
- * installed, so it is the script's `toolCalls` and never one of its tools.
+ * the arguments plus the scoped `tools`. The value is `undefined` either way: a
+ * code state moves the session through its tools, never through a return.
  */
 function buildCodeStateCode(
   prepared: string,
   filePath: string,
-  prelude: string,
-  scope: readonly string[],
+  preamble: readonly string[],
   args: Record<string, unknown>,
 ): string {
-  const query = toCamelCase(TOOL_CALLS_QUERY);
   return [
-    prelude,
-    `const __archmaxQuery = typeof tools !== "undefined" ? tools.${query} : undefined;`,
-    "globalThis.__archmaxToolCalls = async (filter) =>",
-    "  typeof __archmaxQuery === \"function\" ? JSON.parse(await __archmaxQuery(filter ?? {})) : [];",
-    ...scope,
+    ...preamble,
     "globalThis.__stateDef = undefined;",
     argsAssignment(args),
-    "globalThis.args.toolCalls = globalThis.__archmaxToolCalls;",
     `globalThis.__scriptPath = ${JSON.stringify(normalizeRelPath(filePath))};`,
     `await ${transformForEval(prepared)};`,
     "if (typeof globalThis.__stateDef === \"function\") {",
@@ -219,16 +200,10 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
       // globals) and `export default` becomes the state's registration; any
       // other import — or a source that does not parse — fails closed here,
       // host-side, before a REPL exists.
-      const tools = [...params.tools, ...(params.toolCalls ? [params.toolCalls] : [])];
       let code: string;
       try {
-        code = buildCodeStateCode(
-          prepareScriptSource(source, { file: filePath }),
-          filePath,
-          readPrelude("code", sandboxVersion),
-          scopeCall(params.surface, params.tools),
-          params.args,
-        );
+        const preamble = [readPrelude("code", sandboxVersion), ...scopeCall(params.surface, params.tools)];
+        code = buildCodeStateCode(prepareScriptSource(source, { file: filePath }), filePath, preamble, params.args);
       } catch (err) {
         return errorOutcome((err as Error).message);
       }
@@ -240,7 +215,7 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
         return await evalCode(code, {
           sessionId: params.sessionId,
           sessionNamespace: CODE_SESSION,
-          tools,
+          tools: params.tools,
           ...(params.signal ? { signal: params.signal } : {}),
         });
       } finally {

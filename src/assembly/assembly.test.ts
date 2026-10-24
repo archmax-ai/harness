@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { AGENT_DEFAULT_CONFIG } from "../agent.js";
-import { turnStepLimit } from "../core/deepagents.js";
 import { assertNoReservedToolNames, ReservedToolNameError } from "../machine/tool-names.js";
 import { createAgent } from "./index.js";
 import { resolveTrigger, UnknownTriggerError } from "../machine/triggers.js";
@@ -1260,10 +1259,9 @@ describe("Deep Agents parity", () => {
     await agent.invoke({ messages: [] } as never, session);
     expect((seen[0]?.metadata as Record<string, unknown>)?.ls_integration).toBe( "archmax-harness");
     // A turn runs under a generous default bound: one invoke is one whole turn
-    // across states, and the authored budgets are the real limit. A governed
-    // agent's bound follows its turn budget, the default 50 calls here.
+    // across states, and LangGraph's recursion limit is what bounds it.
     expect(AGENT_DEFAULT_CONFIG.recursionLimit).toBe(400);
-    expect(seen[0]?.recursionLimit).toBe(turnStepLimit(50));
+    expect(seen[0]?.recursionLimit).toBe(400);
     // The runner drives the graph's native stream in values+messages mode.
     expect(seen[0]?.streamMode).toEqual(["values", "messages"]);
 

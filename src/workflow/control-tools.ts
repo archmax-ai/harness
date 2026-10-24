@@ -45,7 +45,6 @@ import {
 } from "../machine/variables.js";
 import { decisionRecordFor, inputRecordFor } from "./parks.js";
 import { fileValueIssues, type FileValueCheck } from "./signature-checks.js";
-import { messagesIn, visitStart } from "./visits.js";
 import {
   currentWorkflowState,
   NO_PENDING_FAILURE,
@@ -295,16 +294,11 @@ export interface Move {
   reason: string;
   /** Attached evidence paths, already validated; only into a human state. */
   evidence?: readonly string[];
-  /**
-   * The transcript the target's visit starts after. Default the session's own;
-   * an automated move passes it without the marker message its commit removes.
-   */
-  anchor?: readonly unknown[];
 }
 
 /**
- * The update a move commits — the target position, the trail step, the visit it
- * opens, a cleared rejection marker and a fresh turn budget — plus, into a human state, the park
+ * The update a move commits — the target position, the trail step, a cleared
+ * rejection marker and a fresh turn budget — plus, into a human state, the park
  * record opened in its closing phase. The one derivation every mover shares: the
  * session's agent through {@link handleAdvance}, and an automated state's run.
  * Messages are the caller's (a tool reply, a runtime note).
@@ -322,7 +316,6 @@ export function transitionUpdate(
     ...NO_PENDING_FAILURE,
     stateTurns: null,
     auditTrail: [step],
-    visits: visitStart(move.to, move.anchor ?? messagesIn(state)),
   };
   if (!machine.isHumanState(move.to)) return { update };
   // Into a human state: the park record is committed with the transition, so a
@@ -616,7 +609,6 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
       ...NO_PENDING_FAILURE,
       stateTurns: null,
       auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
-      visits: visitStart(entry, messagesIn(request.state)),
       ...(released.length > 0
         ? {
             variables: Object.fromEntries(

@@ -37,21 +37,23 @@ function controls(state: string, session: unknown = {}) {
   const tools = createAutomatedControls(
     { machine, emit: (event) => events.push(event), mountPrefixes: NO_MOUNTS },
     recorder,
-    { history: { messages: [{ role: "user", text: "hi" }], trail: [], toolCalls: [] } },
+    { messages: [{ role: "user", text: "hi" }], trail: [] },
   );
   const byName = (name: string) => tools.find((tool) => tool.name === name) as StructuredTool;
   return { recorder, tools, byName, events, writes };
 }
 
 describe("an automated state's controls", () => {
-  it("are the state type's control set, in order, and no history for a code state", () => {
-    expect(controls("check").tools.map((tool) => tool.name)).toEqual([
+  it("are the automated control set, in order, for a code state and a grader alike", () => {
+    const names = [
       "archmax_advance",
       "archmax_raise",
       "archmax_get_variables",
       "archmax_set_variables",
-    ]);
-    expect(controls("grade").tools.map((tool) => tool.name)).toContain("archmax_get_history");
+      "archmax_get_history",
+    ];
+    expect(controls("check").tools.map((tool) => tool.name)).toEqual(names);
+    expect(controls("grade").tools.map((tool) => tool.name)).toEqual(names);
     // A terminal state is not offered the advance.
     expect(controls("done").tools.map((tool) => tool.name)).not.toContain("archmax_advance");
   });
@@ -97,8 +99,10 @@ describe("an automated state's controls", () => {
     expect(events).toEqual([expect.objectContaining({ type: "variables-set", state: "check", names: ["note"] })]);
   });
 
-  it("hand a grader the session's history", async () => {
-    const history = JSON.parse(await controls("grade").byName("archmax_get_history").invoke({}));
-    expect(history).toEqual({ messages: [{ role: "user", text: "hi" }], trail: [], toolCalls: [] });
+  it("hand a grader and a code state the same history", async () => {
+    for (const state of ["grade", "check"]) {
+      const history = JSON.parse(await controls(state).byName("archmax_get_history").invoke({}));
+      expect(history).toEqual({ messages: [{ role: "user", text: "hi" }], trail: [] });
+    }
   });
 });

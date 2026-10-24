@@ -22,7 +22,7 @@ import {
   withEventContext,
   type WorkflowEventHandler,
 } from "../core/events.js";
-import { turnStepLimit } from "../core/deepagents.js";
+import { DEFAULT_RECURSION_LIMIT } from "../core/deepagents.js";
 import {
   parseReferences,
   resolvePath,
@@ -711,14 +711,12 @@ export function createSubWorkflowDispatcher(
    */
   function childConfig(
     parent: RunnableConfig,
-    child: { identity: string; workflow: string; dispatchId: string; maxModelCalls: number },
+    child: { identity: string; workflow: string; dispatchId: string },
   ): RunnableConfig {
     const callbacks = callbacksForChild();
-    const run = childRunConfig(parent, child);
     return {
-      ...run,
-      // The child's own turn budget sets its floor; a caller running under a larger limit lends it.
-      recursionLimit: Math.max(run.recursionLimit ?? 0, turnStepLimit(child.maxModelCalls)),
+      recursionLimit: DEFAULT_RECURSION_LIMIT,
+      ...childRunConfig(parent, child),
       ...(callbacks !== undefined ? { callbacks } : {}),
     };
   }
@@ -738,7 +736,6 @@ export function createSubWorkflowDispatcher(
       identity: input.identity,
       workflow,
       dispatchId: input.dispatchId,
-      maxModelCalls: child.machine.maxModelCalls,
     });
     const sessions = {
       callerId: sessionScopeFrom(input.config).sessionId,
@@ -866,7 +863,6 @@ export function createSubWorkflowDispatcher(
       identity: input.identity,
       workflow,
       dispatchId: input.dispatchId,
-      maxModelCalls: child.machine.maxModelCalls,
     });
     const settle = (outcome: { status: "ok"; returns?: Record<string, unknown> } | { status: "error"; reason: string }) =>
       emit({

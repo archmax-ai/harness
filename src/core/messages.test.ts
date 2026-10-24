@@ -126,7 +126,7 @@ describe("turnReply", () => {
     expect(turnReply([...before, { role: "human", content: "again" }], anchor)).toBe("");
   });
 
-  it("drops a draft an automated state sent back once the agent speaks again, and keeps text across other notes", () => {
+  it("keeps every text across runtime notes, an automated state's move included", () => {
     const turn = [
       { role: "human", content: "go" },
       { role: "assistant", content: "first look" },
@@ -135,23 +135,7 @@ describe("turnReply", () => {
       ...runtimeNote("grader", "[grader] Moved to 'answer': cite the order"),
       { role: "assistant", content: "final" },
     ];
-    expect(turnReply([...before, ...turn], anchor)).toBe("final");
-    const kept = [
-      { role: "human", content: "go" },
-      { role: "assistant", content: "first look" },
-      ...runtimeNote("error", "[error] routed"),
-      { role: "assistant", content: "handled" },
-    ];
-    expect(turnReply([...before, ...kept], anchor)).toBe("first look\n\nhandled");
-  });
-
-  it("keeps a draft an automated state passed when nothing is said after it", () => {
-    const turn = [
-      { role: "human", content: "go" },
-      { role: "assistant", content: "the answer" },
-      ...runtimeNote("code", "[code] Moved to 'done': checked"),
-    ];
-    expect(turnReply([...before, ...turn], anchor)).toBe("the answer");
+    expect(turnReply([...before, ...turn], anchor)).toBe("first look\n\ndraft\n\nfinal");
   });
 
   it("finds the turn by the anchor's id when the list was rewritten ahead of it", () => {

@@ -24,8 +24,7 @@ import {
   ADVANCE_TOOL,
   NOT_OFFERED_TO_AUTOMATED,
   ALWAYS_ALLOWED_TOOLS,
-  CODE_STATE_CONTROL_TOOLS,
-  GRADER_STATE_CONTROL_TOOLS,
+  AUTOMATED_STATE_CONTROL_TOOLS,
   UNGRANTABLE_TOOLS,
   DEFAULT_TOOLS,
   workflowSlugFromToolName,
@@ -39,7 +38,6 @@ import {
   type ToolPaths,
 } from "./tool-paths.js";
 import {
-  DEFAULT_MAX_MODEL_CALLS,
   specDisabled,
   type AllowEntry,
   type ForbidEntry,
@@ -466,11 +464,6 @@ export class WorkflowMachine {
     return this.spec.states[from]?.transitions?.find((t) => t.to === to);
   }
 
-  /** The model calls one turn may make across every state: `budget.maxModelCalls`, else the default. */
-  get maxModelCalls(): number {
-    return this.spec.budget?.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
-  }
-
   private owners?: Map<string, string>;
 
   /** The state that owns `name` (lists it in `locks`), the only one that may write it; `undefined` when none does. */
@@ -525,18 +518,11 @@ export class WorkflowMachine {
   /**
    * The control tools `state` is offered, by its type — the one answer the
    * kernel's grant, disclosure and an automated state's tool list read. An agent
-   * or human state has every control; an automated state cannot park or reset,
-   * and only a grader reads the history.
+   * or human state has every control but the history; an automated state reads
+   * the history and cannot park or reset.
    */
   controlTools(state: string): ReadonlySet<string> {
-    switch (this.stateType(state)) {
-      case "code":
-        return CODE_STATE_CONTROL_TOOLS;
-      case "grader":
-        return GRADER_STATE_CONTROL_TOOLS;
-      default:
-        return ALWAYS_ALLOWED_TOOLS;
-    }
+    return this.isAutomatedState(state) ? AUTOMATED_STATE_CONTROL_TOOLS : ALWAYS_ALLOWED_TOOLS;
   }
 
   /**

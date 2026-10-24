@@ -93,27 +93,14 @@ function messageIdOf(message: unknown): string | undefined {
 
 /**
  * What the agent said during the turn that began at `anchor`: each assistant
- * text, in order, joined by a blank line. Once a grader or a code state has
- * moved the session (its `grader` or `code` note), the next thing the agent says
- * takes back what came before it: a draft sent back for revision never reaches
- * the person, and a draft passed with nothing said after it is the reply. No
- * other note does. Empty when the turn said nothing.
+ * text, in order, joined by a blank line. Empty when the turn said nothing.
  */
 export function turnReply(messages: unknown[], anchor: TurnAnchor): string {
-  const start = anchorIndex(messages, anchor);
-  let said: string[] = [];
-  let superseded = false;
-  for (const message of messages.slice(start)) {
-    const note = runtimeNoteKind(message);
-    if (note === "grader" || note === "code") superseded = true;
+  const said: string[] = [];
+  for (const message of messages.slice(anchorIndex(messages, anchor))) {
     if (!isAiMessage(message) || isRuntimeNote(message)) continue;
     const text = contentToString((message as { content?: unknown }).content).trim();
-    if (!text) continue;
-    if (superseded) {
-      said = [];
-      superseded = false;
-    }
-    said.push(text);
+    if (text) said.push(text);
   }
   return said.join("\n\n");
 }

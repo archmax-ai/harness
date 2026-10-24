@@ -6,11 +6,10 @@ import { ALWAYS_ALLOWED_TOOLS, WorkflowMachine } from "./machine.js";
 import {
   ADVANCE_TOOL,
   AGENT_ONLY_TOOLS,
-  CODE_STATE_CONTROL_TOOLS,
+  AUTOMATED_STATE_CONTROL_TOOLS,
   DEFAULT_TOOLS,
   GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
-  GRADER_STATE_CONTROL_TOOLS,
   HARNESS_CONTROL_TOOLS,
   isReservedToolName,
   ARCHMAX_TOOL_PREFIX,
@@ -84,26 +83,20 @@ describe("harness control tool names", () => {
 });
 
 /**
- * An automated state moves, fails and keeps the session's variables; it never
- * parks or resets, and only a grader reads the history.
+ * An automated state — a grader or a code state alike — moves, fails, keeps the
+ * session's variables and reads its history; it never parks or resets.
  */
-describe("automated-state control sets", () => {
-  it("gives a code state advance, raise and the variable tools", () => {
-    expect([...CODE_STATE_CONTROL_TOOLS].sort()).toEqual(
-      [ADVANCE_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, SET_VARIABLES_TOOL].sort(),
+describe("the automated-state control set", () => {
+  it("is advance, raise, the variable tools and the history", () => {
+    expect([...AUTOMATED_STATE_CONTROL_TOOLS].sort()).toEqual(
+      [ADVANCE_TOOL, GET_HISTORY_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, SET_VARIABLES_TOOL].sort(),
     );
-    expect(CODE_STATE_CONTROL_TOOLS.has(WAIT_TOOL)).toBe(false);
-    expect(CODE_STATE_CONTROL_TOOLS.has(RESET_TOOL)).toBe(false);
-  });
-
-  it("gives a grader the code set plus archmax_get_history", () => {
-    expect([...GRADER_STATE_CONTROL_TOOLS].sort()).toEqual(
-      [...CODE_STATE_CONTROL_TOOLS, GET_HISTORY_TOOL].sort(),
-    );
+    expect(AUTOMATED_STATE_CONTROL_TOOLS.has(WAIT_TOOL)).toBe(false);
+    expect(AUTOMATED_STATE_CONTROL_TOOLS.has(RESET_TOOL)).toBe(false);
   });
 
   it("names every automated control among the harness's controls", () => {
-    for (const tool of GRADER_STATE_CONTROL_TOOLS) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
+    for (const tool of AUTOMATED_STATE_CONTROL_TOOLS) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
   });
 
   it("withholds the planning list and both sandbox entry points from automated states", () => {
