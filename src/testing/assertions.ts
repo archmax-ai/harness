@@ -131,7 +131,13 @@ export async function evaluateExpectations(
           gate(
             "succeeded",
             !view.failed && !view.parked && !view.raised,
-            view.raised ? `the session raised '${view.raised.code}': ${view.raised.reason}` : undefined,
+            view.raised
+              ? `the session raised '${view.raised.code}': ${view.raised.reason}`
+              : view.parked
+                ? "the session is parked"
+                : view.failed
+                  ? "the turn did not complete"
+                  : undefined,
           ),
         );
         break;

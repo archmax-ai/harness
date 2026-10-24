@@ -358,7 +358,9 @@ states:
       creates it; if review-report sent it back, read it and fix what the note
       names with edit_file. Answer only from orders.json - never fabricate order
       data. Once the report is written, call archmax_advance to review-report:
-      that call hands the report in.
+      that call hands the report in. If orders.json cannot be read, there is no
+      report to hand in: write none and end the run with archmax_raise, saying
+      why.
     transitions:
       - to: review-report
         description: >-
