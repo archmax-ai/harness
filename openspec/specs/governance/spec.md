@@ -187,23 +187,22 @@ declared `tools.allow_always` SHALL replace the default tools rather than add to
 tool is then permitted in a state only where `allow_always` or that state's `tools.allow` names it.
 The host's `essentialTools` SHALL be permitted in every state whatever the workflow declares.
 
-An automated state (a grader or code state) SHALL never be offered the agent-only tools
-`write_todos`, `archmax_eval` and `archmax_run`, nor `archmax_wait` or `archmax_reset`: not as
-default tools, and not where the workflow's `tools.allow_always` or the state's own `tools.allow`
-names one (see "Effective entries and precedence").
+What each state type is offered beyond its grants, and what no grant gives it, SHALL come from one
+table, `STATE_TYPE_TOOLS` (exported from `@archmax-ai/harness/spec`). Per type it holds the
+type's `controls`, the control tools the type always has whatever its `tools` governance, and its
+`withheld` tools, which no entry grants it. The machine's tool surface, the kernel's grant and
+`validate` SHALL all read this table:
 
-The control tools SHALL be, by type:
+| State type    | `controls`                                                                                                 | `withheld`                                                                     |
+| ------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| agent, human  | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | none                                                                           |
+| code, grader  | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
 
-| State type    | Control tools                                                                                              |
-| ------------- | ---------------------------------------------------------------------------------------------------------- |
-| agent, human  | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` |
-| code, grader  | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` |
-
-`archmax_get_history` SHALL be a control tool like the others: one of the reserved control tools
-(`HARNESS_CONTROL_TOOLS`), never part of an agent script's surface, and permitted only in an
-automated state, a grader or a code state alike. No state of an automated type SHALL permit a tool
-no automated state offers: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` and
-`archmax_reset`.
+A state SHALL never be offered a tool its type withholds: not as a default tool, and not where the
+workflow's `tools.allow_always` or the state's own `tools.allow` names one (see "Effective entries
+and precedence"). The reserved control tools (`HARNESS_CONTROL_TOOLS`) SHALL be every type's
+`controls` plus the two sandbox tools. `archmax_get_history` SHALL be a control tool like the
+others: never part of an agent script's surface, and permitted only in a grader or a code state.
 
 Every other call SHALL be blocked with a reason naming the tool, the state and what the state
 permits. A state with no `tools` block and one with an empty `allow` list SHALL behave identically,
@@ -217,8 +216,8 @@ state permits, for every state type. The kernel, prompt disclosure, the agent sc
 the tool surface an automated state is offered SHALL all read it unchanged, so what a code state
 may call cannot drift from what its script sees.
 
-`task` SHALL be neither a default tool nor grantable. Deep Agents always registers it for its
-general-purpose subagent. The runtime registers no subagent and dispatches nothing through it: a
+`task` (`TASK_TOOL`) SHALL be neither a default tool nor grantable. Deep Agents always registers
+it for its general-purpose subagent. The runtime registers no subagent and dispatches nothing through it: a
 grade is a grader state, and delegated work is a sub-workflow reached through a declared
 `archmax_workflow_<slug>` tool. A `task` call SHALL be blocked in every state, whatever the state
 or the workflow declares, with a refusal that points at grader states and the workflow's declared
@@ -299,12 +298,11 @@ entries for tools the state does not mention and that are not host `essentialToo
 unconstrained. A tool SHALL be decided by exactly one tier, so a state entry naming a granted tool
 narrows it, and a workflow-wide entry for a tool the state mentions SHALL be inert in that state.
 
-In an automated state, an entry naming a tool no automated state is offered (`write_todos`,
-`archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`) SHALL be dropped, whether it is the
-state's own, a declared `allow_always` one or a default tool, so it neither grants nor narrows
-there. `validate` reports the state's own entry
-naming a tool no automated state offers (those three, `archmax_wait` or `archmax_reset`) as an
-error (see "Validation decides through the same kernel").
+In a grader or code state, an entry naming a tool its type withholds
+(`STATE_TYPE_TOOLS[type].withheld`: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`,
+`archmax_reset`) SHALL be dropped, whether it is the state's own, a declared `allow_always` one or
+a default tool, so it neither grants nor narrows there. `validate` reports the state's own entry
+naming a withheld tool as an error (see "Validation decides through the same kernel").
 
 #### Scenario: State entry narrows an always-on tool
 
@@ -325,7 +323,7 @@ error (see "Validation decides through the same kernel").
   `reports/x.md`
 - **THEN** the first write is blocked with `tool.not-allowed` and the second is permitted
 
-#### Scenario: An agent-only entry grants nothing in an automated state
+#### Scenario: A withheld tool's entry grants nothing in an automated state
 
 - **WHEN** the root declares `tools: { allow_always: [read_file, archmax_run] }` and code state
   `check-refund` declares `tools.allow: [archmax_eval]`
@@ -333,7 +331,7 @@ error (see "Validation decides through the same kernel").
   both there with `tool.not-allowed`, while `read_file` is offered there and an agent state with no
   `tools` block permits `archmax_run`
 
-#### Scenario: An automated state's default tools leave out the agent-only ones
+#### Scenario: An automated state's default tools leave out the withheld ones
 
 - **WHEN** a workflow without `tools.allow_always` enters a code state and a grader state, neither
   with a `tools` block
@@ -565,7 +563,8 @@ list, a code state's script as its `tools` (see the `automated-states` capabilit
 disclosed tools SHALL be every tool an effective entry names, plus the control tools of its type
 other than `archmax_advance`, plus `archmax_advance` except in a terminal state, minus the tools a
 `forbid_always` or `forbid` entry names by name. The control tools other than `archmax_advance` are,
-by type:
+by type (`STATE_TYPE_TOOLS[type].controls`, see "The tool surface is allow-only and closed by
+default"):
 
 - in an agent or human state, `archmax_reset`, `archmax_wait`, `archmax_raise`,
   `archmax_get_variables` and `archmax_set_variables`;
@@ -810,12 +809,13 @@ prefixes and skill registry the runtime uses. It SHALL report as errors:
 
 - a write entry into a runtime-owned area or a read-only mount;
 - an entry a `forbid_always` or `forbid` list denies;
-- an entry naming `task` (not grantable);
+- an entry naming `task` (`TASK_TOOL`, not grantable);
 - an `archmax_run` entry outside every skill bundle;
 - a path entry that can only match inside a bundle the state does not enable;
 - an entry whose `file_path` glob resolves under `workflows/`;
-- an entry in an automated state naming a tool no automated state offers (`write_todos`,
-  `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`);
+- an entry in a grader or code state naming a tool its type withholds
+  (`STATE_TYPE_TOOLS[type].withheld`: `write_todos`, `archmax_eval`, `archmax_run`,
+  `archmax_wait`, `archmax_reset`);
 - a code state's `script` outside `scripts/` or missing from it;
 - a code-state script importing anything but `@archmax-ai/harness/*`.
 
@@ -1148,26 +1148,22 @@ read. Every call SHALL still be decided by the kernel whether or not the mount w
 The graph SHALL be disclosed the way the tool surface is: only from where the agent stands. On
 every model call of the session's agent the runtime SHALL disclose the active state's **outgoing
 transitions and nothing else of the graph** — one line per edge carrying the target's slug, its
-declared `type` when not `none`, and its `description`. An **undescribed** edge (no
-`description`, or a blank one) SHALL carry the target state's `instructions` in its place, quoted
-under the line and introduced as the instructions the agent will follow once it is in that state —
-given for choosing the edge, not to be followed now. This is the only attribute of another state
-that SHALL reach a model call of the session's agent, and only through an undescribed edge of the
-active state; an edge into a grader or code state is never undescribed, because the schema refuses
-one (see the `workflow-spec` capability), so a grader's criteria never reach the work it judges.
-Otherwise, no other state's slug, `title`, `summary`, `instructions`, `model`, `script`,
-`triggers`, `budget`, `requires` or transitions SHALL reach any model call of the session's agent,
-and neither SHALL a count of the states, so a state the agent cannot advance to is a state it
-cannot name. What a grader's own model calls are told is specified by the `automated-states`
-capability.
+declared `type` when not `none`, and its `description`, which every edge carries (see the
+`workflow-spec` capability). Beyond the target's slug and the markers below, the description
+SHALL be the only thing the agent is told about an edge. No other state's `title`, `summary`,
+`instructions`, `model`, `script`, `triggers`, `budget`, `requires` or transitions SHALL reach any
+model call of the session's agent, no state the active state has no edge to SHALL be named, and
+neither SHALL a count of the states. So a state the agent cannot advance to is a state it cannot
+name, and a grader's criteria never reach the work it judges. What a grader's own model calls are
+told is specified by the `automated-states` capability.
 
 An edge's line SHALL mark a target that is a **human decision node**, a **grader** state, a
 **code** state or a **terminal** state, because each changes what the call itself must carry or
 what follows it — evidence may be attached only when advancing to a human state, a grader or code
 state runs on its own and may send the session straight back with a note saying what to change, and
 a human or terminal target means the agent stops rather than continues. Nothing further about the
-target SHALL be rendered beyond an undescribed edge's instructions: the marker discloses the
-consequence of taking the edge, not the state on the other side of it.
+target SHALL be rendered: the marker discloses the consequence of taking the edge, not the state on
+the other side of it.
 
 The active state's own markers SHALL be disclosed in the same block: that it is terminal. The
 trigger signature SHALL be disclosed for the **run's own trigger only** — the `requires` it was
@@ -1191,7 +1187,7 @@ A reply-only turn SHALL be disclosed no transitions at all, because it cannot mo
 
 #### Scenario: A human target is marked, and only that
 
-- **WHEN** a described transition's target is a `type: human` state with `instructions`,
+- **WHEN** a transition's target is a `type: human` state with `instructions`,
   `approvers` and three transitions of its own
 - **THEN** the edge is marked as leading to a human decision node, and none of that state's
   `instructions`, `approvers` or transitions appear in the prompt
@@ -1227,28 +1223,6 @@ A reply-only turn SHALL be disclosed no transitions at all, because it cannot mo
 
 - **WHEN** a session parked at a human state is handed a reply and spends its reply-only model call
 - **THEN** no transition is disclosed, because a reply-only turn cannot move the session
-
-#### Scenario: An undescribed edge discloses the target's instructions
-
-- **WHEN** the active state `triage` declares `- to: lookup` with no `description`, and `lookup`
-  declares `instructions: "Look up the order by its id and summarise its status."`, a `title`, a
-  `summary` and transitions of its own
-- **THEN** the edge's line names `lookup` and is followed by those instructions verbatim, quoted and
-  introduced as what the agent will do once in `lookup`, and the prompt carries nothing else of
-  `lookup`: not its `title`, `summary` or transitions
-
-#### Scenario: Described and undescribed edges side by side
-
-- **WHEN** the active state declares one described edge to `refund-review` and one undescribed edge
-  to `lookup`
-- **THEN** the `refund-review` line carries its description and nothing of `refund-review`'s
-  `instructions`, and the `lookup` line carries `lookup`'s instructions
-
-#### Scenario: An undescribed edge into a human state
-
-- **WHEN** an undescribed edge leads to a `type: human` state with `instructions` and `approvers`
-- **THEN** the edge is marked as leading to a human decision node and carries that state's
-  `instructions`, and the prompt carries neither its `approvers` nor its transitions
 
 ### Requirement: A script's tool calls are governed against the state it runs for
 

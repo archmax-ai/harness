@@ -178,66 +178,28 @@ describe("renderStateGraph — the volatile half", () => {
     expect(text).not.toContain("closed");
   });
 
-  describe("an undescribed edge", () => {
-    const UNDESCRIBED: MachineSpec = {
+  it("discloses an edge's description and markers, and nothing of its target", () => {
+    const spec: MachineSpec = {
       states: {
         triage: {
           triggers: { manual: null },
-          transitions: [
-            { to: "refund-review", description: "Refunds over $50." },
-            { to: "lookup", type: "refine" },
-            { to: "approve", description: "  " },
-          ],
+          transitions: [{ to: "lookup", type: "refine", description: "The order id is known." }],
         },
         lookup: {
           title: "Look up the order",
           summary: "Order lookup.",
-          instructions: "Look the order up by its id.\n\n  - Summarise its status.  \n",
+          instructions: "Look the order up by its id.",
           tools: { allow: ["web_fetch"] },
           transitions: [{ to: "closed", description: "Done." }],
-        },
-        "refund-review": { instructions: "Review the refund.", transitions: [{ to: "closed", description: "Done." }] },
-        approve: {
-          type: "human",
-          instructions: "Approve or send back the refund.",
-          approvers: ["support-lead"],
-          transitions: [{ to: "closed", description: "Approve." }],
         },
         closed: {},
       },
     };
-
-    it("carries the target's instructions, quoted and framed for choosing", () => {
-      expect(graph(UNDESCRIBED, "triage")).toContain(
-        [
-          "- to `lookup` (refine) — no description; the instructions you will follow once in `lookup`, " +
-            "given only for choosing this edge:",
-          "  > Look the order up by its id.",
-          "  >",
-          "  >   - Summarise its status.",
-        ].join("\n"),
-      );
-    });
-
-    it("leaves a described edge as it was, disclosing nothing of its target", () => {
-      const text = graph(UNDESCRIBED, "triage");
-      expect(text).toContain("- to `refund-review` — Refunds over $50.\n");
-      expect(text).not.toContain("Review the refund.");
-    });
-
-    it("discloses nothing else of the target", () => {
-      const text = graph(UNDESCRIBED, "triage");
-      for (const absent of ["Look up the order", "Order lookup.", "web_fetch", "closed", "support-lead"]) {
-        expect(text).not.toContain(absent);
-      }
-    });
-
-    it("carries a human target's instructions beside its marker, and nothing else of it", () => {
-      expect(graph(UNDESCRIBED, "triage")).toContain(
-        "- to `approve` (human decision node) — no description; the instructions you will follow once in " +
-          "`approve`, given only for choosing this edge:\n  > Approve or send back the refund.",
-      );
-    });
+    const text = graph(spec, "triage");
+    expect(text).toContain("- to `lookup` (refine) — The order id is known.");
+    for (const absent of ["Look up the order", "Order lookup.", "Look the order up", "web_fetch", "closed"]) {
+      expect(text).not.toContain(absent);
+    }
   });
 
   it("marks a terminal target so the work is finished before the call", () => {

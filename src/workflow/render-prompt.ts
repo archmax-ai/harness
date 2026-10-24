@@ -14,11 +14,10 @@
  *    call for the state in force: its outgoing edges with their markers, and
  *    the run's trigger signature.
  *
- * No other state's slug, `title`, `summary`, budget or transitions is
- * rendered anywhere, and neither is a count of the states: a state the agent
- * cannot advance to is a state it cannot name. A state's `instructions` body is
- * surfaced for the active state, by the caller, and — quoted, for choosing — for
- * the target of an undescribed edge of the active state, by this renderer.
+ * No other state's slug, `title`, `summary`, `instructions`, budget or
+ * transitions is rendered anywhere, and neither is a count of the states: a
+ * state the agent cannot advance to is a state it cannot name. A state's
+ * `instructions` body is surfaced only for the active state, by the caller.
  */
 
 import type { WorkflowMachine } from "../machine/machine.js";
@@ -36,14 +35,7 @@ import type { MachineTransition } from "../machine/types.js";
  * the run straight back with a note saying what to change; a human or terminal
  * target means *stop* rather than *continue*. They disclose the **consequence of
  * taking the edge**, not the state on the other side of it: nothing of the
- * target's own title, summary, script or transitions is rendered.
- *
- * An **undescribed** edge (no description, or a blank one) is transparent: the
- * target's `instructions` stand in for the description, quoted under the line
- * and framed as what the agent will do once there — given for choosing the edge,
- * not to be followed now. The author opts in per edge by leaving it undescribed;
- * the schema refuses one whose target has no instructions to show, and one into
- * a grader state, whose instructions are criteria the graded agent never reads.
+ * target's own title, summary, instructions, script or transitions is rendered.
  */
 function renderTransition(machine: WorkflowMachine, edge: MachineTransition): string {
   const notes: string[] = [];
@@ -53,18 +45,7 @@ function renderTransition(machine: WorkflowMachine, edge: MachineTransition): st
   if (machine.isCodeState(edge.to)) notes.push("code");
   if (machine.isTerminal(edge.to)) notes.push("terminal");
   const suffix = notes.length ? ` (${notes.join(", ")})` : "";
-  const head = `- to \`${edge.to}\`${suffix}`;
-  const description = edge.description?.trim();
-  if (description) return `${head} — ${description}`;
-  const instructions = machine.spec.states[edge.to]?.instructions?.trim() ?? "";
-  const quoted = instructions
-    .split("\n")
-    .map((line) => (line.trim() ? `  > ${line.trimEnd()}` : "  >"));
-  return [
-    `${head} — no description; the instructions you will follow once in \`${edge.to}\`, ` +
-      `given only for choosing this edge:`,
-    ...(instructions ? quoted : []),
-  ].join("\n");
+  return `- to \`${edge.to}\`${suffix} — ${edge.description.trim()}`;
 }
 
 /** The lines of `state`'s outgoing edges, one per transition, as the graph section and a grader's task render them. */

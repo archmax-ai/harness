@@ -44,20 +44,18 @@ export type TransitionType = z.infer<typeof transitionTypeSchema>;
  * One outgoing edge of a state. The agent is disclosed the active state's edges
  * and nothing else of the graph, so `description` is what it routes on — write it
  * for a reader standing in the source state, which knows nothing of the target
- * ("Refunds over $50", never "go to refund-review"). An **undescribed** edge
- * (absent, empty or blank) routes on the target state's `instructions` instead,
- * which the edge then discloses; it loads only when the target has some. At a
- * human state the description is also the decision's button label, and required.
+ * ("Refunds over $50", never "go to refund-review"). Every edge carries one; at
+ * a human state it is also the decision's button label.
  */
 export type MachineTransition = z.infer<typeof machineTransitionSchema>;
 
 /**
- * Per-state execution budget. `maxTurns` bounds the model calls of the state's
- * visit — the session's agent in an agent state, the grader's own in a grader
- * state; `timeoutMs` aborts a model call (an agent state) or the whole grader
- * run (a grader state) when exceeded; `maxParks` bounds how many times an agent
- * state may park itself with `archmax_wait`. Any exhaustion is a state failure
- * subject to `on_error`. A code state takes no budget: it makes no model call.
+ * Per-state execution budget. `timeoutMs` aborts a model call (an agent state)
+ * or the whole grader run (a grader state) when exceeded; `maxParks` bounds how
+ * many times an agent state may park itself with `archmax_wait`. Either
+ * exhaustion is a state failure subject to `on_error`. A code state takes no
+ * budget: it makes no model call. How many model calls a turn makes is bounded
+ * by LangGraph's `recursionLimit`, not by a state.
  */
 export type StateBudget = z.infer<typeof stateBudgetSchema>;
 

@@ -12,7 +12,7 @@ import type { Diagnostic } from "./diagnostic.js";
 import { guardReferences, normalizeAllowEntry } from "./allow.js";
 import { normalizeMountGrants } from "./mount-grants.js";
 import { triggerDeclarationSchema } from "./spec-schema.js";
-import { ADVANCE_TOOL, DEFAULT_TOOLS, NOT_OFFERED_TO_AUTOMATED } from "./tool-names.js";
+import { ADVANCE_TOOL, DEFAULT_TOOLS, STATE_TYPE_TOOLS } from "./tool-names.js";
 import { BUILT_IN_TOOL_PATHS, MUTATING_ACCESSES, SCRATCHPAD_ACCESSES } from "./tool-paths.js";
 import { normalizeSignature } from "./signature.js";
 import { declaredVariableNames } from "./triggers.js";
@@ -311,9 +311,8 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
       );
     }
 
-    // No routing-context advisory here: the schema refuses an edge with neither a
-    // `description` nor target `instructions` to route on, and a state's
-    // `summary` reaches no model call.
+    // No routing-context advisory here: the schema refuses an edge without a
+    // `description`, and a state's `summary` reaches no model call.
 
     if (state.type === "human") {
       if (!state.instructions?.trim()) {
@@ -399,10 +398,11 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
       }
     }
 
+    const withheld = STATE_TYPE_TOOLS[state.type ?? "agent"].withheld;
     if (state.type === "grader" || state.type === "code") {
       (state.tools?.allow ?? []).forEach((entry, index) => {
         const { tool } = normalizeAllowEntry(entry);
-        if (!tool || !NOT_OFFERED_TO_AUTOMATED.has(tool)) return;
+        if (!tool || !withheld.has(tool)) return;
         error(
           `${at}.tools.allow.${index}`,
           `State '${slug}' is a ${state.type} state, which is never offered '${tool}': an automated ` +

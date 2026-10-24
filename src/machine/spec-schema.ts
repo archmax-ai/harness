@@ -198,70 +198,32 @@ export const transitionTypeSchema = z.enum(["approve", "reject", "refine", "none
 
 /**
  * The agent is disclosed the active state's edges and nothing else of the graph,
- * so an edge must give it something to route on: its `description`, or — for an
- * **undescribed** edge (absent, empty or blank) — the target state's own
- * `instructions`, which the edge then discloses in its place. An edge with
- * neither hands the agent a bare slug and asks it to route: an unnavigable graph,
- * which is worse to warn about than to refuse, so {@link refineSpec} refuses it.
- * It refuses an undescribed transition of a human state, where the description
- * is the person's button label, and an undescribed edge into a grader or a code
- * state: a grader's instructions are its criteria, which the work it judges is
- * never shown, and a code state has none. A code state's own edges are exempt —
- * its script routes, and nothing reads their descriptions. A non-string is a
- * typo and refused here. The issue path
+ * so an edge's `description` is the only thing it is told about the edge — no
+ * attribute of the target state is disclosed — and at a human state it is also
+ * the decision's button label. So every edge carries one, whatever the state's
+ * type: an edge without one cannot be chosen, and a reader of the spec or the
+ * trail has nothing to go on either. The issue path
  * (`states.<slug>.transitions.<index>.description`) names the edge.
  */
 const TRANSITION_DESCRIPTION =
-  `must be a string: what the agent routes on when it considers this edge. Say when to take it ` +
-  `(e.g. 'Refunds over $50'), not where it goes — or omit it to route on the target state's ` +
-  `instructions instead.`;
-
-/** An undescribed edge whose target has no instructions: nothing to route on. */
-function undescribedEdgeMessage(target: string): string {
-  return (
-    `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
-    `none, on the target state's instructions — and '${target}' declares none. Say when to take ` +
-    `this edge (e.g. 'Refunds over $50'), or give '${target}' instructions.`
-  );
-}
-
-/** An undescribed edge into an automated state: there are no instructions the agent may be shown. */
-function undescribedAutomatedEdgeMessage(target: string, type: "grader" | "code"): string {
-  const why =
-    type === "grader"
-      ? `'${target}' is a grader, whose instructions are its criteria and never shown to the work it judges`
-      : `'${target}' is a code state, which has none`;
-  return (
-    `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
-    `none, on the target state's instructions — and ${why}. Say when to take this edge ` +
-    `(e.g. 'The reply is drafted').`
-  );
-}
-
-/** An undescribed transition on a human state: the decision's button has no label. */
-const HUMAN_TRANSITION_DESCRIPTION =
-  `must be a non-empty string on a human state's transition: it is the label of the decision's ` +
-  `button for the person deciding, and a target's instructions do not tell them what choosing it ` +
-  `means. Say what the choice is (e.g. 'Approve the refund').`;
+  `must be a non-empty string: it is the only thing the agent is told about this edge — no ` +
+  `attribute of the target state is disclosed to it — so an undescribed edge cannot be chosen. ` +
+  `Say when to take it (e.g. 'Refunds over $50'), not where it goes.`;
 
 /** @see MachineTransition */
 export const machineTransitionSchema = z
   .object({
     to: nonEmptyString,
-    description: z.string({ error: TRANSITION_DESCRIPTION }).optional(),
+    description: z
+      .string({ error: TRANSITION_DESCRIPTION })
+      .refine((value) => value.trim() !== "", TRANSITION_DESCRIPTION),
     type: transitionTypeSchema.optional(),
   })
   .strict();
 
-/** Whether an edge carries no description the agent could route on: absent, empty or blank. */
-export function isUndescribed(transition: { description?: string }): boolean {
-  return !transition.description?.trim();
-}
-
 /** @see StateBudget */
 export const stateBudgetSchema = z
   .object({
-    maxTurns: positiveInt.optional(),
     timeoutMs: positiveInt.optional(),
     maxParks: positiveInt.optional(),
   })
@@ -794,17 +756,6 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
           `${at}.transitions.${index}.to`,
           `State '${slug}' transitions to undefined state '${transition.to}'`,
         );
-        return;
-      }
-      // A code state's script routes: nothing reads its edges' descriptions.
-      if (!isUndescribed(transition) || state.type === "code") return;
-      const target = states[transition.to];
-      if (state.type === "human") {
-        issue(`${at}.transitions.${index}.description`, HUMAN_TRANSITION_DESCRIPTION);
-      } else if (target?.type === "grader" || target?.type === "code") {
-        issue(`${at}.transitions.${index}.description`, undescribedAutomatedEdgeMessage(transition.to, target.type));
-      } else if (!target?.instructions?.trim()) {
-        issue(`${at}.transitions.${index}.description`, undescribedEdgeMessage(transition.to));
       }
     });
     if (state.on_error !== undefined && !(state.on_error in states)) {

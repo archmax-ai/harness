@@ -80,39 +80,35 @@ describe("strict keys", () => {
       ["whitespace only", " \n "],
     ] as const;
 
-    it.each(UNDESCRIBED)("is accepted when %s and the target has instructions", (_label, value) => {
-      expect(withDescription(value, "Look the order up by its id.")).toEqual([]);
-    });
-
-    it.each(UNDESCRIBED)("is rejected when %s and the target has none, naming the edge", (_label, value) => {
-      for (const instructions of [undefined, "  \n "]) {
+    it.each(UNDESCRIBED)("is rejected when %s, whatever the target declares, naming the edge", (_label, value) => {
+      for (const instructions of [undefined, "Look the order up by its id."]) {
         const issues = withDescription(value, instructions);
         expect(issues).toHaveLength(1);
         expect(issues[0]?.path).toBe("states.start.transitions.1.description");
-        expect(issues[0]?.message).toContain("'lookup' declares none");
         // The message says what to write, not just that something is missing.
-        expect(issues[0]?.message).toContain("Say when to take this edge");
+        expect(issues[0]?.message).toContain("Say when to take it");
       }
     });
 
-    it("is rejected when not a string, whatever the target", () => {
+    it("is rejected when not a string", () => {
       const issues = withDescription(42, "Look the order up by its id.");
       expect(issues).toHaveLength(1);
       expect(issues[0]?.path).toBe("states.start.transitions.1.description");
-      expect(issues[0]?.message).toContain("must be a string");
+      expect(issues[0]?.message).toContain("must be a non-empty string");
     });
 
-    it("is required on a human state's transition, even to an instructed target", () => {
+    it("is required on every state type's edges, a code state's included", () => {
       const issues = issuesFor({
         states: {
-          start: { triggers: { manual: null }, transitions: [{ to: "review", description: "Ready for review." }] },
-          review: { type: "human", instructions: "Approve or send back.", transitions: [{ to: "lookup" }] },
-          lookup: { instructions: "Look the order up by its id." },
+          start: { triggers: { manual: null }, type: "code", script: "scripts/start.js", transitions: [{ to: "review" }] },
+          review: { type: "human", instructions: "Approve or send back.", transitions: [{ to: "done" }] },
+          done: null,
         },
       });
-      expect(issues).toHaveLength(1);
-      expect(issues[0]?.path).toBe("states.review.transitions.0.description");
-      expect(issues[0]?.message).toContain("button");
+      expect(issues.map((issue) => issue.path)).toEqual([
+        "states.start.transitions.0.description",
+        "states.review.transitions.0.description",
+      ]);
     });
 
     it("accepts a described edge", () => {
@@ -422,46 +418,6 @@ describe("code-state scripts", () => {
  * A `skills.allow` entry is a slug or the spec does not load: one mis-authored
  * line used to be dropped silently, which switched a grant off without a word.
  */
-/**
- * An undescribed edge routes on its target's instructions, which the agent is
- * then shown. A grader's instructions are its criteria and a code state has
- * none, so an edge into either must say when to take it; a code state's own
- * edges are routed by its script and need no description.
- */
-describe("undescribed edges and automated states", () => {
-  const withEdge = (target: Record<string, unknown>, source: Record<string, unknown> = {}) => ({
-    states: {
-      start: { triggers: { manual: null }, instructions: "Draft the reply.", transitions: [{ to: "next" }], ...source },
-      next: { transitions: [{ to: "done", description: "Done." }], ...target },
-      done: { instructions: "Say goodbye." },
-    },
-  });
-
-  it("refuses an undescribed edge into a grader, whose criteria the agent is never shown", () => {
-    const issues = issuesFor(withEdge({ type: "grader", instructions: "Judge the tone." }));
-    expect(issues).toHaveLength(1);
-    expect(issues[0]?.path).toBe("states.start.transitions.0.description");
-    expect(issues[0]?.message).toContain("'next' is a grader, whose instructions are its criteria");
-  });
-
-  it("refuses an undescribed edge into a code state, which has no instructions", () => {
-    const issues = issuesFor(withEdge({ type: "code", script: "scripts/next.js" }));
-    expect(issues).toHaveLength(1);
-    expect(issues[0]?.path).toBe("states.start.transitions.0.description");
-    expect(issues[0]?.message).toContain("'next' is a code state, which has none");
-  });
-
-  it("lets a code state's own edges go undescribed: its script routes", () => {
-    const spec = {
-      states: {
-        start: { triggers: { manual: null }, type: "code", script: "scripts/start.js", transitions: [{ to: "done" }] },
-        done: null,
-      },
-    };
-    expect(issuesFor(spec)).toEqual([]);
-  });
-});
-
 describe("skill slugs", () => {
   it("rejects a non-slug skills entry, naming its index", () => {
     const issues = issuesFor({

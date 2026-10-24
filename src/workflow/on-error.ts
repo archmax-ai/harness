@@ -66,7 +66,6 @@ export function routeFailure(
     pendingDelegations: null,
     parkPhase: null,
     replyOnly: null,
-    stateTurns: null,
     auditTrail: [
       { to: errorTarget, kind: "on_error", reason, ts: Date.now() } satisfies TrailStep,
     ],

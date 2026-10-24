@@ -5,29 +5,45 @@ sidebar:
   order: 3
 ---
 
-`workflows/<name>/workflow.yaml` is the enforced state machine, a pure YAML
-mapping with these top-level keys:
-
-`title`, `instructions`, `disabled`, `runtime`, `settings`, `tests`, `tools`,
-`skills`, `mounts`, `metadata`, `states`.
-
-This page documents the schema fields, focusing on those added by the core
-refactor. For the conceptual model, see
+`workflows/<slug>/workflow.yaml` is the enforced state machine: one YAML mapping,
+checked against one strict schema. This page is the reference for every key. For
+how a session moves through the machine, see
 [the workflow machine](/guides/workflow-machine/).
 
-An **optional** `WORKFLOW.md` beside the spec is a prose addendum with **no
-frontmatter**. It is appended to the system prompt after a workflow header. The
-runtime renders that header deterministically from the loaded spec, as the
-workflow's `title` and `instructions` (exported as `renderWorkflowPrompt(spec)`).
+| Root key | Holds |
+| --- | --- |
+| [`title`](#slugs-and-titles) | the workflow's display name, metadata only |
+| [`instructions`](#instructions-the-workflows-standing-instructions) | direction that holds for the whole session |
+| [`disabled`](#disabled-take-a-workflow-out-of-service) | `true` to start no new turns |
+| [`runtime`](#runtime) | the runtime contract the workflow is written against |
+| [`settings`](#settings-payload-and-caching-knobs) | the model, prompt caching and the sandbox limits |
+| [`tests`](#tests) | configuration for the workflow's cases |
+| [`tools`](#toolsallow_always) | the workflow-wide tool grant (`allow_always`) and denial (`forbid_always`) |
+| [`skills`](#skillsallow_always--skillsforbid_always-root) | the skills every state enables, and the ones no state may |
+| [`mounts`](#mountsallow_always--mountsforbid_always-root) | the governed mounts every state reaches, and the ones no state may |
+| [`metadata`](#metadata-host-data) | host data the runtime never reads |
+| [`states`](#states) | the states, keyed by slug |
 
-The graph itself is disclosed per model call, for the active state alone
-(`renderStateGraph`). So what the model reads always matches what the kernel
-enforces, and the states it sees are the ones it can advance to. See
-[Token efficiency and cost](/guides/token-efficiency/).
+:::note[Unknown keys are rejected]
+A key the schema does not define is a **load error naming the key and its path**
+(`states.review: Unrecognized key: "transtions"`), so a misspelled
+`transtions:` can never silently produce a terminal state. The one exception is a
+[trigger's declaration](#a-triggers-declaration), where an unknown key is a
+warning.
+:::
 
-`WORKFLOW.md` stays prose. A frontmatter block there alongside `workflow.yaml`
-is a load **error** ("competing machines"). A directory without a
-`workflow.yaml` does not load as a workflow.
+An optional `WORKFLOW.md` beside the spec is prose appended to the system prompt
+after the workflow header, which the runtime renders from the spec's `title` and
+`instructions`. It has **no frontmatter**: a frontmatter block there is a load
+error ("competing machines"). A directory without a `workflow.yaml` is not a
+workflow.
+
+The graph is not part of that header. Each model call discloses the active
+state's own edges, so what the model reads matches what the kernel enforces (see
+[Token efficiency and cost](/guides/token-efficiency/)).
+
+Authored paths are workspace-relative with **no leading slash**
+(`skills/order-data/assets/orders.json`, `scratchpad/refund.json`).
 
 ## `instructions`: the workflow's standing instructions
 
@@ -42,12 +58,10 @@ instructions: |-              # literal block, not folded — see the note below
 
 Optional free-form markdown carrying direction that holds for the **whole
 session**: conventions, house rules, what "done" means. It is rendered verbatim
-as an `## Instructions` block at the top of the workflow section of the system
-prompt, immediately after the workflow heading and before the graph.
-
-Standing direction applies to every turn, so this block is sent on every model
-call, whichever state is active. That puts it in the static, cacheable prompt
-prefix. A state's `instructions` travel with the state instead.
+as an `## Instructions` block right after the workflow heading, ahead of
+`WORKFLOW.md`. It applies to every turn, so it sits in the static, cacheable
+prompt prefix and is sent on every model call, whichever state is active. A
+state's `instructions` travel with the state instead.
 
 Three scopes, three homes; keep guidance in exactly one:
 
@@ -68,21 +82,20 @@ ships no standing guidance, so conventions get repeated in every state. A value
 that is present but is not a non-empty string is an **error**.
 
 Leave the graph itself out. The states, transitions, and `archmax_advance`
-mechanics are already rendered from the spec and covered by the platform prompt.
+mechanics are rendered from the spec and covered by the platform prompt.
 
-A top-level `description:` is a load/validate **error**: the root's text is
-`instructions:`, written as direction. Transition, human-state and case
-`description` fields are unaffected.
+A top-level `description:` or `name:` is a load **error**: the root's display
+name is `title:`, and its prose is `instructions:`, written as direction.
 
 ## States
 
 ```yaml
 states:
   identify-case:            # the state's SLUG — its identity (see Slugs and titles)
-    title: "Identify case"  # human-readable label; never a routing target
-    instructions: "…"       # behavior guidance, surfaced while this state is active
+    title: "Identify case"  # display label; never a routing target
+    instructions: "…"       # guidance, sent while this state is active
     summary: "Route the request to exactly one path."  # label for people and hosts; not in the prompt
-    triggers:               # marks this as a start state; several keys name several (see Triggers)
+    triggers:               # makes this the entry state of each trigger id it names
       manual:
     skills:
       allow: [order-data]   # capability slugs THIS state adds (see skills.allow_always)
@@ -96,7 +109,7 @@ states:
                               # so an entry naming a path inside it narrows nothing there
     transitions:
       - to: orders-question
-        description: "User is asking about orders."   # when to take it; omit to route on the target's instructions
+        description: "User is asking about orders."   # required: when to take this edge
   review-enrichment:
     type: grader            # an automated state: the runtime runs it (see type)
     instructions: "Check the recorded enrichments against their files; approve them or send them back."
@@ -108,22 +121,46 @@ states:
     script: scripts/enrichments-filed.js
 ```
 
-A state with **no `transitions`** is terminal. The turn ends when the agent
-finishes there, and the volatile prompt block says so in place of the list.
+| State key | Holds |
+| --- | --- |
+| [`type`](#type) | who runs the state: `agent` (the default), `human`, `grader` or `code` |
+| [`title`](#slugs-and-titles) | a display label; never a routing target |
+| [`instructions`](#instructions-and-summary) | guidance sent while the state is active; a grader's criteria |
+| [`summary`](#instructions-and-summary) | a label for people and hosts; never in the prompt |
+| [`triggers`](#triggers) | the trigger ids this state is the entry state for |
+| [`transitions`](#transitions-the-only-part-of-the-graph-the-agent-sees) | the outgoing edges |
+| [`tools`](#toolsallow-closed-by-default-governance) | this state's tool grants (`allow`) and denials (`forbid`) |
+| [`skills`](#skillsallow_always--skillsallow-capability-governance-by-slug) | the skills this state adds (`allow`) or denies (`forbid`) |
+| [`mounts`](#mountsallow_always--mountsallow-which-states-reach-a-mount) | the governed mounts this state adds (`allow`) or denies (`forbid`) |
+| `requires` | the variables that must be set before the session leaves this state (see [session variables](/guides/workflow-machine/#session-variables)) |
+| [`locks`](#locks) | the variables only this state may write |
+| [`on_error`](#on_error) | the state a failure here routes to |
+| [`budget`](#budget) | the state's `timeoutMs` and `maxParks` |
+| [`model`](#model) | the model id this state runs on |
+| [`script`](#script) | the file a code state runs |
+| `evidence`, `approvers` | a human state's decision record (see [human-in-the-loop states](/guides/workflow-machine/#human-in-the-loop-states)) |
+| [`metadata`](#metadata-host-data) | host data the runtime never reads |
+
+Which keys each type reads is listed under
+[Keys each state type reads](#keys-each-state-type-reads).
+
+A state with **no `transitions`** is terminal: the session completes when the
+work there is done, and the state's prompt says so in place of the edge list. A state
+written with no value (`done:`) is a terminal state with no keys.
 
 ### `transitions`: the only part of the graph the agent sees
 
-Each entry is `{ to, description?, type? }`:
+Each entry is `{ to, description, type? }`:
 
 | Key | Value |
 | --- | --- |
 | `to` | a declared state's slug |
-| `description` | when this edge applies; omit it to route on the target's `instructions` (never on an edge into a grader or code state) |
-| `type` | one of `approve`, `reject`, `refine`, `none` |
+| `description` | **required**, a non-empty string: when to take this edge. At a human state it is also the label of the decision's button. |
+| `type` | optional: `approve`, `reject`, `refine` or `none` |
 
-The agent is disclosed the active state's outgoing edges, so the description is
-what it knows about where an edge leads. Write it for a reader standing in the
-*source* state, which has no picture of the target:
+The agent is told the active state's outgoing edges and nothing else of the
+graph, and an edge's `description` is all it is told about that edge. Write it
+for a reader standing in the *source* state, who has no picture of the target:
 
 ```yaml
 transitions:
@@ -133,46 +170,15 @@ transitions:
     description: Go to the orders-question state.                           # avoid: where
 ```
 
-An edge may also go **undescribed**: no `description`, or an empty or blank one.
-The agent then routes on the target state's own `instructions`, which the edge's
-line carries in place of a description, quoted and introduced as what the agent
-will do once there. Use it when the next state's instructions already say when
-it applies, rather than paraphrasing them on every edge into it. Nothing else of
-the target is disclosed: not its `title`, `summary` or transitions.
+Every edge carries a description, whatever its state's type. A missing, empty or
+blank one is a load error naming the edge:
 
-```yaml
-states:
-  triage:
-    transitions:
-      - to: lookup                # undescribed: routes on lookup's instructions
-  lookup:
-    instructions: Look the order up by its id and summarise its status.
+```
+states.triage.transitions.0.description: must be a non-empty string: it is the only thing the agent is told about this edge — no attribute of the target state is disclosed to it — so an undescribed edge cannot be chosen. Say when to take it (e.g. 'Refunds over $50'), not where it goes.
 ```
 
-Four cases are **load errors**, each naming
-`states.<slug>.transitions.<index>.description`:
-
-- an undescribed edge whose target has no instructions, because there is nothing
-  to route on;
-- an undescribed edge into a **grader** or a **code** state: a grader's
-  instructions are its criteria, never shown to the work it judges, and a code
-  state has none;
-- an undescribed transition of a **human state**, where the description is the
-  label of the decision's button for the person deciding;
-- a `description` that is not a string.
-
-A code state's **own** edges may go undescribed: its script routes on them, and
-no model reads their descriptions.
-
-An undescribed edge *into* a human state discloses that state's instructions to
-the agent, and those are written for the reviewer. Describe the edge to keep them
-from the agent.
-
-An edge's rendered line marks a target that is a **human decision node**, a
-**grader**, a **code** state or **terminal**, because each changes the call or
-what follows it. A grader or a code state runs on its own and may send the work
-straight back; a human or terminal target means the agent stops there.
-`evidence` may be attached when advancing to a human state, and there alone:
+Each edge renders as one line of the active state's prompt: the target's slug,
+its markers, then the description.
 
 ```
 Transitions — choose one with `archmax_advance` when this state's work is done:
@@ -180,20 +186,27 @@ Transitions — choose one with `archmax_advance` when this state's work is done
 - to `refund-closed` (approve, terminal) — The recorded decision is correct; close the case.
 ```
 
-The line stops there. Everything else the target declares stays out of it:
+A marker states the consequence of taking the edge:
 
-- its `title` and `summary`, and its `instructions` unless the edge is
-  undescribed (never a grader's criteria, since an undescribed edge into a grader
-  is refused);
-- its `script`, `model` and budget;
-- its own transitions;
-- and every state no edge from here reaches.
+| Marker | When |
+| --- | --- |
+| `approve`, `reject`, `refine` | the edge declares that `type` |
+| `human decision node` | the target is a human state: the session parks there for a person's decision, and `archmax_advance` may attach `evidence` |
+| `grader` | the target is a grader state, which runs at once and may send the work back |
+| `code` | the target is a code state, which runs at once and may send the work back |
+| `terminal` | the target has no transitions: the session completes once its work is done |
 
-`triggers:` is a **mapping of trigger id to its declaration**: the one place a
-trigger is declared. Each key makes the state the entry for that id, in the
-order written. Each value is that trigger's declaration (see
-[A trigger's declaration](#a-triggers-declaration)). A `null` value declares the
-id and nothing more:
+Nothing else of the target reaches the agent: not its `title`, `summary`,
+`instructions`, `script`, `model`, `budget` or transitions, and no state that no
+edge from here reaches. See
+[what the agent sees of the graph](/guides/workflow-machine/#what-the-agent-sees-of-the-graph).
+
+### `triggers`
+
+`triggers:` maps each trigger id to its declaration. Each key makes the state the
+**entry state** for that id. The value is the trigger's
+[declaration](#a-triggers-declaration); an empty value declares the id and
+nothing more:
 
 ```yaml
 states:
@@ -208,39 +221,29 @@ states:
       slack-message: { type: ap, piece: slack }
 ```
 
-An id is authored, so adding, reordering or deleting a declaration leaves every
-other id as written.
+- An id is authored, so adding, reordering or deleting a declaration leaves every
+  other id as written.
+- A trigger has **at most one entry state**: two states declaring one id is a
+  load error naming both.
+- A spec where no state declares a trigger has no start state, and fails load.
 
-A trigger has **at most one entry state**, so two states declaring one id is an
-error naming both. Load additionally fails, naming the state and the id, on:
+The other load errors are listed under
+[A trigger's declaration](#a-triggers-declaration).
 
-- a `triggers:` that is not a mapping;
-- an empty trigger id;
-- a value that is neither a mapping nor empty;
-- an `entry:` or `name:` key inside a declaration.
+### `instructions` and `summary`
 
-The state a declaration sits on is its entry state, and the key it sits under is
-its id. A repeated id on one state is ruled out by YAML itself: a mapping cannot
-repeat a key. A spec where no state declares a trigger has no start state, and
-fails load.
+`instructions` are sent to the model **while that state is active**. In a grader
+state they are the grader's criteria. `archmax validate` warns when an agent
+state with several transitions has no `instructions` to route by.
 
-`instructions` are sent to the model **while that state is active**. When
-deciding where to advance, the model reads the transition `description`s of the
-state it is in, or a target's `instructions` where an edge is undescribed.
-`archmax validate` warns when a state with several transitions has no
-`instructions` to classify the request with.
-
-`summary` is an authoring and host label: an editor's node caption, a line in a
-generated diagram. It stays out of the prompt. See
-[Token efficiency and cost](/guides/token-efficiency/).
-
-Authored paths are workspace-relative with **no leading slash**
-(`skills/order-data/assets/orders.json`, `scratchpad/refund.json`).
+`summary` is a label for authors and hosts: an editor's node caption, a line in a
+generated diagram. It stays out of the prompt (see
+[Token efficiency and cost](/guides/token-efficiency/)).
 
 ### Slugs and titles
 
 A state's key in `states` is its **slug**: the state's identity, and the one
-thing that resolves it. Every reference is a slug:
+token every reference resolves against:
 
 - `transitions[].to` and `on_error`;
 - the `to` the agent passes to `archmax_advance`;
@@ -253,68 +256,144 @@ A slug is lowercase alphanumeric segments joined by single hyphens
 and does the same for a state declared under an empty key, which has no identity
 at all. The runtime itself treats a slug as an opaque identifier.
 
-`title` is the state's optional human-readable label: free text, repeatable,
-and **never a routing target**. It is carried in a human state's
-pending-decision record and exposed to hosts as `machine.stateTitle(slug)`. It
-reaches no model call.
+`title` is the state's optional display label: free text, repeatable, and
+**never a routing target**. It is carried in a human state's pending-decision
+record and exposed to hosts as `machine.stateTitle(slug)`. It reaches no model
+call.
 
 Governance, transitions, events, session artifacts, and the CLI state-flow trail
 all use the slug, so retitling a state changes no behavior. Reword a title
 freely. Rename a slug deliberately, since it is a reference target.
 
-`title` and `summary` are both labels for people and hosts. The routing text the model reads when
-choosing an edge is that edge's own `description`, or, for an undescribed edge,
-the target's `instructions`.
-
-At the top level, `title:` is the workflow's human-readable name, metadata only.
+At the top level, `title:` is the workflow's display name, metadata only.
 [`instructions`](#instructions-the-workflows-standing-instructions) is the
 top-level field that carries prompt text.
 
-The workflow's identity is its **workflow slug**, the `workflows/<slug>/`
-directory name (also the CLI argument and the value of `DEFAULT_WORKFLOW`,
-`order-lookup`). A workflow slug follows the same kebab-case convention as a
-state slug, so "slug" means one thing at both levels. `archmax validate` enforces
-it at the same severity: a missing or non-kebab workflow slug is an **error**.
-
-A top-level `name:` or `description:` is a load/validate **error**; the root
-keys are `title:` and `instructions:`.
+The workflow's identity is its **workflow slug**: the `workflows/<slug>/`
+directory name, which is also the CLI's `<workflow>` argument. It follows the
+same kebab-case rule as a state slug, so "slug" means one thing at both levels,
+and `archmax validate` enforces it at the same severity: a missing or non-kebab
+workflow slug is an **error**.
 
 ### `tools.allow`: closed-by-default governance
 
-Tool governance is **closed by default**. Every state has the workflow's
-**workflow-wide grant**: the entries of [`tools.allow_always`](#toolsallow_always)
-when the workflow declares that key, and otherwise the **default tools**:
+Tool governance is **closed by default**. A state's tool surface is:
 
-`ls`, `read_file`, `write_file`, `edit_file`, `copy_file`, `move_file`,
-`remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval`, `archmax_run`.
+- the **workflow-wide grant**: the entries of
+  [`tools.allow_always`](#toolsallow_always) when the workflow declares that key,
+  and otherwise the **default tools**;
+- the state's own `tools.allow` entries;
+- the **controls** of the state's type;
+- any tool the host passes as [`essentialTools`](/reference/public-api/);
 
-A declared `tools.allow_always` **replaces** the default tools rather than adding
-to them, so a workflow that declares it lists every default tool it wants. A new
-workflow lists all twelve and removes only those it must not have.
+less the tools its type withholds and those a
+[denial](#toolsforbid_always--toolsforbid-denial) names outright. Every other
+tool, a consumer-supplied custom tool or a sub-workflow's delegation tool, is
+granted where a list names it. A state with **no `tools` block** gets the
+workflow-wide grant, its controls and the host's `essentialTools`. There is no
+syntax for a fully open state.
 
-Every state also has the runtime controls `archmax_reset`, `archmax_wait`,
-`archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, plus
-`archmax_advance` in non-terminal states, and any tool the host passes as
-[`essentialTools`](/reference/public-api/), whatever the workflow declares. A
-grader or a code state is the exception: it is never offered `write_todos`,
-`archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, even where the
-workflow-wide grant names one, and it adds `archmax_get_history`.
-Everything else is declared: consumer-supplied custom tools, sub-workflow
-delegation tools, and the rest.
+The default tools are `ls`, `read_file`, `write_file`, `edit_file`, `copy_file`,
+`move_file`, `remove_file`, `glob`, `grep`, `write_todos`, `archmax_eval` and
+`archmax_run`. A declared `tools.allow_always` **replaces** them rather than
+adding to them, so a workflow that declares it lists every default tool it wants.
 
-A state with **no `tools` block** therefore gets exactly the workflow-wide grant,
-the controls and the host's `essentialTools`. There is no syntax for a fully
-open state.
+Each state type has its controls, and a grader or code state is withheld some
+tools whatever a grant names:
 
-The runtime's file operations, `copy_file({ source, destination, overwrite? })`,
-`move_file({ source, destination, overwrite? })` and `remove_file({ file_path })`,
-are default tools for the same reason as the code interpreter below: they reach
-nothing the path rules do not let them. Every tool **declares its path
-arguments** and how a call uses each one: `read`, `list`, `search`, `write`,
-`remove` or `execute`. `copy_file` reads `source` and writes `destination`,
-`move_file` removes `source` and writes `destination`, and `remove_file` removes
-`file_path`. Every path rule reads those declarations, for the built-ins and for
-host tools (see [`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace)):
+| State type | Controls | Withheld |
+| --- | --- | --- |
+| `agent`, `human` | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | none |
+| `grader`, `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+
+- `archmax_advance` is left out in a terminal state, and its target is checked
+  against the state's transitions.
+- A `forbid` can still block a control.
+- A `tools.allow` entry on a grader or code state naming a withheld tool is an
+  `archmax validate` error.
+- Deep Agents' `task` is in no state's surface: naming it in a list is an
+  `archmax validate` error, and the kernel refuses every call to it.
+
+The table is exported as `STATE_TYPE_TOOLS` (see
+[tool tables](/reference/public-api/#tool-tables)). What an automated state
+does with its surface is in
+[grader and code states](/guides/automated-states/#what-each-state-is-offered).
+
+A state's `tools.allow` list does two things:
+
+- **grants** tools the workflow-wide grant does not include, for that state (a
+  default tool a declared `allow_always` leaves out among them), and
+- **narrows** a tool the workflow-wide grant includes when an entry names one
+  (the narrower entry wins, e.g. constraining `write_file` to a single artifact
+  path).
+
+Denial is declared beside the grant, in the same two positions (see
+[`tools.forbid_always` / `tools.forbid`](#toolsforbid_always--toolsforbid-denial)).
+
+The model **sees** the active state's tool surface and no other tool. Disclosure
+is name-level, so an argument-constrained tool stays visible while the kernel
+enforces the constraint at call time. Every call is governed, disclosed or not.
+The tool descriptions the agent sees are derived from what the kernel enforces,
+so every restriction the model is told about is one that exists.
+
+#### Allow entries
+
+An `allow` entry is either a bare tool name or an object with `tool` plus any of
+these keys:
+
+| Key | Meaning |
+| --- | --- |
+| `args` | per-argument glob guards |
+| `paths` | globs every path argument the tool declares must match (`file_path` for the file tools, `path` for `ls`, `glob` and `grep`, both `source` and `destination` for `copy_file` and `move_file`); a tool that declares none is guarded on `file_path` |
+| `connection` | the connection slug the tool resolves through, when its collection has more than one; consumer-defined, and governance never resolves it |
+| `source` | a free-form label naming where the tool came from, for the host that authored the entry; governance matches on `tool` alone and never reads it |
+
+```yaml
+tools:
+  allow:
+    - { tool: microsoft-outlook__reply-email, connection: outlook-support }
+```
+
+An `args` glob matches an argument according to what the argument is. An
+argument the tool declares as a **path** (`file_path`, `path`, `source`,
+`destination`, or a host's declared ones; for a tool that declares none,
+`file_path`) is canonicalized before it is matched: a leading `/`, `./`, `//` and
+`..` are resolved, so a different spelling cannot dodge a guard. Every **other**
+argument is matched **as written**: a grant on
+`url: ["https://api.example.com/**"]` admits that API's URLs, and a stored value
+matches itself exactly. A denial on such an argument also catches its path form,
+so `./secrets/k` cannot dodge `target: ["secrets/**"]`. To have a host tool's
+argument matched as a path, declare it with
+[`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
+
+The glob syntax is the same for both: `*` stops at `/`, and `**` crosses it. An
+empty pattern (`""`, written or resolved from a variable) matches only an empty
+value. Globs match **dot-prefixed segments** like any other: `scratchpad/**`
+covers `scratchpad/.cache/x`, and a denial of `secrets/**` covers `secrets/.env`.
+A wildcard that skipped dotfiles would make a denial bypassable and an allowance
+incomplete.
+
+An `args`/`paths` glob may reference a **variable** (`${{name}}` or
+`${{name.dotted.path}}`). It is resolved against the session's variables at call
+time and matched literally, so a value can never widen the guard it lands in.
+
+The **agent** may write the same references into the arguments of its *own*
+calls, embedded anywhere in a string and repeated. The runtime substitutes them
+before the call is governed or executed, and `$${{name}}` writes the characters
+literally. Guard and argument therefore resolve to the same value by
+construction. See [session
+variables](/guides/workflow-machine/#referencing-a-variable-in-a-tool-argument).
+
+#### Path arguments
+
+Every tool **declares its path arguments** and how a call uses each one: `read`,
+`list`, `search`, `write`, `remove` or `execute`. The runtime's file operations
+declare theirs: `copy_file({ source, destination, overwrite? })` reads `source`
+and writes `destination`, `move_file({ source, destination, overwrite? })`
+removes `source` and writes `destination`, and `remove_file({ file_path })`
+removes `file_path`. Every path rule reads those declarations, for the built-ins
+and for host tools (see
+[`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace)):
 
 - the read-only authored zone, the offload areas, a mount narrowed to
   `access: read` and a governed mount no grant of the workflow asks to write
@@ -333,93 +412,24 @@ may hold a list of paths, each governed with the argument's access; a declared
 argument holding anything but a path or a list of paths is refused
 (`tool.path-argument`).
 
-`archmax_eval`, the code interpreter, is a default tool because evaluated code
-reaches what the state already permits and no further. Its `tools.*` calls are
-decided against the active state by the same kernel that decides the agent's own
-calls. Withhold it by leaving it out of a declared `tools.allow_always`, or close
-it workflow-wide with
-[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). A grader or
-code state is never offered it.
+#### The file operations and the sandbox tools
 
-`archmax_run`, which executes an authored script **file**, is a default tool for
-the same reason: the script is a file the state could already read. Which files a
-state may execute is still a governance question, and narrowing the grant per
-state answers it (`{ tool: archmax_run, paths: ["scripts/**"] }`).
+The file operations and the two sandbox tools are default tools because they
+reach nothing the state does not already permit:
 
-A state's `tools.allow` list does two things:
+- `copy_file`, `move_file` and `remove_file` reach no path the path rules refuse.
+- `archmax_eval`, the code interpreter, runs code whose `tools.*` calls are
+  decided against the active state by the same kernel that decides the agent's
+  own calls.
+- `archmax_run` executes an authored script **file** the state could already
+  read. Which files a state may execute is still a governance question, and
+  narrowing the grant per state answers it
+  (`{ tool: archmax_run, paths: ["skills/order-data/scripts/**"] }`); it runs
+  only scripts inside a skill bundle the state enables.
 
-- **grants** tools the workflow-wide grant does not include, for that state (a
-  default tool a declared `allow_always` leaves out among them), and
-- **narrows** a tool the workflow-wide grant includes when an entry names one
-  (the narrower entry wins, e.g. constraining `write_file` to a single artifact
-  path).
-
-Denial is declared beside the grant, in the same two positions; see
-[`tools.forbid_always` / `tools.forbid`](#toolsforbid_always--toolsforbid-denial)
-below.
-
-The model **sees** the active state's tool surface, and that alone. On every
-model call the middleware filters the presented tool definitions to the
-disclosed set: the workflow-wide grant + the host's `essentialTools` + the
-state's entries + `archmax_advance`, minus every tool denied here by name. `archmax_advance` is
-hidden in terminal states.
-
-Disclosure is name-level, so an arg-constrained tool stays visible while the
-kernel enforces the constraint at call time. Every call is governed, disclosed
-or not. The tool descriptions the agent sees are derived from exactly what the
-kernel enforces, so every restriction the model is told about is one that
-exists.
-
-An `allow` entry is either a bare tool name or an object with `tool` plus any of
-these keys:
-
-- `args`: per-argument glob guards.
-- `paths`: globs every path argument the tool declares must match (`file_path`
-  for the file tools, `path` for `ls`, `glob` and `grep`, both `source` and
-  `destination` for `copy_file` and `move_file`). A tool that declares none is
-  guarded on `file_path`.
-- `connection`: the connection slug this tool resolves through, when its
-  collection has more than one connection. It is consumer-defined, and the
-  runtime enforces governance without resolving connections.
-- `source`: a free-form label naming where the tool came from, for the host that
-  authored the entry. Governance matches on `tool` alone, and the runtime
-  preserves the label without reading it.
-
-```yaml
-tools:
-  allow:
-    - { tool: microsoft-outlook__reply-email, connection: outlook-support }
-```
-
-An `args` glob matches an argument according to what the argument is. An
-argument the tool declares as a **path** (`file_path`, `path`, `source`,
-`destination`, or a host's declared ones; for a tool that declares none,
-`file_path`) is canonicalized before it is matched: a leading `/`, `./`, `//` and
-`..` are resolved, so a different spelling cannot dodge a guard. Every **other**
-argument is matched **as written**: a grant on
-`url: ["https://api.example.com/**"]` admits that API's URLs, and a stored value
-matches itself exactly. A denial on such an argument also catches its path form,
-so `./secrets/k` cannot dodge `target: ["secrets/**"]`. The glob syntax is the
-same for both: `*` stops at `/`, and `**` crosses it. An empty pattern (`""`,
-written or resolved from a variable) matches only an empty value. To have a host
-tool's argument matched as a path, declare it with
-[`toolPaths`](/reference/public-api/#tools-toolpaths-host-tools-on-the-governed-workspace).
-
-Globs match **dot-prefixed segments** like any other: `scratchpad/**` covers
-`scratchpad/.cache/x`, and a denial of `secrets/**` covers `secrets/.env`. A
-workspace path is a path, not a shell word, and a wildcard that skipped dotfiles
-would make a denial bypassable and an allowance incomplete.
-
-An `args`/`paths` glob may reference a **variable** (`${{name}}` or
-`${{name.dotted.path}}`). It is resolved against the session's variables at call
-time and matched literally, so a value can never widen the guard it lands in.
-
-The **agent** may write the same references into the arguments of its *own*
-calls, embedded anywhere in a string and repeated. The runtime substitutes them
-before the call is governed or executed, and `$${{name}}` writes the characters
-literally. Guard and argument therefore resolve to the same value by
-construction. See [session
-variables](/guides/workflow-machine/#referencing-a-variable-in-a-tool-argument).
+Withhold one by leaving it out of a declared `tools.allow_always`, or close it
+workflow-wide with
+[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial).
 
 ### `skills.allow_always` / `skills.allow`: capability governance by slug
 
@@ -482,22 +492,18 @@ That rule is evaluated ahead of consumer rules and the state's own
 bundle is **invisible** too: its slug and description stay out of that state's
 prompt, and `ls skills/` there leaves it off the listing.
 
-The two mechanisms compose as *enabled AND allowed*. A `tools.allow` entry
-narrows **within** the enabled set, which is the right tool for a different
-question. `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }` beside
-`skills: { allow: [<slug>] }` says "this capability, and authored scripts
-alone". `archmax_run` is otherwise granted unconstrained wherever the workflow-wide
-grant includes it, so a script the agent wrote into `scratchpad/` could be run.
+The two mechanisms compose as *enabled AND allowed*: a `tools.allow` entry
+narrows **within** the enabled set.
+[`archmax_run`](#toolsallow-closed-by-default-governance) executes scripts inside
+an enabled bundle and nowhere else (`script.skill-only`), so a state that enables
+no skill runs **no script at all**: the tool stays on the surface and refuses
+every path. `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }` narrows
+it to one bundle's scripts.
 
 A **grader or a code state is held to its own list** like any other state. A
 code state that checks the request against the order records enables
 `order-data` itself, so the routing state after it can still enable nothing. No
 caller reads a bundle a state did not enable.
-
-[`archmax_run`](#toolsallow-closed-by-default-governance) executes scripts inside
-a bundle and nowhere else (`script.skill-only`). A state that enables no skill
-therefore runs **no script at all**: the tool stays on the surface and refuses
-every path.
 
 See the [Skills guide](/guides/skills/) for the full rationale.
 `archmax validate` supplies the static diagnostics:
@@ -666,43 +672,28 @@ say a workflow reaches none.
 
 ### `type`
 
-The state type:
-
-| Value | Meaning |
+| Value | Who runs the state |
 | --- | --- |
-| `agent` (default) | The model runs a turn and moves with `archmax_advance`. |
-| `human` | A person picks the outgoing edge (see [the workflow machine](/guides/workflow-machine/)). |
-| `grader` | The runtime runs a grader, an isolated subagent whose criteria are the state's `instructions`. It decides the edge with `archmax_advance`, or ends the session with `archmax_raise` (see [grader and code states](/guides/automated-states/#grader-states)). |
-| `code` | The runtime runs the state's [`script`](#script) in the sandbox, and the script decides the edge (see [grader and code states](/guides/automated-states/#code-states)). |
+| `agent` (default) | the session's agent: its model does the work and moves the session with `archmax_advance` |
+| `human` | a person: the session parks, and the person picks the outgoing edge (see [human-in-the-loop states](/guides/workflow-machine/#human-in-the-loop-states)) |
+| `grader` | the runtime, which runs a grader: an isolated subagent whose criteria are the state's `instructions`, and which moves the session with `archmax_advance` or ends it with `archmax_raise` (see [grader states](/guides/automated-states/#grader-states)) |
+| `code` | the runtime, which runs the state's [`script`](#script) in the sandbox; the script moves the session (see [code states](/guides/automated-states/#code-states)) |
 
 `grader` and `code` are the **automated states**. The runtime runs one whenever
-the session reaches it, in place of the agent's next model call, and a chain of
+the session reaches it, in place of the agent's next model call, so a chain of
 code states makes no model call at all. An automated state cannot park.
 
-A state that may run another workflow declares no state type for it. It names
-the target in `tools.allow` as `archmax_workflow_<slug>`, and calls it (see
-[sub-workflows](/guides/sub-workflows/)).
+These four are the only state types. Running another workflow is a tool call:
+a state grants `archmax_workflow_<slug>` in its `tools.allow`, and the target's
+`manual` trigger signature is the tool's parameters and result (see
+[the signature](#the-signature-requires-and-returns) and
+[sub-workflows](/guides/sub-workflows/)). Waiting for an event is `archmax_wait`
+in an agent state.
 
-The tool's required parameters are the target's `manual` trigger `requires:`,
-typed where the target types them. Its result is `{ message, returns }`, or the closing message alone for a target
-declaring no `returns:`. Capturing that result is the caller's job, and the
-calling state's `requires:` is what makes recording it mandatory.
-
-A `human` state's `evidence:` list is the **baseline**: the paths declared here
-are always presented. The agent advancing into the state may attach more for
-that one decision, with `archmax_advance`'s optional `evidence` argument (see
+A human state's `evidence:` list is the **baseline**: those paths are always
+presented. The agent advancing into the state may attach more for that one
+decision with `archmax_advance`'s `evidence` argument (see
 [evidence](/guides/workflow-machine/#evidence-declared-plus-whatever-the-session-attached)).
-
-These four are the only state types. Delegation is a
-[sub-workflow](/guides/sub-workflows/) call, and waiting for an event is
-`archmax_wait` inside an agent state.
-
-:::note[Unknown keys are rejected]
-`workflow.yaml` is validated against a strict schema. A key the spec does not
-define is a **load error naming the key and its path**
-(`states.review: Unrecognized key: "transtions"`), so a misspelled
-`transtions:` can never silently produce a terminal state.
-:::
 
 ### `script`
 
@@ -729,7 +720,7 @@ authoring backend does not hold, and an import from anything but
 `@archmax-ai/harness/*`.
 
 The file is an ordinary hand-authored JavaScript module. Its default export is
-called with `{ state, trigger, variables, tools }`, reads the session with
+called with `{ state, trigger?, variables, tools }`, reads the session with
 `tools.archmax_get_history()`, moves it with `tools.archmax_advance({ to, reason })`
 or ends it with `tools.archmax_raise({ code, reason })`, and its return value is
 not read. See
@@ -737,66 +728,63 @@ not read. See
 
 ### Keys each state type reads
 
-A key a state's type never reads is accepted by the loader and reported by
-`archmax validate` as an **error**:
+`archmax validate` reports a key a state's type never reads, or a missing one it
+needs, as an **error**; the loader accepts them:
 
 | Type | Errors |
 | --- | --- |
 | `human` | no `instructions`; no transition; a transition to itself; two transitions of the same labelled `type` |
 | `grader` | no `instructions` (they are its criteria); no transition (a grader decides by advancing); `evidence`, `approvers` or `budget.maxParks` declared |
 | `code` | `instructions`, `model`, `budget`, `evidence` or `approvers` declared (a code state makes no model call; describe the script in its JSDoc header or the state's `summary`) |
-| `grader`, `code` | a `tools.allow` entry naming `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, which no automated state is offered |
+| `grader`, `code` | a `tools.allow` entry naming a tool the type [withholds](#toolsallow-closed-by-default-governance) |
 
-`before` and `after` are not state keys. A workflow that still declares either
-fails to load with the unrecognized-key error naming the key and its path
-(`states.orders-question: Unrecognized key: "after"`). A former `before` check
-becomes a code state in front of the state, a former `after` check a code state
-behind it, and a grading rubric a grader state (see the
-[changelog](/reference/changelog/#100)).
+`before` and `after` are not state keys: either is an unrecognized-key load error
+(`states.orders-question: Unrecognized key: "after"`). The
+[changelog](/reference/changelog/#100) maps each to a code or grader state.
 
 ### `budget`
 
-A state's execution budget:
+A state's execution budget. Both keys are optional positive integers:
 
 ```yaml
 states:
   research:
     budget:
-      maxTurns: 8       # model calls this state may make once entered
-      timeoutMs: 30000  # time budget per model call; the failure routes through on_error
+      timeoutMs: 30000  # per model call; on expiry the state fails
       maxParks: 5       # how many times this state may park itself with archmax_wait
 ```
 
-- `maxTurns` bounds the model calls a state may make, counted from its entry.
-- `timeoutMs` races each of the state's model calls against a timer. When the
-  timer wins, the runtime stops waiting: the result is discarded, the state is
-  treated as failed, and it is routed through `on_error`. The in-flight model request itself is **not aborted**, because Deep
-  Agents exposes no per-call abort signal to middleware. It completes, and is
-  billed, in the background.
-- `maxParks` bounds the "wait, re-check, wait again" loop a polling state forms.
+| Key | In an agent state | In a grader state |
+| --- | --- | --- |
+| `timeoutMs` | races each model call against a timer | bounds the grader's whole run |
+| `maxParks` | bounds how many times the state parks with `archmax_wait` | an `archmax validate` error: a grader cannot park |
+
+- **`timeoutMs`**: in an agent state, when the timer wins, the call's result is
+  discarded and the state fails. The in-flight request is **not aborted**,
+  because Deep Agents exposes no per-call abort signal to middleware: it
+  completes, and is billed, in the background. In a grader state the run is
+  aborted.
+- **`maxParks`** bounds the "wait, re-check, wait again" loop of a polling state.
   Parks are counted per state in the checkpoint, so the count survives restarts,
   and the park that would exceed the bound is refused.
-- Any exhaustion is treated as a **turn failure**, subject to `on_error`
-  routing. A state with no `budget` may make any number of model calls, and may
-  park any number of times.
+- An exhausted budget fails the state, which routes through
+  [`on_error`](#on_error). A state with no `budget` has neither bound.
+- A **code state** declares no `budget` (an `archmax validate` error): it makes no
+  model call, and its script is bounded by `settings.timeoutMs`.
 
-In a **grader state**, `maxTurns` bounds the grader's own model calls and
-`timeoutMs` its whole run; exhausting either fails the state. A grader cannot
-park, so `maxParks` there is an `archmax validate` error. A **code state**
-declares no `budget` at all (an error): it makes no model call, and its script is
-bounded by `settings.timeoutMs`.
+`budget` has no other key: `maxTurns` is an unknown-key load error
+(`states.research.budget: Unrecognized key: "maxTurns"`).
 
-What bounds a whole turn, across every state, is LangGraph's `recursionLimit`: 400
-graph steps unless the caller's invoke config sets its own. Every model call, tool
-batch and automated state's run is a step. A state's `maxTurns` starts over on
-every entry, so an agent moving back and forth between states never exhausts it;
-the recursion limit is what stops that turn. Hitting it does not route through
-`on_error`: the turn throws, and the session ends `failed` with the code
-`recursion-limit` (see
+How many model calls a turn makes is bounded by LangGraph's `recursionLimit`: 400
+graph steps, unless the caller's invoke config sets its own. Every model call,
+tool batch and automated state's run is a step, in whichever state it happens.
+Hitting the limit does not route through `on_error`: the turn throws, and the
+session ends `failed` with the code `recursion-limit` (see
 [a turn that throws](/reference/public-api/#a-turn-that-throws)).
 
-`archmax validate` checks that `maxTurns`, `timeoutMs` and `maxParks` are
-positive numbers.
+A grader's own run is bounded by the same 400-step limit and by its
+`timeoutMs`. Hitting either fails the grader state, which does route through
+`on_error`.
 
 ### `model`
 
@@ -850,75 +838,59 @@ so naming one costs no extra setup.
 
 ### `on_error`
 
-A turn-failure route. A **terminal rejection** commits `rejected` to
-checkpointed state, ending the turn. These cause one:
-
-- an automated state's failed run: its script threw or timed out, its grader
-  failed or exhausted its budget, or a non-terminal grader or code state finished
-  without calling `archmax_advance` or `archmax_raise`;
-- an exhausted execution budget (`maxTurns`, `timeoutMs` or `maxParks`);
-- a `${{…}}` guard that cannot be evaluated.
-
-An automated state's `on_error` is its own: a code state whose script throws
-routes to the target it declares.
-
-A [sub-workflow](/guides/sub-workflows/#failure-is-always-closed) call whose
-child fails is the calling state's failure too, but a recoverable one until the
-model finishes. Each failed call is recorded on its own, and a later successful
-call of the same workflow from the same state recovers one of them: the one
-whose arguments it repeats, else the oldest. Every failure still outstanding
-when the model finishes routes like a terminal rejection, and the route names
-each with its arguments. No success recovers a failure with another cause.
-
-In every terminal case the session routes to the named state. It appends an
-explicit `[error]` [runtime
-note](/guides/sessions/#delivering-the-event) to the transcript
-and emits a `state-error-routed` diagnostic.
-
-**Recoverable** rejections are an invalid edge target and an unmet
-`requires`. They keep the caller in place to retry, the agent or an automated
-state alike, and leave `on_error` untouched:
+The state a failure in this state routes to:
 
 ```yaml
 states:
   draft:
     on_error: escalate      # a declared state; may be a human state
     transitions:
-      - to: review
+      - { to: review, description: The draft is ready for review. }
   escalate:
     type: human
+    instructions: Decide whether the case can still be closed.
     transitions:
-      - to: done
-        type: approve
+      - { to: done, type: approve, description: Close the case. }
 ```
 
-A state with no `on_error` keeps the prior fail-closed semantics: the session
-ends `rejected`. `archmax validate` checks that `on_error` names a declared
-state.
+A **terminal rejection** routes the session to the named state, appends an
+`[error]` [runtime note](/guides/sessions/#delivering-the-event) to the
+transcript and emits `state-error-routed`. A state with no `on_error` ends the
+session `rejected`. `archmax validate` checks that `on_error` names a declared
+state. These cause a terminal rejection:
 
-A **tool failure is not a turn failure**, and `on_error` never sees it. When a
-tool the agent calls throws, for example a remote tool whose connection drops,
-the call is answered with an error-status tool message carrying the error's
-message. The session stays in the state, and the next model call reads the
-failure as that call's answer, so the agent can retry, switch tools or say what
-it could not do. Answers to the other calls of the same step are kept. A park
-raised inside a call still parks the session, and a cancelled run still ends
-the turn.
+- an automated state's failed run: its script threw or timed out, its grader
+  failed (a model error, its `timeoutMs`, the recursion limit), or a non-terminal
+  grader or code state finished without calling `archmax_advance` or
+  `archmax_raise`;
+- an exhausted [`budget`](#budget): `timeoutMs` or `maxParks`;
+- a `${{…}}` guard that cannot be evaluated;
+- a failed sub-workflow call still unrecovered when the model finishes.
 
-A **declared failure** never sees `on_error` either. When the agent, a grader
-or a code state's script calls `archmax_raise({ code, reason })` because the work
-cannot be completed or accepted, the session ends at once with the status
-`failed` and that code and reason as its `exit`. No route is taken, no further
-state runs, and the trigger's `returns` are not checked. A raise also
-replaces a rejection still pending from earlier in the turn. Forbid the tool
-(`tools.forbid_always: [archmax_raise]`, or a state's `tools.forbid`) where the
-agent must not end the session itself.
+An automated state's `on_error` is its own: a code state whose script throws
+routes to the target it declares.
 
-A session that finishes **short of its trigger's
-[`returns`](/guides/triggers/#a-trigger-may-declare-its-signature)** does not
-see `on_error` either. A top-level session ends `rejected`, naming what it left
-unset. A sub-workflow child completes instead, and its caller gets the unset
-ones empty (`null`) plus a `note` naming them.
+A [sub-workflow](/guides/sub-workflows/#failure-is-always-closed) call whose
+child fails is recoverable until the model finishes. Each failed call is recorded
+on its own, and a later successful call of the same workflow from the same state
+recovers one of them: the one whose arguments it repeats, else the oldest. Every
+failure still outstanding when the model finishes routes, and the route names
+each with its arguments. No success recovers a failure with another cause.
+
+These never reach `on_error`:
+
+| What happens | Result |
+| --- | --- |
+| an invalid edge target or an unmet `requires` | refused back to the caller, the agent or an automated state, to retry in place |
+| a tool throws | the call is answered with an error-status tool message carrying the error; the session stays in the state, and the next model call reads it |
+| `archmax_raise({ code, reason })`, by the agent, a grader or a code state's script | the session ends `failed` with that code and reason as its `exit`: no route, no further state, no `returns` check; it replaces a rejection still pending from the turn |
+| the session finishes short of its trigger's [`returns`](/guides/triggers/#a-trigger-may-declare-its-signature) | a top-level session ends `rejected`, naming what it left unset; a sub-workflow child completes, and its caller gets the unset ones as `null` plus a `note` |
+| the turn reaches its `recursionLimit` | the turn throws, and the session ends `failed` with `recursion-limit` |
+
+When a tool throws, the answers to the other calls of the same step are kept, a
+park raised inside a call still parks the session, and a cancelled run still
+ends the turn. Forbid `archmax_raise` (`tools.forbid_always: [archmax_raise]`, or
+a state's `tools.forbid`) where the agent must not end the session itself.
 
 ### `locks`
 
@@ -1009,9 +981,9 @@ particular capabilities, use
 
 ## A trigger's declaration
 
-A trigger is declared under the `triggers:` of the state it enters, keyed by its
-id. Every key of the declaration is optional, and so is the declaration itself:
-a `null` value declares the id and nothing more.
+A trigger is declared under the [`triggers:`](#triggers) of the state it enters,
+keyed by its id. Every key of the declaration is optional, and so is the
+declaration itself: an empty value declares the id and nothing more.
 
 ```yaml
 states:
@@ -1046,13 +1018,9 @@ states:
 | `requires` | the machine | Variables a firing must supply for the session to start |
 | `returns` | the machine | Variables the session guarantees are set when it completes |
 
-The state a declaration sits on is the trigger's entry state, so a trigger has
-exactly one, written once. There is no `entry:` key and no root `triggers:`
-block.
-
-`entry:` and `name:` inside a declaration are load **errors** naming the key.
-Each would be wiring the SDK reads elsewhere, and a loose declaration that
-swallowed one would start the run somewhere the author did not say.
+The state a declaration sits on is the trigger's entry state, and the key it sits
+under is its id, so `entry:` and `name:` inside a declaration are load **errors**
+naming the key. There is no root `triggers:` block.
 
 ### The signature: `requires` and `returns`
 
@@ -1165,12 +1133,14 @@ Load fails, and `validate` reports the same in the same words. See
 The names are rendered into the system prompt under the trigger's entry state,
 so the agent is told what it must produce before it is failed for omitting it.
 A typed or described entry is rendered on its own line as
-`name (type) — description`, and an untyped signature reads as it always has.
+`name (type) — description`, and an untyped signature as one sentence of names.
 
 On the `manual` trigger, this signature is also the workflow's **call
 signature**. `requires:` becomes the typed parameters of the
-`archmax_workflow_<slug>` tool a calling workflow binds, and `returns:` becomes
-its result. One declaration, read at both boundaries. A host building an MCP tool
+`archmax_workflow_<slug>` tool a calling workflow binds, and `returns:` its
+result, `{ message, returns }` (the closing message alone for a target declaring
+no `returns:`). Capturing that result is the caller's job, and the calling
+state's `requires:` is what makes recording it mandatory. A host building an MCP tool
 or a form from the same signature uses `signatureJsonSchema` and
 `signatureValueIssues` from `@archmax-ai/harness/spec`: the mapping and rule the
 runtime itself applies (see [Public API](/reference/public-api/#building-a-host-schema-from-a-signature)).
@@ -1198,6 +1168,7 @@ leaves an otherwise runnable workflow runnable. Every *structural* problem here
 is an error that fails load:
 
 - a `triggers:` that is not a mapping;
+- an empty trigger id;
 - a declaration that is neither a mapping nor empty;
 - a trigger declared by two states;
 - a malformed `session` or `message` path;
@@ -1354,47 +1325,39 @@ direction.
 
 ### `tests`
 
-Declarative configuration for the workflow's
-[cases](/reference/cli/#archmax-test). It replaces the removed
-`tests/tests.config.js` file. Discovery reads `*.test.yaml` and `*.test.yml`
-documents, so a leftover config file is ignored without a diagnostic. Delete it.
-
-The cases themselves are declarative YAML documents
-(`workflows/<name>/tests/*.test.yaml`), interpreted host-side; see the
-[testing guide](/guides/testing/):
+Configuration for the workflow's [cases](/guides/testing/): the declarative YAML
+documents under `workflows/<slug>/tests/` that
+[`archmax test`](/reference/cli/#archmax-test) runs, interpreted host-side.
+Discovery reads `*.test.yaml` and `*.test.yml` and ignores every other file there.
 
 ```yaml
 tests:
-  maxConcurrency: 1       # only 1 (or absent) is accepted — see below
+  maxConcurrency: 1       # only 1 (or absent) is accepted
   caseTimeoutMs: 120000   # host-side per-case wall clock (default 120000)
   judge:
-    model: gpt-4o-mini    # grader model override
-    modelOptions:         # grader model construction options
+    model: gpt-4o-mini    # the case judge's model
+    modelOptions:         # the case judge's construction options
       temperature: 0
       maxTokens: 256
 ```
 
-All fields are optional. `judge.model` and `judge.modelOptions` are applied over
-the environment's model configuration and handed to the model factory's `judge`
-role, so the default factory builds exactly the grader named here.
-`modelOptions` takes `temperature` and `maxTokens`; any other key is a load
-error. A [`modelFactory`](/reference/public-api/) that brings its
-own model ignores them with the rest of the environment.
+Every key is optional:
 
-`caseTimeoutMs` is the wall-clock budget the host enforces around each whole
-case, covering every step and assertion. The name keeps it distinct from
-`settings.timeoutMs`, the sandbox *script* budget.
+| Key | Meaning |
+| --- | --- |
+| `maxConcurrency` | `1`: cases run sequentially. A higher value is an `archmax validate` error, and `archmax test` fails before any case runs. |
+| `caseTimeoutMs` | the wall clock the host enforces around each whole case, every step and assertion included. Distinct from `settings.timeoutMs`, the script budget. |
+| `judge.model` | the model id the case judge runs on |
+| `judge.modelOptions` | `temperature` and `maxTokens`; any other key is a load error |
 
-Case concurrency is not implemented. Cases run sequentially, and a
-`maxConcurrency` above 1 is rejected: an error diagnostic from
-`archmax validate`, and a loud failure from `archmax test` before any case runs.
-Set it to 1 or omit it.
+`judge.model` and `judge.modelOptions` apply over the environment's model
+configuration and reach the model factory's `judge` role, so the default factory
+builds exactly the judge named here. A
+[`modelFactory`](/reference/public-api/#modelfactory-pluggable-model-provider)
+that brings its own model ignores them with the rest of the environment. The
+judge scores `grade` assertions; it is not a grader state.
 
 ### `settings`: payload and caching knobs
-
-Alongside the sandbox knobs (`timeoutMs`, `memoryLimitBytes`, `maxPtcCalls`,
-`maxResultChars`), `settings` carries what a workflow declares about its
-model-facing payload:
 
 ```yaml
 settings:
@@ -1404,27 +1367,25 @@ settings:
     ttl: 5m                 # 5m (default) | 1h
 ```
 
-`settings.model` overrides `ARCHMAX_MODEL` for this workflow, and a state's own
-[`model`](#model) overrides it in turn. It is a model id, and that alone. The
-case grader keeps its own (`tests.judge.model`).
+| Key | Meaning |
+| --- | --- |
+| `model` | the model id every state runs on unless it names its own [`model`](#model); overrides `ARCHMAX_MODEL` for this workflow |
+| `prompt_cache` | `enabled` (default `true`) and `ttl` (`5m`, the default, or `1h`) |
+| `timeoutMs`, `memoryLimitBytes`, `maxPtcCalls`, `maxResultChars` | the sandbox limits, which bound a code state's script too |
 
-`settings.sub_workflows` and `settings.prompt` are **removed**: the strict
-schema rejects both by name. Delegation bounds are the dispatcher's
-configuration (see [sub-workflows](/guides/sub-workflows/)), and
-there is one prompt rendering.
+`settings.model` is a model id, and that alone. The case judge keeps its own
+(`tests.judge.model`). Delegation bounds are not settings: they are the
+dispatcher's configuration (see [sub-workflows](/guides/sub-workflows/)).
+`archmax validate` checks the shape of every field.
 
-The todo surface is a grant like any other. `write_todos` is one of the default
-tools, disclosed and permitted wherever the workflow-wide grant or a state's own
-entry includes it. The runtime installs it itself, so the surface stays the same
-whatever an upstream default does, and only when some state of the workflow is
-granted it. Its guidance sits in the static prompt and its schema is offered
-wherever it is granted: together ~13,250 characters per model call, the price of
-a planning scratchpad.
-
-To leave it out, omit it from a declared `tools.allow_always` (and from every
-state's `tools.allow`), which drops its guidance too. To refuse it outright, list
-it in [`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). `archmax validate`
-checks the shape of every field. See
+**The planning list.** `write_todos` is one of the default tools, disclosed and
+permitted wherever the workflow-wide grant or a state's own entry includes it,
+and installed only when some state of the workflow is granted it. Its guidance
+sits in the static prompt and its schema is offered wherever it is granted:
+together ~13,250 characters per model call. To leave it out, omit it from a
+declared `tools.allow_always` and from every state's `tools.allow`, which drops
+its guidance too. To refuse it outright, list it in
+[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). See
 [Token efficiency and cost](/guides/token-efficiency/).
 
 ### `metadata`: host data
@@ -1465,7 +1426,7 @@ the key and its path.
 
 ### `runtime`
 
-A workflow MAY declare the runtime contract it was authored against:
+The runtime contract the workflow is written against. The block is optional:
 
 ```yaml
 runtime:
@@ -1473,17 +1434,13 @@ runtime:
   version: "3"
 ```
 
-This is a separate version axis from the npm package version. `runtime.version`
-names the stable authoring/runtime semantics a workspace expects. Version `"3"`,
-the four state types with grader and code states and no `before`/`after` hooks,
-is the only one supported, and an omitted `runtime` resolves to it
-(`archmax-harness@3`).
+`runtime.version` names the authoring and runtime semantics a workspace expects,
+a version axis separate from the npm package's. `"3"`, the four state types, is
+the only supported version, and an omitted `runtime` resolves to it
+(`archmax-harness@3`). The contract also selects the code-state script contract
+(version `3`) and the case format; a case file carries no version of its own.
 
-A workflow declaring an **unsupported** engine or version fails fast:
-`createAgent` throws an `UnsupportedRuntimeContractError` before any model work,
-naming the requested and the supported contracts, and `archmax validate` reports
-it as an error diagnostic. The retired versions `"1"` and `"2"` are refused the
-same way.
-
-The one contract also selects the sandbox script contract (version `3`) and the
-case format. A case file carries no version of its own.
+An **unsupported** engine or version fails fast: `createAgent` throws an
+`UnsupportedRuntimeContractError` before any model work, naming the requested and
+the supported contracts, and `archmax validate` reports it as an error. Versions
+`"1"` and `"2"` are unsupported.

@@ -208,10 +208,7 @@ states:
       allow: [order-data, refund-policy]
     # No `tools` block: refund.json lands in scratchpad/, writable in every
     # state; what holds the agent to one correct file is the check-refund state.
-    # `budget` bounds the state with headroom for a probe or a retry (the
-    # shortest route is ~5 model calls); a state failure routes to `escalation`.
-    budget:
-      maxTurns: 12
+    # A state failure routes to `escalation`.
     on_error: escalation
     transitions:
       - to: check-refund
@@ -404,9 +401,6 @@ states:
     # retry budget: the instructions say when to give up, and the grader counts
     # the rounds on the trail it reads with archmax_get_history.
     type: grader
-    # Reading the variables and the files, then deciding; this leaves headroom.
-    budget:
-      maxTurns: 8
     on_error: escalation
     skills:
       allow: []

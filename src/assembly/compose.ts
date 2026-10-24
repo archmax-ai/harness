@@ -48,7 +48,7 @@ import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
 import { loadPromptCacheEnv } from "../env.js";
 import { workflowDenials, type GovernanceRule } from "../kernel/kernel.js";
-import { UNGRANTABLE_TOOLS, type WorkflowMachine } from "../machine/machine.js";
+import { TASK_TOOL, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
 import { TODO_TOOL, workflowToolName } from "../machine/tool-names.js";
 import type { ToolPaths, ToolPathTable } from "../machine/tool-paths.js";
@@ -507,7 +507,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   const disclosedAnywhere = new Set(
     Object.keys(target.spec.states).flatMap((slug) => [...target.disclosedTools(slug)]),
   );
-  const withheld = [...UNGRANTABLE_TOOLS].filter((tool) => !disclosedAnywhere.has(tool));
+  const withheld = [TASK_TOOL].filter((tool) => !disclosedAnywhere.has(tool));
   emit({ type: "prompt-shaping", cache: cacheStrategy, withheld });
 
   // One dispatcher per composition, so the depth, cycle and concurrency bounds

@@ -232,8 +232,7 @@ function describeModelResult(result: unknown): string {
  * The `recursionLimit` a turn runs under when the caller names none. One invoke
  * is one whole turn across states — every model call, tool batch and automated
  * state is a super-step — so this is LangGraph's bound on a whole turn: a
- * caller's own `recursionLimit` replaces it, and a state's `maxTurns` and
- * `maxParks` bound the states that declare them.
+ * caller's own `recursionLimit` replaces it.
  */
 export const DEFAULT_RECURSION_LIMIT = 400;
 
