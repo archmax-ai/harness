@@ -16,6 +16,7 @@ import { Command } from "@langchain/langgraph";
 import { tool } from "langchain";
 import { z } from "zod";
 import { spokeSinceLastHumanMessage } from "../core/messages.js";
+import { NOTE_KEY } from "../core/message-readers.js";
 import { canonicalizeRelPath } from "../core/workspace.js";
 import {
   classifyWorkspacePath,
@@ -66,6 +67,14 @@ export { ADVANCE_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, RESET_TOOL, SET_VARIABLES
 
 function toolReply(name: string, toolCallId: string, content: string): ToolMessage {
   return new ToolMessage({ content, tool_call_id: toolCallId, name });
+}
+
+/**
+ * A refusal the agent corrects rather than reads as a failed run: no error
+ * status, but marked refused, so a `message` the call carried was never said.
+ */
+function correctable(name: string, toolCallId: string, content: string): ToolMessage {
+  return new ToolMessage({ content, tool_call_id: toolCallId, name, additional_kwargs: { [NOTE_KEY]: { refused: true } } });
 }
 
 /** The one refusal shape: an error-status tool message, so the model self-corrects and a view classifies it. */
@@ -148,9 +157,19 @@ export function validateAdvanceEvidence(
 
 // --- Schemas and declarations ---------------------------------------------------
 
+/** The `message` a control call carries for the person: what they read as the agent's reply. */
+const personMessage = z
+  .string()
+  .optional()
+  .describe(
+    "What to tell the person as you do this, shown to them as your reply. Put it here, not in a " +
+      "separate message: a message without a tool call ends your turn where you are.",
+  );
+
 export const advanceSchema = z.object({
   to: z.string().describe("Target state slug, as declared in the current state's transitions."),
   reason: z.string().min(1).describe("One sentence: why advance now."),
+  message: personMessage,
   evidence: z
     .array(z.string())
     .optional()
@@ -162,6 +181,7 @@ export const advanceSchema = z.object({
 
 export const waitSchema = z.object({
   reason: z.string().min(1).describe("One sentence: what the run is waiting for."),
+  message: personMessage,
   until: z
     .string()
     .optional()
@@ -193,6 +213,7 @@ export const raiseSchema = z.object({
     .trim()
     .min(1, "a non-empty reason is required")
     .describe("One or two sentences: what failed, and why the work cannot be completed."),
+  message: personMessage,
 });
 
 export const getVariablesSchema = z.object({
@@ -230,7 +251,8 @@ export function createControlTools(opts: { child?: boolean } = {}): StructuredTo
       ADVANCE_TOOL,
       "Advance the workflow to the next state. Pick `to` from the current state's " +
         "transitions in the graph section above (a slug, never a title). The runtime " +
-        "validates the edge, then unlocks the next state's tools.",
+        "validates the edge, then unlocks the next state's tools. Anything the person " +
+        "should read as you move on goes in `message`.",
       advanceSchema,
     ),
     declaration(
@@ -252,19 +274,19 @@ export function createControlTools(opts: { child?: boolean } = {}): StructuredTo
         "'until' when you are waiting for a time rather than an event; an earlier event still " +
         "resumes you. This does NOT request a human decision, approval or review: those " +
         `belong to a human node, which you reach with ${ADVANCE_TOOL} and which the runtime ` +
-        "parks and presents on its own. This tool moves the run nowhere.",
+        "parks and presents on its own. This tool moves the run nowhere. Anything the person " +
+        "should read before you wait goes in `message`.",
       waitSchema,
     ),
     declaration(
       RAISE_TOOL,
       "End this session as a failure, from any state. Call it when the task cannot be " +
-        "completed and recovering has been tried (a retry, another tool or approach), in " +
-        "the same message as your explanation to the person: a session that ends with a " +
-        "reply alone is a success, so a reply that only explains the failure reports it as " +
-        "one. Never call it to finish work that worked. Call it alone, with no other tool " +
-        "call in the same message; anything the person should read goes in that message's " +
-        `text. It is not how you wait (${WAIT_TOOL}), go back (${RESET_TOOL}) or have a ` +
-        "person decide (a human state).",
+        "completed and recovering has been tried (a retry, another tool or approach), with " +
+        "your explanation to the person in `message`: a session that ends with a reply alone " +
+        "is a success, so a reply that only explains the failure reports it as one. Never " +
+        "call it to finish work that worked. Call it alone, with no other tool call in the " +
+        `same message. It is not how you wait (${WAIT_TOOL}), go back (${RESET_TOOL}) or ` +
+        "have a person decide (a human state).",
       raiseSchema,
     ),
     declaration(
@@ -294,6 +316,8 @@ export interface Move {
   reason: string;
   /** Attached evidence paths, already validated; only into a human state. */
   evidence?: readonly string[];
+  /** The mover already told the person what is happening, so a park owes no closing message. */
+  spoke?: boolean;
 }
 
 /**
@@ -327,7 +351,7 @@ export function transitionUpdate(
       pendingDecision: park,
       decisionCount: seq,
       status: WORKFLOW_STATUSES.awaitingDecision,
-      parkPhase: "closing",
+      parkPhase: move.spoke ? "suspend" : "closing",
     },
     park,
   };
@@ -417,13 +441,14 @@ export function handleAdvance(
 
   const from = currentWorkflowState(request.state, opts.machine.entry);
   const refused = transitionRefusal(opts.machine, from, to, readVariables(request.state));
-  if (refused) return { message: reply(`${ADVANCE_TOOL} rejected: ${refused}`) };
+  if (refused) return { message: correctable(ADVANCE_TOOL, request.toolCallId, `${ADVANCE_TOOL} rejected: ${refused}`) };
 
   const { update, park } = transitionUpdate(opts.machine, request.state, {
     to,
     kind: "agent",
     reason,
     evidence: evidence.paths,
+    spoke: Boolean(parsed.data.message?.trim()),
   });
   return {
     message: commit({

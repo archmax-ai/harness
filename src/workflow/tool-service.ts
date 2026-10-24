@@ -43,6 +43,7 @@ import { resolveParams, subWorkflowParkOf, type SubWorkflowDispatcher } from "./
 import { delegationCallResult } from "./workflow-tools.js";
 import { buildRunnableConfig } from "./runtime-config.js";
 import { reportMove } from "./move-events.js";
+import { agentSaid, isAiMessage } from "../core/messages.js";
 
 export interface ToolServiceContext {
   machine: WorkflowMachine;
@@ -337,6 +338,22 @@ export function createToolService(ctx: ToolServiceContext) {
     const claimStep = (moved?: { to: string }) => {
       if (moved) movedAtStep.set(sessionId, { step, to: moved.to });
     };
+    // A control call that landed with a `message` said it to the person: what the
+    // message that made the call says is announced again, whole, under its own id.
+    const announceSaid = () => {
+      const said = (args as { message?: unknown }).message;
+      if (typeof said !== "string" || !said.trim()) return;
+      const source = [...((state as { messages?: unknown[] })?.messages ?? [])]
+        .reverse()
+        .find((m) => isAiMessage(m) && callsTool(m, toolCallId));
+      const messageId = (source as { id?: unknown } | undefined)?.id;
+      emit({
+        type: "agent-text",
+        state: workflowState,
+        text: source ? agentSaid(source) : said.trim(),
+        ...(typeof messageId === "string" ? { messageId } : {}),
+      });
+    };
     switch (toolName) {
       case ADVANCE_TOOL: {
         if (alreadyMovedTo) return duplicateMoveRefusal(toolName, toolCallId, alreadyMovedTo);
@@ -348,6 +365,7 @@ export function createToolService(ctx: ToolServiceContext) {
             // The move is announced inside the call's pair, as the effect of the call that made it.
             if (advanced.moved) {
               const { from, to, reason } = advanced.moved;
+              announceSaid();
               emit({ type: "advance", from, to, reason, callId });
             }
             return advanced;
@@ -372,6 +390,7 @@ export function createToolService(ctx: ToolServiceContext) {
       case WAIT_TOOL: {
         const outcome = await withPairedEvents(call, args, () => handleWait(machine, { toolCallId, args, state }));
         if (outcome.park) {
+          announceSaid();
           emit({
             type: "parked",
             state: workflowState,
@@ -387,6 +406,7 @@ export function createToolService(ctx: ToolServiceContext) {
       case RAISE_TOOL: {
         const outcome = await withPairedEvents(call, args, () => handleRaise(machine, { toolCallId, args, state }));
         if (outcome.raised) {
+          announceSaid();
           const { code, reason } = outcome.raised;
           emit({ type: "raised", state: workflowState, sessionId, code, reason, callId });
           // The session leaves the state it failed in as a completing one does; nothing is entered.
@@ -432,4 +452,10 @@ export function createToolService(ctx: ToolServiceContext) {
       recoveredAtStep.delete(sessionId);
     },
   };
+}
+
+/** Whether an assistant message made the tool call `toolCallId`. */
+function callsTool(message: unknown, toolCallId: string): boolean {
+  const calls = (message as { tool_calls?: unknown }).tool_calls;
+  return Array.isArray(calls) && calls.some((call) => (call as { id?: unknown })?.id === toolCallId);
 }

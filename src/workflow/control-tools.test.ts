@@ -410,7 +410,7 @@ describe("wait tool declaration", () => {
   it("declares a required reason and an optional due time", () => {
     const tool = createControlTools().find((t) => t.name === WAIT_TOOL)!;
     expect(tool.name).toBe(WAIT_TOOL);
-    expect(Object.keys((tool.schema as { shape: Record<string, unknown> }).shape)).toEqual(["reason", "until"]);
+    expect(Object.keys((tool.schema as { shape: Record<string, unknown> }).shape)).toEqual(["reason", "message", "until"]);
   });
 });
 
@@ -556,7 +556,7 @@ describe("handleRaise", () => {
 describe("raise tool declaration and governance", () => {
   it("declares a code and a reason, and no success flag", () => {
     const tool = createControlTools().find((t) => t.name === RAISE_TOOL)!;
-    expect(Object.keys((tool.schema as { shape: Record<string, unknown> }).shape)).toEqual(["code", "reason"]);
+    expect(Object.keys((tool.schema as { shape: Record<string, unknown> }).shape)).toEqual(["code", "reason", "message"]);
     expect(tool.description).toMatch(/when the task cannot be completed/);
     expect(tool.description).toMatch(/Never call it to finish work that worked/);
     // A reply that only explains the failure is the miss it has to prevent.

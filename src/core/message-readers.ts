@@ -46,17 +46,67 @@ export function isHumanMessage(message: unknown): boolean {
 }
 
 /**
- * What the agent last *said*: the final assistant message carrying text. Tool
- * results — the `archmax_advance` confirmation is routinely the literal last
- * message — and the runtime's own notes are skipped, so this is the session's
- * answer as a person would read it.
+ * The control calls whose `message` argument the person reads: what the agent
+ * says as it moves on, waits or fails travels in the call itself, so handing
+ * work on is one tool call rather than text beside one. Named here, not
+ * imported, so this module stays import-free; `tool-names.ts` holds the same names.
+ */
+const SPEAKING_CONTROLS: ReadonlySet<string> = new Set(["archmax_advance", "archmax_wait", "archmax_raise"]);
+
+/**
+ * The ids of the tool calls in `messages` that were refused — an error result,
+ * or one the runtime marked refused for the agent to correct: a refused call
+ * said nothing.
+ */
+export function refusedCallIds(messages: readonly unknown[]): ReadonlySet<string> {
+  const refused = new Set<string>();
+  for (const message of messages) {
+    if (message === null || typeof message !== "object" || messageTypeOf(message) !== "tool") continue;
+    const msg = message as {
+      status?: unknown;
+      tool_call_id?: unknown;
+      additional_kwargs?: Record<string, unknown>;
+      kwargs?: { status?: unknown; tool_call_id?: unknown; additional_kwargs?: Record<string, unknown> };
+    };
+    const status = msg.status ?? msg.kwargs?.status;
+    const id = msg.tool_call_id ?? msg.kwargs?.tool_call_id;
+    const marker = (msg.additional_kwargs ?? msg.kwargs?.additional_kwargs)?.[NOTE_KEY] as { refused?: unknown } | undefined;
+    if ((status === "error" || marker?.refused === true) && typeof id === "string") refused.add(id);
+  }
+  return refused;
+}
+
+/**
+ * What one assistant message says to the person: its text, then the `message`
+ * of each control call it made that was not refused, joined by a blank line.
+ * Empty for a runtime note or a message that said nothing.
+ */
+export function agentSaid(message: unknown, refused: ReadonlySet<string> = new Set()): string {
+  if (message === null || typeof message !== "object" || !isAiMessage(message) || isRuntimeNote(message)) return "";
+  const msg = message as { content?: unknown; tool_calls?: unknown; kwargs?: { tool_calls?: unknown } };
+  const said = [contentToString(msg.content).trim()];
+  const calls = msg.tool_calls ?? msg.kwargs?.tool_calls;
+  for (const call of Array.isArray(calls) ? calls : []) {
+    const { id, name, args } = (call ?? {}) as { id?: unknown; name?: unknown; args?: { message?: unknown } };
+    if (typeof name !== "string" || !SPEAKING_CONTROLS.has(name)) continue;
+    if (typeof id === "string" && refused.has(id)) continue;
+    if (typeof args?.message === "string") said.push(args.message.trim());
+  }
+  return said.filter(Boolean).join("\n\n");
+}
+
+/**
+ * What the agent last *said*: the final assistant message that says anything —
+ * its text, or the `message` of a control call it made. Tool results — the
+ * `archmax_advance` confirmation is routinely the literal last message — and the
+ * runtime's own notes are skipped, so this is the session's answer as a person
+ * would read it.
  */
 export function lastAgentText(messages: unknown[]): string {
+  const refused = refusedCallIds(messages);
   for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (!isAiMessage(message) || isRuntimeNote(message)) continue;
-    const text = contentToString((message as { content?: unknown }).content).trim();
-    if (text) return text;
+    const said = agentSaid(messages[i], refused);
+    if (said) return said;
   }
   return "";
 }
@@ -92,17 +142,17 @@ function messageIdOf(message: unknown): string | undefined {
 }
 
 /**
- * What the agent said during the turn that began at `anchor`: each assistant
- * text, in order, joined by a blank line. Empty when the turn said nothing.
+ * What the agent said during the turn that began at `anchor`: what each
+ * assistant message says ({@link agentSaid}), in order, joined by a blank line.
+ * Empty when the turn said nothing.
  */
 export function turnReply(messages: unknown[], anchor: TurnAnchor): string {
-  const said: string[] = [];
-  for (const message of messages.slice(anchorIndex(messages, anchor))) {
-    if (!isAiMessage(message) || isRuntimeNote(message)) continue;
-    const text = contentToString((message as { content?: unknown }).content).trim();
-    if (text) said.push(text);
-  }
-  return said.join("\n\n");
+  const turn = messages.slice(anchorIndex(messages, anchor));
+  const refused = refusedCallIds(turn);
+  return turn
+    .map((message) => agentSaid(message, refused))
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
@@ -172,17 +222,18 @@ export function lastMessageIsHuman(messages: unknown[]): boolean {
 
 /**
  * Whether the agent has said anything since the last thing it was told — any
- * assistant message carrying non-empty text, including one that also made a tool
- * call. The window is closed by a turn-opening message: a person's, or the
- * runtime's own narration, which closes it exactly as a real message does.
+ * assistant message that says something ({@link agentSaid}), including one that
+ * also made a tool call. The window is closed by a turn-opening message: a
+ * person's, or the runtime's own narration, which closes it exactly as a real
+ * message does.
  */
 export function spokeSinceLastHumanMessage(messages: unknown[]): boolean {
+  const refused = refusedCallIds(messages);
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message === undefined) continue;
     if (opensTurn(message)) return false;
-    if (!isAiMessage(message)) continue;
-    if (contentToString((message as { content?: unknown }).content).trim() !== "") return true;
+    if (agentSaid(message, refused) !== "") return true;
   }
   return false;
 }

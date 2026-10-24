@@ -196,14 +196,12 @@ states:
       "denied", "reason": "<one sentence the customer can understand>" } -
       write_file creates it; if it already exists (e.g. the reviewer or the
       policy check sent the case back), read it and update it with edit_file
-      instead. Tell the customer the decision with the order id, its exact
-      status, and the reason, and send it in a message that also calls
-      archmax_advance to check-refund. That call is what requests the review:
-      the policy check hands the recorded decision to a human reviewer, or
-      sends it back to you naming what is wrong. A message holding the decision
-      and no archmax_advance call ends the conversation with nothing reviewed,
-      however it is worded - after a send-back too: the corrected decision is
-      reviewed only once you call archmax_advance to check-refund again.
+      instead. Then call archmax_advance to check-refund, with the decision for
+      the customer - the order id, its exact status, and the reason - in its
+      `message`. That call is what requests the review: the policy check hands
+      the recorded decision to a human reviewer, or sends it back to you naming
+      what is wrong. After a send-back, fix the decision and call
+      archmax_advance to check-refund again.
     skills:
       allow: [order-data, refund-policy]
     # No `tools` block: refund.json lands in scratchpad/, writable in every
@@ -297,12 +295,10 @@ states:
       allow: []
     instructions: >-
       The request does not name enough to answer it. Ask exactly one clarifying
-      question - the smallest thing you need to identify the order - and send it
-      in a message that also calls archmax_wait, with a reason naming what you
-      are waiting for. The call is what waits: a message holding the question
-      and no archmax_wait call ends the conversation, and the customer's answer
-      never reaches you, however the question is worded. Do not guess and do not
-      answer yet. When the customer's reply arrives you will continue here: read
+      question - the smallest thing you need to identify the order - by calling
+      archmax_wait with the question in its `message` and a reason naming what
+      you are waiting for. The call is what waits: without it the customer's
+      answer never reaches you. Do not guess and do not answer yet. When the customer's reply arrives you will continue here: read
       it, and if it identifies the order, archmax_advance to orders-question to
       answer the original question with what they added.
     transitions:
@@ -355,7 +351,7 @@ states:
       a one-paragraph summary naming the company and each delayed order id.
       Answer only from orders.json - never fabricate order data. If orders.json
       cannot be read, there is no report: write none, and end the run with
-      archmax_raise in the message that says so. This state is terminal - stop
+      archmax_raise, saying why in its `message`. This state is terminal - stop
       once the report is written and summarized.
 
   enrich-order:

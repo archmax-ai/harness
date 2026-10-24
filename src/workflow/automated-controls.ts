@@ -133,6 +133,10 @@ function alreadyDecided(name: string, decision: AutomatedDecision): Error {
   return new Error(`${name} rejected: this state has decided — ${standing}. One decision per state.`);
 }
 
+/** An automated state's advance and raise: the agent's, without the `message` no person reads here. */
+const automatedAdvanceSchema = advanceSchema.omit({ message: true });
+const automatedRaiseSchema = raiseSchema.omit({ message: true });
+
 /**
  * The control tools for one automated run, bound to its recorder — in the order
  * `controlTools(state)` names them, so the surface and the tools agree.
@@ -153,7 +157,7 @@ export function createAutomatedControls(
   if (offered.has(ADVANCE_TOOL) && !terminal) {
     tools.push(
       tool(
-        async (input: z.infer<typeof advanceSchema>, config) => {
+        async (input: z.infer<typeof automatedAdvanceSchema>, config) => {
           if (recorder.decision) throw alreadyDecided(ADVANCE_TOOL, recorder.decision);
           const evidence = advanceEvidence(machine, input.to, input.evidence ?? [], ctx.mountPrefixes);
           if (!evidence.ok) throw new Error(`${ADVANCE_TOOL} rejected: ${evidence.reason}`);
@@ -175,7 +179,7 @@ export function createAutomatedControls(
             "Move the session along one of this state's transitions: `to` is the target's slug, " +
             "`reason` is what the next state reads about why it was entered. The move takes " +
             "effect when this state finishes. Call it once.",
-          schema: advanceSchema,
+          schema: automatedAdvanceSchema,
         },
       ) as unknown as StructuredTool,
     );
@@ -184,7 +188,7 @@ export function createAutomatedControls(
   if (offered.has(RAISE_TOOL)) {
     tools.push(
       tool(
-        async (input: z.infer<typeof raiseSchema>, config) => {
+        async (input: z.infer<typeof automatedRaiseSchema>, config) => {
           if (recorder.decision) throw alreadyDecided(RAISE_TOOL, recorder.decision);
           const callId = callIdOf(config);
           recorder.decide({ kind: "raise", code: input.code, reason: input.reason, ...(callId ? { callId } : {}) });
@@ -196,7 +200,7 @@ export function createAutomatedControls(
             "End the session as a failure: the work cannot be accepted and must not be retried. " +
             "`code` is a short token the session's host reads, `reason` what failed. Call it once, " +
             "instead of advancing.",
-          schema: raiseSchema,
+          schema: automatedRaiseSchema,
         },
       ) as unknown as StructuredTool,
     );

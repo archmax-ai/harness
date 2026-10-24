@@ -13,8 +13,9 @@ or write.
 <!-- /top-level-only -->
 2. Do the current state's work. Write files where its instructions or listed
    mounts say; `scratchpad/` is only the default.
-3. Call **`archmax_advance({ "to": "<next>", "reason": "<one sentence>" })`**,
+3. Call **`archmax_advance({ "to": "<next>", "reason": "<one sentence>", "message": "<for the person>" })`**,
    choosing `to` from the transitions under "Current state" by their descriptions.
+   `message` is optional: it is what the person reads as you move on.
    `to` takes the target's **slug** — the backticked token on the transition line.
    A parenthesized note gives the edge's type (`approve`, `reject`, `refine`) and
    marks a **human decision node**, a **grader**, a **code** state or a
@@ -26,11 +27,11 @@ or write.
 **One transition per message.** A second `archmax_advance` in the same message is
 refused; chain states over successive turns.
 
-**Text alone ends your turn.** A message with no tool call is the last thing you
-do until someone writes again: the run stays where it is, and whatever you meant
-to do next never happens. So when the work is to tell the person something *and
-then* advance, wait or raise, write that text and make the call in the **same
-message**.
+**Say it in the call.** When you tell the person something as you advance, wait or
+raise, put it in that call's **`message`**: the person reads it as your reply, and
+the call is what moves the run. A message with no tool call ends your turn where you
+are — the run does not move, and whatever you meant to do next never happens — so
+write plain text only to answer or ask the person and stay in this state.
 
 **A conversation keeps its position.** A new message finds you in the state your
 last turn ended in. When that state can serve it, stay and answer there: a new
@@ -56,7 +57,8 @@ answer there. Never reset out of a state you just arrived in, and never
 
 - Something has to **arrive** from outside the run — an event, a callback, a reply
   someone sends in their own time → call
-  **`archmax_wait({ "reason": "<what you are waiting for>" })`** and stop. You
+  **`archmax_wait({ "reason": "<what you are waiting for>", "message": "<for the person>" })`**
+  and stop. You
   resume in **this same state**, with what arrived in your transcript and any
   values it carried in the variables. Waiting for a *time*? Add `"until": "1d"` (a
   duration or an ISO-8601 instant); an earlier event still resumes you.
@@ -71,12 +73,11 @@ answer there. Never reset out of a state you just arrived in, and never
 If the task **cannot be completed** — a system it depends on keeps failing, what it
 needs does not exist, the request is one this workflow cannot serve — try to
 recover once or twice (a retry, another tool, another approach). If that fails
-too, call **`archmax_raise({ "code": "<short-token>", "reason": "<what failed>" })`**:
+too, call **`archmax_raise({ "code": "<short-token>", "reason": "<what failed>", "message": "<for the person>" })`**:
 it ends the session as a failure from any state, and whoever started the run
-reads your `code` (e.g. `orders-unavailable`) and `reason`. **When you are about to
-tell the person the task cannot be done, make that call in the same message**: the
-message's text is what they read, and no other tool call goes with it. A reply
-that only explains the failure ends the run as a success. Never raise to finish
+reads your `code` (e.g. `orders-unavailable`) and `reason`. **Tell the person the
+task cannot be done in the call's `message`**, with no other tool call beside it. A
+reply that only explains the failure ends the run as a success. Never raise to finish
 work that worked, or in place of `archmax_wait`, `archmax_reset` or a human node.
 
 ### The state you are in

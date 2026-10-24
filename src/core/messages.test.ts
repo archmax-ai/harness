@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import {
+  agentSaid,
   contentToString,
   humanNote,
   isRuntimeNote,
@@ -18,6 +20,44 @@ describe("contentToString", () => {
     expect(contentToString("plain")).toBe("plain");
     expect(contentToString([{ text: "a" }, "b", { type: "image" }])).toBe("ab");
     expect(contentToString(42)).toBe("");
+  });
+});
+
+/**
+ * What the person reads as you move on travels in the control call's `message`,
+ * so handing work on is one tool call; a refused call said nothing.
+ */
+describe("what a control call's message says", () => {
+  const advancing = (id: string, message?: string, text = "") =>
+    new AIMessage({
+      content: text,
+      tool_calls: [{ id, name: "archmax_advance", args: { to: "review", reason: "done", ...(message ? { message } : {}) } }],
+    });
+  const result = (id: string, status: "success" | "error") =>
+    new ToolMessage({ content: status === "error" ? "refused" : "Advanced.", tool_call_id: id, name: "archmax_advance", status });
+
+  it("is said beside the message's own text, and only for a speaking control", () => {
+    expect(agentSaid(advancing("c1", "Your refund is with a reviewer."))).toBe("Your refund is with a reviewer.");
+    expect(agentSaid(advancing("c1", "With a reviewer.", "Recorded."))).toBe("Recorded.\n\nWith a reviewer.");
+    const other = new AIMessage({ content: "", tool_calls: [{ id: "c2", name: "send_email", args: { message: "hi" } }] });
+    expect(agentSaid(other)).toBe("");
+  });
+
+  it("reaches the turn's reply and the last thing said, unless the call was refused", () => {
+    const anchor = { count: 0 };
+    const accepted = [new HumanMessage("refund please"), advancing("c1", "It is with a reviewer."), result("c1", "success")];
+    expect(turnReply(accepted, anchor)).toBe("It is with a reviewer.");
+    expect(lastAgentText(accepted)).toBe("It is with a reviewer.");
+    expect(spokeSinceLastHumanMessage(accepted)).toBe(true);
+
+    const refusedThenAccepted = [
+      new HumanMessage("refund please"),
+      advancing("c1", "It is with a reviewer."),
+      result("c1", "error"),
+      advancing("c2", "It is with a reviewer now."),
+      result("c2", "success"),
+    ];
+    expect(turnReply(refusedThenAccepted, anchor)).toBe("It is with a reviewer now.");
   });
 });
 

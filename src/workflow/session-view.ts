@@ -1,5 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
-import { contentToString, isRuntimeNote, messageTypeOf, runtimeNoteKind } from "../core/messages.js";
+import { agentSaid, contentToString, isRuntimeNote, messageTypeOf, refusedCallIds, runtimeNoteKind } from "../core/messages.js";
 import type { ParkChannel, TrailStep } from "./state.js";
 import type { VariableStore } from "../machine/variables.js";
 
@@ -51,6 +51,7 @@ export function messagesToSessionView(
   const toolCalls: ToolCallFact[] = [];
   let reply = "";
   let failed = false;
+  const refused = refusedCallIds(list);
 
   for (const raw of list) {
     if (!isMessage(raw)) continue;
@@ -70,8 +71,9 @@ export function messagesToSessionView(
     }
 
     if (type === "ai" || type === "assistant") {
-      if (text) reply = text;
-      events.push({ type: "message.completed", data: { message: text } });
+      const said = agentSaid(raw, refused);
+      if (said) reply = said;
+      events.push({ type: "message.completed", data: { message: said } });
       const calls = msg.tool_calls;
       if (Array.isArray(calls)) {
         for (const c of calls) {

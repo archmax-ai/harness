@@ -7,6 +7,7 @@ import { NOTE_KEY, type RuntimeNoteKind } from "./message-readers.js";
 // The readers are pure and live in `message-readers.ts` (the `@archmax-ai/harness/messages`
 // subpath); re-exported so every runtime importer keeps one module for both halves.
 export {
+  agentSaid,
   anchorIndex,
   contentToString,
   isAiMessage,
@@ -18,6 +19,7 @@ export {
   messagesSince,
   messageTypeOf,
   opensTurn,
+  refusedCallIds,
   runtimeNoteKind,
   spokeSinceLastHumanMessage,
   turnAnchorOf,
