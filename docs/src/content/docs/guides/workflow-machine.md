@@ -147,7 +147,7 @@ prompt, and so does the count of states:
 ```
 Transitions — choose one with `archmax_advance` when this state's work is done:
 - to `refund-review` (human decision node) — The refund is over $50, or the customer has asked twice.
-- to `review-report` (grader) — scratchpad/report.json is written for the requested company.
+- to `review-enrichment` (grader) — Every order has been enriched and `enrichments` is recorded.
 - to `orders-question` — The customer is asking about order status, shipping or tracking.
 ```
 
@@ -741,22 +741,23 @@ states:
       - { to: decline, description: The request names no known requester. }
   orders-question:                                    # terminal: a live answer ends where it is given
     instructions: Answer the order question from the order records.
-  report-requested:                                   # no person waits on this path
+  enrich-order:                                       # no person waits on this path
     triggers:
-      report_requested:
+      enrichment_requested:
     transitions:
-      - { to: review-report, description: scratchpad/report.json is written. }
-  review-report:                                      # grades the report, approves or sends it back
+      - { to: review-enrichment, description: "`enrichments` is recorded." }
+  review-enrichment:                                  # grades the enrichments, approves or sends them back
     type: grader
     instructions: |-
-      Check scratchpad/report.json against the order records. Correct: advance
-      to report-delivered. Wrong: advance back to report-requested saying what
-      to fix. Already sent back twice (count the trail): raise report-incorrect.
+      Check `enrichments` against `orders_to_enrich` and each returned file.
+      Correct: advance to enrichment-reported. Wrong: advance back to
+      enrich-order saying what to fix. Already sent back twice (count the
+      trail): raise enrichment-incorrect.
     transitions:
-      - { to: report-delivered, description: The report is correct. }
-      - { to: report-requested, description: The report is wrong; send it back. }
-  report-delivered:
-    instructions: Summarize the approved report.
+      - { to: enrichment-reported, description: The enrichments are correct. }
+      - { to: enrich-order, description: The enrichments are wrong; send them back. }
+  enrichment-reported:
+    instructions: Summarize the approved enrichments.
   decline:
     instructions: Tell the person why the request was declined; the note above says why.
 ```

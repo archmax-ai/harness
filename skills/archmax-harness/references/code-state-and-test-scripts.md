@@ -637,26 +637,26 @@ retry budget to declare: the script counts the rounds itself, from the history's
 A check that approves into a terminal **agent** state costs one more model call:
 that state's agent has to finish the turn. Approve into a **terminal code state**
 instead. Its script runs and the session completes, with no further model call.
-Say a report path's grader approves into `report-approved`, and the trigger
-declares `returns: [delayed_order_ids]`:
+Say the enrichment path's grader approves into `enrichments-approved`, and the
+trigger declares `returns: [delayed_order_ids]`:
 
 ```yaml
-  report-approved:
+  enrichments-approved:
     type: code
-    script: scripts/report-approved.js     # no transitions: terminal
+    script: scripts/enrichments-approved.js     # no transitions: terminal
 ```
 
 ```js
 /**
- * Approved-report record — the end of the report path.
+ * Approved-enrichments record — the end of the enrichment path.
  *
- * Reads the report the grader approved from scratchpad/report.json and sets the
- * trigger's declared return `delayed_order_ids` from it, so a caller has the
- * result without reading the file, then returns: the session completes.
+ * Reads the `enrichments` the grader approved and sets the trigger's declared
+ * return `delayed_order_ids` from them, so a caller has the result without
+ * walking the list, then returns: the session completes.
  */
-export default async function ({ tools }) {
-  const report = JSON.parse(await tools.read_file({ file_path: "scratchpad/report.json" }));
-  await tools.archmax_set_variables({ variables: { delayed_order_ids: report.delayedOrderIds } });
+export default async function ({ variables, tools }) {
+  const delayed = variables.enrichments.filter((e) => e.delayed).map((e) => e.order_id);
+  await tools.archmax_set_variables({ variables: { delayed_order_ids: delayed } });
 }
 ```
 
@@ -675,43 +675,49 @@ state's `instructions` (its criteria), it reads the session with
 `archmax_get_history` (the whole transcript, tool results included, and the
 trail) and the work with its own state's tools, and it decides with
 `archmax_advance` along one of its transitions, or ends the session with
-`archmax_raise`. The bundled example's report path:
+`archmax_raise`. The bundled example's enrichment path:
 
 ```yaml
 states:
-  report-requested:
+  enrich-order:
     instructions: >-
-      … Write the report to scratchpad/report.json; if review-report sent it
-      back, fix what the note names. Once the report is written, call
-      archmax_advance to review-report: that call hands the report in.
+      Run skills/order-enrichment/scripts/enrich-orders.js with archmax_run …
+      Record that list as the `enrichments` variable with archmax_set_variables,
+      then advance to review-enrichment, which checks it. If the review sends it
+      back, fix what its note names and advance again.
+    requires: [enrichments]
     transitions:
-      - to: review-report
-        description: scratchpad/report.json is written for the requested company.
-  review-report:
+      - to: review-enrichment
+        description: Every order has been enriched and `enrichments` is recorded.
+  review-enrichment:
     type: grader
-    budget: { maxTurns: 6 }          # the grader's own model calls
+    budget: { maxTurns: 8 }          # the grader's own model calls
     on_error: escalation             # a grader that fails or finishes undecided routes here
     skills:
-      allow: [order-data]            # it reads the order records with its own state's tools
+      allow: []                      # read_file, from the workflow-wide grant, reads the returned files
     instructions: |-
-      You check a delayed-orders report before it is delivered.
+      You check the enrichments recorded for this run before they are reported.
 
-      1. Read the requested `company` with `archmax_get_variables`.
-      2. Read `scratchpad/report.json` and `skills/order-data/assets/orders.json`.
-      3. The report is correct when its `company` is the requested company and
-         its `delayedOrderIds` are exactly that company's `delayed` orders.
+      1. Read `orders_to_enrich` and `enrichments` with `archmax_get_variables`.
+      2. The enrichments are correct when `enrichments` holds exactly one entry
+         per requested `order_id` — none missing, none extra — and each entry
+         has an `enrichment_file` and a boolean `delayed`.
+      3. Read each `enrichment_file` with `read_file`: its `delayed` must match
+         the entry's.
 
-      - Correct: advance to `report-delivered`.
-      - Wrong or unreadable: advance back to `report-requested`, naming exactly
-        what to fix.
+      - Correct: advance to `enrichment-reported`.
+      - Wrong: advance back to `enrich-order`, naming exactly what is missing or
+        does not match.
       - Before sending it back, call `archmax_get_history` and count the steps
-        in `trail` with `kind: "grader"` and `to: "report-requested"`: if there
-        are already two, raise `report-incorrect` instead.
+        in `trail` with `kind: "grader"` and `to: "enrich-order"`: if there are
+        already two, raise `enrichment-incorrect` instead.
     transitions:
-      - to: report-delivered         # a terminal agent state that summarizes the report
-        description: The report lists exactly the company's delayed orders.
-      - to: report-requested
-        description: The report is wrong; send it back, naming exactly what to fix.
+      - to: enrichment-reported      # a terminal agent state that summarizes the enrichments
+        description: Every requested order has exactly one enrichment, and each matches its file.
+      - to: enrich-order
+        description: >-
+          The enrichments are incomplete or do not match their files: send them
+          back, naming exactly what to fix.
 ```
 
 What to know:
@@ -725,8 +731,8 @@ What to know:
 - `archmax_get_history` returns `{ messages, trail }` — the same history a code
   state reads: the whole transcript, a `tool` entry carrying its result in `text`,
   and every trail step. Not windowed: a grader judges the whole session, so its
-  criteria say which part counts ("the report in scratchpad/report.json", "the
-  last assistant message with text"). Check a claim against the tool result or
+  criteria say which part counts ("the files `enrichments` names", "the last
+  assistant message with text"). Check a claim against the tool result or
   the file itself, never against the agent's retelling of it.
 - There is **no iteration budget**. A grader that should give up after N rounds
   says so in its `instructions` and counts the rounds from the history's trail
@@ -952,12 +958,12 @@ steps:
 ```
 
 ```yaml
-trigger: { id: report_requested }                        # the report path
-variables: { company: "Acme Corp" }
+trigger: { id: enrichment_requested }                    # the enrichment path
+variables: { orders_to_enrich: [{ order_id: "ORD-1002" }, { order_id: "ORD-1003" }] }
 steps:
-  - send: "A delayed-orders report was requested."
-  - trail: { kind: grader, to: report-delivered, count: 1 }   # the grader approved the report
-  - trail: { kind: grader, to: report-requested, count: 0 }   # without a send-back
+  - send: "Enrich the requested orders."
+  - trail: { kind: grader, to: enrichment-reported, count: 1 }   # the grader approved the enrichments
+  - trail: { kind: grader, to: enrich-order, count: 0 }          # without a send-back
 ```
 
 ### Structural assertions halt the case
@@ -1341,8 +1347,8 @@ seeded byte-for-byte before any step:
 title: Delayed-orders report compiled from a trigger
 description: >-
   The report_requested trigger starts the run: the agent reads the seeded
-  trigger.json, writes scratchpad/report.json, the grader approves it, and the
-  reply names Acme's one delayed order, ORD-1003.
+  trigger.json, writes scratchpad/report.json, and the reply names Acme's one
+  delayed order, ORD-1003.
 trigger:
   id: report_requested
 variables:
@@ -1363,8 +1369,6 @@ steps:
       name: write_file
       input:
         file_path: "/scratchpad\\/report\\.json/"
-  # The review-report grader approved the report into report-delivered.
-  - trail: { to: report-delivered, kind: grader, count: 1 }
   - reply:
       includes: ["ORD-1003", "Acme"]
 ```

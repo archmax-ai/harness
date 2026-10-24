@@ -1298,25 +1298,26 @@ states:
       - to: refund-request
         description: The recorded decision contradicts the policy; send it back with the fix.
 
-  review-report:                 # GRADER state: an isolated grader decides the edge
+  review-enrichment:             # GRADER state: an isolated grader decides the edge
     type: grader
-    budget: { maxTurns: 6 }      # the grader's own model calls
+    budget: { maxTurns: 8 }      # the grader's own model calls
     on_error: escalation
-    skills: { allow: [order-data] }      # what the GRADER reads is granted HERE too
+    skills: { allow: [] }        # the GRADER is governed HERE too: no bundle, and
+                                 # read_file (workflow-wide) reads the returned files
     instructions: |-             # REQUIRED — its criteria
-      Read the requested `company` with archmax_get_variables, then
-      scratchpad/report.json and skills/order-data/assets/orders.json.
-      - Its `delayedOrderIds` are exactly that company's `delayed` orders:
-        advance to `report-delivered`.
-      - Otherwise advance back to `report-requested`, naming what to fix. Before
+      Read `orders_to_enrich` and `enrichments` with archmax_get_variables, then
+      each entry's `enrichment_file` with read_file.
+      - One entry per requested `order_id`, none missing or extra, each `delayed`
+        matching its file: advance to `enrichment-reported`.
+      - Otherwise advance back to `enrich-order`, naming what to fix. Before
         that, count the steps in archmax_get_history's trail with kind "grader"
-        and to "report-requested"; if there are already two, raise
-        `report-incorrect` instead.
+        and to "enrich-order"; if there are already two, raise
+        `enrichment-incorrect` instead.
     transitions:                 # REQUIRED — at least one
-      - to: report-delivered
-        description: The report lists exactly the company's delayed orders.
-      - to: report-requested
-        description: The report is wrong; send it back naming what to fix.
+      - to: enrichment-reported
+        description: Every requested order has exactly one enrichment, and each matches its file.
+      - to: enrich-order
+        description: The enrichments are incomplete or do not match their files; send them back.
 ```
 
 - **When it runs.** Whenever the session's position reaches it — the agent's
@@ -1456,7 +1457,7 @@ Two failure classes, routed differently:
 error or an undecided grader routes somewhere instead of ending the session
 rejected. The bundled example demonstrates this: `refund-request` pairs
 `budget.maxTurns: 12` with `on_error: escalation`, and its `screen-request`,
-`check-refund` and `review-report` route to the same terminal escalation state.
+`check-refund` and `review-enrichment` route to the same terminal escalation state.
 
 ## Human states
 
@@ -2005,14 +2006,20 @@ status — so no state repeats them. Its shape:
 - `escalation` (terminal) is the error handler entered via `on_error` (and from
   `check-refund`'s give-up edge).
 - `general-question` (terminal) answers and writes `scratchpad/answer.json`.
-- `report-requested` (`triggers: { report_requested: }`) — a host-fired path no
-  person waits on — writes `scratchpad/report.json` for the requested `company`
-  and advances to `review-report`, a **grader** behind it: its state enables
-  `order-data`, so it reads the order records with its own state's tools; it
-  reads the requested `company` with `archmax_get_variables`. It approves into
-  `report-delivered` (a terminal agent state that summarizes the report), sends
-  the report back naming what to fix, or raises `report-incorrect` once it has
-  sent it back twice, counted on `archmax_get_history`'s trail.
+- `report-requested` (terminal, `triggers: { report_requested: }`) writes
+  `scratchpad/report.json` for the requested `company` and summarizes it; when the
+  order records cannot be read, the agent ends the session with `archmax_raise`
+  instead (case `orders-unavailable`).
+- `enrich-order` (`triggers: { enrichment_requested: }`) — a host-fired path no
+  person waits on — runs the `order-enrichment` fan-out script with `archmax_run`,
+  records its result as `enrichments` (`requires: [enrichments]`), and advances to
+  `review-enrichment`, a **grader** behind it: it reads `orders_to_enrich` and
+  `enrichments` with `archmax_get_variables` and each returned `enrichment_file`
+  with `read_file`. It approves into `enrichment-reported` (a terminal agent state
+  that summarizes the enrichments), sends them back to `enrich-order` naming what
+  to fix, or raises `enrichment-incorrect` once it has sent them back twice,
+  counted on `archmax_get_history`'s trail. Case `enrichment-fan-out` pins the
+  approval as a `grader` trail step.
 
 ### Source of truth in code
 

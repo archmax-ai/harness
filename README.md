@@ -113,28 +113,31 @@ states:
     instructions: Answer from skills/order-data/assets/orders.json.
                                     # no skills block: the workflow's grant reaches
                                     # here, and enabling a bundle is the whole grant
-  report-requested:
+  enrich-order:
     triggers:
-      report_requested:             # a host event: no person is waiting on this path
+      enrichment_requested:         # a host event: no person is waiting on this path
+    skills: { allow: [order-enrichment] }               # the fan-out script's bundle
+    tools: { allow: [archmax_workflow_enrich-order] }   # delegation is granted by name
     instructions: >-
-      Write the company's delayed orders to scratchpad/report.json, then
-      archmax_advance to review-report. If a note sends it back, fix what it names.
+      Run skills/order-enrichment/scripts/enrich-orders.js with archmax_run, record
+      its result as `enrichments`, then archmax_advance to review-enrichment. If a
+      note sends it back, fix what it names.
     transitions:
-      - to: review-report
-        description: scratchpad/report.json is written for the requested company.
-  review-report:                    # a grader state: an isolated grader judges the work
+      - to: review-enrichment
+        description: Every order has been enriched and `enrichments` is recorded.
+  review-enrichment:                # a grader state: an isolated grader judges the work
     type: grader                    # against these criteria and decides the edge
     instructions: >-
-      Check scratchpad/report.json against the order records. Correct: advance to
-      report-delivered. Wrong: send it back naming what to fix. After two
-      send-backs, raise report-incorrect.
+      Check `enrichments` against `orders_to_enrich` and each returned file.
+      Correct: advance to enrichment-reported. Wrong: send them back naming what
+      to fix. After two send-backs, raise enrichment-incorrect.
     transitions:
-      - to: report-delivered
-        description: The report lists exactly the company's delayed orders.
-      - to: report-requested
-        description: The report is wrong; send it back naming what to fix.
-  # decline, report-delivered: terminal states that tell the person why, and
-  # summarize the approved report
+      - to: enrichment-reported
+        description: Every requested order has exactly one enrichment, and each matches its file.
+      - to: enrich-order
+        description: The enrichments are incomplete or do not match their files; send them back.
+  # decline, enrichment-reported: terminal states that tell the person why, and
+  # summarize the approved enrichments
 ```
 
 Grader and code states are **automated states**: the runtime runs them on entry, with no model
@@ -147,7 +150,7 @@ reason reaches the next state as a note (a send-back is the correction the agent
 `archmax_raise` to end the session as failed. A check is a state on the graph, in front of the
 work or behind it, and an edge into one always carries a description: a grader's instructions are
 its criteria, and a code state has none. A grader suits work the agent hands on, such as the
-report above, rather than a live answer: everything the agent says in a turn reaches the person,
+enrichments above, rather than a live answer: everything the agent says in a turn reaches the person,
 a draft sent back included. Both live on the authoring plane, so the agent they check can neither
 read nor call them. See
 [grader and code states](https://harness.archmax.ai/guides/automated-states/).

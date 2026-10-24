@@ -570,8 +570,8 @@ The runtime SHALL record an ordered `auditTrail` in checkpointed state, one `Tra
 
 #### Scenario: Automated moves are recorded under their type
 
-- **WHEN** code state `check-refund` advances to `refund-review` with reason `matches the policy`, and in a report session grader state `review-report` advances to `report-delivered` with reason `the report lists exactly the delayed orders`
-- **THEN** the first session's trail gains `{ to: "refund-review", kind: "code", reason: "matches the policy" }`, and the second's `{ to: "report-delivered", kind: "grader", reason: "the report lists exactly the delayed orders" }`
+- **WHEN** code state `check-refund` advances to `refund-review` with reason `matches the policy`, and in an enrichment session grader state `review-enrichment` advances to `enrichment-reported` with reason `every order has one matching enrichment`
+- **THEN** the first session's trail gains `{ to: "refund-review", kind: "code", reason: "matches the policy" }`, and the second's `{ to: "enrichment-reported", kind: "grader", reason: "every order has one matching enrichment" }`
 
 #### Scenario: A discarded advance leaves no code step
 

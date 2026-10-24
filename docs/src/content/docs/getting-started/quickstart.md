@@ -61,11 +61,12 @@ request from an unknown requester or one reaching for another company's orders.
 Order answers come from `skills/order-data/assets/orders.json`, and a live
 answer ends where it is given: `orders-question` is terminal. Refund decisions
 pass the `check-refund` code state, which re-derives the policy before a person
-reviews them. A delayed-orders report, started by the `report_requested` trigger
-with no person waiting on it, passes the `review-report` grader state, which
-checks it against the order records and approves it into `report-delivered` or
-sends it back with what to fix. `refund-request` also demonstrates a
-`budget.maxTurns` limit and an `on_error` route to a terminal `escalation` state.
+reviews them. An order enrichment, started by the `enrichment_requested` trigger
+with no person waiting on it, passes the `review-enrichment` grader state, which
+checks what `enrich-order` recorded against the files its sub-runs returned and
+approves it into `enrichment-reported` or sends it back with what to fix.
+`refund-request` also demonstrates a `budget.maxTurns` limit and an `on_error`
+route to a terminal `escalation` state.
 Each state's guidance lives inline in its `instructions`.
 
 ## Use as a library

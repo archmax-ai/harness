@@ -314,7 +314,7 @@ decided only by its existence and the state's `requires`, whoever takes it.
 
 #### Scenario: An undescribed edge into an automated state is refused
 
-- **WHEN** an agent state declares `transitions: [{ to: review-report }]`, where `review-report` is
+- **WHEN** an agent state declares `transitions: [{ to: review-enrichment }]`, where `review-enrichment` is
   a grader state with `instructions`, or `transitions: [{ to: check-refund }]`, where `check-refund`
   is a code state
 - **THEN** loading fails with one error addressed to that transition's `description`, saying that
@@ -923,9 +923,9 @@ state may use — and both SHALL be part of the spec hash, because they change w
 
 #### Scenario: A grader state's model
 
-- **WHEN** a spec declares `settings: { model: small-model }`, grader state `review-report`
+- **WHEN** a spec declares `settings: { model: small-model }`, grader state `review-enrichment`
   declares `model: careful-model`, and grader state `check-tone` declares none
-- **THEN** the `review-report` grader's model calls run on `careful-model` and the `check-tone`
+- **THEN** the `review-enrichment` grader's model calls run on `careful-model` and the `check-tone`
   grader's on `small-model`
 
 #### Scenario: An unknown id is not the schema's business
@@ -1749,8 +1749,8 @@ which would fail open.
 
 #### Scenario: A well-formed grader validates clean
 
-- **WHEN** grader state `review-report` declares `instructions` and transitions to
-  `report-delivered` and back to `report-requested`
+- **WHEN** grader state `review-enrichment` declares `instructions` and transitions to
+  `enrichment-reported` and back to `enrich-order`
 - **THEN** `archmax validate` reports no diagnostic about the state
 
 ### Requirement: Keys a state type never reads are lint errors

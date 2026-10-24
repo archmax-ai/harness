@@ -248,37 +248,37 @@ call may not have succeeded.
 
 ```yaml
 states:
-  review-report:
+  review-enrichment:
     type: grader
     budget:
-      maxTurns: 6
+      maxTurns: 8
     on_error: escalation
-    skills:
-      allow: [order-data]
     instructions: |-
-      You check a delayed-orders report before it is delivered.
+      You check the enrichments recorded for this run before they are reported.
 
-      1. Read the requested `company` with `archmax_get_variables`.
-      2. Read `scratchpad/report.json` and `skills/order-data/assets/orders.json`.
-      3. The report is correct when its `company` is the requested company and
-         its `delayedOrderIds` are exactly that company's orders whose status is
-         `delayed`.
+      1. Read `orders_to_enrich` and `enrichments` with `archmax_get_variables`.
+      2. The enrichments are correct when `enrichments` holds exactly one entry
+         per requested `order_id` — none missing, none extra — and each entry
+         has an `enrichment_file` and a boolean `delayed`.
+      3. Read each `enrichment_file` with `read_file`: its `delayed` must match
+         the entry's.
 
-      - Correct: advance to `report-delivered`.
-      - Wrong or unreadable: advance back to `report-requested`, naming exactly
-        what to fix.
+      - Correct: advance to `enrichment-reported`.
+      - Wrong: advance back to `enrich-order`, naming exactly what is missing or
+        does not match.
       - Before sending it back, call `archmax_get_history` and count the steps
-        in `trail` with `kind: "grader"` and `to: "report-requested"`: if there
-        are already two, raise `report-incorrect` instead.
+        in `trail` with `kind: "grader"` and `to: "enrich-order"`: if there are
+        already two, raise `enrichment-incorrect` instead.
     transitions:
-      - to: report-delivered
-        description: The report lists exactly the company's delayed orders.
-      - to: report-requested
-        description: The report is wrong; send it back naming exactly what to fix.
+      - to: enrichment-reported
+        description: Every requested order has exactly one enrichment, and each matches its file.
+      - to: enrich-order
+        description: The enrichments are incomplete or do not match their files; send them back naming exactly what to fix.
 ```
 
-The grader judges with its own state's tools: this state enables `order-data`,
-so it reads the order records itself rather than trusting the report.
+The grader judges with its own state's tools: `read_file` comes from the
+workflow-wide grant, so it reads each file the sub-runs returned itself rather
+than trusting the `delayed` the agent recorded.
 
 A grader state must declare non-empty `instructions`, which are its criteria. It
 must also declare at least one transition: a grader decides by advancing, and one
@@ -321,7 +321,7 @@ stops it. A grader that should give up after N rounds says so in its
 `instructions` and counts the rounds itself, from the trail that
 `archmax_get_history` returns. Each earlier send-back is a step
 `{ kind: "grader", to: "<the graded state>" }`. The example above raises once it
-has sent the report back twice.
+has sent the enrichments back twice.
 
 A code state counts the same way, from the same trail. The reference workspace's
 `check-refund` escalates after two send-backs:
@@ -358,23 +358,25 @@ whole trail, oldest first. A grader calls it as a tool; a code state's script
 calls `tools.archmax_get_history()` and parses the answer. Both read the same
 view, so a grader and a script counting the same rounds read the same thing.
 
-What `review-report` reads on its second round:
+What `review-enrichment` reads on its second round:
 
 ```jsonc
 {
   "messages": [
-    { "role": "user", "text": "A delayed-orders report was requested." },
-    { "role": "assistant", "text": "", "toolCalls": [{ "id": "call_1", "name": "read_file", "args": { "file_path": "skills/order-data/assets/orders.json" } }] },
-    { "role": "tool", "text": "[{\"id\":\"ORD-1001\",\"customer\":\"Acme Corp\",\"status\":\"delivered\", …}]", "tool": "read_file", "id": "call_1" },
-    // … the report written, and the agent's archmax_advance into review-report
-    { "role": "runtime", "text": "[grader] The 'review-report' grader moved the run to 'report-requested': ORD-1003 is missing. …", "note": "grader" }
-    // … the report fixed, and the advance into review-report again
+    { "role": "user", "text": "Enrich the requested orders." },
+    { "role": "assistant", "text": "", "toolCalls": [{ "id": "call_1", "name": "archmax_run", "args": { "file_path": "skills/order-enrichment/scripts/enrich-orders.js" } }] },
+    { "role": "tool", "text": "[{\"order_id\":\"ORD-1002\",\"enrichment_file\":\"scratchpad/attachments/ORD-1002.json\",\"delayed\":false}, …]", "tool": "archmax_run", "id": "call_1" },
+    // … the enrichments recorded, and the agent's archmax_advance into review-enrichment
+    { "role": "runtime", "text": "[grader] The 'review-enrichment' grader moved the run to 'enrich-order': ORD-1003 has no entry in enrichments. …", "note": "grader" }
+    // … the enrichments fixed, and the advance into review-enrichment again
   ],
   "trail": [
-    { "to": "report-requested", "kind": "trigger", "reason": "report_requested", "ts": 1761300000000 },
-    { "to": "review-report", "kind": "agent", "reason": "…", "ts": 1761300004120 },
-    { "to": "report-requested", "kind": "grader", "reason": "ORD-1003 is missing. …", "ts": 1761300009870 },
-    { "to": "review-report", "kind": "agent", "reason": "…", "ts": 1761300013450 }
+    { "to": "enrich-order", "kind": "trigger", "reason": "enrichment_requested", "ts": 1761300000000 },
+    { "to": "enrich-order", "kind": "sub-workflow", "workflow": "enrich-order", "status": "ok", "ts": 1761300002480 },
+    // … one sub-workflow step per enriched order
+    { "to": "review-enrichment", "kind": "agent", "reason": "…", "ts": 1761300004120 },
+    { "to": "enrich-order", "kind": "grader", "reason": "ORD-1003 has no entry in enrichments. …", "ts": 1761300009870 },
+    { "to": "review-enrichment", "kind": "agent", "reason": "…", "ts": 1761300013450 }
   ]
 }
 ```
@@ -434,7 +436,7 @@ The agent standing in the next state learns why it was entered from a runtime
 note:
 
 ```text
-[grader] The 'review-report' grader moved the run to 'report-requested': ORD-1003 is delayed and missing from delayedOrderIds. You are now in 'report-requested'.
+[grader] The 'review-enrichment' grader moved the run to 'enrich-order': ORD-1003 has no entry in enrichments; record every order the script returned. You are now in 'enrich-order'.
 [code] 'check-refund' moved the run to 'refund-review': "denied" matches the refund policy. You are now in 'refund-review'.
 ```
 
@@ -447,7 +449,7 @@ From the state before, the agent sees only the transition line, marked with the
 target's type:
 
 ```text
-- to `review-report` (grader) — scratchpad/report.json is written for the requested company.
+- to `review-enrichment` (grader) — Every order has been enriched and `enrichments` is recorded.
 ```
 
 So an edge **into** a grader or a code state must carry a `description`. An
@@ -474,7 +476,7 @@ the corrected one. A grader's own text never enters the transcript, so it is
 never part of a reply.
 
 So put a send-back loop where the work is handed on and no person is waiting on
-the turn's text, such as a triggered report, rather than in front of a live
+the turn's text, such as a triggered enrichment, rather than in front of a live
 answer.
 
 ## Events
@@ -550,34 +552,32 @@ agent reads the send-back reason as a note and fixes the work.
 ### Approve, then end
 
 A grader that approves into a terminal agent state costs one more model call:
-that state's agent has to finish. The reference workspace's `report-delivered`
+that state's agent has to finish. The reference workspace's `enrichment-reported`
 does, because its summary is the point. When nothing more needs saying, approve
 into a **terminal code state** instead. Its script runs and the session completes,
 with no further model call:
 
 ```yaml
-  report-filed:
+  enrichments-filed:
     type: code
-    script: scripts/report-filed.js
+    script: scripts/enrichments-filed.js
 ```
 
 ```js
 /**
- * Report filing.
+ * Enrichment filing.
  *
- * Copies the approved scratchpad/report.json to scratchpad/filed-report.json,
- * with the number of rounds the review took, then returns: the session
- * completes.
+ * Writes the approved `enrichments` to scratchpad/enrichments.json, with the
+ * number of rounds the review took, then returns: the session completes.
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ tools }) => {
-  const report = JSON.parse(await tools.read_file({ file_path: "scratchpad/report.json" }));
+export default defineCodeState(async ({ variables, tools }) => {
   const { trail } = JSON.parse(await tools.archmax_get_history());
-  const rounds = trail.filter((step) => step.to === "review-report").length;
+  const rounds = trail.filter((step) => step.to === "review-enrichment").length;
   await tools.write_file({
-    file_path: "scratchpad/filed-report.json",
-    content: JSON.stringify({ ...report, rounds }),
+    file_path: "scratchpad/enrichments.json",
+    content: JSON.stringify({ enrichments: variables.enrichments, rounds }),
   });
 });
 ```
@@ -586,12 +586,13 @@ export default defineCodeState(async ({ tools }) => {
 
 Put a grader behind the state it grades, with an edge back to it. The grader's
 `instructions` say how many rounds to allow and to raise after that, counting the
-trail. `review-report` above approves to `report-delivered`, sends the report back
-to `report-requested` with the correction, and raises `report-incorrect` once it
-has sent it back twice. The graded state's `instructions` tell the agent to
-advance to the grader once the work is written, and to fix what the note names
-when it is sent back. Every draft the agent writes stays in the turn's
-[reply](#the-turns-reply), so the loop suits work no person is waiting on.
+trail. `review-enrichment` above approves to `enrichment-reported`, sends the
+enrichments back to `enrich-order` with the correction, and raises
+`enrichment-incorrect` once it has sent them back twice. The graded state's
+`instructions` tell the agent to advance to the grader once the work is recorded,
+and to fix what the note names when it is sent back. Every draft the agent writes
+stays in the turn's [reply](#the-turns-reply), so the loop suits work no person is
+waiting on.
 
 ## Testing automated states
 
@@ -606,14 +607,16 @@ control tool is never mocked: an automated state's `archmax_advance` and
 [testing workflows](/guides/testing/#assertions).
 
 ```yaml
-# workflows/order-lookup/tests/triggered-report.test.yaml (excerpt)
+# workflows/order-lookup/tests/enrichment-fan-out.test.yaml (excerpt)
 trigger:
-  id: report_requested
+  id: enrichment_requested
 variables:
-  company: "Acme Corp"
+  orders_to_enrich:
+    - order_id: "ORD-1002"
+    - order_id: "ORD-1003"
 steps:
-  - send: "A delayed-orders report was requested."
-  - trail: { kind: grader, to: report-delivered, count: 1 }
-  - reply:
-      includes: ["ORD-1003", "Acme"]
+  - send: "Enrich the requested orders."
+  - ranWorkflow: { workflow: enrich-order, count: 2 }
+  - reachedState: enrichment-reported
+  - trail: { kind: grader, to: enrichment-reported, count: 1 }
 ```

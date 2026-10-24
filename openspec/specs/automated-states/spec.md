@@ -173,7 +173,7 @@ session `failed` with its code and reason. A completion SHALL be checked against
 
 #### Scenario: A raise ends the session
 
-- **WHEN** a grader calls `archmax_raise({ code: "report-incorrect", reason })`
+- **WHEN** a grader calls `archmax_raise({ code: "enrichment-incorrect", reason })`
 - **THEN** the session ends `failed` with that code and reason in its outcome, and no further
   state runs in the turn
 
@@ -207,7 +207,7 @@ naming the code and reason. A grader's own messages SHALL NOT enter the session'
 #### Scenario: A send-back reaches the agent as a note
 
 - **WHEN** a grader advances back to the agent state it grades with
-  `reason: "the report misses ORD-1003"`
+  `reason: "the enrichments miss ORD-1003"`
 - **THEN** the agent's next model call reads a `grader` runtime note carrying that reason, and
   the trail records a `grader` step into the agent state
 
@@ -251,7 +251,7 @@ rounds says so in its instructions and counts them from the history's trail.
 
 #### Scenario: The grader reads the history and sends the work back
 
-- **WHEN** a grader calls `archmax_get_history`, finds the report incomplete, and calls
+- **WHEN** a grader calls `archmax_get_history`, finds the enrichments incomplete, and calls
   `archmax_advance` back to the agent state
 - **THEN** the session moves back with that reason, and the grader made no further model call
 

@@ -995,9 +995,9 @@ error tool result, and the tool SHALL NOT run.
 
 #### Scenario: A grader is held to its own state's grants
 
-- **WHEN** agent state `report-requested` grants `lookup_orders`, advances to grader state
-  `review-report`, which grants no host tool, and the grader calls `lookup_orders`
-- **THEN** the call is blocked with `tool.not-allowed` naming `review-report`, the grader receives
+- **WHEN** agent state `enrich-order` grants `lookup_orders`, advances to grader state
+  `review-enrichment`, which grants no host tool, and the grader calls `lookup_orders`
+- **THEN** the call is blocked with `tool.not-allowed` naming `review-enrichment`, the grader receives
   an error tool result, and `lookup_orders` does not run
 
 #### Scenario: The previous state's grant does not follow into a code state
@@ -1138,7 +1138,7 @@ read. Every call SHALL still be decided by the kernel whether or not the mount w
 #### Scenario: An automated state is held to its own state's mounts
 
 - **WHEN** the table governs `catalogs/eu`, only state `triage` enables it, and the script of code
-  state `screen-request` and the grader of grader state `review-report` each read
+  state `screen-request` and the grader of grader state `review-enrichment` each read
   `catalogs/eu/skus.csv` and list `/`
 - **THEN** both reads are blocked with `mount.not-allowed`, and neither listing shows a
   `catalogs/eu` entry

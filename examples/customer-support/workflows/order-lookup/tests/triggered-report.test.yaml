@@ -7,17 +7,15 @@
 # Nothing is seeded into the workspace: the variable carries everything the
 # agent needs, so there is no fixture file to copy in with `workspace: { from: … }`.
 # Nothing is mocked: the agent works from the seeded variable and the real
-# skills/order-data/assets/orders.json fixture, and the review-report grader
-# checks the report against that same fixture before report-delivered
-# summarizes it.
+# skills/order-data/assets/orders.json fixture.
 # The assertions pin the run's OUTCOME — where it started, what it produced,
 # what it said — rather than the route it took to get there: which files the
 # model chooses to open is not part of this case's contract.
 title: Delayed-orders report compiled from a trigger
 description: >-
   The report_requested trigger starts the run with a seeded `company`
-  variable; the agent writes scratchpad/report.json, the grader approves it, and
-  the summary names Acme's one delayed order, ORD-1003.
+  variable; the agent writes scratchpad/report.json and its reply names Acme's one
+  delayed order, ORD-1003.
 trigger:
   id: report_requested
 variables:
@@ -32,11 +30,6 @@ steps:
       name: write_file
       input:
         file_path: "/scratchpad\\/report\\.json/"
-  # The grader approved the report into report-delivered.
-  - trail:
-      to: report-delivered
-      kind: grader
-      count: 1
   - reply:
       includes: ["ORD-1003", "Acme"]
   # The seeded variable is readable for the whole run and cannot be rewritten.

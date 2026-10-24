@@ -63,12 +63,12 @@ steps:
 ```
 
 ```yaml
-trigger: { id: report_requested }                             # the report path
-variables: { company: "Acme Corp" }
+trigger: { id: enrichment_requested }                         # the enrichment path
+variables: { orders_to_enrich: [{ order_id: "ORD-1002" }, { order_id: "ORD-1003" }] }
 steps:
-  - send: "A delayed-orders report was requested."
-  - trail: { kind: grader, to: report-requested, count: 0 }   # no send-back
-  - trail: { kind: grader, to: report-delivered, count: 1 }   # the grader approved
+  - send: "Enrich the requested orders."
+  - trail: { kind: grader, to: enrich-order, count: 0 }          # no send-back
+  - trail: { kind: grader, to: enrichment-reported, count: 1 }   # the grader approved
 ```
 
 A case that declines at entry asserts `reachedState: <declining state>` plus

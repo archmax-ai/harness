@@ -166,7 +166,7 @@ states:
     title: Answer order question
     summary: Answer an order/status question from the order data.
     # Terminal: a live answer ends here. Checks belong where the agent hands
-    # work on — see review-report for a grader on the report path.
+    # work on — see review-enrichment for a grader on the enrichment path.
     instructions: >-
       Find the orders matching the user's request by customer name, order id,
       and/or status (delivered, shipped, processing, delayed). The
@@ -354,70 +354,12 @@ states:
       user. Read trigger.json from the workspace root for the request payload
       (the company the report is for). Then read skills/order-data/assets/orders.json and collect
       that company's delayed orders. Write the report to scratchpad/report.json as
-      { "company": "<name>", "delayedOrderIds": ["<id>", ...] } - write_file
-      creates it; if review-report sent it back, read it and fix what the note
-      names with edit_file. Answer only from orders.json - never fabricate order
-      data. Once the report is written, call archmax_advance to review-report:
-      that call hands the report in. If orders.json cannot be read, there is no
-      report to hand in: write none and end the run with archmax_raise, saying
-      why.
-    transitions:
-      - to: review-report
-        description: >-
-          scratchpad/report.json is written for the requested company.
-
-  review-report:
-    title: Review the report
-    summary: Check the report against the order records; approve it or send it back.
-    # A grader state: an isolated grader subagent judges the report with its
-    # state's own tools — here the order records its skill grants — reads the
-    # session with archmax_get_history, and decides with archmax_advance or
-    # archmax_raise. There is no retry budget: the instructions say when to give
-    # up, and the grader counts the rounds on the trail.
-    type: grader
-    # Reading the report, the records and the history, then deciding; this leaves headroom.
-    budget:
-      maxTurns: 6
-    on_error: escalation
-    skills:
-      allow: [order-data]
-    instructions: |-
-      You check a delayed-orders report before it is delivered.
-
-      ## Steps
-
-      1. Read the requested `company` with `archmax_get_variables`.
-      2. Read `scratchpad/report.json` and `skills/order-data/assets/orders.json`.
-      3. The report is correct when its `company` is the requested company and
-         its `delayedOrderIds` are exactly that company's orders whose status is
-         `delayed` — none missing, none extra.
-
-      ## Decision
-
-      - Correct: advance to `report-delivered`.
-      - Wrong or unreadable: advance back to `report-requested`, naming exactly
-        what to fix (the missing or extra ids, the wrong company).
-      - Before sending it back, call `archmax_get_history` and count the steps
-        in `trail` with `kind: "grader"` and `to: "report-requested"`: if there
-        are already two, raise `report-incorrect` instead.
-    transitions:
-      - to: report-delivered
-        description: >-
-          The report lists exactly the company's delayed orders.
-      - to: report-requested
-        description: >-
-          The report is wrong: send it back, naming exactly what to fix.
-
-  report-delivered:
-    title: Deliver the report
-    summary: Summarize the approved report.
-    # Terminal; reports from scratchpad/report.json alone, so no skill is enabled.
-    skills:
-      allow: []
-    instructions: >-
-      The report in scratchpad/report.json has been checked. Read it and reply
-      with a one-paragraph summary naming the company and each delayed order id.
-      This state is terminal - stop once the summary is written.
+      { "company": "<name>", "delayedOrderIds": ["<id>", ...] } and reply with
+      a one-paragraph summary naming the company and each delayed order id.
+      Answer only from orders.json - never fabricate order data. If orders.json
+      cannot be read, there is no report: write none, and end the run with
+      archmax_raise in the message that says so. This state is terminal - stop
+      once the report is written and summarized.
 
   enrich-order:
     title: Enrich the requested orders
@@ -432,7 +374,9 @@ states:
       Run skills/order-enrichment/scripts/enrich-orders.js with archmax_run. It enriches every
       order in `orders_to_enrich`, one sub-run apiece, and returns a list of
       { order_id, enrichment_file, delayed } objects. Record that list as the
-      `enrichments` variable with archmax_set_variables, then advance. Do not
+      `enrichments` variable with archmax_set_variables, then advance to
+      review-enrichment, which checks it. If the review sends it back, fix what
+      its note names and advance again. Do not
       enrich anything by hand and do not call the enrichment workflow yourself -
       the script does it.
     # The advance is refused until the script's result has been recorded.
@@ -447,8 +391,53 @@ states:
         - archmax_workflow_enrich-order
     on_error: escalation
     transitions:
+      - to: review-enrichment
+        description: Every order has been enriched and `enrichments` is recorded.
+
+  review-enrichment:
+    title: Review the enrichments
+    summary: Check the recorded enrichments before they are reported; approve or send back.
+    # A grader state on work no person is waiting on: an isolated grader subagent
+    # checks the agent's recorded result with its own state's tools (the
+    # variables, and read_file for the files the sub-runs returned), then decides
+    # with archmax_advance — or ends the session with archmax_raise. There is no
+    # retry budget: the instructions say when to give up, and the grader counts
+    # the rounds on the trail it reads with archmax_get_history.
+    type: grader
+    # Reading the variables and the files, then deciding; this leaves headroom.
+    budget:
+      maxTurns: 8
+    on_error: escalation
+    skills:
+      allow: []
+    instructions: |-
+      You check the enrichments recorded for this run before they are reported.
+
+      ## Steps
+
+      1. Read `orders_to_enrich` and `enrichments` with `archmax_get_variables`.
+      2. The enrichments are correct when `enrichments` holds exactly one entry
+         per requested `order_id` — none missing, none extra — and each entry
+         has an `enrichment_file` and a boolean `delayed`.
+      3. Read each `enrichment_file` with `read_file`: its `delayed` must match
+         the entry's.
+
+      ## Decision
+
+      - Correct: advance to `enrichment-reported`.
+      - Wrong: advance back to `enrich-order`, naming exactly what is missing or
+        does not match.
+      - Before sending it back, call `archmax_get_history` and count the steps
+        in `trail` with `kind: "grader"` and `to: "enrich-order"`: if there are
+        already two, raise `enrichment-incorrect` instead.
+    transitions:
       - to: enrichment-reported
-        description: Every order has been enriched.
+        description: >-
+          Every requested order has exactly one enrichment, and each matches its file.
+      - to: enrich-order
+        description: >-
+          The enrichments are incomplete or do not match their files: send them
+          back, naming exactly what to fix.
 
   enrichment-reported:
     title: Report the enrichments

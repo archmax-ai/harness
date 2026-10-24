@@ -118,13 +118,14 @@ A breaking release: checking a state's work moves out of hooks and onto the grap
   `screen-request` code state and sends a refused one to `decline`. It checks a refund decision in
   the `check-refund` code state before the human review, escalating after two send-backs it counts
   on the trail; `refund-closed` states the final decision in so many words. A live answer ends
-  where it is given: `orders-question` is terminal. The grader sits on the triggered report path,
-  where no person is waiting: `report-requested` writes `scratchpad/report.json` (or raises when
-  `orders.json` cannot be read) and advances to the `review-report` grader state, which reads the
-  order records with its own state's `order-data` skill and the requested `company` with
-  `archmax_get_variables`, and approves into the terminal agent state `report-delivered` or sends
-  the report back, raising `report-incorrect` after two send-backs. The `triggered-report` case
-  pins that approval as a `grader` trail step.
+  where it is given: `orders-question` is terminal, and so is the triggered `report-requested`. The
+  grader sits on the triggered enrichment path, where no person is waiting: `enrich-order` records
+  the fan-out script's `enrichments` and advances to the `review-enrichment` grader state, which
+  reads `orders_to_enrich` and `enrichments` with `archmax_get_variables` and each returned
+  `enrichment_file` with `read_file`, and approves into the terminal agent state
+  `enrichment-reported` or sends the enrichments back to `enrich-order`, raising
+  `enrichment-incorrect` after two send-backs. The `enrichment-fan-out` case pins that approval as
+  a `grader` trail step.
 - **A case's `succeeded` reads the action's outcome.** `succeeded: true` passes when the outcome is
   `completed`: not parked, raised, failed or rejected. It used to fail whenever any tool result in
   the transcript had error status, so an agent's recovered `ls` of a missing directory failed an

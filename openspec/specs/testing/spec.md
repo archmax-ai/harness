@@ -245,10 +245,10 @@ These assertions SHALL read an automated state's outcome as they read the agent'
 
 #### Scenario: A grader's send-backs are counted
 
-- **WHEN** the grader state `review-report` sends the session back to `report-requested` twice and
-  then approves to `report-delivered`
-- **THEN** `trail: { kind: grader, to: report-requested, count: 2 }` and
-  `trail: { kind: grader, to: report-delivered, count: 1 }` pass
+- **WHEN** the grader state `review-enrichment` sends the session back to `enrich-order` twice and
+  then approves to `enrichment-reported`
+- **THEN** `trail: { kind: grader, to: enrich-order, count: 2 }` and
+  `trail: { kind: grader, to: enrichment-reported, count: 1 }` pass
 
 #### Scenario: Trail counting
 

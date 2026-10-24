@@ -97,15 +97,15 @@ states:
     transitions:
       - to: orders-question
         description: "User is asking about orders."   # when to take it; omit to route on the target's instructions
-  review-report:
+  review-enrichment:
     type: grader            # an automated state: the runtime runs it (see type)
-    instructions: "Check the report against the order records; approve it or send it back."
+    instructions: "Check the recorded enrichments against their files; approve them or send them back."
     transitions:
-      - { to: report-filed, description: "The report is correct." }
-      - { to: report-requested, description: "The report is wrong; send it back." }
-  report-filed:
+      - { to: enrichments-filed, description: "The enrichments are correct." }
+      - { to: enrich-order, description: "The enrichments are wrong; send them back." }
+  enrichments-filed:
     type: code              # runs its script and completes, with no model call
-    script: scripts/report-filed.js
+    script: scripts/enrichments-filed.js
 ```
 
 A state with **no `transitions`** is terminal. The turn ends when the agent

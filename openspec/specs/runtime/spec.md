@@ -650,11 +650,11 @@ prompt section SHALL render any `metadata` block, at the root or on a state.
 
 #### Scenario: A graded state says only that it is graded
 
-- **WHEN** the agent state `report-requested` has a transition to the grader state
-  `review-report`, whose `instructions` hold the report's criteria
-- **THEN** the prompt rendered in `report-requested` discloses the grading only as that transition
-  line, `review-report` by slug with the transition's `description`, and contains no part of
-  `review-report`'s `instructions`, `model` or `budget`
+- **WHEN** the agent state `enrich-order` has a transition to the grader state
+  `review-enrichment`, whose `instructions` hold the enrichments' criteria
+- **THEN** the prompt rendered in `enrich-order` discloses the grading only as that transition
+  line, `review-enrichment` by slug with the transition's `description`, and contains no part of
+  `review-enrichment`'s `instructions`, `model` or `budget`
 
 #### Scenario: Metadata is never rendered
 
