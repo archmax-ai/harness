@@ -3,6 +3,7 @@
  * code-state script and its host tools, with a scripted model standing in for
  * the agent and the grader. When this fails, the README is wrong.
  */
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { StructuredTool } from "@langchain/core/tools";
@@ -83,5 +84,20 @@ describe("the README's refund example", () => {
     expect(outcome.auditTrail[2]?.reason).toBe("Order ORD-1002 is shipped, so the refund must be denied.");
     // Only the corrected email reached the grader.
     expect(grader.calls).toHaveLength(1);
+  });
+
+  it("is exactly the code the README shows", () => {
+    const readme = readFileSync(resolve(ROOT, "../../README.md"), "utf8");
+    for (const [label, path] of [
+      ["yaml\n# workflows/refund/workflow.yaml", "workflows/refund/workflow.yaml"],
+      ["js\n// workflows/refund/scripts/check-decision.js", "workflows/refund/scripts/check-decision.js"],
+      ["js\n// tools.js", "tools.js"],
+      ["js\n// index.js", "index.js"],
+    ] as const) {
+      const start = readme.indexOf("```" + label + "\n");
+      expect(start, `README shows ${path}`).toBeGreaterThanOrEqual(0);
+      const body = readme.slice(start + label.length + 4, readme.indexOf("\n```", start + label.length + 4) + 1);
+      expect(body, path).toBe(readFileSync(join(ROOT, path), "utf8"));
+    }
   });
 });

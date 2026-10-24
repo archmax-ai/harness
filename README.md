@@ -56,204 +56,205 @@ npx skills add archmax-ai/harness
 
 ## Quickstart
 
-### A workspace
+A refund desk in four states. The agent decides the refund and drafts the email, a script checks
+the decision against the policy, a grader checks the email, and the agent sends it. The complete
+example is in [`examples/refund/`](examples/refund/).
 
 ```
-my-workspace/
-├── AGENTS.md                      # persona
-├── workflows/order-lookup/
-│   ├── workflow.yaml              # the enforced state machine
-│   ├── WORKFLOW.md                # optional prose addendum
-│   ├── scripts/screen-request.js  # code-state scripts, run by the runtime
-│   └── tests/*.test.yaml          # cases for `archmax test`
-├── skills/<slug>/                 # skill bundles: SKILL.md, assets/, scripts/
-└── sessions/                      # default session store (gitignored)
+refund/
+├── index.js                          # your program: the host tools and the agent
+├── tools.js
+└── workflows/refund/
+    ├── workflow.yaml                 # the process, enforced
+    └── scripts/check-decision.js     # the deterministic check
 ```
+
+### The workflow
 
 ```yaml
-# workflows/order-lookup/workflow.yaml (excerpt)
-title: Order lookup
-instructions: Only ever disclose the requester's own company's orders.
-runtime: { engine: archmax-harness, version: "3" }
-tools:
-  allow_always: [ls, read_file, write_file, edit_file, glob, grep, copy_file,
-                 move_file, remove_file, write_todos, archmax_eval, archmax_run]
-                                          # granted in every state. Without this key a
-                                          # workflow gets these default tools; declared,
-                                          # it gets exactly what it lists
-  forbid_always: [archmax_reset]          # denied in every state; deny beats allow
-skills: { allow_always: [order-data] }    # enabled in every state; a state's own
-                                          # `skills.allow` adds, `skills.forbid` subtracts
-mounts: { allow_always: [reference] }     # which STATES reach a host-governed mount;
-                                          # a grant may say `access: read` or `read_write`,
-                                          # and only `read_write` lets this workflow write it
+# workflows/refund/workflow.yaml
+title: Refund request
+instructions: Decide only from what lookup_customer returns; never guess an order.
 
 states:
-  screen-request:                   # a code state: the runtime runs its script on
-    type: code                      # entry, with no model call, and the script moves
-    script: scripts/screen-request.js   # the session with tools.archmax_advance
+  decide:
     triggers:
       manual:
-    transitions:                    # its script routes, so a code state's own edges
-                                    # may go undescribed
-      - to: identify-case
-        description: The requester is known and asks about their own company's orders.
-      - to: decline
-        description: The request names no known requester.
-  identify-case:
-    instructions: Classify the request and archmax_advance to the matching path.
-    transitions:                    # the agent is shown this state's edges and nothing
-                                    # else of the graph: it routes on each description,
-                                    # or, where an edge has none, on the target's
-                                    # instructions
-      - to: orders-question
-        description: The user is asking about orders, status, shipping, or tracking.
-  orders-question:                  # no transitions: terminal, so a live answer
-                                    # ends where it is given
-    instructions: Answer from skills/order-data/assets/orders.json.
-                                    # no skills block: the workflow's grant reaches
-                                    # here, and enabling a bundle is the whole grant
-  enrich-order:
-    triggers:
-      enrichment_requested:         # a host event: no person is waiting on this path
-    skills: { allow: [order-enrichment] }               # the fan-out script's bundle
-    tools: { allow: [archmax_workflow_enrich-order] }   # delegation is granted by name
+        requires: [email]
+    tools:
+      allow: [lookup_customer]
     instructions: >-
-      Run skills/order-enrichment/scripts/enrich-orders.js with archmax_run, record
-      its result as `enrichments`, then archmax_advance to review-enrichment. If a
-      note sends it back, fix what it names.
+      Look the customer up with lookup_customer, using the `email` variable. A
+      refund is approved only when their order is delivered; otherwise it is
+      denied. Record the decision with archmax_set_variables as `decision`
+      (approved or denied), write the email to the customer in
+      scratchpad/email.md, then advance to check-decision. If you are sent
+      back, fix what the note says and advance again.
     transitions:
-      - to: review-enrichment
-        description: Every order has been enriched and `enrichments` is recorded.
-  review-enrichment:                # a grader state: an isolated grader judges the work
-    type: grader                    # against these criteria and decides the edge
+      - to: check-decision
+        description: The decision is recorded and the email is drafted.
+
+  check-decision:
+    type: code
+    script: scripts/check-decision.js
+    tools:
+      allow: [lookup_customer]
+    transitions:
+      - to: review-email
+        description: The decision matches the refund policy.
+      - to: decide
+        description: The decision contradicts the refund policy.
+
+  review-email:
+    type: grader
     instructions: >-
-      Check `enrichments` against `orders_to_enrich` and each returned file.
-      Correct: advance to enrichment-reported. Wrong: send them back naming what
-      to fix. After two send-backs, raise enrichment-incorrect.
+      Read scratchpad/email.md and the `decision` variable. Approve the email
+      when it is polite, states the decision plainly and names the order.
+      Otherwise send it back, saying exactly what to change.
     transitions:
-      - to: enrichment-reported
-        description: Every requested order has exactly one enrichment, and each matches its file.
-      - to: enrich-order
-        description: The enrichments are incomplete or do not match their files; send them back.
-  # decline, enrichment-reported: terminal states that tell the person why, and
-  # summarize the approved enrichments
+      - to: send
+        description: The email is ready to send.
+      - to: decide
+        description: The email needs changes.
+
+  send:
+    tools:
+      allow: [send_email]
+    instructions: >-
+      Send scratchpad/email.md to the customer at `email` with send_email, then
+      say in one sentence that it was sent.
 ```
 
-Grader and code states are **automated states**: the runtime runs them on entry, with no model
-call of the session's agent, so a chain of code states costs nothing. A code state's script
-(`workflows/<slug>/scripts/`) runs in the sandbox; a grader is an isolated subagent whose system
-prompt is the state's `instructions`. Both read the session with `archmax_get_history`: its whole
-transcript, tool results included, and its trail. Each is offered exactly its own state's tools,
-and each leaves the way every state does: `archmax_advance` along one of its transitions, whose
-reason reaches the next state as a note (a send-back is the correction the agent reads), or
-`archmax_raise` to end the session as failed. A check is a state on the graph, in front of the
-work or behind it, and an edge into one always carries a description: a grader's instructions are
-its criteria, and a code state has none. A grader suits work the agent hands on, such as the
-enrichments above, rather than a live answer: everything the agent says in a turn reaches the person,
-a draft sent back included. Both live on the authoring plane, so the agent they check can neither
-read nor call them. See
-[grader and code states](https://harness.archmax.ai/guides/automated-states/).
+Each state is one step of the process, and the agent only ever sees the step it is in: that
+state's instructions, its tools and the transitions out of it, each with a description to choose
+by. It moves on by calling `archmax_advance`, and the runtime refuses any edge the state does not
+declare. A state with no transitions, like `send`, is where the session ends.
 
-A trigger may also declare the contract a caller relies on: what a firing must supply and what the
-session guarantees when it completes. A delegating workflow, a host's MCP tool and a start form all
-read the same declaration, and the runtime holds it at the boundary:
+Two of the states run without the agent. **`check-decision` is a code state**: the runtime runs
+its script on entry, with no model call. **`review-email` is a grader state**: an isolated
+subagent judges the email against the state's instructions. Both reach only their own state's
+tools, and both decide the same way the agent does, with `archmax_advance`. A send-back reaches the
+agent as a note it reads before trying again.
 
-```yaml
-states:
-  intake:
-    triggers:
-      manual:
-        description: Refund one order and report what was refunded.   # for callers, not the agent
-        requires:
-          - order_id                                                   # a bare name is untyped
-          - { name: due, type: date, description: The day the refund is due. }
-        returns:
-          - { name: total, type: number, description: Refunded amount in EUR. }
-```
+### The check
 
-A start whose `due` is not a real `YYYY-MM-DD` day is refused before any model call, and a session
-that finishes with `total` not a number is rejected. One that finishes with `total` unset is
-rejected too, unless it runs as a sub-workflow: then its caller gets `total` empty (`null`), plus a
-`note` naming it. A return is owed only when the session finishes, and a seed of one lands unlocked. `signatureJsonSchema` on
-`@archmax-ai/harness/spec` turns the same signature into a JSON Schema. See
-[triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature).
+```js
+// workflows/refund/scripts/check-decision.js
+export default async function ({ variables, tools }) {
+  const customer = JSON.parse(await tools.lookup_customer({ email: variables.email }));
+  const order = customer?.order;
+  const due = order?.status === "delivered" ? "approved" : "denied";
 
-An entry typed `file` takes a path from the workspace root. A host hands one in with
-`send(sessionId, { message, files: { invoice: { name, content } } })`, or the CLI with
-`--file invoice=./invoice.pdf`, and the file lands in the session's `scratchpad/attachments/`. A
-sub-workflow is its own session with its own files, so a `file` argument is copied into the child,
-and a `file` return is copied back under a name that never overwrites the caller's files. See
-[passing files](https://harness.archmax.ai/guides/sub-workflows/#passing-files). The child's
-session id is `<parent>~<n>`, `n` the dispatch's number in its caller, and a host tool called in
-the child is handed that id as `ToolContext.sessionId`, so a host that stores session files itself
-keys them under the child's `<sessionId>/`, not its caller's.
-
-`examples/customer-support/` in this repository is a complete reference workspace.
-
-### The CLI
-
-```bash
-npx archmax run order-lookup "Which orders are delayed for Acme?" --root ./my-workspace
-npx archmax run reconcile "Reconcile this" --file invoice=./invoice.pdf  # hand the session a file
-npx archmax test order-lookup --root ./my-workspace       # run the workflow's cases
-npx archmax validate order-lookup --root ./my-workspace   # static checks, no model calls
-npx archmax sessions --root ./my-workspace                # list durable sessions
-npx archmax decide <session> --to approved                # resume a session parked at a human state
-npx archmax reply <session> "Any update?"                 # answer a parked session; it stays parked
-npx archmax deliver <session> --trigger email_reply       # resume a session parked with archmax_wait
-```
-
-Results go to stdout and the state flow to stderr. Exit 0 means done or parked, 1 a failure
-(including a session the agent ended with `archmax_raise`), 2 a usage error. See the
-[CLI reference](https://harness.archmax.ai/reference/cli/).
-
-### The library
-
-```ts
-import { createAgent } from "@archmax-ai/harness";
-
-const agent = await createAgent({
-  workflow: "order-lookup",
-  workspace: { rootDir: "./my-workspace" },
-});
-
-// A turn, a decision, a reply or a delivery: one call, one Outcome.
-const outcome = await agent.workflow!.send("session-42", {
-  message: "Which orders are delayed for Acme?",
-});
-console.log(outcome.kind, outcome.state, outcome.reply); // "parked" "refund-review" "..."
-
-if (outcome.kind === "parked" && outcome.parkedChannel === "decision") {
-  await agent.workflow!.decide("session-42", { target: "approved", comment: "Within policy." });
+  if (variables.decision === due) {
+    await tools.archmax_advance({
+      to: "review-email",
+      reason: `The refund is ${due}, as the policy requires.`,
+    });
+  } else {
+    await tools.archmax_advance({
+      to: "decide",
+      reason: `Order ${order?.id ?? "(none)"} is ${order?.status ?? "unknown"}, so the refund must be ${due}.`,
+    });
+  }
 }
 ```
 
-A session is a success unless the agent says otherwise. When the work cannot be completed, the
-agent calls `archmax_raise({ code, reason })`, which is offered in every state and only for
-failure. The session then ends `failed`, with no further model call and no `on_error` route, and
-`outcome.kind === "failed"` carries `outcome.exit: { success: false, code, reason }`, so a host
-branches on the agent's own code. A completed turn carries `exit: { success: true }`; a rejection
-by governance carries `outcome.rejected` instead. See
-[how a session ended](https://harness.archmax.ai/guides/sessions/#how-a-session-ended).
+The policy lives in code, so it holds whatever the model says. When the agent records the wrong
+decision, the script sends it back with the reason, before anyone grades the email.
 
-Omit `workflow` for a plain Deep Agent with the same parameters, or pass `workflow: false` to
-declare an agent ungoverned. `onEvent` receives the typed event stream and
-`workspace.sessionStore` puts sessions elsewhere. `workspace.mounts` composes what the agent can
-see, and marking a mount `governed: true` hands the spec's `mounts` block the decision of which
-states reach it. Marking one `searchable: false` keeps root-wide searches away from a backend
-that must refuse them.
+### Running it
 
-Five subpaths keep production imports small:
+```bash
+npm install @archmax-ai/harness langchain zod
+```
 
-- `@archmax-ai/harness/sandbox`: code-state script types (`defineCodeState`, `CodeStateInput`)
-- `@archmax-ai/harness/testing`: the case engine
-- `@archmax-ai/harness/cli`: the state-flow renderer
-- `@archmax-ai/harness/spec`: the `workflow.yaml` schema, the pure validator and the grammars
-- `@archmax-ai/harness/messages`: transcript readers
+`lookup_customer` and `send_email` are your systems, passed in as ordinary LangChain tools:
 
-The last two are browser-safe, with no runtime behind them. See the
-[public API reference](https://harness.archmax.ai/reference/public-api/).
+```js
+// tools.js
+import { tool } from "langchain";
+import { z } from "zod";
+
+const customers = {
+  "ann@example.com": { name: "Ann", order: { id: "ORD-1001", status: "delivered" } },
+  "bob@example.com": { name: "Bob", order: { id: "ORD-1002", status: "shipped" } },
+};
+
+export const lookupCustomer = tool(async ({ email }) => JSON.stringify(customers[email] ?? null), {
+  name: "lookup_customer",
+  description: "Look up a customer and their latest order by email address.",
+  schema: z.object({ email: z.string() }),
+});
+
+export const sendEmail = tool(
+  async ({ to, body }) => {
+    console.log(`To ${to}:\n${body}`);
+    return "sent";
+  },
+  {
+    name: "send_email",
+    description: "Send an email to the customer.",
+    schema: z.object({ to: z.string(), body: z.string() }),
+  },
+);
+```
+
+```js
+// index.js
+import { createAgent } from "@archmax-ai/harness";
+import { lookupCustomer, sendEmail } from "./tools.js";
+
+const agent = await createAgent({
+  workflow: "refund",
+  tools: [lookupCustomer, sendEmail],
+  workspace: { rootDir: import.meta.dirname },
+});
+
+const outcome = await agent.workflow.send("ticket-1001", {
+  message: "Hi, I'd like a refund for my last order.",
+  variables: { email: "ann@example.com" },
+});
+
+console.log(outcome.kind); // "completed"
+console.log(outcome.auditTrail.map((step) => `${step.kind} → ${step.to}`).join("\n"));
+```
+
+```text
+completed
+trigger → decide
+agent → check-decision
+code → review-email
+grader → send
+```
+
+One call is one turn, and `outcome` says how it ended: `completed`, `parked` (waiting on a person
+or an event), or `failed` (the agent called `archmax_raise` because the work cannot be done). The
+trail records every move and who made it. Sessions are durable, under `sessions/` by default, so
+`send` with the same id continues the conversation.
+
+### The CLI
+
+A workflow that needs only the harness's own tools runs from the command line too. The reference
+workspace [`examples/customer-support/`](examples/customer-support/) is one, and it is the suite
+the end-to-end tests run against a real model:
+
+```bash
+npx archmax run order-lookup "Which orders are delayed for Acme?" --root examples/customer-support
+npx archmax test order-lookup --root examples/customer-support       # run the workflow's cases
+npx archmax validate order-lookup --root examples/customer-support   # static checks, no model calls
+```
+
+The refund example needs your two tools, so it runs from your code. See the
+[CLI reference](https://harness.archmax.ai/reference/cli/) for `sessions`, `decide`, `reply` and
+`deliver`.
+
+### Next
+
+- [Grader and code states](https://harness.archmax.ai/guides/automated-states/): checks on the graph
+- [Human states](https://harness.archmax.ai/guides/workflow-machine/#human-in-the-loop-states): a person picks the edge
+- [Triggers](https://harness.archmax.ai/guides/triggers/): typed inputs and returns, files
+- [Testing](https://harness.archmax.ai/guides/testing/): cases for `archmax test`
+- [Public API](https://harness.archmax.ai/reference/public-api/): `createAgent`, outcomes, events
 
 ### Authoring with a coding agent
 

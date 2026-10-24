@@ -5,7 +5,7 @@ states:
   decide:
     triggers:
       manual:
-        requires: [email]          # the host passes the customer's email with the message
+        requires: [email]
     tools:
       allow: [lookup_customer]
     instructions: >-
@@ -19,7 +19,7 @@ states:
       - to: check-decision
         description: The decision is recorded and the email is drafted.
 
-  check-decision:                  # a code state: a deterministic check, no model call
+  check-decision:
     type: code
     script: scripts/check-decision.js
     tools:
@@ -30,7 +30,7 @@ states:
       - to: decide
         description: The decision contradicts the refund policy.
 
-  review-email:                    # a grader state: judges the customer communication
+  review-email:
     type: grader
     instructions: >-
       Read scratchpad/email.md and the `decision` variable. Approve the email
