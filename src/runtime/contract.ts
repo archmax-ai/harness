@@ -33,35 +33,36 @@ export interface ResolvedRuntimeContract extends RuntimeContract {
  * What each supported runtime version implies for the surfaces that used to
  * version themselves.
  *
- * Sandbox 2 = hooks are default-export functions returning `ok()` / `veto()` /
- * `correct()`,
- * plus typed `@archmax-ai/harness/*` import stripping. The test-case format has not
- * changed across runtime versions, which is exactly why it did not need an axis
- * of its own.
+ * Version 3 = the state types `agent`, `human`, `grader` and `code`, with no
+ * `before`/`after` hooks; sandbox 3 = a code state's script is a default-export
+ * function called with the state's input that moves the session through
+ * `tools.archmax_advance`, plus typed `@archmax-ai/harness/*` import stripping.
+ * Versions 1 and 2 (the hook contract) are retired: a workspace declaring one is
+ * refused rather than half-run. The test-case format has not changed across
+ * runtime versions, which is exactly why it did not need an axis of its own.
  *
  * This table is the single source of the supported set — adding a runtime
  * version is one entry here.
  */
 const CONTRACT_SURFACES: Readonly<Record<string, { sandbox: number; testFormat: string }>> = {
-  "1": { sandbox: 1, testFormat: "1" },
-  "2": { sandbox: 2, testFormat: "1" },
+  "3": { sandbox: 3, testFormat: "1" },
 };
 
+/** Default contract version applied when metadata is omitted. */
+export const DEFAULT_RUNTIME_VERSION = "3";
+
 /** The sandbox script contract applied when nothing resolves a runtime version. */
-export const DEFAULT_SANDBOX_VERSION = CONTRACT_SURFACES["2"]!.sandbox;
+export const DEFAULT_SANDBOX_VERSION = CONTRACT_SURFACES[DEFAULT_RUNTIME_VERSION]!.sandbox;
 
 /**
- * The execution contexts the runtime assembles a prelude for. The vocabulary
- * survived the contract merge; the list of them did not, because nothing
- * enumerated it — a context is always named, never iterated.
+ * The execution contexts the runtime assembles a prelude for: `ptc` for the
+ * agent's own code (`archmax_eval`, `archmax_run`), `code` for a code state's
+ * script. A context is always named, never iterated.
  */
-export type SandboxContext = "lifecycle-hook" | "ptc";
+export type SandboxContext = "ptc" | "code";
 
 /** The runtime engine this package implements. */
 export const RUNTIME_ENGINE = "archmax-harness";
-
-/** Default contract version applied when metadata is omitted. */
-export const DEFAULT_RUNTIME_VERSION = "1";
 
 /** The contract resolved for workspaces that omit `runtime` metadata. */
 export const DEFAULT_RUNTIME_CONTRACT: RuntimeContract = {
@@ -70,12 +71,11 @@ export const DEFAULT_RUNTIME_CONTRACT: RuntimeContract = {
 };
 
 /**
- * The explicit set of runtime contracts the installed runtime supports.
- * Version 2 identifies the v2 authoring contract (two-file `workflow.yaml` /
- * `WORKFLOW.md` layout, declarative `tests:` block, typed sandbox imports,
- * verdict-returning hook functions). Load behavior is
- * layout-driven, not version-driven — the version is declarative metadata for
- * support checking, validation, and docs. Version 1 remains supported.
+ * The explicit set of runtime contracts the installed runtime supports. Version
+ * 3 identifies the current authoring contract (two-file `workflow.yaml` /
+ * `WORKFLOW.md` layout, declarative `tests:` block, typed sandbox imports, the
+ * four state types). Load behavior is layout-driven, not version-driven — the
+ * version is declarative metadata for support checking, validation, and docs.
  */
 export const SUPPORTED_RUNTIME_CONTRACTS: readonly RuntimeContract[] = Object.keys(
   CONTRACT_SURFACES,

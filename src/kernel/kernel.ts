@@ -29,7 +29,6 @@ import {
   type ToolPaths,
 } from "../machine/tool-paths.js";
 import type { VariableStore } from "../machine/variables.js";
-import { unmetRequirements } from "../workflow/control-tools.js";
 import { canonicalizeRelPath } from "../core/workspace.js";
 import {
   classifyWorkspacePath,
@@ -41,16 +40,14 @@ import {
 import { NO_MOUNTS, type MountPrefixes } from "../core/mounts.js";
 import { NO_SKILLS, skillOfPath, type SkillPrefixes } from "../core/skills.js";
 import { authoringPlanePrefix, describeAuthoringPrefix } from "../core/mounts.js";
-import type { LifecycleDecision } from "../lifecycle/runner.js";
-import { rubricTransitionOutcome, type RubricVerdictResult } from "../rubrics/rubrics.js";
 
 /**
  * The decision kernel: a single pure, synchronous function that produces every
  * governance verdict from the machine spec, a snapshot of checkpointed workflow
- * state, and a proposed action. Effectful work (running hooks/judges) happens in
- * `LifecycleRunner`; its outputs are reduced here as {@link HookFact}s so the
- * kernel stays pure and both runtime enforcement and static validation share one
- * code path.
+ * state, and a proposed action — a tool call or a transition. Effectful work
+ * (running a code state's script, a grader) happens elsewhere and asks the
+ * kernel about each call and move it makes, so runtime enforcement and static
+ * validation share one code path.
  */
 
 export type VerdictDecision = "allow" | "block";
@@ -70,40 +67,23 @@ export interface Verdict {
   reason?: string;
   /** Tool-call blocks: whether the block should surface as a warn-level event. */
   warn?: boolean;
-  /** Transition reductions: whether the deciding hook consumed one of its iterations. */
-  correctionConsumed?: boolean;
-  /**
-   * Transition reductions: whether the block is a `correct` refused because the
-   * hook's `max_iterations` are already spent. Retrying in place cannot clear
-   * it, so the runner reports it as a terminal rejection.
-   */
-  budgetExhausted?: boolean;
 }
 
 /**
- * A reduced lifecycle-hook outcome. `LifecycleRunner` executes a hook, parses
- * its return value into a {@link LifecycleDecision}, and hands it here (with an
- * optional `error` when the hook could not execute) for reduction.
+ * Who initiated a tool call, which decides the authority it runs on:
+ *
+ *  - `agent` (the default): a model's call — the session's agent in an agent
+ *    state, the grader in a grader state;
+ *  - `script`: a programmatic call from a sandbox script — the agent's
+ *    `archmax_eval`/`archmax_run`, or a code state's script — governed exactly as
+ *    a model's call in the same state;
+ *  - `runtime`: the runtime's own read of a `file` value, on runtime authority:
+ *    outside the active state's surface — its allow and forbid lists, its skill
+ *    and mount grants — but held to its workflow's mount grants, its
+ *    workflow-wide denials and every safety rule. No script or model ever runs
+ *    on it.
  */
-export interface HookFact extends LifecycleDecision {
-  /** Present when the hook could not execute; reduces to a fail-closed veto. */
-  error?: string;
-  /** Bounded grade-and-retry budget for an `after` hook of any kind (0 = none). */
-  maxIterations?: number;
-  /** Iterations already consumed for this state. */
-  iterationsUsed?: number;
-}
-
-/**
- * Who initiated a tool call. `agent` (the default) is a call the model made
- * directly; `script` is a programmatic call from a sandbox script, governed
- * identically to an agent call in the same state; `lifecycle` is a programmatic
- * call from a lifecycle hook (and the runtime's own `file` value check), which
- * runs on runtime authority: outside the active state's surface — its allow and
- * forbid lists, its skill and mount grants — but held to its workflow's mount
- * grants, its workflow-wide denials and every safety rule.
- */
-export type ToolCallOrigin = "agent" | "script" | "lifecycle";
+export type ToolCallOrigin = "agent" | "script" | "runtime";
 
 export type ProposedAction =
   | {
@@ -125,9 +105,12 @@ export type ProposedAction =
       from: string;
       to: string;
       reason?: string;
-      hookFacts: HookFact[];
-    }
-  | { kind: "enter-state"; state: string; hookFacts: HookFact[] };
+    };
+
+/** The variables a state still owes before it may be left — its `requires` minus what is set. */
+export function unmetRequirements(required: string[], store: VariableStore): string[] {
+  return required.filter((name) => store[name] === undefined);
+}
 
 /** Read-only context a governance rule may consult. */
 export interface RuleApi {
@@ -160,15 +143,15 @@ export interface RuleApi {
 export type GovernanceRule = (action: ProposedAction, api: RuleApi) => Verdict | null;
 
 /**
- * Agent tools that scripts may never invoke through programmatic tool calling
- * (PTC): every harness control tool (including both sandbox entry points, so
- * sandboxed code cannot re-enter the sandbox) plus a bare `eval`. Owned by
- * governance so the interpreter and the lifecycle runner cannot drift.
+ * Tools an **agent state's** scripts (`archmax_eval`, `archmax_run`) may never
+ * invoke through programmatic tool calling (PTC): every harness control tool
+ * (including both sandbox entry points, so sandboxed code cannot re-enter the
+ * sandbox) plus a bare `eval`. Moving the machine and writing its variables is
+ * the model's own governed decision there; the script reads the variables via
+ * `args.variables`. A code state is the exception by construction: its script
+ * *is* the state, so it is handed its state's controls as its own tools.
  */
 export const PTC_EXCLUDED_TOOLS: ReadonlySet<string> = new Set<string>([
-  // Moving the state machine is the model's governed decision, and a script
-  // that could *write* variables would be editing the governance inputs of the
-  // state it judges (scripts read them via the `args.variables` snapshot).
   ...HARNESS_CONTROL_TOOLS,
   "eval",
 ]);
@@ -178,9 +161,9 @@ const EVAL_BLOCK_MESSAGE =
   `\`${EVAL_TOOL}\`, the runtime's own code interpreter.`;
 
 const TASK_BLOCK_MESSAGE =
-  `[workflow] BLOCKED: \`task\` is the runtime's own dispatch for grading rubrics, not a tool ` +
-  `a state may call. A rubric grades your work; you do not call it. To delegate work to another ` +
-  `process, use the workflow's declared \`archmax_workflow_<slug>\` tool.`;
+  `[workflow] BLOCKED: \`task\` is Deep Agents' subagent dispatch, not a tool a state may call. ` +
+  `To delegate work to another process, use the workflow's declared \`archmax_workflow_<slug>\` ` +
+  `tool; work is graded by a grader state the workflow declares, never by you.`;
 
 const ALLOW: Verdict = { decision: "allow", ruleId: "allow" };
 
@@ -232,74 +215,6 @@ function normalizeZonePath(path: string): string {
  */
 export function isReadOnlyZonePath(path: string, mounts?: MountPrefixes): boolean {
   return classifyWorkspacePath(path, mounts) === "authored";
-}
-
-/**
- * Reduce a single lifecycle-hook fact to a verdict. Fail-closed: an execution
- * error is a veto. `before` hooks gate entry with `ok`/`veto` only — a `correct`
- * at entry has nothing to retry, so it reduces to a veto and never consumes the
- * correction budget. Within an `after` veto window any hook's `correct` (script
- * or subagent judge alike) enters the same bounded correction flow, budgeted by
- * the hook's `max_corrections`.
- */
-export function reduceHookFact(
-  fact: HookFact,
-  opts: { phase: "before" | "after" | "tool"; veto: boolean; to?: string },
-): Verdict {
-  if (fact.error != null) {
-    return { decision: "block", ruleId: "hook.error", reason: fact.error };
-  }
-  if (fact.verdict === "ok") return { decision: "allow", ruleId: "hook.ok" };
-
-  if (opts.phase === "before") {
-    const reason =
-      fact.verdict === "correct"
-        ? `before hooks cannot request corrections ('correct' gates nothing at entry, treated as veto): ${fact.reason}`
-        : fact.reason;
-    return { decision: "block", ruleId: "hook.veto", reason };
-  }
-
-  if (opts.phase === "after" && opts.veto) {
-    const outcome = rubricTransitionOutcome(fact as RubricVerdictResult, {
-      maxIterations: fact.maxIterations ?? 0,
-      iterationsUsed: fact.iterationsUsed ?? 0,
-      to: opts.to,
-    });
-    if (outcome.reason) {
-      return {
-        decision: "block",
-        ruleId: fact.rubric ? "hook.rubric" : "hook.veto",
-        reason: outcome.reason,
-        // Only a block that actually granted a retry spends one, and only a
-        // `correct` refused for want of budget is unretryable.
-        correctionConsumed: outcome.consumesIteration,
-        budgetExhausted: outcome.budgetExhausted,
-      };
-    }
-    return { decision: "allow", ruleId: fact.rubric ? "hook.rubric" : "hook.ok" };
-  }
-
-  if (opts.veto) {
-    return {
-      decision: "block",
-      ruleId: "hook.veto",
-      reason: fact.reason,
-      correctionConsumed: false,
-    };
-  }
-  return { decision: "allow", ruleId: "hook.noop" };
-}
-
-/** Reduce an ordered list of hook facts, short-circuiting on the first block. */
-function reduceHookFacts(
-  facts: HookFact[],
-  opts: { phase: "before" | "after"; veto: boolean; to?: string },
-): Verdict {
-  for (const fact of facts) {
-    const verdict = reduceHookFact(fact, opts);
-    if (verdict.decision !== "allow") return verdict;
-  }
-  return ALLOW;
 }
 
 /** The `not allowed in this state` block verdict shared by the tool-governance rules. */
@@ -354,11 +269,11 @@ const evalBlockRule: GovernanceRule = (action) => {
 };
 
 /**
- * Safety rule: `task` is never callable by the agent. Registered rubrics make the
- * framework provide the tool so the *runtime* has a runnable to dispatch through;
- * that is not a grant. Non-overridable, so no state entry, `allow_always` or
- * consumer rule can re-open it — which is why disclosure withholding it and this
- * rule refusing it are two independent gates on the same fact.
+ * Safety rule: `task` is never callable. Deep Agents registers it whatever the
+ * assembly passes; that is not a grant. Non-overridable, so no state entry,
+ * `allow_always` or consumer rule can re-open it — which is why disclosure
+ * withholding it and this rule refusing it are two independent gates on the
+ * same fact.
  */
 const taskBlockRule: GovernanceRule = (action) => {
   if (action.kind !== "tool-call" || !UNGRANTABLE_TOOLS.has(action.tool)) return null;
@@ -444,7 +359,7 @@ const runtimeManagedRule: GovernanceRule = (action, api) => {
  * rules, and the per-state `allow` default, so no declaration can reach into a
  * capability the state was not given; a `tools.allow` entry may only narrow
  * *within* the enabled set. `script` origin is bound (model authority); a
- * `lifecycle`-origin call runs on runtime authority, outside the enabled set,
+ * `runtime`-origin call runs on runtime authority, outside the enabled set,
  * and is held only to its workflow's own `skills.forbid_always`
  * ({@link runtimeSkillVerdict}).
  */
@@ -452,7 +367,7 @@ const skillRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
   const skills = api.skills ?? NO_SKILLS;
   if (skills.length === 0) return null;
-  const verdictOf = action.origin === "lifecycle" ? runtimeSkillVerdict : skillVerdict;
+  const verdictOf = action.origin === "runtime" ? runtimeSkillVerdict : skillVerdict;
   for (const path of pathsOf(action, api)) {
     const verdict = verdictOf(action, path, api, skills);
     if (verdict) return verdict;
@@ -461,9 +376,9 @@ const skillRule: GovernanceRule = (action, api) => {
 };
 
 /**
- * {@link skillRule} for one path of a call on runtime authority: a hook reads any
- * bundle whatever the enabled set, except one its workflow's `skills.forbid_always`
- * denies. A state's `skills.forbid` does not bind it.
+ * {@link skillRule} for one path of a call on runtime authority: the runtime reads
+ * any bundle whatever the enabled set, except one its workflow's
+ * `skills.forbid_always` denies. A state's `skills.forbid` does not bind it.
  */
 function runtimeSkillVerdict(
   action: ToolCallAction,
@@ -550,14 +465,14 @@ function skillVerdict(
  *
  * Evaluated after the zone rules, so a *write* into a hidden read-only mount is
  * refused as read-only — the more useful reason — whether or not the state has
- * the mount. Non-overridable. A `lifecycle`-origin call runs on runtime
+ * the mount. Non-overridable. A `runtime`-origin call runs on runtime
  * authority, so it is decided on its **workflow**'s grants instead of the
  * state's ({@link runtimeMountVerdict}): outside the state's surface, never
  * outside the workflow's.
  */
 const mountRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
-  const verdictOf = action.origin === "lifecycle" ? runtimeMountVerdict : mountVerdict;
+  const verdictOf = action.origin === "runtime" ? runtimeMountVerdict : mountVerdict;
   for (const path of pathsOf(action, api)) {
     const verdict = verdictOf(action, path, api);
     if (verdict) return verdict;
@@ -568,9 +483,9 @@ const mountRule: GovernanceRule = (action, api) => {
 /**
  * {@link mountRule} for one path of a call on runtime authority. One table serves
  * a session and every child it dispatches, so it holds mounts other workflows in
- * the tree grant: a hook reaches a governed mount only where some grant of its
- * own workflow names it, in any state, and writes it only where the workflow
- * asks to. The workflow's own `mounts.forbid_always` binds it; a state's
+ * the tree grant: the runtime reads a governed mount only where some grant of
+ * its own workflow names it, in any state, and writes it only where the
+ * workflow asks to. The workflow's own `mounts.forbid_always` binds it; a state's
  * `mounts.allow`, `mounts.forbid` and `access: read` do not.
  */
 function runtimeMountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi): Verdict | null {
@@ -594,8 +509,8 @@ function runtimeMountVerdict(action: ToolCallAction, path: DeclaredPath, api: Ru
       ruleId: "mount.not-allowed",
       reason:
         `[workflow] BLOCKED: ${on} is under the mount '${name}', which no grant of this ` +
-        `workflow names. A hook reaches a governed mount only where its workflow grants it, ` +
-        `in 'mounts.allow_always' or a state's 'mounts.allow'.`,
+        `workflow names. The runtime reaches a governed mount only where its workflow grants ` +
+        `it, in 'mounts.allow_always' or a state's 'mounts.allow'.`,
       warn: true,
     };
   }
@@ -675,8 +590,8 @@ function mountVerdict(action: ToolCallAction, path: DeclaredPath, api: RuleApi):
  * a rule — any path under one of those mounts is refused, whatever the child
  * granted itself, and the refusal names the workflow that denied it.
  *
- * A workflow-wide denial binds a hook and a rubric grader too, so this rule
- * binds the `lifecycle` origin as well.
+ * A workflow-wide denial binds the runtime's own reads too, so this rule binds
+ * the `runtime` origin as well.
  */
 export function compileForbiddenMountRules(
   names: readonly string[],
@@ -712,9 +627,9 @@ export function compileForbiddenMountRules(
  * `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`,
  * named with the workflow that declared them. A per-state `forbid` is not
  * inherited — it governs that state's turns, not a child session — and neither
- * is any grant. Compiled as rules, they bind the `lifecycle` origin too, so a
- * descendant's hooks and the runtime's reads on a child's behalf are held to
- * them. A workflow's own lists bind its own hooks through the kernel's rules.
+ * is any grant. Compiled as rules, they bind every origin, so a descendant's
+ * automated states and the runtime's reads on a child's behalf are held to
+ * them.
  */
 export function workflowDenials(machine: WorkflowMachine, source: string): GovernanceRule[] {
   return [
@@ -803,9 +718,9 @@ const runOpenAccessRule: GovernanceRule = (action, api) => {
  */
 const stateToolsRule: GovernanceRule = (action, { machine, variables }) => {
   if (action.kind !== "tool-call") return null;
-  // Lifecycle hooks run on harness authority, so the state's grant does not
-  // bind them; every other rule in the pipeline still does.
-  if (action.origin === "lifecycle") return null;
+  // The runtime's own reads run on runtime authority, so the state's grant does
+  // not bind them; every other rule in the pipeline still does.
+  if (action.origin === "runtime") return null;
   const { state, tool, args } = action;
   let unresolved: GuardResolutionFailure | undefined;
   const allowed = machine.checkAllowed(state, tool, args, {
@@ -841,10 +756,10 @@ function unresolvedGuardVerdict(
 
 /**
  * Safety rule: `archmax_run` executes only scripts that live inside a skill bundle.
- * Hook scripts (run by the lifecycle runner from the authoring plane) and runtime
- * scripts (run by the agent from a skill bundle) are disjoint by construction: an
- * agent cannot run its own guard, a file it wrote into the run zone, or another
- * workflow's hooks. Classification uses the resolved skill registry rather than a
+ * A code state's script (run by the runtime from the authoring backend) and an
+ * agent's scripts (run from a skill bundle) are disjoint by construction: an
+ * agent cannot run a code state's script, a file it wrote into the run zone, or
+ * another workflow's scripts. Classification uses the resolved skill registry rather than a
  * literal `skills/` string, so an empty registry blocks every `archmax_run`.
  *
  * Non-overridable: evaluated with the safety rules, ahead of `policy`, consumer
@@ -863,8 +778,8 @@ const scriptSkillOnlyRule: GovernanceRule = (action, api) => {
     reason:
       `[workflow] BLOCKED: '${action.tool}' may only execute scripts that live in a skill bundle, ` +
       `and '${path.path}' is not in one. Scripts the agent runs belong in ` +
-      `'skills/<capability>/scripts/'; lifecycle hook scripts live on the authoring plane and are ` +
-      `run by the harness, never by the agent.`,
+      `'skills/<capability>/scripts/'; a code state's script lives in its workflow's 'scripts/' ` +
+      `and is run by the runtime, never by the agent.`,
     warn: true,
   };
 };
@@ -893,13 +808,13 @@ const pathArgumentRule: GovernanceRule = (action, api) => {
  * Safety rule: the authoring plane is not addressable. Every
  * {@link AUTHORING_PREFIXES} prefix (`workflows/**`) has no route
  * in the agent's workspace composite, so an agent read finds nothing; a
- * **script** or **hook** naming one is told why, and which prefix. Applies in
+ * **script** or a **runtime** read naming one is told why, and which prefix. Applies in
  * every state whatever it allows — the plane's isolation is structural, not
  * granted.
  */
 const governancePlaneRule: GovernanceRule = (action, api) => {
   if (action.kind !== "tool-call") return null;
-  if (action.origin !== "script" && action.origin !== "lifecycle") return null;
+  if (action.origin !== "script" && action.origin !== "runtime") return null;
   // A tool that declares no paths is still read by its conventional path
   // argument here: the plane's isolation does not wait on a declaration.
   const declared = pathsOf(action, api).map((p) => p.path);
@@ -996,6 +911,9 @@ export function compileForbidRules(
       if (action.kind !== "tool-call") return null;
       if (!anyTool && action.tool !== tool) return null;
       if (scope === "state" && action.state !== state) return null;
+      // A state's own denial governs that state's surface, which a read on
+      // runtime authority runs outside of; only workflow-wide denials bind it.
+      if (scope === "state" && action.origin === "runtime") return null;
       const guards = argMatchers ? describeGuards(normalized) : null;
       if (argMatchers && !denialMatches(normalized, action, api)) return null;
       const target = describeTargets(action, api);
@@ -1129,8 +1047,8 @@ export function decide(
       return decideToolCall(machine, action, customRules, mountPrefixes, variables, skills);
 
     case "transition": {
-      // The `requires` gate runs before the edge's hooks: the agent owes a value
-      // it can still supply, so a judge on incomplete work would be wasted.
+      // The `requires` gate runs before the edge: the state owes a value it can
+      // still supply, which is the more useful refusal.
       const unmet = unmetRequirements(machine.requiredVariables(action.from), variables ?? {});
       if (unmet.length > 0) {
         return {
@@ -1155,14 +1073,7 @@ export function decide(
               : "No transitions from this state."),
         };
       }
-      return reduceHookFacts(action.hookFacts, {
-        phase: "after",
-        veto: true,
-        to: action.to,
-      });
+      return ALLOW;
     }
-
-    case "enter-state":
-      return reduceHookFacts(action.hookFacts, { phase: "before", veto: false });
   }
 }

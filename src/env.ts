@@ -300,11 +300,11 @@ export function loadPricingEnv(): PricingTable | undefined {
 }
 
 /**
- * The role a model plays in the runtime: the workflow `agent` (turns), a `judge`
- * (the offline case grader), or a `rubric` (a grading rubric dispatched by a
- * lifecycle hook). A {@link ModelFactory} may return a different model per role.
+ * The role a model plays in the runtime: the workflow `agent` (the session's
+ * turns), a `judge` (the offline case grader), or a `grader` (a grader state's
+ * subagent). A {@link ModelFactory} may return a different model per role.
  */
-export type ModelRole = "agent" | "judge" | "rubric";
+export type ModelRole = "agent" | "judge" | "grader";
 
 /**
  * Supplies the chat model for a given role, so library users can run the runtime
@@ -323,11 +323,11 @@ export type ModelFactory = (
   role: ModelRole,
   env: () => AgentEnv,
   /**
-   * The model id the caller asked for — today, the `model` a grading rubric
-   * declares. Additive: a factory that ignores it behaves exactly as one written
-   * before rubrics could name a model, and no error is raised for an unhonoured
-   * request. The default factory applies it over `ARCHMAX_MODEL`, keeping the
-   * configured endpoint and credentials.
+   * The model id the caller asked for — the `model` a state declares (or its
+   * workflow's `settings.model`), for the `agent` and `grader` roles. Additive: a
+   * factory that ignores it returns its own model, and no error is raised for an
+   * unhonoured request. The default factory applies it over `ARCHMAX_MODEL`,
+   * keeping the configured endpoint and credentials.
    */
   requested?: string,
 ) => BaseChatModel;

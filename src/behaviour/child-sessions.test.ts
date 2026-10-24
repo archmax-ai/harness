@@ -44,7 +44,7 @@ afterEach(() => {
   for (const dir of storeDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 const CHILD_TOOL = workflowToolName("enrich");
 
 /** A parent whose one state delegates to `enrich`, answering every turn there. */

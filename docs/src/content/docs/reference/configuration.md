@@ -34,7 +34,7 @@ is built under the hood):
 | `ARCHMAX_MODEL` | yes | Default model identifier (e.g. `anthropic/claude-sonnet-4.6`); a workflow may name its own (see below) |
 | `ARCHMAX_TEMPERATURE` | no | Sampling temperature |
 | `ARCHMAX_MAX_TOKENS` | no | Max output tokens |
-| `ARCHMAX_STREAMING` | no | Model response streaming (default `1`). Controls the granularity of `agent-text-delta` lifecycle events: chunk-by-chunk when on, one whole-message delta per response when off. The events themselves always flow. Set `0` for OpenAI-compatible endpoints that misbehave under SSE. `invoke` results are identical either way. |
+| `ARCHMAX_STREAMING` | no | Model response streaming (default `1`). Controls the granularity of `agent-text-delta` events: chunk-by-chunk when on, one whole-message delta per response when off. The events themselves always flow. Set `0` for OpenAI-compatible endpoints that misbehave under SSE. `invoke` results are identical either way. |
 
 
 ### Which model a turn runs on
@@ -67,9 +67,11 @@ handed to `createAgent` outranks every declared id, because the SDK cannot
 rebuild a host's model under another id. Assembly emits one warning naming the
 ids it made inert.
 
-Pass a `modelFactory` instead. It is called for the `agent` and `rubric` roles
-with the declared id as its `requested` argument. The `judge` role is called
-without one, and `tests.judge.model` arrives in the `env` the factory is handed.
+Pass a `modelFactory` instead. It is called for the `agent` and `grader` roles
+with the declared id as its `requested` argument: a grader state's own `model`,
+else `settings.model`. The `judge` role (the case judge) is called without one,
+and `tests.judge.model` arrives in the `env` the factory is handed. The roles are
+`ModelRole = "agent" | "judge" | "grader"`; there is no `rubric` role.
 
 ## Prompt caching
 
@@ -169,8 +171,8 @@ environment. Three blocks carry them:
 
 | Block | Keys, for example |
 | --- | --- |
-| `settings` | `timeoutMs` for script execution |
+| `settings` | `timeoutMs` for script execution, a code state's script included |
 | `tests` | `caseTimeoutMs` and `judge` for the case suite; `maxConcurrency` accepts 1 |
-| `runtime` | `engine: archmax-harness` and `version: "2"`, the authoring contract |
+| `runtime` | `engine: archmax-harness` and `version: "3"`, the authoring contract |
 
 See the [machine spec reference](/reference/machine-spec/).

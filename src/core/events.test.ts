@@ -51,26 +51,22 @@ describe("createWorkflowEventEmitter", () => {
       output: "boom",
       truncated: false,
     });
-    emit({
-      type: "rubric-result",
-      state: "a",
-      name: "judge",
-      dispatchId: "d1",
-      status: "error",
-      durationMs: 5,
-    });
+    emit({ type: "code-result", state: "a", status: "ok", durationMs: 5 });
+    emit({ type: "code-result", state: "a", status: "error", durationMs: 5, reason: "boom" });
+    emit({ type: "grader-result", state: "a", status: "ok", durationMs: 5 });
+    emit({ type: "grader-result", state: "a", status: "error", durationMs: 5, reason: "undecided" });
 
-    expect(events.map((e) => e.level)).toEqual(["info", "warn", "warn"]);
+    expect(events.map((e) => e.level)).toEqual(["info", "warn", "info", "warn", "info", "warn"]);
   });
 
   it("respects an explicit level override", () => {
     const events: WorkflowLifecycleEvent[] = [];
     const emit = createWorkflowEventEmitter((e) => events.push(e));
 
-    emit({ type: "hook-output", state: "a", line: "script error", level: "warn" });
+    emit({ type: "code-output", state: "a", line: "script error", level: "warn" });
 
     expect(events[0]).toMatchObject({
-      type: "hook-output",
+      type: "code-output",
       state: "a",
       line: "script error",
       level: "warn",
@@ -168,17 +164,6 @@ describe("consoleEventHandler", () => {
       level: "warn",
       ...env,
     });
-    consoleEventHandler({ type: "rubric-start", state: "a", name: "judge", dispatchId: "d1", level: "info", ...env });
-    consoleEventHandler({
-      type: "rubric-result",
-      state: "a",
-      name: "judge",
-      dispatchId: "d1",
-      status: "ok",
-      durationMs: 3,
-      level: "info",
-      ...env,
-    });
     consoleEventHandler({ type: "model-usage", state: "a", inputTokens: 1, outputTokens: 2, level: "info", ...env });
 
     expect(logSpy).not.toHaveBeenCalled();
@@ -189,11 +174,29 @@ describe("consoleEventHandler", () => {
 describe("renderEventLine", () => {
   it("renders the established console prefixes", () => {
     expect(renderEventLine({ type: "interpreter-enabled", level: "info", ...env })).toBe(
-      "[interpreter] enabled (ptc: all agent tools)",
+      "[interpreter] enabled (ptc: the active state's tools)",
     );
     expect(
       renderEventLine({ type: "state-leave", state: "a", next: "b", level: "info", ...env }),
     ).toBe("[workflow] leaving node 'a' -> workflowState=b");
+  });
+
+  it("renders an automated state's run, bracketed by its start and result", () => {
+    expect(
+      renderEventLine({ type: "code-start", state: "screen", script: "scripts/screen.js", level: "info", ...env }),
+    ).toBe("[workflow] code state 'screen': running scripts/screen.js");
+    expect(renderEventLine({ type: "code-output", state: "screen", line: "checked", level: "info", ...env })).toBe(
+      "[workflow:screen] checked",
+    );
+    expect(
+      renderEventLine({ type: "code-result", state: "screen", status: "error", durationMs: 4, reason: "boom", level: "warn", ...env }),
+    ).toBe("[workflow] code state 'screen' FAILED: boom");
+    expect(renderEventLine({ type: "grader-start", state: "review", level: "info", ...env })).toBe(
+      "[workflow] grader state 'review': grading",
+    );
+    expect(
+      renderEventLine({ type: "grader-result", state: "review", status: "ok", durationMs: 7, level: "info", ...env }),
+    ).toBe("[workflow] grader state 'review' decided (7ms)");
   });
 
   it("renders an agent-driven advance as a transition", () => {

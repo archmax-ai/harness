@@ -162,19 +162,18 @@ describe("validateWorkflow", () => {
     );
   });
 
-  it("checks the workflow's turn budget, and keeps state budget keys out of it", async () => {
-    const declaring = async (budget: string) => {
-      const root = makeWorkspace({
-        "workflows/p/workflow.yaml": workflowFile(
-          [`budget: ${budget}`, "states:", "  poll:", "    triggers: { manual: }", "    summary: Check the bank."].join("\n"),
+  // A turn is bounded by LangGraph's recursion limit; there is no workflow-wide budget to declare.
+  it("refuses a root budget as an unknown key", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": workflowFile(
+        ["budget: { maxModelCalls: 80 }", "states:", "  poll:", "    triggers: { manual: }", "    summary: Check the bank."].join(
+          "\n",
         ),
-      });
-      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-      return { valid: result.valid, errors: result.diagnostics.map((d) => d.message).join(" | ") };
-    };
-    expect(await declaring("{ maxModelCalls: 80 }")).toMatchObject({ valid: true });
-    expect((await declaring("{ maxModelCalls: 0 }")).errors).toContain("'budget.maxModelCalls': must be a positive number");
-    expect((await declaring("{ maxTurns: 8 }")).errors).toContain("maxTurns");
+      ),
+    });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.valid).toBe(false);
+    expect(result.diagnostics.map((d) => d.message).join(" | ")).toContain('Unrecognized key: "budget"');
   });
 
   it("accepts a positive park budget", async () => {
@@ -334,7 +333,7 @@ describe("validateWorkflow", () => {
         (d) =>
           d.severity === "error" &&
           /authoring plane \('workflows\/'\)/.test(d.message) &&
-          /machine specs, grading rubrics, hook scripts, and test cases/.test(d.message),
+          /machine specs, code-state scripts, and test cases/.test(d.message),
       ),
     ).toBe(true);
   });
@@ -848,7 +847,7 @@ describe("validateWorkflow", () => {
         [
           "runtime:",
           "  engine: archmax-harness",
-          '  version: "1"',
+          '  version: "3"',
           "states:",
           "  start:",
           "    triggers: { manual: }",
@@ -863,14 +862,70 @@ describe("validateWorkflow", () => {
     expect(result.diagnostics.some((d) => d.field === "runtime")).toBe(false);
   });
 
-  it("rejects a bare-string lifecycle hook", async () => {
+  // The hook contract is retired: a workspace still declaring it is told which
+  // contract is left rather than half-run.
+  it("errors on the retired hook contract, naming the one that is supported", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
+          "runtime:",
+          "  engine: archmax-harness",
+          '  version: "2"',
           "states:",
           "  start:",
           "    triggers: { manual: }",
-          "    after: skills/gate/scripts/x.js",
+          "    transitions:",
+          "      - to: done",
+          "        description: Test edge to done.",
+          "  done: {}",
+        ].join("\n"),
+      ),
+    });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.valid).toBe(false);
+    const runtimeError = result.diagnostics.find((d) => d.field === "runtime");
+    expect(runtimeError?.severity).toBe("error");
+    expect(runtimeError?.message).toContain("archmax-harness@2");
+    expect(runtimeError?.message).toContain("Supported: archmax-harness@3.");
+  });
+
+  // Every step is a state now, so a leftover hook slot is what any typo is: an
+  // unrecognized key, named with the state it sits on.
+  it("rejects a leftover lifecycle hook as an unrecognized key", async () => {
+    for (const hook of ["after: skills/gate/scripts/x.js", "before: { script: hooks/check.js }"]) {
+      const root = makeWorkspace({
+        "workflows/p/workflow.yaml": workflowFile(
+          [
+            "states:",
+            "  start:",
+            "    triggers: { manual: }",
+            `    ${hook}`,
+            "    transitions:",
+            "      - to: done",
+            "        description: Test edge to done.",
+            "  done: {}",
+          ].join("\n"),
+        ),
+        "workflows/p/hooks/check.js": "export default () => {};\n",
+      });
+      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+      expect(result.valid).toBe(false);
+      const key = hook.split(":")[0]!;
+      const error = result.diagnostics.find((d) => d.message.includes(`Unrecognized key: "${key}"`));
+      expect(error?.severity).toBe("error");
+      expect(error?.field).toBe("states.start");
+    }
+  });
+
+  it("rejects the root extensions block as an unrecognized key", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": workflowFile(
+        [
+          "extensions:",
+          "  hooks: [webhook]",
+          "states:",
+          "  start:",
+          "    triggers: { manual: }",
           "    transitions:",
           "      - to: done",
           "        description: Test edge to done.",
@@ -881,97 +936,103 @@ describe("validateWorkflow", () => {
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
     expect(result.valid).toBe(false);
     expect(
-      result.diagnostics.some((d) => /must be a \{ script \} or \{ rubric \} entry/.test(d.message)),
+      result.diagnostics.some(
+        (d) => d.severity === "error" && /Unrecognized key: "extensions"/.test(d.message),
+      ),
     ).toBe(true);
   });
 
+  /** One code state in front of a terminal state, running `script`. */
+  const codeStateYaml = (script: string) =>
+    workflowFile(
+      [
+        "instructions: Screen the request.",
+        "states:",
+        "  start:",
+        "    triggers: { manual: }",
+        "    type: code",
+        `    script: ${script}`,
+        "    transitions:",
+        "      - to: done",
+        "        description: The request is in order.",
+        "  done: {}",
+      ].join("\n"),
+    );
 
+  it("accepts a code state whose script resolves", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": codeStateYaml("scripts/check.js"),
+      "workflows/p/scripts/check.js":
+        '/** Passes everything. */\nexport default async ({ tools }) => {\n  await tools.archmax_advance({ to: "done", reason: "ok" });\n};\n',
+    });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
 
+  it("reports a code state whose script does not exist", async () => {
+    const root = makeWorkspace({ "workflows/p/workflow.yaml": codeStateYaml("scripts/check.js") });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.valid).toBe(false);
+    const missing = result.diagnostics.filter((d) => /script not found/.test(d.message));
+    expect(missing).toEqual([
+      expect.objectContaining({
+        severity: "error",
+        message: "Code state 'start' script not found: workflows/p/scripts/check.js",
+        file: "workflows/p/scripts/check.js",
+        field: "states.start.script",
+      }),
+    ]);
+  });
 
-  it("flags an unknown hook kind that is not declared as an extension", async () => {
+  // The file exists — that is the point. A script the agent runs with
+  // archmax_run lives in a skill bundle; a code state's lives in its workflow.
+  it("reports a code-state script outside the workflow's scripts/, naming where it lives", async () => {
+    for (const script of ["skills/gate/scripts/check.js", "scripts/../../other/scripts/gate.js"]) {
+      const root = makeWorkspace({
+        "workflows/p/workflow.yaml": codeStateYaml(script),
+        "skills/gate/scripts/check.js": "export default () => {};\n",
+      });
+      const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+      expect(result.valid).toBe(false);
+      const atKey = result.diagnostics.filter(
+        (d) => d.severity === "error" && d.field === "states.start.script",
+      );
+      expect(atKey.length).toBeGreaterThan(0);
+      expect(atKey.map((d) => d.message).join(" | ")).toMatch(/inside 'scripts\/'/);
+    }
+  });
+
+  it("reports a code state with no script, and a script on a state that is not one", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
           "states:",
           "  start:",
           "    triggers: { manual: }",
-          "    after: { webhook: approvals/refund }",
+          "    type: code",
+          "    transitions:",
+          "      - to: draft",
+          "        description: Screened.",
+          "  draft:",
+          "    script: scripts/draft.js",
           "    transitions:",
           "      - to: done",
-          "        description: Test edge to done.",
+          "        description: Drafted.",
           "  done: {}",
         ].join("\n"),
       ),
+      "workflows/p/scripts/draft.js": "export default () => {};\n",
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
     expect(result.valid).toBe(false);
-    expect(result.diagnostics.some((d) => /unknown kind 'webhook'/.test(d.message))).toBe(true);
-  });
-
-  it("accepts a custom hook kind declared under extensions.hooks", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "extensions:",
-          "  hooks: [webhook]",
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    after: { webhook: approvals/refund }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
-    });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(result.diagnostics.some((d) => /unknown kind 'webhook'/.test(d.message))).toBe(false);
-  });
-
-  it("reports a hook wired into a skill bundle, naming where hooks live", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    before: { script: skills/gate/scripts/check.js }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
-      "skills/gate/scripts/check.js": "export default () => ({ verdict: 'ok' });\n",
-    });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(result.valid).toBe(false);
-    // The file exists — that is the point. It is in the wrong plane, so the
-    // diagnostic has to name the location rather than report it missing.
-    const message = result.diagnostics.find((d) => /hook script/.test(d.message))?.message ?? "";
-    expect(message).toMatch(/outside 'hooks\/'/);
-    expect(message).toMatch(/workflows\/p\/hooks\//);
-  });
-
-  it("reports a hook path that climbs out of its workflow", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    before: { script: ../other/hooks/gate.js }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
-    });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(result.valid).toBe(false);
-    expect(result.diagnostics.some((d) => /outside 'hooks\//.test(d.message))).toBe(true);
+    const errors = result.diagnostics.filter((d) => d.severity === "error");
+    expect(errors.find((d) => d.field === "states.start.script")?.message).toContain(
+      "Code state 'start' declares no 'script'",
+    );
+    expect(errors.find((d) => d.field === "states.draft.script")?.message).toContain(
+      "only a code state runs",
+    );
   });
 
   it("reports an archmax_run entry that grants nothing because it names no bundle", async () => {
@@ -993,62 +1054,92 @@ describe("validateWorkflow", () => {
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
     expect(result.valid).toBe(false);
-    expect(
-      result.diagnostics.some((d) => /outside every skill bundle/.test(d.message)),
-    ).toBe(true);
+    const inert = result.diagnostics.find((d) => /outside every skill bundle/.test(d.message));
+    expect(inert?.severity).toBe("error");
+    // And says where a code state's script lives instead, for the author who
+    // was reaching for one.
+    expect(inert?.message).toContain("workflows/<slug>/scripts/");
   });
 
-  it("errors on an inline rubric with no instructions", async () => {
+  // The type-dependent rules are the lint's; `validate` surfaces them in the
+  // lint's own words, as errors.
+  it("errors on a grader that cannot decide and a code state carrying a key it never reads", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
+          "instructions: Draft, check, grade.",
           "states:",
           "  start:",
           "    triggers: { manual: }",
-          "    after: { rubric: { max_iterations: 2 } }",
+          "    instructions: Draft the reply.",
           "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
+          "      - to: check",
+          "        description: Drafted.",
+          "  check:",
+          "    type: code",
+          "    script: scripts/check.js",
+          "    instructions: Check the draft.",
+          "    tools:",
+          "      allow: [archmax_eval]",
+          "    transitions:",
+          "      - to: grade",
+          "        description: Checked.",
+          "  grade:",
+          "    type: grader",
+          "    budget: { maxParks: 1 }",
+          "    transitions: []",
         ].join("\n"),
       ),
+      "workflows/p/scripts/check.js": "export default () => {};\n",
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
     expect(result.valid).toBe(false);
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "error" && d.field === "states.start.after",
-      ),
-    ).toBe(true);
+    const errorFields = result.diagnostics
+      .filter((d) => d.severity === "error")
+      .map((d) => d.field)
+      .sort();
+    expect(errorFields).toEqual([
+      "states.check.instructions",
+      "states.check.tools.allow.0",
+      "states.grade.budget.maxParks",
+      "states.grade.instructions",
+      "states.grade.transitions",
+    ]);
   });
 
-  it("accepts tagged script and rubric hooks whose targets resolve", async () => {
+  it("accepts a grader and a code state that are well formed", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
+          "instructions: Draft, grade, record.",
           "states:",
           "  start:",
           "    triggers: { manual: }",
-          "    before: { script: hooks/ok.js }",
-          "    after:",
-          "      - { rubric: { instructions: judge the tone } }",
-          "      - { script: hooks/ok.js }",
+          "    instructions: Draft the reply.",
           "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
+          "      - to: grade",
+          "        description: Drafted.",
+          "  grade:",
+          "    type: grader",
+          "    instructions: Approve a polite reply; send anything else back with the fix.",
+          "    model: large-model",
+          "    budget: { maxTurns: 4 }",
+          "    transitions:",
+          "      - to: record",
+          "        description: The reply is polite.",
+          "      - to: start",
+          "        description: The reply needs another pass.",
+          "  record:",
+          "    type: code",
+          "    script: scripts/record.mjs",
         ].join("\n"),
       ),
-      "workflows/p/hooks/ok.js": "export default () => ({ verdict: 'ok' });\n",
+      "workflows/p/scripts/record.mjs": "export default () => {};\n",
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    const hookErrors = result.diagnostics.filter(
-      (d) => d.severity === "error" && /hook|rubric/.test(d.message),
-    );
-    expect(hookErrors).toHaveLength(0);
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(result.valid).toBe(true);
   });
-
-
 
   it("errors on a state or workflow entry granting task", async () => {
     const root = makeWorkspace({
@@ -1071,86 +1162,11 @@ describe("validateWorkflow", () => {
       (d) => d.severity === "error" && /not grantable/.test(d.message),
     );
     expect(notGrantable).toHaveLength(2);
-  });
-
-
-
-
-
-  it("rejects a specification-only hook as an unknown kind", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    before: { specification: nothing to run }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
-    });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "error" && /unknown kind 'specification'/.test(d.message),
-      ),
-    ).toBe(true);
-    expect(result.valid).toBe(false);
-  });
-
-  // The sidecar was parsed and never read, so an author relying on it was
-  // guiding nobody. Rejected by name, pointing at where a judge's guidance lives.
-
-  it("rejects a removed specification sidecar on a rubric hook as malformed", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    after: { rubric: { instructions: judge it }, specification: be strict }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
-    });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "error" && /Unrecognized key: "specification"/.test(d.message),
-      ),
-    ).toBe(true);
-    expect(result.valid).toBe(false);
-  });
-
-  it("rejects an instructions sidecar on a script hook", async () => {
-    const root = makeWorkspace({
-      "workflows/p/workflow.yaml": workflowFile(
-        [
-          "states:",
-          "  start:",
-          "    triggers: { manual: }",
-          "    before: { script: hooks/ok.js, instructions: be strict }",
-          "    transitions:",
-          "      - to: done",
-          "        description: Test edge to done.",
-          "  done: {}",
-        ].join("\n"),
-      ),
-      "workflows/p/hooks/ok.js": "export default () => ({ verdict: 'ok' });\n",
-    });
-    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(
-      result.diagnostics.some(
-        (d) => d.severity === "error" && /must be a single-key tagged object/.test(d.message),
-      ),
-    ).toBe(true);
-    expect(result.valid).toBe(false);
+    // Each names what to reach for instead: a sub-workflow, or a grader state.
+    for (const d of notGrantable) {
+      expect(d.message).toContain("archmax_workflow_<slug>");
+      expect(d.message).toContain("declare a grader state");
+    }
   });
 
   const plainWorkflowYaml = [
@@ -1355,68 +1371,52 @@ describe("validateWorkflow", () => {
     ).toBe(true);
   });
 
-  it("rejects a spec-side specification key on a hook", async () => {
-    const v2Root = makeWorkspace({
-      "workflows/p/workflow.yaml": [
-        "states:",
-        "  start:",
-        "    triggers: { manual: }",
-        "    before: { script: hooks/x.js, specification: check it }",
-        "    transitions:",
-        "      - to: done",
-        "        description: Test edge to done.",
-        "  done: {}",
-      ].join("\n"),
-      "workflows/p/hooks/x.js": "console.log('x');\n",
-    });
-    const v2 = await validateWorkflow({ rootDir: v2Root, workflow: "p" });
-    // The removed `specification` sidecar makes the hook a two-key object,
-    // which fails kind detection (fail-closed) rather than being ignored.
-    expect(
-      v2.diagnostics.some((d) => d.severity === "error" && /single-key tagged object/.test(d.message)),
-    ).toBe(true);
-    expect(v2.valid).toBe(false);
-  });
-
-  it("rejects foreign imports in hook scripts", async () => {
+  it("rejects foreign imports in a code state's script", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": [
         "states:",
         "  start:",
         "    triggers: { manual: }",
-        "    before: { script: hooks/x.js }",
+        "    type: code",
+        "    script: scripts/x.js",
         "    transitions:",
         "      - to: done",
         "        description: Test edge to done.",
         "  done: {}",
       ].join("\n"),
-      "workflows/p/hooks/x.js":
+      "workflows/p/scripts/x.js":
         '/**\n * Checks things.\n */\nimport fs from "node:fs";\nconsole.log(fs);\n',
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
     const importErrors = result.diagnostics.filter((d) => /@archmax-ai\/harness\/\*/.test(d.message));
-    expect(importErrors.map((d) => d.file)).toEqual(["workflows/p/hooks/x.js"]);
+    expect(importErrors.map((d) => d.file)).toEqual(["workflows/p/scripts/x.js"]);
+    expect(importErrors[0]?.field).toBe("states.start.script");
+    expect(importErrors[0]?.message).toContain("imports from 'node:fs'");
     expect(importErrors.every((d) => d.severity === "error")).toBe(true);
     expect(result.valid).toBe(false);
   });
 
-  it("accepts @archmax-ai/harness typed imports in hook scripts", async () => {
+  it("accepts @archmax-ai/harness typed imports in a code state's script", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": [
         "states:",
         "  start:",
         "    triggers: { manual: }",
-        "    before: { script: hooks/x.js }",
+        "    type: code",
+        "    script: scripts/x.js",
         "    transitions:",
         "      - to: done",
         "        description: Test edge to done.",
         "  done: {}",
       ].join("\n"),
-      "workflows/p/hooks/x.js":
-        '/** Checks it. */\nimport { defineHook } from "@archmax-ai/harness/sandbox";\nexport default defineHook(({ t }) => { t.log("ok"); });\n',
+      "workflows/p/scripts/x.js":
+        '/** Checks it. */\nimport { defineCodeState } from "@archmax-ai/harness/sandbox";\n' +
+        'export default defineCodeState(async ({ tools }) => {\n' +
+        '  await tools.archmax_advance({ to: "done", reason: "ok" });\n});\n',
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
     expect(result.diagnostics.filter((d) => /import/.test(d.message))).toHaveLength(0);
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
   });
 
   it("treats warnings as non-fatal", async () => {

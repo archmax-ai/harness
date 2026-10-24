@@ -113,7 +113,7 @@ A case MAY declare `trigger: { id }` (no other keys), and every `send` of the ca
 
 ### Requirement: Case-level variable seeds
 
-A case MAY declare a top-level `variables:` mapping; each name SHALL match the variable-name shape (lowercase letters, digits and underscores, starting with a letter) or parsing fails naming it. The seeds are supplied with every `send` of the case as host seeds, so the runtime stores them locked exactly as a production host seed: a `${{…}}` guard reference resolves from them, a `requires:` gate is satisfied by them, hook scripts observe them, the model cannot rewrite them, and a `variables` assertion sees them as locked. This is how a case supplies a trigger-started workflow's payload, since `trigger` carries only an id.
+A case MAY declare a top-level `variables:` mapping; each name SHALL match the variable-name shape (lowercase letters, digits and underscores, starting with a letter) or parsing fails naming it. The seeds are supplied with every `send` of the case as host seeds, so the runtime stores them locked exactly as a production host seed: a `${{…}}` guard reference resolves from them, a `requires:` gate is satisfied by them, code-state scripts and graders observe them, the model cannot rewrite them, and a `variables` assertion sees them as locked. This is how a case supplies a trigger-started workflow's payload, since `trigger` carries only an id.
 
 #### Scenario: Seed observed as locked
 
@@ -124,6 +124,12 @@ A case MAY declare a top-level `variables:` mapping; each name SHALL match the v
 
 - **WHEN** a case seeds a variable named `From-Email`
 - **THEN** parsing fails naming the required shape
+
+#### Scenario: A code state reads a seed
+
+- **WHEN** a case seeds `from_email: "a@b.com"` and the workflow's entry state is a code state
+- **THEN** its script receives `from_email` in its `variables`, and its `archmax_set_variables` of
+  `from_email` is refused as a write to a locked variable
 
 ### Requirement: Case-declared workspace files
 
@@ -146,7 +152,7 @@ A case MAY declare `workspace: { "<path>": <entry> }`, seeded into the case's se
 
 ### Requirement: Declarative tool mocks
 
-A case MAY declare `mocks:` as a list of `{ tool, whenInput?, result }` entries. A mock matches a call by tool name and, when `whenInput` is given, by partial match against the call's arguments; the first matching mock in declaration order wins, so a narrower entry declared earlier shadows a broader one. A string `result` is the tool's payload verbatim and any other value is JSON-serialized. The mocks ride each driven `send` in the run configuration and SHALL intercept both agent-initiated tool calls (the tool-mock middleware) and the calls scripts make through `tools.*` (the PTC gateway), so a mock means one thing whoever makes the call.
+A case MAY declare `mocks:` as a list of `{ tool, whenInput?, result }` entries. A mock matches a call by tool name and, when `whenInput` is given, by partial match against the call's arguments; the first matching mock in declaration order wins, so a narrower entry declared earlier shadows a broader one. A string `result` is the tool's payload verbatim and any other value is JSON-serialized. The mocks ride each driven `send` in the run configuration and SHALL intercept both agent-initiated tool calls (the tool-mock middleware) and every call the PTC gateway governs — the calls an agent's script makes through `tools.*`, the calls a code state's script makes through `tools.*`, and a grader's calls — so a mock means one thing whoever makes the call.
 
 #### Scenario: Agent call mocked
 
@@ -157,6 +163,17 @@ A case MAY declare `mocks:` as a list of `{ tool, whenInput?, result }` entries.
 
 - **WHEN** the driven agent runs a script calling `tools.readFile(...)` with input matching a `read_file` mock
 - **THEN** the script receives the mocked result
+
+#### Scenario: Code state call mocked
+
+- **WHEN** a code state's script calls `tools.crm_lookup({ email: "a@acme.test" })` and the case
+  mocks `crm_lookup` with `whenInput: { email: "a@acme.test" }`
+- **THEN** the script receives the mocked result and the real tool never runs
+
+#### Scenario: Grader call mocked
+
+- **WHEN** a grader calls `read_file` with input matching a `read_file` mock
+- **THEN** the grader is answered with the mocked result and the real tool never runs
 
 ### Requirement: Mocks require a target that can intercept them
 
@@ -202,17 +219,36 @@ The engine SHALL interpret a case on the host: it opens one session for the case
 
 ### Requirement: Structural assertions read the session's trail and park
 
-The engine SHALL evaluate these assertions from the view's audit trail, park state and exit record: `succeeded: true` (the turn neither parked, nor ended with `archmax_raise`, nor recorded a failed tool call; a governance rejection is not a failure); `parked: true` (parked on either channel), `parked: decision` / `parked: input` (pinning the channel) or `parked: { channel?, state? }` (pinning the channel and/or the state the session parked in — which `reachedState` cannot express, since a park commits no transition); `raised: true` (the turn ended with `archmax_raise`), `raised: <code>` (pinning the exit code exactly) or `raised: { code?, reason? }` (pinning the code exactly and/or matching the reason with the one partial-match vocabulary, a `/pattern/flags` string included); `reachedState: <slug>` (a committed trail step of any kind but `trigger` has `to` equal to the slug, so a vetoed entry never "reaches" the state); `noTraversal: true` (every trail step is a trigger arrival); `triggerArrival: <id>` (a `trigger` step carries that id as its `reason`, including one delivered into a park); `trail: { to?, kind?, reason?, count }` (at least one field, and the number of steps matching every given field equals `count`). An `raised` mapping with neither field, or an `raised` value of any other shape, SHALL be a schema error.
+The engine SHALL evaluate these assertions from the view's audit trail, park state and exit record: `succeeded: true` (the action's outcome is `completed`: the turn neither parked, nor ended with `archmax_raise`, nor failed or was rejected; a tool call that failed or was blocked along the way, and that the turn recovered from, does not fail it); `parked: true` (parked on either channel), `parked: decision` / `parked: input` (pinning the channel) or `parked: { channel?, state? }` (pinning the channel and/or the state the session parked in — which `reachedState` cannot express, since a park commits no transition); `raised: true` (the turn ended with `archmax_raise`), `raised: <code>` (pinning the exit code exactly) or `raised: { code?, reason? }` (pinning the code exactly and/or matching the reason with the one partial-match vocabulary, a `/pattern/flags` string included); `reachedState: <slug>` (a committed trail step of any kind but `trigger` has `to` equal to the slug, so a session reaches its start state only by moving into it, never by its trigger arrival); `noTraversal: true` (every trail step is a trigger arrival); `triggerArrival: <id>` (a `trigger` step carries that id as its `reason`, including one delivered into a park); `trail: { to?, kind?, reason?, count }` (at least one field, `kind` compared exactly with a step's kind, and the number of steps matching every given field equals `count`). An `raised` mapping with neither field, or an `raised` value of any other shape, SHALL be a schema error.
+
+These assertions SHALL read an automated state's outcome as they read the agent's. A grader's or a code state's move commits a trail step of kind `grader` or `code` (see `automated-states`), beside the kinds `trigger`, `agent`, `human`, `sub-workflow`, `reset` and `on_error`: `reachedState` reaches its target, `trail` matches it by `kind: grader` or `kind: code` and by the `reason` the state passed to `archmax_advance`, and `noTraversal` counts it as a traversal. A raise by a grader or a code state ends the session as the agent's raise does, so `raised` reads its code and reason and `succeeded` fails.
 
 #### Scenario: Park pinned to channel and state
 
 - **WHEN** a turn parks via `archmax_wait` in `clarify`
 - **THEN** `parked: input` and `parked: { channel: input, state: clarify }` pass, while `parked: decision` and `parked: { state: review }` fail with the pinned fields in their detail
 
-#### Scenario: Vetoed entry commits no transition
+#### Scenario: A raise at entry commits no transition
 
-- **WHEN** the start state's `before` hook vetoes the turn
-- **THEN** `noTraversal: true` passes and `reachedState: <start state>` fails
+- **WHEN** the start state is a code state screening the request, and its script refuses it with
+  `tools.archmax_raise({ code: "not-a-customer", reason: "The sender is not a customer." })`
+- **THEN** `noTraversal: true` and `raised: not-a-customer` pass, while
+  `reachedState: <start state>` and `succeeded: true` fail
+
+#### Scenario: An automated state's move is a traversal
+
+- **WHEN** the entry code state `screen-request` advances to `identify-case` with the reason
+  `requester verified`
+- **THEN** `reachedState: identify-case` and
+  `trail: { kind: code, to: identify-case, reason: "requester verified", count: 1 }` pass, and
+  `noTraversal: true` fails
+
+#### Scenario: A grader's send-backs are counted
+
+- **WHEN** the grader state `review-enrichment` sends the session back to `enrich-order` twice and
+  then approves to `enrichment-reported`
+- **THEN** `trail: { kind: grader, to: enrich-order, count: 2 }` and
+  `trail: { kind: grader, to: enrichment-reported, count: 1 }` pass
 
 #### Scenario: Trail counting
 
@@ -231,6 +267,14 @@ The engine SHALL evaluate these assertions from the view's audit trail, park sta
 - **WHEN** a turn completes without `archmax_raise`
 - **THEN** `raised: true` fails, with a detail saying the session did not raise
 
+#### Scenario: A recovered tool error is not a failed turn
+- **WHEN** the agent's lookup tool fails, the agent moves on and the turn completes
+- **THEN** `succeeded: true` passes
+
+#### Scenario: A rejected turn did not succeed
+- **WHEN** governance rejects the turn and no tool call failed
+- **THEN** `succeeded: true` fails, saying the turn did not complete
+
 ### Requirement: The `variables` assertion
 
 `variables: { expect, path?, locked? }` SHALL produce one record per expected name: failed with detail `(not set)` when the variable is absent; when `path` gives a dotted path for the name (`items.0.sku`; a negative index such as `items.-1.sku` counts from the end), the addressed value is compared and an unresolvable path fails with `(path does not resolve)`; otherwise the stored value is compared to the expected one by deep equality, a mismatch reporting both values. When `locked` names the variable, a further record checks the stored lock flag.
@@ -247,7 +291,9 @@ The engine SHALL evaluate these assertions from the view's audit trail, park sta
 
 ### Requirement: Content assertions read the transcript and tool calls
 
-The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each a token or list of tokens; a plain token is a substring, a `/pattern/flags` token a regex) against the whole assistant transcript of the turn — every completed assistant message joined, not only the final reply — producing one `reply.includes` / `reply.excludes` record per token; `calledTool: { name, input? }` (some recorded call has that name and its arguments partially match `input`); `notCalledTool` (no such call); `blockedTool` (a matching call was made and governance rejected it — distinct from a call that never happened and from a tool that ran and errored); `usedNoTools: true` (the turn recorded no tool calls); and `ranWorkflow: { workflow, status?, count? }` (the trail's `sub-workflow` steps for that slug with `status`, default `ok`: at least one, or exactly `count`). Tool-call matching compares the arguments as the transcript records them — a `${{name}}` reference in reference form, not its resolved value.
+The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each a token or list of tokens; a plain token is a substring, a `/pattern/flags` token a regex) against the whole assistant transcript of the turn — every completed assistant message joined, not only the final reply — producing one `reply.includes` / `reply.excludes` record per token; `calledTool: { name, input? }` (some recorded call has that name and its arguments partially match `input`); `notCalledTool` (no such call); `blockedTool` (a matching call was made and governance rejected it — distinct from a call that never happened and from a tool that ran and errored); `usedNoTools: true` (the turn recorded no tool calls); and `ranWorkflow: { workflow, status?, count? }` (the trail's `sub-workflow` steps for that slug with `status`, default `ok`: at least one, or exactly `count`, whoever dispatched — the agent, a script, a code state or a grader). Tool-call matching compares the arguments as the transcript records them — a `${{name}}` reference in reference form, not its resolved value.
+
+`reply` and the tool-call assertions (`calledTool`, `notCalledTool`, `blockedTool`, `usedNoTools`) SHALL read the session's transcript and nothing else, so they see the session's agent's own messages and tool calls. An automated state's calls are not in the transcript (see `automated-states`): a code state's script calls its tools through `tools.*`, as an agent's script does, and a grader's messages and calls stay in its isolated context. These assertions SHALL NOT count them, so a turn whose only tool calls were an automated state's passes `usedNoTools: true`. A runtime note, the `grader` and `code` kinds included, is neither a tool call nor part of the reply. What an automated state did SHALL be asserted from what it committed: its move and its reason in the trail (`reachedState`, `trail`), its raise (`raised`), the variables it set (`variables`) and its dispatches (`ranWorkflow`).
 
 #### Scenario: Reply tokens over the whole turn
 
@@ -263,6 +309,27 @@ The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each 
 
 - **WHEN** the model calls `send_reply({ body: "ref ${{order_id}}" })`
 - **THEN** `calledTool: { name: send_reply, input: { body: "ref ${{order_id}}" } }` passes
+
+#### Scenario: A code state's calls are not the agent's
+
+- **WHEN** an entry code state's script calls `tools.read_file(...)` and advances to an agent state
+  whose model answers without calling a tool
+- **THEN** `usedNoTools: true` passes and `calledTool: { name: read_file }` fails, while
+  `trail: { kind: code, count: 1 }` passes
+
+#### Scenario: A grader's words are not the reply
+
+- **WHEN** a grader calls `archmax_get_history`, writes "the tone is curt" in text and sends the
+  session back with a correction, and the agent then answers without repeating those words
+- **THEN** `reply: { includes: "the tone is curt" }` and `calledTool: { name: archmax_get_history }`
+  fail, and `trail: { kind: grader, count: 1 }` passes
+
+#### Scenario: A code state's dispatch is on the record
+
+- **WHEN** a code state's script calls `tools.archmaxWorkflowEnrichOrder({ order_id })` and the
+  child completes
+- **THEN** `ranWorkflow: { workflow: enrich-order }` passes, and `calledTool` with the delegation
+  tool's name fails
 
 ### Requirement: One partial-match vocabulary
 

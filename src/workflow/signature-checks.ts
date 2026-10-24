@@ -25,8 +25,8 @@ export type InvalidValueIssue = Extract<SignatureValueIssue, { kind: "invalid" }
 /**
  * What the file check asks of the session a `file` value belongs to: what a
  * path names in its workspace, and why it may not read it on runtime authority
- * (the rules that bind a hook — the zone rules and every workflow-wide denial,
- * inherited ones included), or `undefined` when it may.
+ * (the rules that bind runtime authority — the zone rules and every
+ * workflow-wide denial, inherited ones included), or `undefined` when it may.
  */
 export interface FileValueCheck {
   kind(path: string): Promise<"file" | "directory" | "missing">;

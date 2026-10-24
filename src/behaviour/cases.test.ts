@@ -131,6 +131,29 @@ describe("runTests", () => {
     expect(model.issued.map((c) => c.name)).toEqual(["crm_lookup", "archmax_advance"]);
   });
 
+  it("judges succeeded by the turn's outcome: a tool error the agent recovered from is no failure", async () => {
+    const root = makeWorkspace({
+      "AGENTS.md": AGENTS_MD,
+      "workflows/w/workflow.yaml": WORKFLOW,
+      "workflows/w/tests/recovered.test.yaml": `
+title: A failed lookup the agent recovers from
+description: The CRM call fails, the agent moves on and answers.
+steps:
+  - send: "Who is a@acme.test?"
+  - reachedState: done
+  - succeeded: true
+`,
+    });
+    const { results } = await run(root, [
+      { tool: "crm_lookup", args: { email: "a@acme.test" } },
+      { tool: "archmax_advance", args: { to: "done", reason: "the lookup failed; answering anyway" } },
+      { reply: "I could not look that up." },
+    ]);
+    const [result] = results;
+    expect(failures(result!.records)).toEqual([]);
+    expect(result!.verdict.status).toBe("passed");
+  });
+
   it("fails the reply assertion when the reply does not include the expected token", async () => {
     const root = makeWorkspace({
       "AGENTS.md": AGENTS_MD,
@@ -320,7 +343,7 @@ describe("a case's clock", () => {
     const root = makeWorkspace({
       "AGENTS.md": AGENTS_MD,
       "workflows/w/workflow.yaml": {
-        runtime: { engine: "archmax-harness", version: "2" },
+        runtime: { engine: "archmax-harness", version: "3" },
         tests: { maxConcurrency: 1 },
         states: {
           work: { triggers: { manual: null }, transitions: [{ to: "review", description: "Hand it over." }] },

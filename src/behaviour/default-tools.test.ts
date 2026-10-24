@@ -19,7 +19,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /** The text of every system block of the model's `index`th call. */
 function systemText(model: ScriptedModel, index = 0): string {
@@ -67,18 +67,22 @@ describe("a declared allow_always replaces the default tools", () => {
       draft: {
         triggers: { manual: null },
         tools: { allow: [{ tool: "write_file", paths: ["reports/**"] }] },
-        transitions: [{ to: "review", description: "The draft is written." }],
+        transitions: [{ to: "check", description: "The draft is written." }],
       },
-      review: { before: { script: "hooks/enter.js" } },
+      check: { type: "code", script: "scripts/check.js", transitions: [{ to: "review", description: "Checked." }] },
+      review: {},
     },
   };
 
   it("discloses and permits per state exactly what the workflow grants", async () => {
-    const root = workspaceWith(spec, { "workflows/w/hooks/enter.js": "export default () => {};\n" });
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/check.js":
+        'export default async ({ tools }) => { await tools.archmax_advance({ to: "review", reason: "checked" }); };\n',
+    });
     const { agent, model, events } = await assemble(root, {
       turns: [
         { tool: "write_file", args: { file_path: "scratchpad/a.md", content: "x" } },
-        advanceTo("review"),
+        advanceTo("check"),
         { tool: "write_file", args: { file_path: "scratchpad/b.md", content: "y" } },
         { tool: "archmax_eval", args: { code: "1 + 1" } },
         { reply: "ok" },
@@ -106,7 +110,7 @@ describe("a declared allow_always replaces the default tools", () => {
       expect(blocked.reason).toMatch(/not allowed in state/);
     }
 
-    // The hook ran in the sandbox all the same: it runs on runtime authority.
-    expect(eventsOf(events, "hook-verdict")).toMatchObject([{ state: "review", phase: "before", verdict: "ok" }]);
+    // The code state ran in the sandbox all the same: running a script needs no grant of the interpreter.
+    expect(eventsOf(events, "code-result")).toMatchObject([{ state: "check", status: "ok" }]);
   });
 });

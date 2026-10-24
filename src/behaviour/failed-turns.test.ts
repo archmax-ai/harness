@@ -22,7 +22,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /** a ⇄ b, so a model that always advances never ends its turn. */
 const CYCLE = {

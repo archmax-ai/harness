@@ -96,7 +96,7 @@ describe("deleting a file", () => {
 
   it("is remove_file's alone: a governed agent registers no delete tool either", async () => {
     const root = workspaceWith({
-      runtime: { engine: "archmax-harness", version: "2" },
+      runtime: { engine: "archmax-harness", version: "3" },
       states: { start: { triggers: { manual: null }, tools: { allow: ["delete"] } } },
     });
     const { agent, model } = await assemble(root, {

@@ -28,16 +28,18 @@ afterEach(() => {
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A workspace with both planes populated: a governed workflow, a judge, a skill bundle. */
+/** A workspace with both planes populated: a governed workflow, a grader, a skill bundle. */
 function makeWorkspace(): string {
   const root = mkdtempSync(join(tmpdir(), "plane-"));
   roots.push(root);
   const files: Record<string, string> = {
-    "workflows/p/workflow.yaml": "runtime: { engine: archmax-harness, version: '2' }\nstates:\n  start: {}\n",
+    "workflows/p/workflow.yaml": "runtime: { engine: archmax-harness, version: '3' }\nstates:\n  start: {}\n",
     "workflows/order-lookup/workflow.yaml":
-      "rubrics:\n  tone:\n    instructions: judge the tone\n    max_iterations: 2\nstates:\n  start: {}\n",
+      "states:\n  start:\n    transitions: [{ to: review-reply, description: Drafted. }]\n" +
+      "  review-reply:\n    type: grader\n    instructions: judge the tone\n" +
+      "    transitions: [{ to: start, description: Send back. }]\n",
     "workflows/p/WORKFLOW.md": "# prose addendum\n",
-    "workflows/p/hooks/gate.js": "export default () => ok();\n",
+    "workflows/p/scripts/gate.js": "export default async ({ tools }) => {};\n",
     "workflows/p/tests/a.test.yaml": "description: a case\nsteps: []\n",
     "workflows/other/workflow.yaml": "states:\n  start: {}\n",
     "skills/cap/SKILL.md": "---\nname: cap\ndescription: a capability\n---\n\nbody\n",
@@ -64,13 +66,13 @@ describe("the governance plane is not part of the agent workspace", () => {
     expect(await workspace.readText("workflows/p/workflow.yaml")).toBeNull();
   });
 
-  it("hides a sibling workflow's spec, the prose, the hooks, and the cases alike", async () => {
+  it("hides a sibling workflow's spec, the prose, the code-state scripts, and the cases alike", async () => {
     const { workspace } = createWorkspaceContext({ rootDir: makeWorkspace() });
 
     // Everything a run could learn about how it is governed, or graded.
     expect(await workspace.readText("workflows/other/workflow.yaml")).toBeNull();
     expect(await workspace.readText("workflows/p/WORKFLOW.md")).toBeNull();
-    expect(await workspace.readText("workflows/p/hooks/gate.js")).toBeNull();
+    expect(await workspace.readText("workflows/p/scripts/gate.js")).toBeNull();
     expect(await workspace.readText("workflows/p/tests/a.test.yaml")).toBeNull();
   });
 
@@ -79,7 +81,7 @@ describe("the governance plane is not part of the agent workspace", () => {
 
     expect(await workspace.listDir("workflows")).toEqual([]);
     expect(await workspace.listDir("./workflows/")).toEqual([]);
-    expect(await workspace.listDir("workflows/p/hooks")).toEqual([]);
+    expect(await workspace.listDir("workflows/p/scripts")).toEqual([]);
   });
 
   it("omits the plane from the agent-visible root listing", async () => {
@@ -101,13 +103,13 @@ describe("the governance plane is not part of the agent workspace", () => {
 });
 
 describe("a grader's criteria are not part of the agent workspace", () => {
-  it("keeps the rubric in the spec, which the agent cannot read", async () => {
+  it("keeps a grader state's criteria in the spec, which the agent cannot read", async () => {
     const { workspace, authoring } = createWorkspaceContext({ rootDir: makeWorkspace() });
 
-    // A grading rubric is declared in `workflow.yaml`, so the one route that
-    // does not exist protects the criteria and the iteration budget together —
-    // exactly the facts an agent could otherwise play against.
-    expect(await authoring.readText("workflows/order-lookup/workflow.yaml")).toContain("rubrics:");
+    // A grader's instructions are declared in `workflow.yaml`, so the one route
+    // that does not exist protects the criteria and the send-back edges together
+    // — exactly the facts an agent could otherwise play against.
+    expect(await authoring.readText("workflows/order-lookup/workflow.yaml")).toContain("type: grader");
     expect(await workspace.readText("workflows/order-lookup/workflow.yaml")).toBeNull();
   });
 
@@ -143,7 +145,7 @@ describe("the plane cannot be mounted back in", () => {
     // prefix's own content rather than "the authoring plane" in the abstract.
     expect(() =>
       createWorkspaceContext({ rootDir: makeWorkspace(), mounts: { "/workflows/": stubBackend() } }),
-    ).toThrow(/machine specs, grading rubrics, hook scripts, and test cases/);
+    ).toThrow(/machine specs, code-state scripts, and test cases/);
   });
 
   it("refuses a writable mount served by the authoring backend", () => {
@@ -189,7 +191,7 @@ const SKILLS: SkillPrefixes = [{ slug: "cap", prefix: "skills/cap" }];
 function verdict(
   tool: string,
   filePath: string,
-  origin: "agent" | "script" | "lifecycle" = "agent",
+  origin: "agent" | "script" | "runtime" = "agent",
   rules: GovernanceRule[] = [],
 ) {
   return decide(
@@ -209,8 +211,8 @@ describe("a script naming the plane is told why", () => {
     expect(v.ruleId).toBe("zone.governance-plane");
   });
 
-  it("blocks a lifecycle PTC read of the plane", () => {
-    expect(verdict("read_file", "workflows/p/hooks/gate.js", "lifecycle").ruleId).toBe(
+  it("blocks a script reading a code state's script", () => {
+    expect(verdict("read_file", "workflows/p/scripts/gate.js", "script").ruleId).toBe(
       "zone.governance-plane",
     );
   });
@@ -227,13 +229,14 @@ describe("a script naming the plane is told why", () => {
     expect(v.decision).toBe("block");
     expect(v.ruleId).toBe("zone.governance-plane");
     expect(v.reason).toContain("workflows/");
-    expect(v.reason).toContain("grading rubrics");
+    expect(v.reason).toContain("machine specs");
   });
 
-  it("blocks a lifecycle read of a spec", () => {
-    // A hook is the very thing that dispatches a rubric; it still gets the name,
-    // never the document declaring it.
-    expect(verdict("read_file", "workflows/other/workflow.yaml", "lifecycle").ruleId).toBe(
+  it("blocks the runtime's own read of a spec", () => {
+    // The runtime's `file`-value check reads on runtime authority, outside the
+    // state's surface — never into the plane: a `file` value naming a spec is
+    // refused with the name, not served the document.
+    expect(verdict("read_file", "workflows/other/workflow.yaml", "runtime").ruleId).toBe(
       "zone.governance-plane",
     );
   });
@@ -261,8 +264,8 @@ describe("archmax_run executes only skill-bundled scripts", () => {
     expect(v.ruleId).toBe("script.skill-only");
   });
 
-  it("blocks a hook script — the agent may not run its own guard", () => {
-    expect(verdict(RUN_TOOL, "workflows/p/hooks/gate.js").ruleId).toBe("script.skill-only");
+  it("blocks a code state's script — the agent may not run its own check", () => {
+    expect(verdict(RUN_TOOL, "workflows/p/scripts/gate.js").ruleId).toBe("script.skill-only");
   });
 
   it("is not widened by a state that grants everything", () => {

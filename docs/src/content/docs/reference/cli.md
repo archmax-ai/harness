@@ -57,7 +57,7 @@ the prompt is the rest of the line.
 | `--file <variable>=<path>` | Repeatable. Hands the session the local file at `<path>` (relative to the working directory): it is placed in the session's `scratchpad/attachments/` under its base name, with a `-1`, `-2`, … suffix when the name is taken, and `<variable>` is seeded, locked, with the placed path. This is what a [`file` input](/reference/machine-spec/#the-signature-requires-and-returns) takes. A flag without `=`, an invalid variable name, a variable named twice or also given in `--variables`, or a file that cannot be read is a usage error (exit 2). |
 | `--session <id>` | The conversation this firing belongs to: continues the session that carries it, or starts one under that id. |
 | `--session-path <path>` | Dotted path into `--variables` holding the session id, overriding the trigger's declared session path. |
-| `--verbose` | One raw line per lifecycle event on `stderr`. |
+| `--verbose` | One raw line per event on `stderr`. |
 
 Session resolution runs when the trigger declares a session path, or when either
 session option is given. A `resume` disposition delivers the trigger to a
@@ -68,14 +68,16 @@ A park exits `0`. What the session said goes to `stdout`, the park report and
 the resuming command to `stderr`.
 
 A rejected session exits `1`: a start refused at the boundary (a missing or
-mistyped `requires` input), a completion short of its `returns`, a failed hook.
+mistyped `requires` input), a completion short of its `returns`, a failed state
+with no `on_error`, such as a code state whose script threw.
 `✖ rejected` and the reason go to `stderr`, and whatever the session last said
 goes to `stdout`.
 
-A session the agent ended with `archmax_raise` exits `1` as well. `✖ failed`,
+A session ended with `archmax_raise`, by the agent, a grader or a code state,
+exits `1` as well. `✖ failed`,
 the state it raised in, its code and its reason go to `stderr`
 (`Session s1 failed in the 'lookup' state with code 'orders-unavailable': …`),
-and whatever the session last said goes to `stdout`. The code is the agent's,
+and whatever the session last said goes to `stdout`. The code is the raiser's,
 reported rather than used as the process's exit code. The state flow shows the
 raise as `✖ raised <code>` beneath the state, then `✖ <state> → failed`.
 
@@ -129,8 +131,9 @@ archmax sessions [session] [--workflow <slug>] [--json]
 
 Without an argument, it lists the durable sessions. Each line carries the id,
 the status, open or finished, the current state, `awaiting=<state>` for a parked
-session, `exit=<code>` for a session the agent ended with `archmax_raise`
-(status `failed`), and the names of its variables.
+session, `exit=<code>` for a session ended with `archmax_raise` (status
+`failed`; by the agent, a grader or a code state), and the names of its
+variables.
 
 A parked session also shows the wait reason and `due=<instant>` for a
 `archmax_wait` park, or the decision context for a human state.

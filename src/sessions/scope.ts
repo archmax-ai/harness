@@ -42,24 +42,6 @@ export function callingStateFrom(config: { configurable?: Configurable }): strin
  */
 export const SEED_VARIABLES_KEY = "archmax_seed_variables";
 
-/**
- * Where an invocation's own id rides. Every turn, decision, reply, delivery and
- * child run is stamped with a fresh one, so a count kept per invocation (the turn
- * budget) starts over with each, as LangGraph's step limit does.
- */
-export const INVOCATION_KEY = "archmax_invocation";
-
-/** `config` stamped as a new invocation. */
-export function withInvocation(config: RunnableConfig | undefined): RunnableConfig {
-  return { ...(config ?? {}), configurable: { ...(config?.configurable ?? {}), [INVOCATION_KEY]: crypto.randomUUID() } };
-}
-
-/** The invocation `config` was stamped as, if any. */
-export function invocationOf(config: RunnableConfig | undefined): string | undefined {
-  const id = config?.configurable?.[INVOCATION_KEY];
-  return typeof id === "string" ? id : undefined;
-}
-
 /** The `configurable` bag of a runnable config, however partially typed the caller has it. */
 type Configurable = Record<string, unknown> | undefined;
 
@@ -198,8 +180,6 @@ export function childRunConfig(
       thread_id: childSessionId(parentSessionId, child.identity),
       [SUB_WORKFLOW_CHAIN_KEY]: [...parentScope.chain, child.workflow],
       [SUB_WORKFLOW_DISPATCH_KEY]: child.dispatchId,
-      // The child's run is an invocation of its own, never a continuation of its caller's.
-      [INVOCATION_KEY]: crypto.randomUUID(),
     },
   };
 }

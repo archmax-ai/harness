@@ -125,12 +125,12 @@ On its own, `skills: { allow: [order-enrichment] }` lets `archmax_run` reach the
 scripts of every enabled bundle. A script the agent wrote into `scratchpad/`
 stays refused either way, by the `script.skill-only` safety rule.
 
-Lifecycle **hooks are exempt**, exactly as they are exempt from a state's
-`tools.allow`, because a `before` hook runs on runtime authority. So a routing
-state can enable nothing while the hook that enforces tenancy still reads the
-order records. That is how the bundled example's `identify-case` state is
-written. A bundle the workflow's `skills.forbid_always` denies is still refused
-to its hooks.
+A **code state's script and a grader** are held to their own state's skills,
+like the agent. So a check that reads a bundle's data is a code state that enables
+the bundle itself, and the routing state after it can still enable nothing. That
+is how the bundled example is written: `screen-request` enables `order-data` to
+check the requester against the order records, and `identify-case`, which only
+routes, enables none.
 
 `archmax validate` reports these as errors:
 
@@ -166,9 +166,9 @@ stays inline in its `instructions`. Reach for a `SKILL.md` in three cases: a
 capability has machinery to carry, a state's guidance outgrows an inline string,
 or guidance is shared across workflows.
 
-**Lifecycle hook scripts do not live here.** The runtime runs a hook, so it
-belongs on the authoring plane beside the spec that wires it
-(`workflows/<slug>/hooks/<check>.js`), out of the agent's reach entirely.
+**Code-state scripts do not live here.** The runtime runs a code state's script,
+so it belongs on the authoring plane beside the spec that declares it
+(`workflows/<slug>/scripts/<check>.js`), out of the agent's reach entirely.
 `archmax_run` is confined to skill bundles by a non-overridable kernel rule, so
 the two classes cannot meet. See [The authoring plane](/guides/authoring-plane/).
 
@@ -187,7 +187,7 @@ That guarantee covers paths outside `scratchpad/`, which stays writable wherever
 `write_file` is granted.
 
 So pair every skill instruction that matters with a matching governance rule or
-an `after` hook. What *is* enforced about a skill is its `skills.allow`
+a code state that checks the work behind the state. What *is* enforced about a skill is its `skills.allow`
 membership: whether a state may reach the bundle at all.
 
 ## Where skills come from

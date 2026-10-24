@@ -54,8 +54,8 @@ declarative YAML documents, interpreted host-side by `archmax test`.
 
 - `src/` is the runtime (library). It holds `assembly/` (`createAgent`),
   `machine/` (the schema and the compiled machine), `validate/`, `workflow/`
-  (governance middleware, parks, control tools), `kernel/`, `sandbox/`, `lifecycle/`,
-  `rubrics/`, `sessions/`, `testing/` (the case engine), `cli/`, `core/`,
+  (governance middleware, parks, control tools, grader and code states),
+  `kernel/`, `sandbox/`, `sessions/`, `testing/` (the case engine), `cli/`, `core/`,
   `public/` (the `sandbox`, `testing` and `cli` subpaths), `behaviour/`,
   `env.ts`, `index.ts`. `core/platform-prompt.md` is the platform prompt,
   the graph-state execution model merged into every governed agent's system

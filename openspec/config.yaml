@@ -7,8 +7,9 @@ context: |
   governed layer over LangChain Deep Agents: one Deep Agent per workflow,
   governed by a declarative workflow.yaml state machine. Tooling is npm
   (package-lock.json); it is not a monorepo. Vocabulary follows
-  docs/src/content/docs/reference/glossary.md (session, turn, state, hook,
-  verdict, case, grade; "runtime"/"kernel", never "harness").
+  docs/src/content/docs/reference/glossary.md (session, turn, state,
+  automated state, grader state, code state, case, grade; "runtime"/"kernel",
+  never "harness").
 
   Documentation is published as an Astro + Starlight site living in a
   self-contained `docs/` project at the repo root. Content is authored as
@@ -34,8 +35,8 @@ context: |
   The distributable authoring skill at `skills/archmax-harness/` (SKILL.md plus
   `references/*.md`) is likewise part of the product: it is the playbook
   coding agents use to author workflows and wire the runtime. Any change to
-  the authoring surface (the workflow.yaml machine schema, lifecycle hooks
-  and hand-authored hook scripts, tool governance, human states,
+  the authoring surface (the workflow.yaml machine schema, grader and code
+  states and their scripts, tool governance, human states,
   cases, CLI commands, or the public wiring API)
   MUST update `skills/archmax-harness/` in the same change — alongside the README.md
   and `docs/` updates required above — so the skill never drifts from the
@@ -47,7 +48,7 @@ rules:
   proposal:
     - When a change affects user-facing behavior (CLI, config, authoring model, public API), call out the required `docs/` updates in the Impact section.
     - When a change makes a significant difference to users of the SDK, call out the required README.md updates in the Impact section.
-    - When a change affects the authoring surface (workflow schema, hooks, governance, cases, sandbox script contracts, CLI, wiring API), call out the required `skills/archmax-harness/` updates in the Impact section.
+    - When a change affects the authoring surface (workflow schema, grader and code states, governance, cases, sandbox script contracts, CLI, wiring API), call out the required `skills/archmax-harness/` updates in the Impact section.
   tasks:
     - For any user-facing change, include an explicit task to update the relevant pages under `docs/` (the Astro Starlight site) so documentation ships with the feature.
     - For any significant change affecting users of the SDK, include an explicit task to update README.md so it ships with the feature.

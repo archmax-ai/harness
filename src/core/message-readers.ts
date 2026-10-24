@@ -93,15 +93,11 @@ function messageIdOf(message: unknown): string | undefined {
 
 /**
  * What the agent said during the turn that began at `anchor`: each assistant
- * text, in order, joined by a blank line. A completion check's revision request
- * (an `after` note) takes back what came before it, so a rejected draft never
- * reaches the person; no other note does. Empty when the turn said nothing.
+ * text, in order, joined by a blank line. Empty when the turn said nothing.
  */
 export function turnReply(messages: unknown[], anchor: TurnAnchor): string {
-  const start = anchorIndex(messages, anchor);
-  let said: string[] = [];
-  for (const message of messages.slice(start)) {
-    if (runtimeNoteKind(message) === "after") said = [];
+  const said: string[] = [];
+  for (const message of messages.slice(anchorIndex(messages, anchor))) {
     if (!isAiMessage(message) || isRuntimeNote(message)) continue;
     const text = contentToString((message as { content?: unknown }).content).trim();
     if (text) said.push(text);
@@ -115,7 +111,8 @@ export function turnReply(messages: unknown[], anchor: TurnAnchor): string {
  *  - `decision` — a person picked an edge at a human state and the session was routed
  *  - `event` — a trigger firing was delivered to a parked session
  *  - `error` — a failed state was routed to its `on_error` target
- *  - `after` — a terminal state's completion check asked for a revision
+ *  - `grader` — a grader state moved the session (its reason is what the next state reads) or ended it
+ *  - `code` — a code state moved the session or ended it
  *  - `sub-workflow` — a resumed child's result, handed back to its caller
  *  - `opening` — the fixed line a child session's own transcript opens with
  */
@@ -123,7 +120,8 @@ export type RuntimeNoteKind =
   | "decision"
   | "event"
   | "error"
-  | "after"
+  | "grader"
+  | "code"
   | "sub-workflow"
   | "opening";
 

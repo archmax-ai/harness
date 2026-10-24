@@ -125,6 +125,9 @@ function viewOf(session: DriveSession, outcome: Outcome): SessionView {
   const view = messagesToSessionView(outcome.messages, session.name, outcome.auditTrail, outcome.variables);
   // What this action's turn said, not the session's last text: the grader's reply.
   view.reply = outcome.reply;
+  // Whether the turn failed is the outcome's to say: a tool error the agent
+  // recovered from is not a failed turn, and a rejection is one whatever its tools did.
+  view.failed = outcome.kind === "failed" || outcome.kind === "rejected";
   if (outcome.kind === "parked") {
     view.parked = true;
     if (outcome.parkedChannel) view.parkedChannel = outcome.parkedChannel;

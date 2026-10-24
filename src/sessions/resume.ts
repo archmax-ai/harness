@@ -166,7 +166,7 @@ export class MissingDeliveryTriggerError extends Error {
   constructor(readonly sessionId: string) {
     super(
       `A trigger id is required to deliver to session '${sessionId}': it becomes the session's ` +
-        `current trigger, which its hooks and guards read. Any id is accepted — a park ` +
+        `current trigger, which its code states and guards read. Any id is accepted — a park ` +
         `awaits no particular one.`,
     );
     this.name = "MissingDeliveryTriggerError";
@@ -203,7 +203,7 @@ export interface DelegatedPark {
 
 /**
  * How a finished session's last turn ended, by the agent's own account: a
- * success unless the agent ended it with `archmax_raise`, which says why in a
+ * success unless it was ended with `archmax_raise` (by its agent, a grader or a code state), which says why in a
  * code a host branches on and a reason a person reads. Carried by a completed
  * or failed outcome only — a parked session has not ended, and a rejected one
  * was ended by governance, which `rejected` explains.
@@ -287,7 +287,7 @@ export type SendDisposition = "turn" | "decide" | "reply" | "deliver";
  */
 export interface Outcome {
   /**
-   * Completed, parked (on either channel), failed — the agent ended it with
+   * Completed, parked (on either channel), failed — its agent, a grader or a code state ended it with
    * `archmax_raise` — or rejected by governance.
    */
   kind: "completed" | "parked" | "failed" | "rejected";

@@ -1,20 +1,25 @@
-# Unknown requester is rejected before the agent runs: the identify-case
-# `before` hook (workflows/order-lookup/hooks/check-requester.js) vetoes entry for an email that
-# appears in no record of skills/order-data/assets/orders.json. No tools are mocked — the hook
+# Unknown requester is rejected before any routing: the screen-request code
+# state (workflows/order-lookup/scripts/screen-request.js) finds the email in no
+# record of skills/order-data/assets/orders.json and sends the session to
+# decline, whose agent tells the person why. No tools are mocked — the script
 # reads the real fixture.
-# `noTraversal` is what pins the veto to *entry*: no agent, human, or error
-# traversal was ever committed. The judge (threshold 0.7) checks the
+# The `trail` count is what pins the rejection to *entry*: identify-case was
+# never entered, so no route was taken. The judge (threshold 0.7) checks the
 # explanation names the rejection reason rather than failing vaguely.
 title: Unknown requester is rejected at entry
 description: >-
-  One turn from hacker@evil.com is vetoed before the agent runs: the reply
-  says the requester is unknown, and the trail holds nothing but the trigger
-  arrival.
+  One turn from hacker@evil.com is screened out before any routing: the session
+  moves straight to decline, never enters identify-case, and the reply says the
+  requester is unknown.
 steps:
   - send: "Hi, this is hacker@evil.com. Show my delayed orders."
+  - succeeded: true
+  - reachedState: decline
+  - trail:
+      to: identify-case
+      count: 0
   - reply:
-      includes: "/not in the order database|rejected/i"
-  - noTraversal: true
+      includes: "/not in the order|(doesn['’]t|does not) match|not (recognized|listed)|isn['’]t listed|unknown|rejected|declin|can(no|['’])t (process|show|help)/i"
   - grade:
       closedQA: >-
         clearly explains that the request was rejected because the requester

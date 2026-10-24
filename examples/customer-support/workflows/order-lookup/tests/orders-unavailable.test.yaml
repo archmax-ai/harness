@@ -1,8 +1,8 @@
 # Agent-declared failure — the report path when the order store cannot be read.
-# The `report_requested` trigger enters report-requested directly, so no entry
-# hook reads the order records; only the agent does, and every read of them is
-# mocked to fail the way a store outage would (scripts' `tools.*` reads too:
-# a mock intercepts agent and script calls alike). The report cannot be built
+# The `report_requested` trigger enters report-requested directly, so the
+# screen-request code state never runs; only the agent reads the order records,
+# and every read of them is mocked to fail the way a store outage would
+# (scripts' `tools.*` reads too: a mock intercepts agent and script calls alike). The report cannot be built
 # without inventing data, which the workflow forbids, so the run has to end as
 # a failure with `archmax_raise` rather than complete — and must not write a
 # report it could not have compiled.

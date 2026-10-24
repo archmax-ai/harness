@@ -39,8 +39,8 @@ exactly one place, so reading one state tells you everything about what starts
 it.
 
 A workflow may declare as many start states as it likes. The trigger id is
-recorded in checkpointed state, and lifecycle hooks and scripts read it as
-`args.trigger`.
+recorded in checkpointed state. A code state's script reads it as `trigger`, and
+any script as `variables.trigger`.
 
 A state that declares a trigger can also be the target of another state's
 transition. It runs its turn like any other state.
@@ -66,7 +66,7 @@ declaration. A shared entry state has **one** behavior: one set of
 `instructions`, one tool allowlist, one set of transitions.
 
 Which trigger fired stays readable per session, as `${{trigger}}` in a guard and
-`args.trigger` in a hook. Branch on it where the paths genuinely differ, and
+`trigger` in a code state's script. Branch on it where the paths genuinely differ, and
 declare separate states once they differ enough to be two states.
 
 Two rules the loader enforces, each failing the workflow closed with the state
@@ -154,7 +154,8 @@ back:
 
 A session that *parks* is exempt, since it has not finished. `note` is reserved:
 a trigger's `returns` may not declare it. A workflow that wants the model to try
-again checks its returns in a terminal `after` hook, which can `correct`.
+again checks its returns in a code state before the terminal state, which sends
+the session back with what is missing.
 
 ### A return is owed when the session finishes
 
@@ -218,14 +219,17 @@ The types are held in three places:
   the variable, the type and the trigger, and it can write `12.5` instead.
 - **At completion.** A session that still holds a mistyped return is rejected,
   naming the terminal state, the variable and the type. The write check already
-  covers the agent's own writes, so this catches a script or hook that wrote one.
+  covers every `archmax_set_variables` call, the agent's and a code state's
+  alike, so this is the backstop for a value that reached the session another
+  way.
 
 A `file` entry's value is a path from the workspace root:
 `scratchpad/attachments/invoice.pdf` for a file in the session, or
 `skills/billing/assets/template.pdf` for an authored one. The shape check is the
 same pure rule a host runs. In the same three places the runtime also checks that
-a file is at the path and that the session may read it on runtime authority, the
-rules a hook is bound by. Those rules include the workflow's mount grants, so a
+a file is at the path and that the session may read it, on runtime authority:
+the workflow-wide denials, the safety rules and the workflow's mount grants bind
+the check, the state's own lists do not. Those mount grants are the workflow's, so a
 path under a governed mount no state of the workflow is granted is refused too. A
 seed naming a file that is not there is refused before any model call, and `archmax_set_variables({ variables: { report:
 "scratchpad/report.md" } })` is refused until the agent has written that file. A
@@ -427,8 +431,8 @@ The id itself follows four rules:
   via `resolveTrigger`, which throws `UnknownTriggerError` listing the declared
   ids.
 - The trigger is written once at the turn boundary into checkpointed state.
-  Lifecycle `before`/`after` scripts read it as `args.trigger` (the **id
-  string**), and the session's input as `args.variables`. Both survive resume.
+  A code state's script reads it as `trigger` (the **id string**), and the
+  session's input as `variables`. Both survive resume.
 - The id is also exposed as the built-in `trigger` variable. A guard can bind to
   how the session started (`${{trigger}}`) without any seeding. It is one of
   two reserved names. The other, `title`, names the *task* and is written by the

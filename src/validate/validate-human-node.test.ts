@@ -199,10 +199,9 @@ describe("validateWorkflow — human nodes that cannot do what they declare", ()
     expect(errors(result, /Human state 'review' declares a transition to itself/)).toHaveLength(1);
   });
 
-  // Every hook site lives inside an agent segment; a human node runs none. The
-  // hook was validated as well-formed and then never called — governance that
-  // reads as enforced and enforces nothing.
-  it.each(["before", "after"] as const)("flags a '%s' hook on a human node", async (phase) => {
+  // A human node never ran a hook, and now no state does: a leftover slot is the
+  // unrecognized key it is, on a human node exactly as on any other state.
+  it.each(["before", "after"] as const)("refuses a leftover '%s:' on a human node as an unrecognized key", async (phase) => {
     writeWorkflow(
       [
         "states:",
@@ -220,19 +219,28 @@ describe("validateWorkflow — human nodes that cannot do what they declare", ()
 
     const result = await validateWorkflow({ workflow: "wf", rootDir: root });
     expect(result.valid).toBe(false);
-    expect(
-      errors(result, new RegExp(`Human state 'review' declares a '${phase}' hook, which can never run`)),
-    ).toHaveLength(1);
+    const found = errors(result, new RegExp(`Unrecognized key: "${phase}"`));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ field: "states.review" });
   });
 
-  it("leaves a hook on an ordinary agent state alone", async () => {
+  // What a hook on the reviewed state used to check is a grader in front of the
+  // human node now: an ordinary state on the graph, which validates clean.
+  it("accepts a grader in front of a human node", async () => {
     writeWorkflow(
       [
+        "instructions: Draft, grade, then approve.",
         "states:",
         "  a:",
         "    triggers: { manual: }",
-        "    after: { rubric: { instructions: review it } }",
-        "    transitions: [{ to: review, description: hand off }]",
+        "    instructions: Draft the reply.",
+        "    transitions: [{ to: grade, description: The draft is ready. }]",
+        "  grade:",
+        "    type: grader",
+        "    instructions: Approve a polite reply; send anything else back with the fix.",
+        "    transitions:",
+        "      - { to: review, description: The reply is polite. }",
+        "      - { to: a, description: The reply needs another pass. }",
         "  review:",
         "    type: human",
         "    instructions: Approve the decision.",
@@ -242,6 +250,7 @@ describe("validateWorkflow — human nodes that cannot do what they declare", ()
     );
 
     const result = await validateWorkflow({ workflow: "wf", rootDir: root });
-    expect(errors(result, /which can never run/)).toHaveLength(0);
+    expect(result.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(result.valid).toBe(true);
   });
 });

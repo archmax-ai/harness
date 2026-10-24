@@ -6,8 +6,6 @@ import {
   compileForbiddenMountRules,
   decide,
   isReadOnlyZonePath,
-  reduceHookFact,
-  type HookFact,
   type ProposedAction,
 } from "./kernel.js";
 
@@ -34,9 +32,6 @@ const SPEC: MachineSpec = {
 function machine(): WorkflowMachine {
   return WorkflowMachine.fromSpec(SPEC);
 }
-
-const okFact: HookFact = { verdict: "ok", reason: "" };
-const vetoFact: HookFact = { verdict: "veto", reason: "precondition not met" };
 
 describe("decide — tool-call", () => {
   it("always blocks an unnamespaced eval tool without a warning", () => {
@@ -432,95 +427,21 @@ describe("reply-only turns", () => {
 
 describe("decide — transition", () => {
   it("blocks an undeclared edge with valid targets listed", () => {
-    const v = decide(machine(), { kind: "transition", from: "collect", to: "done", hookFacts: [] });
+    const v = decide(machine(), { kind: "transition", from: "collect", to: "done" });
     expect(v.decision).toBe("block");
     expect(v.ruleId).toBe("transition.no-edge");
     expect(v.reason).toContain("Valid target slugs: review");
   });
 
-  it("allows a declared edge when hooks pass", () => {
-    const v = decide(machine(), {
-      kind: "transition",
-      from: "collect",
-      to: "review",
-      hookFacts: [okFact],
-    });
+  it("allows a declared edge", () => {
+    const v = decide(machine(), { kind: "transition", from: "collect", to: "review" });
     expect(v.decision).toBe("allow");
   });
 
-  it("blocks a declared edge when an after hook vetoes", () => {
-    const v = decide(machine(), {
-      kind: "transition",
-      from: "collect",
-      to: "review",
-      hookFacts: [vetoFact],
-    });
+  it("says so when the state has no transitions", () => {
+    const v = decide(machine(), { kind: "transition", from: "done", to: "collect" });
     expect(v.decision).toBe("block");
-    expect(v.reason).toBe("hook veto: precondition not met");
-  });
-});
-
-describe("decide — enter-state (before hooks)", () => {
-  it("allows when before hooks pass", () => {
-    const v = decide(machine(), { kind: "enter-state", state: "review", hookFacts: [okFact] });
-    expect(v.decision).toBe("allow");
-  });
-
-  it("blocks when a before hook vetoes", () => {
-    const v = decide(machine(), { kind: "enter-state", state: "review", hookFacts: [vetoFact] });
-    expect(v.decision).toBe("block");
-    expect(v.reason).toBe("precondition not met");
-  });
-});
-
-describe("reduceHookFact — fail closed", () => {
-  it("reduces an errored hook fact to a veto carrying the error", () => {
-    const v = reduceHookFact({ verdict: "ok", reason: "", error: "boom" }, { phase: "after", veto: true });
-    expect(v.decision).toBe("block");
-    expect(v.ruleId).toBe("hook.error");
-    expect(v.reason).toBe("boom");
-  });
-
-  it("routes a rubric after-veto through rubric messaging and consumes an iteration", () => {
-    const v = reduceHookFact(
-      { verdict: "correct", reason: "incomplete", rubric: "tone", maxIterations: 1, iterationsUsed: 0 },
-      { phase: "after", veto: true, to: "done" },
-    );
-    expect(v.decision).toBe("block");
-    expect(v.reason).toContain("attempt(s) remaining");
-    expect(v.correctionConsumed).toBe(true);
-  });
-
-  it("does not block a correct verdict outside an after-veto window", () => {
-    const v = reduceHookFact(
-      { verdict: "correct", reason: "x", rubric: "tone" },
-      { phase: "after", veto: false },
-    );
-    expect(v.decision).toBe("allow");
-  });
-
-  it("bills no iteration for a correct verdict refused on an exhausted budget", () => {
-    // The refusal grants no retry, so it must not charge for one: charging it
-    // pushed the count past the max and cost the state its budget on the next
-    // visit (issue #62).
-    const v = reduceHookFact(
-      { verdict: "correct", reason: "fix it", maxIterations: 1, iterationsUsed: 1 },
-      { phase: "after", veto: true, to: "next" },
-    );
-    expect(v.decision).toBe("block");
-    expect(v.reason).toContain("still incomplete after 1 attempt(s)");
-    expect(v.correctionConsumed).toBe(false);
-    expect(v.budgetExhausted).toBe(true);
-  });
-
-  it("bills no iteration for a deliberate veto, and does not call it exhausted", () => {
-    const v = reduceHookFact(
-      { verdict: "veto", reason: "requester not found", maxIterations: 2, iterationsUsed: 0 },
-      { phase: "after", veto: true, to: "next" },
-    );
-    expect(v.decision).toBe("block");
-    expect(v.correctionConsumed).toBe(false);
-    expect(v.budgetExhausted).toBe(false);
+    expect(v.reason).toContain("No transitions from this state.");
   });
 });
 
@@ -590,7 +511,7 @@ describe("decide — skill governance", () => {
     state: string,
     tool: string,
     args: Record<string, unknown>,
-    origin?: "agent" | "script" | "lifecycle",
+    origin?: "agent" | "script" | "runtime",
   ) =>
     decide(
       skillMachine(),
@@ -671,22 +592,22 @@ describe("decide — skill governance", () => {
     expect(v.ruleId).toBe("skill.not-allowed");
   });
 
-  it("exempts a lifecycle hook, which runs on harness authority", () => {
-    const v = call("draft", "read_file", { file_path: "skills/order-data/assets/orders.json" }, "lifecycle");
+  it("exempts the runtime's own read, which runs on runtime authority", () => {
+    const v = call("draft", "read_file", { file_path: "skills/order-data/assets/orders.json" }, "runtime");
     expect(v.decision).toBe("allow");
   });
 
-  it("holds a lifecycle hook to its workflow's own skills.forbid_always, not a state's forbid", () => {
+  it("holds the runtime's read to its workflow's own skills.forbid_always, not a state's forbid", () => {
     const machine = WorkflowMachine.fromSpec({
       skills: { forbid_always: ["refund-policy"] },
       states: { work: { triggers: { manual: null }, skills: { forbid: ["order-data"] } } },
     });
-    const hook = (file_path: string) =>
-      decide(machine, { kind: "tool-call", state: "work", tool: "read_file", args: { file_path }, origin: "lifecycle" }, [], MOUNTS, {}, SKILLS);
-    const v = hook("skills/refund-policy/SKILL.md");
+    const read = (file_path: string) =>
+      decide(machine, { kind: "tool-call", state: "work", tool: "read_file", args: { file_path }, origin: "runtime" }, [], MOUNTS, {}, SKILLS);
+    const v = read("skills/refund-policy/SKILL.md");
     expect(v).toMatchObject({ decision: "block", ruleId: "skill.forbidden" });
     expect(v.reason).toContain("'skills.forbid_always' denies in every state");
-    expect(hook("skills/order-data/assets/orders.json").decision).toBe("allow");
+    expect(read("skills/order-data/assets/orders.json").decision).toBe("allow");
   });
 
   it("fires for no call when the workspace serves no skills", () => {
@@ -763,7 +684,7 @@ describe("decide — mount governance", () => {
     state: string,
     tool: string,
     args: Record<string, unknown>,
-    origin?: "agent" | "script" | "lifecycle",
+    origin?: "agent" | "script" | "runtime",
   ) =>
     decide(
       mountMachine(),
@@ -937,15 +858,15 @@ describe("decide — mount governance", () => {
   });
 
   /**
-   * A hook and a rubric grader run on runtime authority: bound by the
+   * The runtime's own `file`-value read runs on runtime authority: bound by the
    * workflow-wide denial (which travels as an inherited rule) and not by the
    * state's own surface, exactly as for tools.
    */
-  it("exempts a lifecycle hook from the state's surface", () => {
-    expect(call("intake", "read_file", { file_path: "catalogs/eu/skus.csv" }, "lifecycle").decision).toBe(
+  it("exempts the runtime's own read from the state's surface", () => {
+    expect(call("intake", "read_file", { file_path: "catalogs/eu/skus.csv" }, "runtime").decision).toBe(
       "allow",
     );
-    expect(call("route", "read_file", { file_path: "skills/README.md" }, "lifecycle").decision).toBe(
+    expect(call("route", "read_file", { file_path: "skills/README.md" }, "runtime").decision).toBe(
       "allow",
     );
   });
@@ -999,7 +920,7 @@ describe("compileForbiddenMountRules", () => {
     expect(v.reason).toContain("mounts.forbid_always");
   });
 
-  it("binds a lifecycle hook too: a workflow-wide denial is not a state surface", () => {
+  it("binds the runtime's own read too: a workflow-wide denial is not a state surface", () => {
     const v = decide(
       child,
       {
@@ -1007,7 +928,7 @@ describe("compileForbiddenMountRules", () => {
         state: "work",
         tool: "read_file",
         args: { file_path: "reference/rates.csv" },
-        origin: "lifecycle",
+        origin: "runtime",
       },
       compileForbiddenMountRules(["reference"], "order-lookup"),
       MOUNTS,
@@ -1028,10 +949,10 @@ describe("compileForbiddenMountRules", () => {
 });
 
 /**
- * Runtime authority — a hook script, the runtime's own `file` value check — is
- * decided on the workflow's grants, not the active state's: outside the state's
- * surface, never outside the workflow's. One table serves a caller and every
- * child, so it holds mounts other workflows grant.
+ * Runtime authority — the runtime's own `file`-value read check — is decided on
+ * the workflow's grants, not the active state's: outside the state's surface,
+ * never outside the workflow's. One table serves a caller and every child, so it
+ * holds mounts other workflows grant.
  */
 describe("decide — mounts on runtime authority", () => {
   /** `invoices` is in the table because another workflow in the tree grants it. */
@@ -1054,16 +975,16 @@ describe("decide — mounts on runtime authority", () => {
       publish: { mounts: { allow: [{ mount: "exports", access: "read" }] } },
     },
   };
-  const hook = (spec: MachineSpec, tool: string, file_path: string, state = "intake") =>
+  const runtime = (spec: MachineSpec, tool: string, file_path: string, state = "intake") =>
     decide(
       WorkflowMachine.fromSpec(spec),
-      { kind: "tool-call", state, tool, args: { file_path }, origin: "lifecycle" },
+      { kind: "tool-call", state, tool, args: { file_path }, origin: "runtime" },
       [],
       MOUNTS,
     );
 
   it("reaches a mount another state grants, whatever the active state forbids", () => {
-    expect(hook(SPEC, "read_file", "reference/rates.csv").decision).toBe("allow");
+    expect(runtime(SPEC, "read_file", "reference/rates.csv").decision).toBe("allow");
     // The model in the same state is still refused.
     const agent = decide(
       WorkflowMachine.fromSpec(SPEC),
@@ -1076,7 +997,7 @@ describe("decide — mounts on runtime authority", () => {
 
   it("refuses a governed mount no grant of the workflow names, to read and to write", () => {
     for (const tool of ["read_file", "write_file"]) {
-      const v = hook(SPEC, tool, "invoices/a.xml");
+      const v = runtime(SPEC, tool, "invoices/a.xml");
       expect(v, tool).toMatchObject({ decision: "block", ruleId: "mount.not-allowed", warn: true });
       expect(v.reason, tool).toContain("'invoices'");
       expect(v.reason, tool).toContain("no grant of this workflow names");
@@ -1084,19 +1005,19 @@ describe("decide — mounts on runtime authority", () => {
   });
 
   it("refuses a write the workflow does not ask for, and allows one it asks for in any state", () => {
-    const v = hook(SPEC, "write_file", "exports/out.csv");
+    const v = runtime(SPEC, "write_file", "exports/out.csv");
     expect(v).toMatchObject({ decision: "block", ruleId: "mount.read-only" });
     expect(v.reason).toContain("may read but not write");
     const writes: MachineSpec = {
       ...SPEC,
       states: { ...SPEC.states, publish: { mounts: { allow: [{ mount: "exports", access: "read_write" }] } } },
     };
-    expect(hook(writes, "write_file", "exports/out.csv").decision).toBe("allow");
+    expect(runtime(writes, "write_file", "exports/out.csv").decision).toBe("allow");
   });
 
   it("holds the workflow's own forbid_always, and names it", () => {
     const denied: MachineSpec = { ...SPEC, mounts: { allow_always: ["exports"], forbid_always: ["reference"] } };
-    const v = hook(denied, "read_file", "reference/rates.csv", "triage");
+    const v = runtime(denied, "read_file", "reference/rates.csv", "triage");
     expect(v).toMatchObject({ decision: "block", ruleId: "mount.forbidden" });
     expect(v.reason).toContain("'mounts.forbid_always' denies in every state");
   });
@@ -1106,13 +1027,13 @@ describe("decide — mounts on runtime authority", () => {
       ...SPEC,
       mounts: { allow_always: ["exports", { mount: "skills", access: "read" }] },
     };
-    expect(hook(SPEC, "write_file", "skills/notes.md").decision).toBe("allow");
-    expect(hook(narrowed, "write_file", "skills/notes.md").ruleId).toBe("mount.read-only");
-    expect(hook(narrowed, "read_file", "skills/notes.md").decision).toBe("allow");
+    expect(runtime(SPEC, "write_file", "skills/notes.md").decision).toBe("allow");
+    expect(runtime(narrowed, "write_file", "skills/notes.md").ruleId).toBe("mount.read-only");
+    expect(runtime(narrowed, "read_file", "skills/notes.md").decision).toBe("allow");
   });
 
   it("leaves a path under no mount to the other rules", () => {
-    expect(hook(SPEC, "write_file", "scratchpad/notes.md").decision).toBe("allow");
+    expect(runtime(SPEC, "write_file", "scratchpad/notes.md").decision).toBe("allow");
   });
 });
 

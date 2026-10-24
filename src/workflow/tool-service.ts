@@ -6,7 +6,6 @@
  */
 import { ToolMessage } from "@langchain/core/messages";
 import { Command } from "@langchain/langgraph";
-import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import type { MountPrefixes } from "../core/mounts.js";
@@ -43,16 +42,15 @@ import {
 import { resolveParams, subWorkflowParkOf, type SubWorkflowDispatcher } from "./sub-workflow.js";
 import { delegationCallResult } from "./workflow-tools.js";
 import { buildRunnableConfig } from "./runtime-config.js";
+import { reportMove } from "./move-events.js";
 
 export interface ToolServiceContext {
   machine: WorkflowMachine;
   emit: WorkflowEventEmitter;
-  lifecycle: LifecycleRunner;
   mountPrefixes: MountPrefixes;
   subWorkflows?: SubWorkflowDispatcher;
   /** The `file` type's runtime check for a session in a state; omitted, a `file` value is held to its shape alone. */
   files?: (state: string, variables: VariableStore) => FileValueCheck;
-  lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext;
 }
 
 /** The identities of one call being serviced. */
@@ -137,7 +135,7 @@ function settledMessage(result: unknown): ToolMessage | undefined {
 }
 
 export function createToolService(ctx: ToolServiceContext) {
-  const { machine, emit, lifecycle, mountPrefixes, subWorkflows } = ctx;
+  const { machine, emit, mountPrefixes, subWorkflows } = ctx;
 
   function emitToolCalled(state: string, toolName: string, callId: string, args: Record<string, unknown>): void {
     const detail = toolCallDetail(args);
@@ -174,8 +172,7 @@ export function createToolService(ctx: ToolServiceContext) {
    * The model step each session last moved in, keyed by session id. One step may
    * commit one transition: sibling `archmax_advance` calls in a single assistant
    * message each read the same step-start position, so each would pass edge
-   * validation, run the leaving state's `after` hook, and write a position to a
-   * last-value channel — double-running a governance hook and landing wherever
+   * validation and write a position to a last-value channel — landing wherever
    * the last writer said (issue #66).
    */
   const movedAtStep = new Map<string, { step: string; to: string }>();
@@ -213,15 +210,6 @@ export function createToolService(ctx: ToolServiceContext) {
     return new Command({
       update: { ...update, auditTrail: [...((update.auditTrail as TrailStep[] | undefined) ?? []), ...steps] },
     });
-  }
-
-  /** Report a move: the state left, the state entered, and the park it opened. */
-  function reportMove(sessionId: string, moved: { from: string; to: string; park?: PendingDecision }): void {
-    emit({ type: "state-leave", state: moved.from, next: moved.to });
-    emit({ type: "state-enter", state: moved.to });
-    if (moved.park) {
-      emit({ type: "parked", state: moved.to, sessionId, awaiting: "decision" });
-    }
   }
 
   /** Service a delegation through the dispatcher; refused as a blocked call when nothing may run. */
@@ -343,13 +331,11 @@ export function createToolService(ctx: ToolServiceContext) {
     const state = request.state;
     const step = stepIdOf(state);
     // One transition per model step. Only a move that landed claims the step, so
-    // a refused attempt (invalid edge, hook veto) leaves a sibling free to try.
+    // a refused attempt (an invalid edge, an unmet `requires`) leaves a sibling free to try.
     const claimed = movedAtStep.get(sessionId);
     const alreadyMovedTo = claimed?.step === step ? claimed.to : undefined;
-    const claimStep = (moved?: { from: string; to: string; park?: PendingDecision }) => {
-      if (!moved) return;
-      movedAtStep.set(sessionId, { step, to: moved.to });
-      reportMove(sessionId, moved);
+    const claimStep = (moved?: { to: string }) => {
+      if (moved) movedAtStep.set(sessionId, { step, to: moved.to });
     };
     switch (toolName) {
       case ADVANCE_TOOL: {
@@ -357,27 +343,30 @@ export function createToolService(ctx: ToolServiceContext) {
         const outcome = await withPairedEvents(
           call,
           args,
-          () =>
-            handleAdvance(
-              { machine, lifecycle, mountPrefixes },
-              {
-                toolCallId,
-                callId,
-                args,
-                state,
-                ctx: ctx.lifecycleCtx(sessionId, state, request.runtime?.signal),
-              },
-            ),
+          () => {
+            const advanced = handleAdvance({ machine, mountPrefixes }, { toolCallId, args, state });
+            // The move is announced inside the call's pair, as the effect of the call that made it.
+            if (advanced.moved) {
+              const { from, to, reason } = advanced.moved;
+              emit({ type: "advance", from, to, reason, callId });
+            }
+            return advanced;
+          },
           // A refused transition replies without erroring the message, so the outcome is read off the move.
           (result) => (result.moved ? "ok" : "error"),
         );
         claimStep(outcome.moved);
+        if (outcome.moved) {
+          const { from, to, park } = outcome.moved;
+          reportMove(emit, sessionId, { from, to, parks: park !== undefined });
+        }
         return outcome.message;
       }
       case RESET_TOOL: {
         if (alreadyMovedTo) return duplicateMoveRefusal(toolName, toolCallId, alreadyMovedTo);
         const outcome = await withPairedEvents(call, args, () => handleReset(machine, { toolCallId, args, state }));
         claimStep(outcome.moved);
+        if (outcome.moved) reportMove(emit, sessionId, outcome.moved);
         return outcome.message;
       }
       case WAIT_TOOL: {
@@ -436,7 +425,6 @@ export function createToolService(ctx: ToolServiceContext) {
     emitToolCalled,
     dispatchSteps,
     withDispatchSteps,
-    reportMove,
     serviceDelegation,
     serviceControlTool,
     releaseSession(sessionId: string): void {

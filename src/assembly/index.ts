@@ -3,8 +3,8 @@
  *
  * Takes Deep Agents' parameters verbatim and adds `workflow`: omit it for a
  * plain Deep Agent, supply it and the same agent is governed by that machine.
- * Every file the assembly reads — machine spec, system prompt, hook scripts,
- * scripts — is served through a configured backend, never via direct `fs`, and
+ * Every file the assembly reads — machine spec, system prompt, code-state and
+ * agent scripts — is served through a configured backend, never via direct `fs`, and
  * the authored governance plane is served by a *separate* backend the agent's
  * workspace has no route to.
  */
@@ -23,7 +23,7 @@ import {
   type TurnInput,
   type WorkflowSurface,
 } from "../agent.js";
-import { turnStepLimit, type CompiledAgentGraph } from "../core/deepagents.js";
+import type { CompiledAgentGraph } from "../core/deepagents.js";
 import { consoleEventHandler, createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
 import type { MountSpec } from "../core/mounts.js";
 import type { SessionStore } from "../core/session-store.js";
@@ -39,7 +39,6 @@ import {
   type ModelFactory,
 } from "../env.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
-import type { HookExecutor } from "../lifecycle/runner.js";
 import {
   loadMachineSpec,
   WorkflowDisabledError,
@@ -60,7 +59,6 @@ import {
   UnsupportedRuntimeContractError,
 } from "../runtime/contract.js";
 import type { SandboxRuntime } from "../sandbox/runtime.js";
-import { rubricsAsSubagents, rubricsFromSpec, type Rubric } from "../rubrics/rubrics.js";
 import {
   createArtifactEmitter,
   createSessionOperations,
@@ -132,9 +130,9 @@ export interface AgentWorkspaceParams {
  * `backend`, `skills`, `checkpointer`, `store`, `interruptOn`, `name` — so a
  * `createDeepAgent` call ports by changing only the import, with one recorded
  * exception: there is no `subagents` parameter. An agent-facing subagent is not
- * a concept the archmax harness offers — grading is a **rubric** declared in `workflow.yaml`
- * and delegating work is a **sub-workflow** — so `task` is disclosed to no
- * state. The harness's concerns are otherwise strictly additive: `workflow`
+ * a concept the archmax harness offers — grading is a **grader state** declared in
+ * `workflow.yaml` and delegating work is a **sub-workflow** — so `task` is
+ * disclosed to no state. The harness's concerns are otherwise strictly additive: `workflow`
  * (governance), `workspace` (file composition), `authoring` (the
  * governance-plane backend), and the extension points below.
  */
@@ -197,16 +195,15 @@ export interface CreateAgentParams {
    *
    * Omitted, the default workflow (`DEFAULT_WORKFLOW`) is still *looked for* on
    * the authoring backend, and governs the agent when found. Pass `false` for an
-   * agent that is ungoverned **by declaration**: no spec is read and no rubric
-   * discovered, so a stray `workflows/` tree under the resolved root cannot
-   * govern it.
+   * agent that is ungoverned **by declaration**: no spec is read, so a stray
+   * `workflows/` tree under the resolved root cannot govern it.
    */
   workflow?: string | false;
   /** Where files come from and where sessions go. See {@link AgentWorkspaceParams}. */
   workspace?: AgentWorkspaceParams;
   /**
    * Backend serving the **authored governance plane** — machine specs,
-   * `WORKFLOW.md` prose, lifecycle hook scripts, and cases. The agent's
+   * `WORKFLOW.md` prose, code-state scripts, and cases. The agent's
    * workspace composite has no route to them. Defaults to `backend` when one is
    * supplied, else a filesystem backend over the resolved root. Handing it to a
    * *writable* mount fails assembly (`AuthoringBackendExposedError`).
@@ -228,7 +225,7 @@ export interface CreateAgentParams {
    */
   sessionPath?: string;
   /**
-   * Supplies the chat model per role (`agent`, `judge`, `subagent`) so the
+   * Supplies the chat model per role (`agent`, `judge`, `grader`) so the
    * runtime can run against any LangChain `BaseChatModel`. When both `model`
    * and `modelFactory` are given, `model` wins for the agent role.
    */
@@ -265,12 +262,7 @@ export interface CreateAgentParams {
    * rule may block a call a state would permit; it cannot loosen a safety rule.
    */
   policyRules?: GovernanceRule[];
-  /**
-   * Custom lifecycle hook-kind executors, registered alongside `script` and
-   * `subagent`. Registering one under a built-in kind fails assembly.
-   */
-  hookExecutors?: Record<string, HookExecutor>;
-  /** Script-execution backend for the sandbox tools and lifecycle scripts. Defaults to QuickJS. */
+  /** Script-execution backend for the sandbox tools and code-state scripts. Defaults to QuickJS. */
   sandboxRuntime?: SandboxRuntime;
   /**
    * Lifecycle event subscriber. When supplied, every runtime diagnostic is
@@ -346,11 +338,6 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     if (issue.kind !== "missing") emit({ type: "warning", scope: "workflow", message: issue.message });
   }
 
-  // Grading rubrics come from the spec that was just loaded — no directory to
-  // list, no file format to parse, and nothing to merge: a grader is declared on
-  // the hook that applies it, so it arrives with the machine and is scoped to it.
-  const rubrics = rubricsFromSpec(loaded.spec ?? { states: {} });
-
   // Skills are discovered once; the resolved registry is the single input to
   // what the kernel refuses, what the prompt names, and what a listing returns.
   const skillSources = params.skills ?? [...DEFAULT_SKILL_SOURCES];
@@ -410,23 +397,24 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   };
   // Pricing feeds `costUsd` on usage events (host option first, then env).
   const pricing = params.pricing ?? loadPricingEnv();
-  // The grader's model: a rubric may name its own id, resolved through the same
-  // factory seam as every other model, and memoized per distinct id so one model
-  // is built per id per assembly.
-  const rubricModels = new Map<string, BaseChatModel | undefined>();
-  const rubricModel = (rubric: Rubric): BaseChatModel | undefined => {
-    const key = rubric.model ?? "";
-    if (!rubricModels.has(key)) {
-      rubricModels.set(
-        key,
-        params.modelFactory
-          ? params.modelFactory("rubric", env, rubric.model)
-          : rubric.model !== undefined
-            ? createChatModel({ ...env(), model: rubric.model })
-            : undefined,
-      );
+  // The model a grader state runs on: the `grader` role, asked for the id its
+  // state declares (else its workflow's `settings.model`), and memoized per
+  // distinct id. A host's factory decides what the role and the id mean; without
+  // one, an explicit `model` outranks every declared id as it does for the
+  // agent, and otherwise the env-configured model runs at the declared id.
+  const graderModels = new Map<string, BaseChatModel>();
+  const graderModel = (id?: string): BaseChatModel => {
+    const key = id ?? "";
+    let resolved = graderModels.get(key);
+    if (!resolved) {
+      resolved = params.modelFactory
+        ? params.modelFactory("grader", env, id)
+        : params.model !== undefined || id === undefined
+          ? model
+          : createChatModel({ ...env(), model: id });
+      graderModels.set(key, resolved);
     }
-    return rubricModels.get(key);
+    return resolved;
   };
 
   const ctx: AssemblyContext = {
@@ -444,9 +432,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     model,
     agentModel,
     honoursDeclaredModels: params.model === undefined,
-    rubrics,
-    rubricModel,
-    subagents: rubricsAsSubagents(rubrics, rubricModel),
+    graderModel,
     skillSources,
     skillRegistry,
     skillTable: skillPrefixes(skillRegistry),
@@ -527,8 +513,6 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     return seeded;
   };
 
-  // The step limit follows the turn budget, so the budget ends a runaway turn first; a caller's own limit wins.
-  const stepLimit: RunnableConfig = { recursionLimit: turnStepLimit(machine.maxModelCalls) };
   const workflow: WorkflowSurface = {
     name: workflowName,
     machine,
@@ -588,7 +572,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       // Validated here, so a bad name is refused before anything runs.
       if (turn.variables) buildSeededVariables(turn.variables);
       const seeds = { ...(turn.variables ?? {}), ...(hasFiles ? await placeTurnFiles(sessionId, turn) : {}) };
-      const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, stepLimit, config, {
+      const turnConfig: RunnableConfig = mergeConfigs(AGENT_DEFAULT_CONFIG, config, {
         configurable: {
           thread_id: sessionId,
           // Seeded per turn, locked, through the per-invocation seed channel the
@@ -610,6 +594,5 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     members: agentMembers,
     driver,
     workflow,
-    config: stepLimit,
   });
 }

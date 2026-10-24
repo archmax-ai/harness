@@ -2,7 +2,8 @@
  * Findings about one `workflow.yaml` that do not stop it loading: warnings about
  * things that run but almost certainly do not do what the author meant, and
  * **errors** the runtime tolerates but `archmax validate` fails on (a human state
- * that cannot present the decision it declares). Pure over the parsed spec — no
+ * that cannot present the decision it declares, a key a state's type never
+ * reads, a grader with nothing to decide between). Pure over the parsed spec — no
  * workspace, no registry — so the loader and the validator report the same
  * findings. What the runtime cannot run without lives in `spec-schema.ts`.
  */
@@ -11,7 +12,7 @@ import type { Diagnostic } from "./diagnostic.js";
 import { guardReferences, normalizeAllowEntry } from "./allow.js";
 import { normalizeMountGrants } from "./mount-grants.js";
 import { triggerDeclarationSchema } from "./spec-schema.js";
-import { ADVANCE_TOOL, DEFAULT_TOOLS } from "./tool-names.js";
+import { ADVANCE_TOOL, DEFAULT_TOOLS, NOT_OFFERED_TO_AUTOMATED } from "./tool-names.js";
 import { BUILT_IN_TOOL_PATHS, MUTATING_ACCESSES, SCRATCHPAD_ACCESSES } from "./tool-paths.js";
 import { normalizeSignature } from "./signature.js";
 import { declaredVariableNames } from "./triggers.js";
@@ -43,6 +44,19 @@ function scratchpadOnlyNarrowing(entry: AllowEntry): { tool: string; paths: stri
   if (paths.length === 0 || !paths.every((path) => classifyWorkspacePath(path) === "run-open")) return null;
   return { tool, paths };
 }
+
+/** Why a code state reads none of these keys, as the error says it. */
+const CODE_STATE_UNREAD: Record<string, string> = {
+  instructions:
+    "a code state runs its script and makes no model call, so nothing reads them — say what the " +
+    "script does in its docblock, or in 'summary'",
+  model: "a code state makes no model call",
+  budget:
+    "a code state makes no model call and cannot park; its script is bounded by " +
+    "'settings.timeoutMs'",
+  evidence: "evidence belongs to a human state's decision record",
+  approvers: "approvers belong to a human state's decision record",
+};
 
 /** Findings for a spec the schema has accepted. `file` is left to the caller. */
 export function lintSpec(spec: MachineSpec): Diagnostic[] {
@@ -288,8 +302,9 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
     }
 
     // A state with several outgoing edges is making a routing decision, which
-    // belongs to its own `instructions`. Human states require them already.
-    if (state.type !== "human" && transitions.length > 1 && !state.instructions?.trim()) {
+    // belongs to its own `instructions`. Human and grader states require them
+    // already, and a code state's script decides on its own.
+    if ((state.type ?? "agent") === "agent" && transitions.length > 1 && !state.instructions?.trim()) {
       warn(
         `${at}.instructions`,
         `State '${slug}' has ${transitions.length} outgoing transitions but no 'instructions'; add guidance so the agent classifies the request and routes with archmax_advance instead of leaving that decision to whichever state it lands in`,
@@ -338,18 +353,63 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
           );
         }
       }
-      // Every hook site lives inside an agent turn, and a human state runs
-      // none: a hook here validates cleanly and is never called.
-      for (const phase of ["before", "after"] as const) {
-        if (state[phase] === undefined) continue;
+    }
+
+    if (state.type === "code") {
+      for (const key of Object.keys(CODE_STATE_UNREAD) as (keyof typeof CODE_STATE_UNREAD)[]) {
+        if (state[key as keyof typeof state] === undefined) continue;
         error(
-          `${at}.${phase}`,
-          `Human state '${slug}' declares a '${phase}' hook, which can never run: hooks execute ` +
-            `inside an agent segment and a human state runs none — it presents the decision and ` +
-            `waits for a person. Move it to the agent state ` +
-            `${phase === "before" ? "that advances into" : "the decision routes to"} this state`,
+          `${at}.${key}`,
+          `Code state '${slug}' declares '${key}', which a code state never reads: ${CODE_STATE_UNREAD[key]}.`,
         );
       }
+    }
+
+    if (state.type === "grader") {
+      // A grader decides where the session goes, so it needs its criteria and
+      // somewhere to send the session: a grader with no edge could approve only
+      // by saying nothing, which fails open.
+      if (!state.instructions?.trim()) {
+        error(
+          `${at}.instructions`,
+          `Grader state '${slug}' must declare 'instructions': they are its criteria, the whole of ` +
+            `what it grades the session against`,
+        );
+      }
+      if (transitions.length === 0) {
+        error(
+          `${at}.transitions`,
+          `Grader state '${slug}' must declare at least one transition: a grader decides with ` +
+            `${ADVANCE_TOOL}, and with nowhere to send the session it could only approve by silence`,
+        );
+      }
+      for (const key of ["evidence", "approvers"] as const) {
+        if (state[key] === undefined) continue;
+        error(
+          `${at}.${key}`,
+          `Grader state '${slug}' declares '${key}', which a grader never reads: ${CODE_STATE_UNREAD[key]}.`,
+        );
+      }
+      if (state.budget?.maxParks !== undefined) {
+        error(
+          `${at}.budget.maxParks`,
+          `Grader state '${slug}' declares 'budget.maxParks', but a grader cannot park: it ` +
+            `decides within the turn it runs in`,
+        );
+      }
+    }
+
+    if (state.type === "grader" || state.type === "code") {
+      (state.tools?.allow ?? []).forEach((entry, index) => {
+        const { tool } = normalizeAllowEntry(entry);
+        if (!tool || !NOT_OFFERED_TO_AUTOMATED.has(tool)) return;
+        error(
+          `${at}.tools.allow.${index}`,
+          `State '${slug}' is a ${state.type} state, which is never offered '${tool}': an automated ` +
+            `state cannot park or reset, and the planning list and the sandbox tools are the agent's. ` +
+            `Drop the entry.`,
+        );
+      });
     }
 
     const seen = new Set<string>();

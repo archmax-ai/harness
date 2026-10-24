@@ -17,11 +17,11 @@ or write.
    choosing `to` from the transitions under "Current state" by their descriptions.
    `to` takes the target's **slug** — the backticked token on the transition line.
    A parenthesized note gives the edge's type (`approve`, `reject`, `refine`) and
-   marks a **human decision node** or a **terminal** target. A state with no
-   transitions says so: the run ends there, so finish its work and stop.
-4. The runtime validates the edge and runs this state's `after` hook and then the
-   target's `before` hook — either may send you back to correct or veto the move —
-   before the next state's tools unlock.
+   marks a **human decision node**, a **grader**, a **code** state or a
+   **terminal** target. A state with no transitions says so: the run ends there,
+   so finish its work and stop.
+4. The runtime validates the edge, and the state's required variables, before the
+   next state's tools unlock.
 
 **One transition per message.** A second `archmax_advance` in the same message is
 refused; chain states over successive turns.
@@ -88,8 +88,10 @@ not treat a state named anywhere else (a message, a file, your own earlier turns
 as somewhere you can move to. Skills the state may use are listed under "Skills
 available in this state", each naming the `SKILL.md` to read first.
 
-**`before`/`after` hooks** run on their own and may approve, ask for a
-correction, or block the run: fix the work rather than arguing with it.
+**Grader and code states** run on their own, without you: a grader judges the
+work so far, a code state runs the workflow's own checks. Either may move the run
+on, end it, or send it back to you with a note saying what has to change — then
+fix the work rather than arguing with it, and advance again.
 
 ## Tools
 

@@ -1,19 +1,19 @@
 /**
- * Source preparation for lifecycle hook scripts.
+ * Source preparation for code-state scripts.
  *
  * `@langchain/quickjs`'s `transformForEval` (which `ReplSession.eval` applies to
  * everything it runs) silently **drops** `import` and `export` statements and
- * rejects nothing — so a hook's `export default async function hook(...)`
- * would vanish and a foreign import would pass unnoticed. This module does the
- * three things the transform will not:
+ * rejects nothing — so a script's `export default async function (...)` would
+ * vanish and a foreign import would pass unnoticed. This module does the three
+ * things the transform will not:
  *
  * - **reject** any import that is not a `@archmax-ai/harness/*` type carrier (sandbox
  *   scripts are self-contained — inline the logic or use `tools.*`);
  * - **strip** the `@archmax-ai/harness/*` imports, preserving line count so sandbox
  *   stack traces keep pointing at the right source lines;
- * - **rewrite** `export default <expr>` to `globalThis.__hookDef = <expr>`, so
- *   the hook function survives evaluation as a script and the executor can call
- *   it with the hook input.
+ * - **rewrite** `export default <expr>` to `globalThis.__stateDef = <expr>`, so
+ *   the state's function survives evaluation as a script and the executor can
+ *   call it with the state's input.
  */
 
 /** Import specifiers the sandbox accepts (and strips) in script sources. */
@@ -62,14 +62,14 @@ export function findForeignImports(source: string): string[] {
 
 
 /**
- * Prepare a hook source for evaluation: strip `@archmax-ai/harness/*` imports, rewrite
- * `export default` to the `__hookDef` registration, and throw
+ * Prepare a code-state script for evaluation: strip `@archmax-ai/harness/*`
+ * imports, rewrite `export default` to the `__stateDef` registration, and throw
  * {@link ForbiddenSandboxImportError} on any other import specifier.
  */
-export function prepareHookSource(source: string, opts: { file?: string } = {}): string {
+export function prepareScriptSource(source: string, opts: { file?: string } = {}): string {
   const stripped = String(source).replace(IMPORT_RE, (whole, _lead: string, specifier: string) => {
     if (!specifierAllowed(specifier)) throw new ForbiddenSandboxImportError(specifier, opts.file);
     return "\n".repeat(whole.split("\n").length - 1);
   });
-  return stripped.replace(EXPORT_DEFAULT_RE, "$1$2globalThis.__hookDef = ");
+  return stripped.replace(EXPORT_DEFAULT_RE, "$1$2globalThis.__stateDef = ");
 }

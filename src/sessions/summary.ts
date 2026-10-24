@@ -47,7 +47,7 @@ export interface SessionSummary {
    */
   resumeAt?: string;
   /**
-   * For a `failed` session, the failure the agent raised with `archmax_raise`:
+   * For a `failed` session, the failure raised with `archmax_raise` — by its agent, a grader or a code state:
    * its code and its reason.
    */
   exit?: Extract<SessionExit, { success: false }>;

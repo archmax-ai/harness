@@ -29,12 +29,10 @@ import type { TurnRunner } from "./workflow/turn-runner.js";
 /**
  * The default config an assembled agent carries: the integration metadata
  * tracing backends key off, and the recursion limit a turn runs under when the
- * caller names none. One invoke is one whole turn across states — every hook,
- * model call and tool batch is a super-step — so the limit is generous by
- * design: the authored budgets (the workflow's `budget.maxModelCalls`, a
- * state's `maxTurns` and `maxParks`) are the real bound. A governed agent runs
- * under `turnStepLimit` of its turn budget instead, so the budget runs
- * out first.
+ * caller names none. One invoke is one whole turn across states — every model
+ * call, tool batch and automated state is a super-step — so the limit is generous by
+ * design: a state's `maxTurns` and `maxParks` bound the states that declare
+ * them, and this bounds the whole turn.
  */
 export const AGENT_DEFAULT_CONFIG: RunnableConfig = {
   metadata: { ls_integration: "archmax-harness" },

@@ -147,14 +147,14 @@ const SESSION_AREA_SET: ReadonlySet<string> = new Set(sessionAreaNames());
 
 /**
  * The authoring prefixes: the workspace-root names holding what the **runtime**
- * reads. `workflows/` carries the machine specs — grading rubrics included — the
- * prose addenda, the lifecycle hook scripts, and the offline test cases a session
- * is enforced with. It is served by the *authoring* backend and is not routed into
+ * reads. `workflows/` carries the machine specs — grader states' criteria
+ * included — the prose addenda, the code-state scripts, and the offline test
+ * cases a session is enforced with. It is served by the *authoring* backend and is not routed into
  * the agent's workspace composite.
  *
  * It is reserved rather than merely omitted: a workspace that mounted it would hand
  * a session its own spec, its sibling workflows' specs, the tests grading it, and
- * the criteria (with the iteration budget) of the rubric that vetoes it. Refusing
+ * the criteria a grader state judges it by, and the code its code states run. Refusing
  * the key makes the isolation a property of composition instead of a rule
  * something downstream could relax.
  *
@@ -176,7 +176,7 @@ export type AuthoringPrefix = (typeof AUTHORING_PREFIXES)[number];
  * diagnostic describes the prefix the consumer actually named.
  */
 const AUTHORING_CONTENT: Record<AuthoringPrefix, string> = {
-  workflows: "machine specs, grading rubrics, hook scripts, and test cases",
+  workflows: "machine specs, code-state scripts, and test cases",
 };
 
 /** Whether a bare root name is an authoring prefix. */

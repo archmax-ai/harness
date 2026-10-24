@@ -6,14 +6,14 @@
  * is the property those unit tests cannot state: a case seed is
  * **indistinguishable from a production host seed** to everything downstream of
  * it. So these tests drive real YAML cases through `runTests` against a real
- * governed runtime — real graph, real kernel, real QuickJS hook — and check the
- * four consumers a host seed reaches:
+ * governed runtime — real graph, real kernel, real QuickJS code state — and
+ * check the five consumers a host seed reaches:
  *
  * - a state's `requires:` gate (satisfied by the seed, refused without it),
  * - a `${{…}}` reference in a `tools.allow` glob (resolved from the seed),
  * - a `${{…}}` reference the **agent** writes into a tool argument (resolved from
  *   the seed at the call boundary),
- * - a lifecycle hook script's read-only `args.variables` snapshot,
+ * - a code state script's `variables` input,
  * - `set_variables`, which must refuse a seeded name exactly as it refuses a
  *   host-seeded one.
  *
@@ -114,7 +114,7 @@ const AGENTS = "# Agent\n\nAnswer the request.\n";
 
 describe("a case seed satisfies a requires gate", () => {
   const WORKFLOW = [
-    "runtime: { engine: archmax-harness, version: '2' }",
+    "runtime: { engine: archmax-harness, version: '3' }",
     "states:",
     "  start:",
     "    triggers: { manual: }",
@@ -176,7 +176,7 @@ describe("a case seed satisfies a requires gate", () => {
 
 describe("a case seed resolves a governance guard", () => {
   const WORKFLOW = [
-    "runtime: { engine: archmax-harness, version: '2' }",
+    "runtime: { engine: archmax-harness, version: '3' }",
     "states:",
     "  start:",
     "    triggers: { manual: }",
@@ -226,14 +226,18 @@ describe("a case seed resolves a governance guard", () => {
   });
 });
 
-describe("a case seed is visible to a lifecycle hook script", () => {
+describe("a case seed is visible to a code state's script", () => {
   const WORKFLOW = [
-    "runtime: { engine: archmax-harness, version: '2' }",
+    "runtime: { engine: archmax-harness, version: '3' }",
     "states:",
-    "  start:",
+    "  gate:",
+    "    type: code",
+    "    script: scripts/see-variables.js",
     "    triggers: { manual: }",
-    "    before:",
-    "      script: hooks/see-variables.js",
+    "    transitions:",
+    "      - to: start",
+    "        description: The seed reached the script.",
+    "  start:",
     "    transitions:",
     "      - to: done",
     "        description: Test edge to done.",
@@ -241,23 +245,26 @@ describe("a case seed is visible to a lifecycle hook script", () => {
   ].join("\n");
 
   /**
-   * The hook's whole contract: the seed is present in the read-only snapshot
+   * The script's whole contract: the seed is present in its `variables` input
    * under the name the case declared, with the value it declared. A missing or
-   * renamed seed vetoes entry, which fails the case loudly.
+   * renamed seed raises, which fails the case loudly.
    */
   const SCRIPT = [
     "/**",
-    " * Entry gate that only passes when the case's seed reached the sandbox.",
+    " * Entry gate that only lets the run on when the case's seed reached the sandbox.",
     " */",
-    "export default ({ variables }) =>",
-    "  variables.from_email === 'a@b.c'",
-    "    ? ok()",
-    "    : veto('the case seed is not visible in args.variables');",
+    "export default async function ({ variables, tools }) {",
+    "  if (variables.from_email !== 'a@b.c') {",
+    "    await tools.archmax_raise({ code: 'seed-missing', reason: 'the case seed is not visible in variables' });",
+    "    return;",
+    "  }",
+    "  await tools.archmax_advance({ to: 'start', reason: 'the seed is visible' });",
+    "}",
   ].join("\n");
 
   const CASE = [
-    "title: hook",
-    "description: The before hook sees the case's seed in args.variables, so entry is not vetoed.",
+    "title: code",
+    "description: The code state sees the case's seed in its variables, so the run is let on.",
     "variables:",
     "  from_email: a@b.c",
     "steps:",
@@ -265,15 +272,15 @@ describe("a case seed is visible to a lifecycle hook script", () => {
     "  - reachedState: done",
   ].join("\n");
 
-  it("passes the seed into args.variables", async () => {
+  it("passes the seed into the script's variables", async () => {
     const root = makeWorkspace({
       "AGENTS.md": AGENTS,
       "workflows/v/workflow.yaml": WORKFLOW,
-      "workflows/v/hooks/see-variables.js": SCRIPT,
-      "workflows/v/tests/hook.test.yaml": CASE,
+      "workflows/v/scripts/see-variables.js": SCRIPT,
+      "workflows/v/tests/code.test.yaml": CASE,
     });
 
-    const { result } = await runCase(root, "hook", [
+    const { result } = await runCase(root, "code", [
       { tool: "archmax_advance", args: { to: "done", reason: "gate passed" } },
       { reply: "answered" },
     ]);
@@ -285,7 +292,7 @@ describe("a case seed is visible to a lifecycle hook script", () => {
 
 describe("the agent cannot rewrite a case seed", () => {
   const WORKFLOW = [
-    "runtime: { engine: archmax-harness, version: '2' }",
+    "runtime: { engine: archmax-harness, version: '3' }",
     "states:",
     "  start:",
     "    triggers: { manual: }",
@@ -328,7 +335,7 @@ describe("the agent cannot rewrite a case seed", () => {
 
 describe("a case seed resolves a reference the agent wrote", () => {
   const WORKFLOW = [
-    "runtime: { engine: archmax-harness, version: '2' }",
+    "runtime: { engine: archmax-harness, version: '3' }",
     "states:",
     "  start:",
     "    triggers: { manual: }",

@@ -48,7 +48,7 @@
 - [x] 4.4 Docs for the case key. In `docs/src/content/docs/guides/testing.md`, add a `clock` row to the top-level keys table and a short "Cases and the date" section covering:
   - why a case whose fixtures or prompts carry dates should pin its clock;
   - the accepted forms, with the advice to pin on a ten-minute mark;
-  - that hook scripts, the sandbox and recorded timestamps still read the real clock, so a script that needs "today" should read it from a seeded variable;
+  - that code-state scripts, the sandbox and recorded timestamps still read the real clock, so a script that needs "today" should read it from a seeded variable;
   - that an absolute `archmax_wait` `until` may land in the real past.
 
   Verify with `npm run docs:build`.

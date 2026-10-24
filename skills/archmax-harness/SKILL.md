@@ -3,13 +3,13 @@ name: archmax-harness
 description: >-
   Build with the @archmax-ai/harness runtime for LangChain Deep Agents. Use this
   whenever you are designing, editing or fixing a workflow state machine (a
-  workflow.yaml with states, transitions, lifecycle hooks, tool and skill
-  governance, grading rubrics, scripts, cases, or skill bundles), OR wiring the
+  workflow.yaml with states, transitions, grader and code states, tool and skill
+  governance, scripts, cases, or skill bundles), OR wiring the
   @archmax-ai/harness npm package into a backend service — assembling an agent with
   createAgent, running a workflow, resuming human-in-the-loop states, or
-  streaming lifecycle events / session artifacts so a frontend can visualize a
+  streaming the event stream / session artifacts so a frontend can visualize a
   run. Trigger this skill for phrases like "design a workflow", "author a
-  workflow.yaml", "add a state/transition/hook", "archmax validate fails", "run
+  workflow.yaml", "add a state/transition/check", "archmax validate fails", "run
   an agent workflow from my worker", or "integrate @archmax-ai/harness" even when the
   runtime is not named explicitly.
 ---
@@ -20,7 +20,8 @@ The archmax harness is a thin, governed runtime over
 [LangChain Deep Agents](https://docs.langchain.com/oss/javascript/deepagents/overview):
 one Deep Agent per workflow, moved by a declarative state machine
 (`workflow.yaml`). It holds no use-case logic — a **workspace** supplies it.
-Runtime contract: `runtime: { engine: archmax-harness, version: "2" }` in every spec.
+Runtime contract: `runtime: { engine: archmax-harness, version: "3" }` in every spec
+(omitted resolves to `3`; `1` and `2` are refused).
 
 **Read by task, not by curiosity.** This file holds the procedure, the
 workspace layout and the commands. Load exactly the short reference your next
@@ -29,12 +30,12 @@ file needs, once, and nothing else:
 | You are about to… | Load |
 | --- | --- |
 | write or edit `workflow.yaml` | [`references/workflow-yaml.md`](references/workflow-yaml.md) — every key, machine rules, governance |
-| write a script — a skill's `scripts/*.js` (`archmax_run`) or a `hooks/*.js` gate | [`references/hooks-and-scripts.md`](references/hooks-and-scripts.md); sequence the skill case with the *Script playbook* below |
+| write a script — a code state's `workflows/<slug>/scripts/*.js` or a skill's `scripts/*.js` (`archmax_run`) | [`references/code-states-and-scripts.md`](references/code-states-and-scripts.md); sequence the skill case with the *Script playbook* below |
 | write or fix a case (`tests/*.test.yaml`) | [`references/cases.md`](references/cases.md) |
 | fix what `archmax validate` / `archmax test` reported | [`references/diagnostics.md`](references/diagnostics.md) |
 | embed the package in a service | [`references/wiring.md`](references/wiring.md) |
 
-The long references — `workflow-schema.md`, `hook-and-test-scripts.md`,
+The long references — `workflow-schema.md`, `code-state-and-test-scripts.md`,
 `backend-integration.md` — are exhaustive; open a **section** of one only when
 the short reference says so or a field's exact semantics are in doubt. Do
 **not** read the SDK source, do not `ls`/`glob` a workspace to discover its
@@ -58,8 +59,14 @@ then verify. Do not write a file, validate, and discover the next file.
    `description`, which is what the agent knows about where the edge leads. Leave
    an edge undescribed only when the target's `instructions` already say when it
    applies: the agent is then shown them instead (never on a human state's
-   transitions, whose description is the button label). If something outside the session calls the workflow
-   (another workflow, a host's MCP tool or form), give its trigger a
+   transitions, whose description is the button label, and never on an edge
+   into a grader, whose instructions are criteria the work is never shown, or
+   into a code state, which has none; a code state's own edges may go
+   undescribed, since its script routes). **Checks are states too**: sketch
+   each deterministic check as a code state and each judgment (tone,
+   completeness) as a grader state, with its edges — onward, back to the work
+   it checks, and where it gives up (see *Checks are states* below). If something outside the session calls the workflow (another
+   workflow, a host's MCP tool or form), give its trigger a
    `description` for the caller and a `requires`/`returns` signature, typing an
    entry (`{ name, type, description }`; `string` `integer` `number` `boolean`
    `date` `date-time` `object` `array` `file`) where the caller must build or read the
@@ -72,10 +79,10 @@ then verify. Do not write a file, validate, and discover the next file.
    them; where a person must always be reached instead, forbid the tool in
    that state.
 2. **Decide the file set** from the sketch: `workflow.yaml` always; one
-   `hooks/<check>.js` per *deterministic* gate; one inline `rubric:` per
-   *judgment* gate (tone, completeness); cases — one happy path per branch,
-   one per hook veto path, one `decide:` per human state, one `raised:` per
-   failure a host branches on; a
+   `scripts/<check>.js` per code state (a grader needs no file: its criteria
+   are its `instructions`); cases — one happy path per branch, one per path a
+   check declines or sends back, one `decide:` per human state, one `raised:`
+   per failure a host branches on; a
    `skills/<capability>/` bundle only for data, an `archmax_run` script, or
    guidance two or more states share identically; `AGENTS.md` only for a
    workspace-wide persona.
@@ -95,9 +102,9 @@ then verify. Do not write a file, validate, and discover the next file.
    a model (`settings.model`, or `model:` on one state) only where the work
    differs in kind — a small model on mechanical states, the default on
    drafting, judgement and heavy-routing ones.
-4. **Write hooks, rubrics, cases** — description first (a hook's JSDoc, a
-   case's `title` + `description`), then the body, and never leave the two
-   disagreeing. Before writing a case, settle what to mock ([`references/cases.md`](references/cases.md)).
+4. **Write code-state scripts, grader criteria, cases** — description first (a
+   script's JSDoc, a grader's give-up rule, a case's `title` + `description`),
+   then the body, and never leave the two disagreeing. Before writing a case, settle what to mock ([`references/cases.md`](references/cases.md)).
 5. **Verify**: `archmax validate <slug>` → fix every error (and every warning
    you can) → `archmax test <slug>`. Never call a workflow done without a clean
    `validate`.
@@ -113,8 +120,9 @@ then verify. Do not write a file, validate, and discover the next file.
    `succeeded`, `trail`) is a routing or governance defect — fix the routing state's
    `instructions`, the transition `description`s, or the `tools`/`skills`
    grants; a **content** miss (`reply`, `calledTool`, `grade`) is an
-   `instructions` defect in the state that answered; a veto reason quoted in
-   the reply is the hook or rubric speaking — fix what it names. Change the
+   `instructions` defect in the state that answered; a decline the reply
+   quotes, or a send-back the agent keeps failing, is a code or grader state
+   speaking — fix what it names (or the check, when it is wrong). Change the
    case only when it asserts something the spec never promised.
 4. A `grade` miss is the one non-deterministic assertion: re-run that case
    once before calling it a regression. Re-run with `--verbose` for raw
@@ -126,7 +134,7 @@ instead.
 
 **Shapes come from tools, not from research.** Before naming any field of a
 tool's result or a trigger's payload — in `instructions`, a `${{…}}` guard, a
-hook — ask the host: a platform embedding this runtime typically exposes
+code-state script — ask the host: a platform embedding this runtime typically exposes
 describe-style tools (a tool's input and output schema, a trigger's payload
 schema and sample) and a way to sample or invoke once with a narrow input. Call
 those first; fall back to a recorded session's variables (`archmax sessions <id>`)
@@ -143,7 +151,7 @@ Deterministic work the model triggers with `archmax_run`. In order:
 2. **Write it.** `skills/<cap>/scripts/<x>.js`: JSDoc, then the body. Input is the
    global `args` — `args.<param>` from the model plus `args.variables`, a read-only
    snapshot — and the **last expression** is the result. Contract:
-   [`references/hooks-and-scripts.md`](references/hooks-and-scripts.md).
+   [`references/code-states-and-scripts.md`](references/code-states-and-scripts.md).
 3. **Land the result in a variable.** Return structured data, and name the variable
    in the calling state's `requires:`. A script may not call
    `archmax_set_variables`, so `requires` is what makes the model record the return;
@@ -173,7 +181,39 @@ instructions: >-
 
 Exact — a retyped copy truncates and drifts, a reference cannot — and it agrees by
 construction with a guard on the same variable. Not available in scripts, which
-read `args.variables`. To write the characters literally: `$${{name}}`.
+read `args.variables` (a code state's script: `variables`); a grader's own tool
+arguments get it like the agent's. To write the characters literally: `$${{name}}`.
+
+### Checks are states (grader and code states)
+
+A check is a state on the graph, never a slot inside one. A `type: code` state
+runs `script: scripts/<x>.js` and a `type: grader` state runs an isolated grader
+whose criteria are its `instructions`; both run on entry with **no call of the
+agent's model**, are offered only **their own state's** tools (grant there what
+the check reads; never `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`
+or `archmax_reset`, even when `tools.allow_always` lists them), and leave like every state:
+`archmax_advance({ to, reason })` — the `reason` is the note the next state
+reads — or `archmax_raise({ code, reason })`. Finishing without either fails
+closed through `on_error`, so give every automated state an `on_error`. Both
+read the **whole session** the same way, with `archmax_get_history` →
+`{ messages, trail }` (a script: `JSON.parse(await tools.archmax_get_history())`);
+a tool result is inline in its tool message's `text`. Every edge into one needs
+a `description`. Put a grader on work the agent hands on (a report, a record),
+not on a live answer: everything the agent says in a turn is that turn's reply,
+a draft sent back included. Contract:
+[`references/code-states-and-scripts.md`](references/code-states-and-scripts.md).
+
+| Want | Shape |
+| --- | --- |
+| A deterministic check **in front of** a state | The trigger's entry (or the edge's target) is a code state that advances to the work, or to a state that declines it |
+| A check **behind** a state | The state's edge points at a code state with an edge onward and one **back**; a send-back's `reason` names the fix |
+| **Approve, then end** | Approve into a **terminal code state**: its script records the result and the session completes, no model call; the session's next message opens at its trigger's entry state |
+| Judgment with a bounded loop | A grader behind the graded state, edges onward and back; its `instructions` say "raise after N send-backs", counted as trail steps `{ kind: grader, to: <graded state> }` |
+
+The checked state's `instructions` say that advancing into the check is what
+hands the work in, and to fix the work when a note sends it back. There is
+no `before:`/`after:`, no `rubric:`, no `max_iterations`: a leftover key fails to
+load.
 
 ### Workspace layout (complete — nothing else exists)
 
@@ -183,7 +223,7 @@ read `args.variables`. To write the characters literally: `$${{name}}`.
   workflows/<slug>/                  # AUTHORING PLANE — runtime reads it, the agent CANNOT
     workflow.yaml                    #   the machine (required, canonical)
     WORKFLOW.md                      #   optional plain-markdown addendum, NO frontmatter
-    hooks/<check>.js                 #   lifecycle hook scripts, run by the runtime
+    scripts/<check>.js               #   code-state scripts (`type: code`), run by the runtime
     tests/<case>.test.yaml           #   one case per file; fixtures beside them (`from:`)
   skills/<capability>/               # AGENT PLANE — mounted read-only, enabled per state by slug
     SKILL.md                         #   frontmatter (name = directory slug, description) + body
@@ -200,20 +240,21 @@ read `args.variables`. To write the characters literally: `$${{name}}`.
 
 Rules that follow:
 
-- **The agent cannot read `workflows/**`** — its spec, hooks, rubrics and
-  cases have no route in its workspace. Never point `instructions`,
+- **The agent cannot read `workflows/**`** — its spec, code-state scripts,
+  grader criteria and cases have no route in its workspace. Never point `instructions`,
   `evidence` or a case `workspace:` at one (`validate` errors). Text the agent
   needs goes in a skill bundle.
-- **Placement**: a hook is the guard, a runtime script is the tool; they
-  never share a file or a directory.
+- **Placement**: a code-state script is the check, a runtime script is the
+  tool; they never share a file. Both directories are named `scripts/`, on
+  different planes.
 
   | Script | Runs on | Lives at | Wired as |
   | --- | --- | --- | --- |
-  | Hook | runtime authority, at `before`/`after` | `workflows/<slug>/hooks/<x>.js` | `before: { script: hooks/<x>.js }` (workflow-relative, confined to `hooks/`) |
+  | Code-state script | the runtime, when its `type: code` state is entered; governed by **that state's** grants | `workflows/<slug>/scripts/<x>.js` | `type: code` + `script: scripts/<x>.js` (workflow-relative, confined to `scripts/`) |
   | Runtime script | the model's authority, via `archmax_run` | `skills/<cap>/scripts/<x>.js` | enabling the skill; narrow with `{ tool: archmax_run, paths: ["skills/<cap>/scripts/**"] }` |
 
   `archmax_run` is confined to skill bundles by a non-overridable rule
-  (`script.skill-only`): a script in `scratchpad/` or `hooks/` is unrunnable.
+  (`script.skill-only`): a script in `scratchpad/` or `workflows/` is unrunnable.
 - **Paths have no leading slash** (`skills/order-data/assets/orders.json`,
   `scratchpad/refund.json`); never author a `run/` prefix. `scratchpad/` is
   writable in every state that is granted `write_file`, whatever its entry
@@ -225,8 +266,9 @@ Rules that follow:
   (`>-` is fine). Pasting a paragraph into a second state means hoist it.
   Never one `skills/<state>/` per state.
 - **Every `.js` you author opens with a JSDoc block**: title line, blank
-  line, then what it reads, the sequence of checks, and the condition for each
-  verdict (hook) or what it computes and returns (script). Admin UIs show this
+  line, then what it reads, the sequence of checks, and where it sends the
+  session in each case (code state: each `archmax_advance` target and why, each
+  raise) or what it computes and returns (`archmax_run` script). Admin UIs show this
   instead of the code. No `@specification` tag, no sidecar key.
 
 ### Verify (CLI)

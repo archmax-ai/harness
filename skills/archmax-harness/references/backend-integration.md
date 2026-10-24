@@ -93,9 +93,10 @@ All optional (`CreateAgentParams`, `src/assembly/index.ts`):
 | `rootDir` | `string` | Workspace root for the default filesystem backend. Defaults to cwd. |
 | `workflow` | `string` | Named workflow under `workflows/<name>/`. |
 | `trigger` | `TriggerInput` | `{ id, args? }`; defaults to `{ id: "manual" }`. Selects the start state. |
-| `model` | `BaseChatModel` | Defaults to the env-configured OpenAI-compatible model. Inject your own to bypass env. |
+| `model` | `BaseChatModel` | Defaults to the env-configured OpenAI-compatible model. Inject your own to bypass env. An explicit instance outranks every model id a spec declares, grader states' included. |
+| `modelFactory` | `(role, env, requested?) => BaseChatModel` | Supplies the chat model per role: `agent` (the session's turns), `judge` (the case judge for `grade:`) and `grader` (a grader state's subagent). `requested` is the id the state or `settings.model` declares, for the `agent` and `grader` roles; a grader state's model is `modelFactory("grader", env, id)`, resolved once per composition. `env` is a thunk, so a factory with its own credentials never loads `.env`. |
 | `backend` | `BackendProtocolV2` | Serves the authored workspace. Defaults to a `FilesystemBackend` over `rootDir`. |
-| `authoring` | `BackendProtocolV2` | Serves the **authoring plane** — `workflows/**` (machine specs including the rubrics their states declare, `WORKFLOW.md`, `hooks/`, `tests/`) — to the runtime only. Never a route in the agent's workspace, so no tool call or PTC call can reach it. Defaults to `backend` when you supply one, else a `FilesystemBackend` over the resolved root. Handing it to a **writable** mount throws `AuthoringBackendExposedError`; a read-only mount may share it. |
+| `authoring` | `BackendProtocolV2` | Serves the **authoring plane** — `workflows/**` (machine specs, `WORKFLOW.md`, code-state `scripts/`, `tests/`) — to the runtime only. Never a route in the agent's workspace, so no tool call or PTC call can reach it. Defaults to `backend` when you supply one, else a `FilesystemBackend` over the resolved root. Handing it to a **writable** mount throws `AuthoringBackendExposedError`; a read-only mount may share it. |
 | `mounts` | `Record<string, MountSpec>` | Authored mounts as a `CompositeBackend` route table: key → backend, or `{ backend, readOnly, governed, searchable }`. Trailing slash = directory mount; no slash = exact-path file mount (`"/AGENTS.md"`). Read-only unless declared otherwise. `governed: true` hands the spec's `mounts` block the decision of **which states** may reach it (closed by default, like a skill bundle) and whether each may write there; a mount not so declared is visible in every state exactly as today, so a table that marks nothing behaves unchanged. `readOnly` is a **ceiling** the spec cannot lift: a governed writable mount is written only by a workflow whose own grants ask `access: read_write` (a bare grant reads it, so serving one route writable for one workflow in a delegation tree opens it to no other), and a grant may narrow a writable mount to reads in a state, never open a read-only one. A key may be several segments deep (`"/catalogs/eu/"`); its **first** segment is what is reserved, so `/workflows/x/` fails as `/workflows/` does. Omitted on the default backend: `defaultMounts(rootDir)` (the conventional table — `/skills/`, `/.platform/`, `/AGENTS.md`, none governed — extend with `{ ...defaultMounts(root), "/templates/": … }`). Omitted with a custom `backend`: nothing authored is served; expose subtrees with `mountSubtree(backend, "skills")`. A key colliding with a run area — or naming the authoring-plane prefix (`/workflows/`) — throws `MountCollisionError`. `searchable: false` declares a mount the runtime never searches on its own initiative: a root-wide `grep`/`glob` fans out over the other mounts only, while a search the agent addresses at the mount (or a path inside it) still reaches its backend and returns the backend's own answer — matches or `{ error }` — verbatim. Use it for a backend that must refuse searches (a remote folder served live). Listing and reading are unchanged, the prompt marks it "browse only", names arrive as `MountPrefixes.unsearchable`, and it is ignored on a file mount. |
 | `sessionStore` | `SessionStore` | Physical storage for run state (checkpoints, artifacts, the per-session `scratchpad/`). Zero-config default: `createFilesystemSessionStore({ dir: "<rootDir>/sessions" })`. Required with a custom `backend` (else `SessionStoreRequiredError`). Build with `createBackendSessionStore({ backend, prefix? })` for S3-style storage or `createMemorySessionStore()` for ephemeral runs. |
 | `systemPrompt` | `string` | Appended after workspace `AGENTS.md`. |
@@ -145,7 +146,7 @@ const sessionId = `run-${runId}`;
 try {
   const result = await agent.invoke(
     { messages: [{ role: "user", content: prompt }] },
-    { configurable: { thread_id: sessionId }, recursionLimit: 50 },
+    { configurable: { thread_id: sessionId } },
   );
   // result: { messages, status?, workflowState?, pendingDecision? }
   if (result.status === WORKFLOW_STATUSES.awaitingDecision) {
@@ -157,6 +158,12 @@ try {
   agent.dispose(sessionId);   // frees the session's sandbox/PTC state and its checkpoints in memory; the next turn reloads them from the store
 }
 ```
+
+A turn runs under LangGraph's `recursionLimit` — 400 unless the config passes its
+own, which wins. It is the one bound on a whole turn (every model call, tool batch
+and automated state is a step; a state's `budget.maxTurns`/`maxParks` bound that
+state); a turn that hits it ends the session `failed` with exit code
+`recursion-limit`.
 
 To cancel a turn, pass an `AbortSignal` as `signal` in the same config (or in
 `agent.workflow.send(sessionId, input, { signal })`) and abort it. The turn's
@@ -187,12 +194,12 @@ checkpoint:
 // turn 1
 await agent.invoke(
   { messages: [{ role: "user", content: "Look up order 1234" }] },
-  { configurable: { thread_id: "chat-42" }, recursionLimit: 50 },
+  { configurable: { thread_id: "chat-42" } },
 );
 // turn 2 — SAME thread_id; only the new message
 await agent.invoke(
   { messages: [{ role: "user", content: "And when did it ship?" }] },
-  { configurable: { thread_id: "chat-42" }, recursionLimit: 50 },
+  { configurable: { thread_id: "chat-42" } },
 );
 ```
 
@@ -215,19 +222,20 @@ await agent.invoke(
       { role: "user", content: "what was my first message?" }, // the new turn
     ],
   },
-  { configurable: { thread_id: "chat-42" }, recursionLimit: 50 },
+  { configurable: { thread_id: "chat-42" } },
 );
 ```
 
 Gotchas:
 
-- **A hook reads its visit from `messages`, newest last** — the conversation since
-  the session entered the state it is in, which can span turns. A hook that keys
-  off "the current request" should take the *last* `user` entry; an earlier
-  state's messages are not in it, so what a hook needs from there is stored (a
-  variable, a file) or read with `toolCalls`. (A grading rubric receives the
-  compact `userRequest`/`history` payload its rubric is written against: `history`
-  is the same visit, `userRequest` the person's *latest* message.)
+- **An automated state reads the whole session.** A code state and a grader
+  both call `archmax_get_history` for `{ messages, trail }` (a script:
+  `JSON.parse(await tools.archmax_get_history())`). Its `messages` are the whole
+  transcript, oldest first, which can span turns: a script that keys off "the
+  current request" should take the *last* `user` entry, not the first — the
+  first is the message that opened the session. A tool entry carries its tool,
+  the call `id` and the result as its `text`. Neither's own calls or messages
+  enter the session's transcript.
 - **A definition edit is adopted, not refused.** A session takes its next turn
   under the `workflow.yaml` in force now; the recorded `specHash` says which
   definition each turn ran under but gates nothing. A turn positioned in a state
@@ -236,7 +244,7 @@ Gotchas:
   in seeded history, or the provider may reject the turn.
 - **Not every message in a session's transcript is a person's.** The runtime
   writes **runtime notes** of its own — `[decision]`, `[event]`, `[error]`,
-  `[after]`, `[sub-workflow: …]` — carried as a synthetic `archmax_note` tool call
+  `[grader]`, `[code]`, `[sub-workflow: …]` — carried as a synthetic `archmax_note` tool call
   and its result, so a model cannot read them as a person speaking. Ask
   `isRuntimeNote(message)` / `runtimeNoteKind(message)` rather than inferring
   authorship from role or a `[bracket]` prefix: a turn's lower bound is a human
@@ -249,7 +257,7 @@ Gotchas:
 import { isRuntimeNote, runtimeNoteKind } from "@archmax-ai/harness";
 
 const opensTurn = (m: unknown) => isRuntimeNote(m) || m.role === "user";
-const label = (m: unknown) => runtimeNoteKind(m); // "decision" | "event" | … | null
+const label = (m: unknown) => runtimeNoteKind(m); // "decision" | "event" | "grader" | "code" | … | null
 ```
 
 ## Human-in-the-loop
@@ -264,6 +272,7 @@ if (result.status === WORKFLOW_STATUSES.awaitingDecision && result.pendingDecisi
   // When they pick:
   const outcome = await agent.workflow.decide(sessionId, { target: chosenTo, comment });
   // DecideOutcome: { status?, workflowState?, reparked, state?, reply, rejected?, exit?, messages }
+  // `reply` is every assistant text of the turn, in order ("" when it said nothing).
   // `rejected` says why when status is "rejected"; Outcome from send() carries it too.
   // `exit` is { success: false, code, reason } when the agent ended the run with
   // archmax_raise (status "failed"), { success: true } when it completed.
@@ -425,17 +434,17 @@ Pass `onEvent`; every `WorkflowLifecycleEvent` carries a `level`
 | --- | --- |
 | `state-enter` / `state-leave` | state entered / left (`{ state, next? }`) |
 | `advance` | transition committed (`{ from, to, reason?, callId? }` — `callId` names the `archmax_advance` call that drove it; absent on the turn's opening arrival) |
-| `hook-start` / `hook-output` / `hook-passed` / `hook-verdict` / `hook-rejected` | lifecycle hook activity + verdict (`ok`/`correct`/`veto`) |
+| `code-start` / `code-output` / `code-result` | a code state's run: `{ state, script }`, one `{ state, line }` per `console.log` line, then `{ state, status: "ok" \| "error", durationMs, reason? }` |
+| `grader-start` / `grader-result` | a grader state's run: `{ state }`, then `{ state, status, durationMs, reason? }`. `status` is `ok` when the run settled on a decision or a completion; a move then emits `advance`/`state-leave`/`state-enter` (a code state's tool calls carry `origin: "script"`, a grader's none) |
 | `parked` / `decided` | human state parked / resolved (`{ state, sessionId, awaiting, to? }` — a human park carries no `callId`, since no call asked for it) |
 | `parked` (`awaiting: "input"`) / `delivered` | the agent parked the run (`{ state, sessionId, reason, resumeAt?, callId }` — the `archmax_wait` call) / an event resumed it (`{ state, trigger, to }`, where `to` is the same state) |
 | `raised` | the agent ended the session as a failure (`{ state, sessionId, code, reason, callId }` — the `archmax_raise` call); a `state-leave` follows, and the outcome is `failed` |
 | `agent-text` | complete assistant message in a state (`{ state, text, messageId }` — always the id the message is stored under; absent only on a `partial: true` event from a failed turn) |
 | `agent-text-delta` | streaming text chunk (`{ state, text, messageId? }`) — flows for every run, even when the graph is driven with `invoke`; a sub-workflow child's chunks carry the child's `sessionId` and `subWorkflowDispatchId`, never the caller's state |
 | `tool-called` / `tool-result` / `tool-blocked` | tool passed governance (`callId`, `args`) / settled (`callId`, `status`, `durationMs`, `output` preview) / denied. **Every** governed call, `archmax_advance` included — so a UI drawing a row per call draws one per transition; filter it if you already draw transitions from `advance`/`state-leave`. A tool that **throws** settles `status: "error"` with the error's message as `output` while the turn **continues**: the model reads the same message as the call's answer, and nothing is thrown out of `send` — read tool failures here |
-| `rubric-start` / `rubric-result` | grading-rubric dispatch bracketed by `dispatchId`, with the rubric's `name` |
-| `model-usage` | per model call provider token usage: `inputTokens` (the total, of which the cache counts are a breakdown), `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model?` (the id the call was priced against), `costUsd?` |
+| `model-usage` | per model call — the agent's or a grader's, under its state — provider token usage: `inputTokens` (the total, of which the cache counts are a breakdown), `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model?` (the id the call was priced against), `costUsd?` |
 | `prompt-shaping` | assembly-time payload summary: resolved `profile`, prompt-cache mechanism, `withheld` built-ins |
-| `skills-loaded`, `hooks-summary`, `graph-topology`, `workflow-reset`, `warning` | assembly-time diagnostics |
+| `skills-loaded`, `graph-topology`, `workflow-reset`, `warning` | assembly-time diagnostics |
 
 For a browser client, forward these over SSE/WebSocket keyed by `sessionId`. To
 render a live chat transcript: accumulate `agent-text-delta` into a bubble
@@ -508,7 +517,7 @@ gives the same figure live in process.
 ### Measuring anything else — fold the stream
 
 The SDK keeps no metrics ledger. Tool calls, governance refusals, the path a run
-took, corrections and vetoes, rubric dispatches, and how long a session
+took, every send-back by a grader or code state, and how long a session
 sat waiting for a person are all already on the typed event stream, and a backend
 counts what it needs:
 
@@ -581,8 +590,8 @@ interface RunMetadata { sessionId: string; workflow: string;
   runtimeContract: ResolvedRuntimeContract; packageVersion: string; }
 // trail.json: { sessionId, workflow, steps: TrailStep[] } — the audit trail,
 // re-derived from checkpointed state on every artifact write.
-// TrailStep: { to, kind: "trigger"|"agent"|"human"|"reset"|"on_error",
-//              reason?, ts }
+// TrailStep: { to, kind: "trigger"|"agent"|"human"|"grader"|"code"|
+//              "sub-workflow"|"reset"|"on_error", reason?, workflow?, status?, ts }
 ```
 
 An **API** reads these files (through the same session store, or via `runArtifactPaths(sessionId)`
@@ -591,7 +600,7 @@ path helpers) to render historical runs: `graph.json`/`graph.mmd` for the diagra
 path (which edges committed, by whom, and why), `variables.json` for the run's
 inputs and established facts (also what a test author reads to reproduce a real
 firing's payload — see
-[hook-and-test-scripts.md](hook-and-test-scripts.md#recovering-a-cases-inputs-from-previous-runs)).
+[code-state-and-test-scripts.md](code-state-and-test-scripts.md#recovering-a-cases-inputs-from-previous-runs)).
 Note it holds whatever the run's variables held, verbatim: a host that must not
 persist an input should not seed it. To persist artifacts yourself,
 stream the run and call `agent.emitRunArtifacts(sessionId, trajectory)`.
@@ -752,7 +761,7 @@ workflow-governed target.
 an `archmax_workflow_<slug>` tool), the child runtime is
 composed from the *same* resolved inputs as the parent — model and
 `modelFactory`, `backend` and `mounts`, `sessionStore` and `checkpointer`, host
-`tools` and `essentialTools`, `sandboxRuntime`, `hookExecutors`,
+`tools` and `essentialTools`, `sandboxRuntime`,
 `policyRules`, `promptCache` and `pricing` — differing only in
 the machine that governs it and the system prompt that machine renders. So a
 custom backend serves the child's spec too, and a `modelFactory` supplies its

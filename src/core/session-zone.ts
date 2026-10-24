@@ -59,7 +59,7 @@ export class SessionZoneRouter implements BackendProtocolV2 {
   /**
    * Bind id-free run-root addressing to `sessionId` for everything `fn` does
    * (the binding propagates through async continuations, so a whole agent
-   * turn — including lifecycle hooks, sandboxed scripts, and the inner
+   * turn — including automated states, sandboxed scripts, and the inner
    * agent's own checkpoint writes — is covered by wrapping its `invoke`).
    * Concurrent sessions each carry their own binding.
    */

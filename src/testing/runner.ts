@@ -150,8 +150,8 @@ export interface RunTestsOptions {
   /** Reporter callback invoked with each case result as it completes. */
   onCaseResult?: (result: CaseResult) => void;
   /**
-   * Script-execution backend forwarded to the agent under test (its lifecycle
-   * hooks and `archmax_run` sources). Case documents themselves are YAML
+   * Script-execution backend forwarded to the agent under test (its code
+   * states' scripts and `archmax_run` sources). Case documents themselves are YAML
    * interpreted on the host — no sandbox is involved in running them.
    */
   sandboxRuntime?: SandboxRuntime;

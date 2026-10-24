@@ -55,8 +55,8 @@ rendered from something the runtime enforces:
    plain agent Deep Agents' skills section. Deep Agents 1.13 appends no guidance for its file tools.
 8. The volatile "Current state" block, per model call: the current date and
    time, then the active state's instructions, skills, variables, argument
-   constraints, **its own outgoing transitions**, its hooks, and the run's
-   trigger signature.
+   constraints, **its own outgoing transitions**, and the session's trigger
+   signature.
 
 Layers 1-6 are handed to Deep Agents as `{ prefix, base: null }`. Its own base
 prompt ("You are a Deep Agent…", ~1,700 characters) is dropped: it is generic
@@ -119,11 +119,11 @@ What the rendering does:
 
 - **The graph stays out of the static prompt.** The rendered header carries
   the workflow's `title` and root `instructions`. A state's own `instructions`,
-  edges, markers and hooks arrive per turn while it is active. Each state's
+  edges and markers arrive per turn while it is active. Each state's
   guidance is billed once, for the turns where it applies.
 - **`task` is withheld** in every state of every assembly, and nothing grants it.
-  A [grading rubric](/guides/grading-rubrics/) grades the agent,
-  so the tool belongs to the runtime. Its schema is ~1,900 characters, and no
+  Grading is a [grader state](/guides/automated-states/) and delegating work is a
+  sub-workflow, so no state has a use for it. Its schema is ~1,900 characters, and no
   state ever sends it.
 - **HTML comments are stripped from the prose addendum.** `WORKFLOW.md` can
   therefore hold diagrams and rationale for whoever opens the file, without

@@ -1,0 +1,1016 @@
+## MODIFIED Requirements
+
+### Requirement: One graph carries the machine
+
+A workflow SHALL execute as exactly one `createDeepAgent` graph whose checkpointed state carries the
+machine's channels beside `messages`: `workflowState`, `entryState`, `trigger`, `status`,
+`specHash`, `variables`, `auditTrail`, `usage`, the per-state counters `stateTurns` and
+`parkCounts`, the outstanding delegation failures `failedDelegations`, and the park records
+`pendingDecision`, `pendingInput`, `pendingDelegations`, `parkPhase` and `replyOnly`, declared once
+in `src/workflow/state.ts`. There SHALL be no `iterations` and no `beforeDone` channel. Governance
+middleware SHALL be the only writer; a control tool commits its change through a `Command` when it
+succeeds, and an automated state's outcome is committed by `afterModel` (see "Governance middleware
+sites"), so the checkpoint is the single source of truth with no in-memory mirror. The accumulating
+channels (`auditTrail`, `variables`, `pendingDelegations`, `failedDelegations`) SHALL have reducers
+idempotent on an echo: a middleware callback returning the whole state it read changes nothing.
+Calls settling in the same step SHALL each land their update on an accumulating channel.
+
+#### Scenario: Advance commits to the checkpoint
+
+- **WHEN** the agent successfully calls `archmax_advance`
+- **THEN** the checkpointed `workflowState` is the new state as soon as the call settles
+
+#### Scenario: Hook echo is a no-op
+
+- **WHEN** a middleware callback (what LangChain calls a middleware hook) returns the whole state it
+  read, including the trail it already held
+- **THEN** the trail is unchanged and no locked variable is rewritten
+
+#### Scenario: Two delegation calls fail in one step
+
+- **WHEN** one tool batch carries two delegation calls and both children fail
+- **THEN** both failures are recorded and the turn goes on, rather than failing on a channel that
+  accepts one value per step
+
+#### Scenario: No correction bookkeeping is checkpointed
+
+- **WHEN** a grader state has sent the work back to its agent state twice and the session's
+  checkpoint is read
+- **THEN** it carries no `iterations` and no `beforeDone` channel, and the two send-backs appear as
+  `grader` steps on its trail
+
+### Requirement: The turn boundary opens every turn
+
+The middleware's `beforeAgent` callback SHALL be the turn boundary, run once per invoke and never on
+a park resumption (which re-enters at its interrupt through a `Command`). It SHALL resolve the
+trigger (the invoke's, else the assembly default, else `manual`) and the position: a first turn
+opens at the start state that trigger declares; a later turn continues at the retained position; a
+retained position the spec no longer declares reopens at the trigger's start state, and so does a
+session that completed in a terminal automated state (see the `automated-states` capability). It SHALL record
+`entryState` once. Every turn SHALL emit `advance` from the session origin to the opening state, then
+`state-enter`, and append a `trigger` trail step; `workflow-reset` SHALL be emitted only when a turn
+opens at a start state. No transcript message SHALL announce a turn. The boundary SHALL reset the
+turn's mechanics only — `rejected`, the outstanding delegation failures, the exit record,
+`parkCounts`, `stateTurns`, every park record and phase, `replyOnly`, status to `running` — and
+retain the conversation: position, `entryState`, variables, transcript, trail, usage and files. A
+session in a terminal state SHALL continue there under that state's governance; `archmax_reset` is
+the way out. A session that ended `failed` SHALL take its next turn the same way, continuing at the
+state it raised in. When the opening position is an automated state, it SHALL run as the turn's
+first step, in place of the first model call of the session's agent (see the `automated-states`
+capability).
+
+It SHALL seed the host's `variables`, a parent's sub-workflow params and the reserved `trigger`,
+locked and marked as a host seeding boundary so they replace a locked value of the same name; a
+seeded `title` SHALL lose to one the session holds, and a seeded title emits `title-set` with no
+`state` or `callId`. When the session's recorded spec hash differs from the current one, the full
+spec SHALL be persisted under `_specs/<hash>` before any model call.
+
+#### Scenario: First turn enters the trigger's start state
+
+- **WHEN** a session with no prior position is invoked with trigger `manual`
+- **THEN** the position is the state `manual` enters, and `workflow-reset`, `advance` and
+  `state-enter` are emitted
+
+#### Scenario: Later turn continues in place
+
+- **WHEN** a session's previous turn finished in `orders-question` and a new turn begins
+- **THEN** the turn opens in `orders-question`, emits `advance` naming it and no `workflow-reset`,
+  and no turn-boundary message is appended
+
+#### Scenario: Dropped position reopens at the start state
+
+- **WHEN** the retained position is a state the current spec no longer declares
+- **THEN** the turn opens at the trigger's start state, emits `workflow-reset`, and commits that state
+
+#### Scenario: A completed terminal code state reopens at the start state
+
+- **WHEN** the session completed in a terminal code state and a new turn begins
+- **THEN** the turn opens at the trigger's start state, emits `workflow-reset`, and the code
+  state's script does not run again
+
+#### Scenario: A failed session takes a new turn
+
+- **WHEN** a session's previous turn ended `failed` in `lookup` and a new message arrives for it
+- **THEN** the turn opens in `lookup` with status `running` and no exit record
+
+### Requirement: A turn the machine cannot serve is refused at the boundary
+
+The turn boundary SHALL refuse a turn when the machine is `disabled`, or when the trigger's
+`requires` names are not all supplied by the opening variables. A refusal SHALL commit
+`status: rejected` with a reason naming the workflow (or the trigger and the missing names), emit a
+`warning` event with that reason, and end the turn before any state is entered or run, or any model
+is called; it SHALL NOT throw. A decision, reply or delivery SHALL NOT pass through this gate, so
+disabling a workflow never traps its parked sessions.
+
+#### Scenario: A disabled workflow is refused
+
+- **WHEN** a host invokes a disabled workflow
+- **THEN** the outcome is `rejected` naming the workflow as disabled, and no model call is made
+
+#### Scenario: Unmet requires is refused
+
+- **WHEN** a firing on trigger `enrich` supplies no `order_id`, which `enrich` requires
+- **THEN** the turn is refused with a reason naming `enrich` and `'order_id'`
+
+#### Scenario: A parked decision still resolves on a disabled workflow
+
+- **WHEN** a workflow is disabled while a session is parked at a human state
+- **THEN** deciding that session resumes and completes normally
+
+#### Scenario: A refused turn runs no code state
+
+- **WHEN** a host invokes a disabled workflow whose trigger enters a code state
+- **THEN** the outcome is `rejected` and the code state's script does not run
+
+### Requirement: Governance middleware sites
+
+The workflow middleware SHALL govern the graph at fixed sites: `wrapModelCall` discloses only the
+active state's tool surface in registration order and composes the system message as a static block
+plus the volatile block; when the position is an automated state and the turn is not reply-only, it
+SHALL NOT call the session agent's model but run that one state and return a marker message
+carrying the run's outcome (see the `automated-states` capability). `wrapToolCall` resolves the
+called name, substitutes `${{name}}` references, applies the kernel's verdict to every call, and
+services the control and delegation tools itself; `afterModel` reports text and usage, removes an
+automated run's marker and commits its outcome (returning to the model when the session moved, so
+the next state is served the same way), routes budget exhaustion and committed rejections through
+`on_error`, and settles the turn's status. The outcome SHALL travel on the checkpointed marker
+rather than in process memory, so an `afterModel` replayed after a process exit commits what the run
+settled. A blocked call SHALL be answered with an error-status tool message and a `tool-blocked`
+event, never thrown; a terminal kernel verdict (an unevaluable guard) SHALL be committed as
+`rejected` so the run routes through `on_error` once the model finishes.
+
+#### Scenario: A tool outside the state's surface is refused
+
+- **WHEN** the model calls a tool the active state does not allow
+- **THEN** the call is answered with an error-status message naming the allowed surface, a
+  `tool-blocked` event is emitted, and the run stays in place
+
+#### Scenario: The marker never reaches the transcript
+
+- **WHEN** a code state advances to an agent state and the agent's model is called there
+- **THEN** the transcript that call reads holds the `code` runtime note of the move and no marker
+  message of the code state's run
+
+### Requirement: Evidence attached to a transition
+
+`archmax_advance` SHALL accept an optional `evidence` list of workspace-relative paths only when `to`
+is a human state; on another target a non-empty list SHALL be refused recoverably before the
+transition is attempted. Each path SHALL be classified through the kernel's zone table with the
+assembly's mounts: readable paths (scratchpad, other session paths, read-only mounts, offload areas)
+are accepted; one that escapes the workspace, addresses a runtime-internal area or is empty after
+canonicalization is refused naming it; more than 20 paths SHALL be refused. Accepted paths SHALL be
+stored canonically, de-duplicated, and carried into the park record after the state's declared
+`evidence`.
+
+#### Scenario: Evidence into a human state
+
+- **WHEN** the agent advances into `refund-review` with `evidence: [scratchpad/refund.json]` and the
+  state declares `evidence: [scratchpad/policy.md]`
+- **THEN** the park record's evidence is `[scratchpad/policy.md, scratchpad/refund.json]`
+
+#### Scenario: Evidence toward another target is refused
+
+- **WHEN** the agent advances into a grader state with `evidence: [scratchpad/reply.md]`
+- **THEN** the call is refused, saying the target is not a human state, and the position is unchanged
+
+### Requirement: `archmax_reset` returns the session to its entry state
+
+The runtime SHALL expose `archmax_reset({ reason })` in every agent and human state, requiring a
+non-empty `reason`; no automated state offers it. It SHALL move the position to the recorded
+`entryState` (else the trigger's start state), clear `rejected` and `stateTurns`, append a `reset`
+trail step with the reason, and re-enter the entry state; an automated entry state SHALL run again
+in place of the next model call (see the `automated-states` capability). It SHALL NOT touch
+messages, variables (locked seeds included), files or the recorded trail. `tools.forbid_always`
+MAY ban it.
+
+The platform prompt and the tool's description SHALL tell the model when to reset and when not to.
+A reset is for a new message the current state cannot serve (no transition reaches what was asked,
+or an earlier turn took a wrong path), and for a follow-up that lands on a terminal state the
+session moved into and finished in. When the current state can serve the new message, the model
+SHALL be told to answer there, because a new message alone is no reason to reset. While the
+session is in the state the conversation began in, the model SHALL be told never to reset, because
+a reset leads back to that same state. The platform prompt SHALL name a terminal state the
+conversation began in as an exception to its terminal-state rule, alongside a session parked with
+`archmax_wait` and a terminal state routed into in the same turn. This matches the volatile block,
+which gives the terminal-state reset instruction only for a terminal state other than the entry
+state.
+
+#### Scenario: Entry state is stable across deliveries
+
+- **WHEN** a session started by `email_received` was resumed by a delivery of `email_reply` and resets
+- **THEN** it returns to the `email_received` start state with its transcript and scratchpad untouched
+
+#### Scenario: A follow-up the state can serve needs no reset
+
+- **WHEN** a top-level session's system prompt and its `archmax_reset` description are rendered
+- **THEN** the prompt's "A conversation keeps its position" paragraph tells the model to stay and
+  answer when the current state can serve the new message and never to reset from the state the
+  conversation began in, and the description says a state that can serve the message needs no reset
+
+#### Scenario: A terminal entry state answers its follow-ups
+
+- **WHEN** the platform prompt lists the cases in which a message on a terminal state is answered
+  without a reset
+- **THEN** the terminal state the conversation began in is listed, beside a session parked with
+  `archmax_wait` and a terminal state routed into this turn
+
+#### Scenario: A reset re-runs a code entry state
+
+- **WHEN** a session whose entry state is the code state `screen-request` calls `archmax_reset` from
+  `orders-question`
+- **THEN** the trail records a `reset` step into `screen-request`, and its script runs again before
+  the next model call of the session's agent
+
+### Requirement: `archmax_wait` parks the session in place
+
+The runtime SHALL expose `archmax_wait({ reason, until? })` in every agent and human state, terminal
+states included, rejecting an empty `reason`; no automated state offers it, since an automated
+state cannot park. A wait SHALL commit a `pendingInput` record (state, `title` when declared,
+reason, `parkedAt`, `resumeAt` when declared), set `status: awaiting_input`, increment the state's
+park count, emit `parked` with `awaiting: "input"`, the reason and the call's `callId`, and tell the
+model to stop; the position SHALL be unchanged and no transition committed. `until` SHALL be a
+relative duration (`<integer><ms|s|m|h|d>`) or an ISO-8601 instant, normalized to an absolute
+`resumeAt` on the runtime's clock; an unparseable `until` SHALL reject the call naming the accepted
+forms without parking. `resumeAt` SHALL be a hint for whoever schedules: the runtime holds no timer
+and an earlier delivery resumes the park just the same.
+
+#### Scenario: Wait parks the current state
+
+- **WHEN** the agent in `clarify` calls `archmax_wait({ reason: "waiting for an order id", until: "1d" })`
+- **THEN** the session parks with `clarify` as its position, no transition is recorded, and the
+  record and `parked` event carry a `resumeAt` one day after `parkedAt`
+
+#### Scenario: Unparseable due time refuses the park
+
+- **WHEN** the agent passes `until: "tomorrow morning"`
+- **THEN** the call is rejected naming the accepted forms and the session does not park
+
+#### Scenario: An automated state cannot wait
+
+- **WHEN** a code state's script reads `tools.archmax_wait`
+- **THEN** the value is `undefined`, and the session cannot park in the code state
+
+### Requirement: Budgets
+
+In an agent or human state, `budget.maxTurns` SHALL be an exact count of the session agent's model
+calls made in the state since it was entered: the call that would exceed it is not made and the
+exhaustion is routed as a failure; the count resets on every transition and at each turn boundary.
+`budget.timeoutMs` SHALL race the state's model call against a timer; on expiry the runtime
+substitutes a budget-exhausted result, removes it from the transcript and routes the failure through
+`on_error`, without aborting the in-flight request. `budget.maxParks` SHALL cap `archmax_wait` parks
+per state within a turn, checked before the park is committed; an exceeded bound refuses the wait
+and commits `rejected` naming the state and the bound. A delegated child's park SHALL NOT count. An
+automated state makes no model call of the session's agent and SHALL spend no turn budget; a grader
+state's `maxTurns` and `timeoutMs` bound its grader's run instead (see the `automated-states`
+capability). Every exhaustion SHALL route through `on_error` when declared, else end the turn
+rejected.
+
+#### Scenario: Turn budget is exact
+
+- **WHEN** a state declares `maxTurns: 8` and the agent advances on its fifth model call
+- **THEN** the state completes normally
+
+#### Scenario: Timeout substitutes a result
+
+- **WHEN** a model call in a state with `timeoutMs: 1000` has not returned after one second
+- **THEN** the failure is routed through `on_error` and the request itself is not aborted
+
+#### Scenario: A grader's budget counts only its grader's calls
+
+- **WHEN** a grader state declares `budget: { maxTurns: 1 }` and its grader decides on its first
+  model call
+- **THEN** the grader's decision commits, and no turn-budget exhaustion is routed for the state
+
+### Requirement: Human states park for a decision
+
+A state declaring `type: human` SHALL be a human state. On entry — by `archmax_advance` (the
+agent's, or an automated state's: see the `automated-states` capability), a decision, `on_error`, or
+a turn opening on a session already parked there — the runtime SHALL build the pending-decision
+record deterministically, with no model call, from the slug, the `title` when declared, the
+transitions with `type`/`description`, the declared `evidence` merged with attached evidence, a
+1-based `seq` and `createdAt`; commit it as `pendingDecision` with `status: awaiting_decision`; and
+emit `parked` with `awaiting: "decision"` and no `callId`. Nothing SHALL be rendered to a file: the
+record is the presentation, and a surface reads the state's `instructions` from the spec on demand.
+The record's `state` is the routing identity.
+
+#### Scenario: Pending decision committed on entry
+
+- **WHEN** a session advances into `refund-review`
+- **THEN** the checkpoint holds a `pendingDecision` with `state: refund-review`, its transitions and
+  evidence, status is `awaiting_decision`, and no file is written
+
+### Requirement: A person picks the edge
+
+`decide(sessionId, { target, comment? })` SHALL validate before the graph is touched: the session
+must be parked `awaiting_decision` with a live interrupt (`SessionNotParkedError`), and `target` must
+be one of the record's transitions other than the parked state (`InvalidDecisionTargetError`,
+listing the valid targets); a rejected decision leaves the session parked unchanged. A human state's
+transitions MAY declare `type: approve | reject | refine | none` (default `none`), at most one of
+each labeled type. On a valid decision the runtime SHALL route deterministically — no model selects
+the edge — appending a `human` trail step with the comment and a `[decision]` runtime note naming the
+edge, the comment and the new position, and emitting `decided`, `state-leave` and `state-enter`. A
+decision into another human state SHALL present it at once and owe a closing message. A decision
+into an automated state SHALL run that state before any model call of the session's agent (see the
+`automated-states` capability).
+
+#### Scenario: Invalid target is rejected
+
+- **WHEN** a decision names a target that is not one of the record's transitions
+- **THEN** `InvalidDecisionTargetError` lists the valid targets and the session stays parked
+
+### Requirement: `deliver` resumes the parked state in place
+
+`deliver(sessionId, { trigger: { id }, variables?, message? })` SHALL validate before the graph is touched:
+parked `awaiting_input` (`SessionNotAwaitingInputError`), a non-empty trigger id
+(`MissingDeliveryTriggerError`), valid variable names (`InvalidVariableNameError`); any trigger id is
+accepted. A delivery SHALL NOT select an edge: it clears `pendingInput`, records the delivered id as
+the current trigger (checkpoint and `trigger` variable), seeds the variables as locked host seeds
+replacing a locked value of the same name (`title` excepted: never locked, skipped with a warning
+when malformed), appends a `trigger` trail step, emits `delivered` and — when variables were seeded —
+`variables-set` and `title-set`, appends an `[event]` runtime note naming the trigger and its values,
+and continues the parked state. `entryState` SHALL NOT change. A non-blank `message` SHALL be
+appended as the person's own human message directly after the note, in the same update as the
+arrival — emitting `park-message` inbound — so it can neither land on a session whose park is gone
+(the delivery is refused first) nor be separated from the arrival by a crash between two writes. A
+resume payload carrying a `trigger` SHALL be read as a delivery whether or not it carries a message;
+only a payload with a message and no trigger is a reply.
+
+#### Scenario: Delivery re-runs the parked state
+
+- **WHEN** a session parked in `clarify` is delivered `{ trigger: { id: "email_reply" },
+  variables: { reply_body: "It's ORD-1001." } }`
+- **THEN** `pendingInput` is cleared, the position is still `clarify`, the transcript carries an
+  `[event]` runtime note naming `email_reply` and `reply_body`, and `archmax_get_variables` returns
+  `trigger: "email_reply"` and the delivered `reply_body`
+
+#### Scenario: The person's message travels with the firing
+
+- **WHEN** the same session is delivered `{ trigger: { id: "email_reply" }, message: "It's ORD-1001." }`
+- **THEN** the transcript carries the `[event]` note and then a human message `It's ORD-1001.` that is
+  not a runtime note, `park-message` inbound is emitted, and the resumed state answers it
+
+### Requirement: The handoff message
+
+A parked session SHALL speak before it suspends: the runtime spends exactly one reply-only model
+call — handed the parked state's tool list like any other call in that state, text the only
+product — when a session parks by `archmax_advance` into a
+human state (always, whether the agent or an automated state advanced), by `archmax_wait` (only when
+the agent has said nothing since the last message that opened a turn), when a decision or `on_error`
+routes it into another human state, when a delegated child's decision is presented, and when a
+person replies to a parked session. The reply SHALL be composed by the model from the transcript and
+a runtime directive, never a fixed string or an authored notice; a human state's `instructions`
+SHALL be withheld from it. The turn SHALL be one model call: no text leaves the park unchanged
+without a retry, and a tool call the model makes is refused by the kernel's reply-only rule, after
+which the session suspends without another model call. That reply SHALL be the park's `reply` on
+every surface.
+
+The directive SHALL head the volatile block `## This run is parked` and open with one of four
+shapes chosen structurally from the state: answering a person's message while a decision is pending
+(the model cannot make, predict or announce it); waiting for something from outside (`pendingInput`,
+naming the reason); having been routed to a human state by a runtime note; or having just handed the
+run to a person. Each SHALL end with the same instruction — one short message, no tool calls because
+every call is refused, the run stays parked until someone else acts — and SHALL label the state by
+slug and title.
+
+#### Scenario: Silent handoff into a human state speaks
+
+- **WHEN** the agent records a refund with tool calls only and advances into `refund-review`
+- **THEN** one reply-only call runs before the session suspends and its text is the outcome's `reply`
+
+#### Scenario: A wait that already spoke spends no extra call
+
+- **WHEN** the agent asks for an order id and then calls `archmax_wait`
+- **THEN** no reply-only call runs and the park's `reply` is the question already asked
+
+#### Scenario: A runtime note opens the silence window
+
+- **WHEN** a delivered firing resumes a run and it calls `archmax_wait` without writing text after
+  the arrival
+- **THEN** one reply-only call runs, because the arrival note opened a turn
+
+#### Scenario: Answering while a person decides
+
+- **WHEN** the last transcript message is a person's message on a session parked at a human state
+- **THEN** the directive says a person is deciding and the model cannot make, predict or announce
+  that decision
+
+#### Scenario: A tool call on the handoff turn is refused and the session suspends
+
+- **WHEN** the agent advances into `refund-review` and the model answers its reply-only call with a
+  call to `read_file`
+- **THEN** the call is refused with `tool.reply-only` and the tool never runs, no further model call
+  is made, and the session is parked at `refund-review` awaiting a decision
+
+#### Scenario: A code state's handoff is spoken by the session's agent
+
+- **WHEN** the code state `check-refund` advances into `refund-review`
+- **THEN** one reply-only call of the session's agent runs before the session suspends, and its text
+  is the outcome's `reply`
+
+### Requirement: Runtime notes are marked tool pairs
+
+A message the runtime writes on its own behalf SHALL be a runtime note: an assistant message
+carrying one `archmax_note` tool call with no text, answered in the same append by a tool message
+holding the note, both marked on `additional_kwargs.archmax.note` with the kind — `decision`, `event`,
+`error`, `grader`, `code`, `sub-workflow` or `opening`. A `grader` or `code` note SHALL carry an
+automated state's reason to the next state (see the `automated-states` capability); there SHALL be
+no `after` kind. `archmax_note` SHALL be registered as no tool and callable by nothing. A note SHALL
+never be a human message or a mid-thread system message; the `[kind]` prefix is readability only.
+One constructor (`runtimeNote`) SHALL build every note. A sub-workflow's opening line SHALL stay a
+human-role message marked `opening`; a person's message to a parked session SHALL stay a plain human
+message with no marker. `opensTurn` SHALL treat a human-role message and a runtime note alike as
+something the run was told, so the silence window and a reply-only turn's spend are decided per
+message across transcripts mixing both shapes. Derived views SHALL exclude notes from the tool calls
+a run made and from the reply it ended on. `isRuntimeNote`, `runtimeNoteKind` and `RuntimeNoteKind`
+SHALL be exported from the package root.
+
+#### Scenario: A decision reaches the target as a runtime note
+
+- **WHEN** a person selects an edge and the run routes
+- **THEN** the target's transcript carries an `archmax_note` pair marked `decision`, and no human-role
+  message was appended for it
+
+#### Scenario: Authorship is readable without content
+
+- **WHEN** a host calls `runtimeNoteKind` on an arrival note
+- **THEN** it returns `event`, and a workflow instruction whose text contains `[event]` returns `null`
+
+#### Scenario: An automated state's note names its type
+
+- **WHEN** a host calls `runtimeNoteKind` on the note a code state's advance added, and on the note a
+  grader state's advance added
+- **THEN** it returns `code` for the first and `grader` for the second
+
+### Requirement: The graph section is rendered from the spec
+
+The graph section SHALL be a pure, deterministic function of the spec: a `# Workflow: <title>`
+heading; the spec's `instructions` verbatim under `## Instructions` when declared; then `## States`
+with each state in declaration order headed by its backticked slug, its `title` as a parenthetical
+label, and markers — the start-state marker naming every trigger the state is entered by (singular
+`trigger:` or plural `triggers:` in declaration order), a human-state marker, `terminal` — followed
+by its one-line `summary`, each signed trigger's `requires`/`returns` labelled with the trigger id,
+and its transitions as target slugs with `type` and `description`. State `instructions` bodies SHALL
+NOT be rendered here, and transition lines SHALL name slugs, never titles. `validate` SHALL warn when
+a non-terminal state declares neither a `summary` nor any transition `description`.
+
+A grader state's `instructions`, the standard it grades against, SHALL reach no prompt of the
+session's agent: the graph section renders no state's `instructions`, and an automated state makes
+no model call of that agent, so the agent whose work is graded reads no part of the standard. No
+prompt section SHALL render any `metadata` block, at the root or on a state.
+
+#### Scenario: Heading carries slug and title
+
+- **WHEN** state `refund-request` declares `title: Evaluate refund request`
+- **THEN** its heading is `` `refund-request` (Evaluate refund request)``
+
+#### Scenario: A graded state says only that it is graded
+
+- **WHEN** the agent state `orders-question` has a transition to the grader state `review-reply`,
+  whose `instructions` hold the tone criteria
+- **THEN** the prompt rendered in `orders-question` discloses the grading only as that transition
+  line, `review-reply` by slug with the transition's `description`, and contains no part of
+  `review-reply`'s `instructions`, `model` or `budget`
+
+#### Scenario: Metadata is never rendered
+
+- **WHEN** a spec carries `metadata` at the root and on states
+- **THEN** no part of either block appears anywhere in the rendered prompt
+
+#### Scenario: Signature rendered under its entry state
+
+- **WHEN** trigger `enrich` declares `requires: [order_id]` and `returns: [delayed]` and enters `enrich`
+- **THEN** the `enrich` section says a run started by `enrich` arrives with `order_id` and must set
+  `delayed` with `archmax_set_variables` before it completes
+
+### Requirement: Typed lifecycle event stream
+
+Every runtime diagnostic SHALL be a `WorkflowLifecycleEvent` (`src/core/events.ts`) on one stream per
+assembled agent, carrying `level` (`info`, `warn`, `error`), `ts`, a strictly increasing `seq`,
+`sessionId` while a session is bound, and `subWorkflowDispatchId` inside a sub-workflow. With
+`onEvent` supplied the runtime SHALL write nothing to the console; otherwise the default subscriber
+SHALL render events through `renderEventLine` with the `[workflow]`/`[interpreter]` prefixes,
+rendering nothing for `tool-called`, `agent-text`, `agent-text-delta`, `tool-result` and
+`model-usage`. Every `state` field SHALL be a slug; the park-family events (`parked`, `decided`,
+`park-message`, `delivered`) SHALL carry the parked state as a required `state`. Assembly SHALL emit
+a `graph-topology` diagnostic listing each state's declared targets.
+
+Each automated state's run SHALL be bracketed on the stream: a code state's by `code-start` and
+`code-result`, with one `code-output` per console line of its script, and a grader state's by
+`grader-start` and `grader-result`, each with the payload the `automated-states` capability defines.
+These events are operator-facing — the `onEvent` stream and the CLI's state flow — and SHALL reach
+no prompt. There SHALL be no `hooks-summary`, `hook-start`, `hook-output`, `hook-passed`,
+`hook-verdict`, `hook-rejected`, `rubric-start` or `rubric-result` event.
+
+#### Scenario: Handler receives everything, console stays silent
+
+- **WHEN** `createAgent` is called with `onEvent`
+- **THEN** every diagnostic reaches the handler and none is written to the console
+
+#### Scenario: Park event carries its channel
+
+- **WHEN** a session parks by `archmax_wait`
+- **THEN** `parked` carries `state`, `awaiting: "input"`, the reason, `resumeAt` when declared and
+  the wait call's `callId`; a human-state park carries `awaiting: "decision"` and no `callId`
+
+#### Scenario: A code state's output reaches the console
+
+- **WHEN** `createAgent` is called without `onEvent` and a code state's script logs a line
+- **THEN** the console carries a line for that output, between the lines for the run's
+  `code-start` and `code-result`
+
+### Requirement: Paired tool events and call attribution
+
+A call that passes governance SHALL emit `tool-called` (state, tool, `callId`, structured `args`) and
+exactly one `tool-result` with the same `callId`, `status` `ok`/`error`, `durationMs`, and a capped
+`output` preview with `truncated` — including the control and delegation tools the middleware
+services itself, with `status: "error"` when the handler refused (for `archmax_advance`, judged by
+whether the transition committed). A call governance refuses SHALL emit `tool-blocked` only.
+Programmatic calls, from an agent's sandbox script or a code state's script, SHALL emit the same
+telemetry with `origin: "script"`; a grader's calls SHALL emit it as a model's calls do, with no
+`origin`, under the grader state. Every call an automated state makes, its control tools included,
+SHALL emit the pair. `callId` SHALL be the provider's tool-call id when one exists, and every event a
+call causes — `advance`, `parked`, `variables-set`, `title-set`, the sub-workflow pair — SHALL carry
+it; an automated state's `advance` and `raised`, emitted when its run settles, SHALL carry the
+recorded call's `callId`. An event no call caused (the turn's opening `advance`, a human-state park,
+seeding) SHALL omit it.
+
+#### Scenario: The advance tool emits the pair like any other call
+
+- **WHEN** the agent calls `archmax_advance` and the transition commits
+- **THEN** `tool-called` and `tool-result` (`ok`) share the call's id, and the `advance` event carries
+  the same `callId`
+
+#### Scenario: A refused transition settles as an error
+
+- **WHEN** `archmax_advance` names an undeclared edge or the leaving state's `requires` is unmet
+- **THEN** its `tool-result` is `error` and no `advance` event is emitted
+
+#### Scenario: A code state's calls are attributed to its script
+
+- **WHEN** a code state's script calls `tools.read_file` and then `tools.archmax_advance`
+- **THEN** each call emits `tool-called` and `tool-result` with the code state as `state` and
+  `origin: "script"`, and the `advance` event carries the advance call's `callId`
+
+### Requirement: Text, usage and variable events
+
+The turn runner SHALL drive every turn with LangGraph streaming and emit `agent-text-delta` (state,
+text, `messageId` when known) for each text chunk, whether the consumer used `invoke` or `stream`.
+After each model call the middleware SHALL emit `agent-text` with the message's full text and its
+committed `messageId`, and `model-usage` with input, output and cache token counts, the `model` the
+call was priced against — the id the response reported, else the id the runtime asked the endpoint
+to run — and `costUsd` only when priced, accumulating the session's `usage` channel. `model` SHALL
+be omitted only when neither source names one. A turn that
+fails mid-stream SHALL emit one `agent-text` flagged `partial: true` per streamed message before the
+error propagates. A landed `archmax_set_variables` SHALL emit `variables-set` (names, `locked`,
+`callId`, never values) and, for `title`, `title-set` with the trimmed value; a refused write emits
+nothing.
+
+A sub-workflow child's text SHALL reach the event stream only from the child's own turn runner,
+carrying the child's `sessionId` and the dispatch's `subWorkflowDispatchId`. A caller's turn runner
+SHALL NOT emit a child's text, neither as an `agent-text-delta` nor as a `partial` `agent-text`. A
+child SHALL be invoked without its caller's stream handlers; every other callback the caller hands
+down SHALL still observe the child's runs.
+
+A grader's model calls are no model calls of the session's agent: their text SHALL NOT be emitted as
+`agent-text-delta`, and their usage SHALL be reported as the `automated-states` capability defines.
+
+#### Scenario: Deltas precede the completed text
+
+- **WHEN** the model generates text in state `S`
+- **THEN** `agent-text-delta` events with `state: S` arrive before the `agent-text` for that message,
+  sharing its `messageId`
+
+#### Scenario: Usage attributes a call that named no model
+
+- **WHEN** a model call in state `S` returns usage without naming a model
+- **THEN** its `model-usage` event carries the id the runtime asked the endpoint to run, so the call
+  is attributed to a model rather than to nothing
+
+#### Scenario: Concurrent children stream as their own
+
+- **WHEN** state `S` dispatches two children in one tool batch and both stream text at the same time
+- **THEN** each child's `agent-text-delta` events carry that child's `sessionId` and its dispatch's
+  `subWorkflowDispatchId`
+- **AND** the caller's deltas carry only the caller's own text, with `state: S` and the `messageId`
+  of the caller's own message
+
+#### Scenario: A failed turn finalizes only its own text
+
+- **WHEN** a caller's turn fails mid-stream after a child it dispatched streamed text
+- **THEN** the caller's `partial` `agent-text` holds only the text the caller's own model streamed
+
+#### Scenario: A host's tracer still sees the child
+
+- **WHEN** a host invokes a turn with its own callback handler and the turn dispatches a child
+- **THEN** the handler observes every model call the child makes
+
+#### Scenario: A grader's text does not stream as the session's
+
+- **WHEN** a grader writes text on a model call before it decides
+- **THEN** no `agent-text-delta` event carries that text
+
+### Requirement: A failed tool call is answered, not thrown
+
+A governed call whose tool throws SHALL be answered with an error-status tool message, never thrown
+out of the turn. The message SHALL carry the error's message, answer the call's id and name the
+tool, exactly as a blocked call is answered. The session SHALL stay in the active state, and the
+next model call SHALL see the failure in its transcript. The call SHALL settle with exactly one
+`tool-result` whose `status` is `error` and whose preview is that message. A tool failure SHALL NOT
+be a state failure: it does not route through `on_error` and does not end the turn. Answers already
+given to other calls of the same model step SHALL be kept.
+
+Two things SHALL still propagate unchanged, with no answer recorded for the call:
+
+- a LangGraph bubble-up signal, which covers an interrupt that parks the session (including a
+  delegated child's park) and a parent command;
+- any failure raised once the run's abort signal has fired.
+
+This requirement covers calls that reach the tool node. It does not cover these calls:
+
+- The control and delegation tools the runtime services itself keep their own answers.
+- A `script`-origin call, from an agent's sandbox script or a code state's script, still throws to
+  the script, which may catch it.
+- A grader's call is answered inside the grader's own run (see the `automated-states` capability).
+
+#### Scenario: A throwing tool is answered and the turn continues
+
+- **WHEN** a state allows `web_search`, and the model calls it, and the tool throws
+  `Error("Connection closed")`
+- **THEN** the call is answered with an error-status tool message whose content is
+  `Connection closed`
+- **AND** exactly one `tool-result` for the call's id is emitted, with `status: "error"`
+- **AND** the session stays in the same state, and the next model call receives that message as
+  the call's answer
+
+#### Scenario: Sibling calls survive one failure
+
+- **WHEN** one model step issues four tool calls, and one throws while three return
+- **THEN** the turn does not fail
+- **AND** the next model call sees three results and one error-status answer, each correlated to
+  its own call id
+
+#### Scenario: A tool failure does not route through on_error
+
+- **WHEN** a state declares `on_error: escalate`, and a tool it calls throws
+- **THEN** no `state-error-routed` event is emitted, and the session stays in the state it was in
+
+#### Scenario: A park still propagates
+
+- **WHEN** a tool call raises a LangGraph interrupt, for example a delegated child that parks at a
+  human state
+- **THEN** the interrupt propagates and the session parks as it did before this requirement
+- **AND** the call is not answered with an error-status message
+
+#### Scenario: A cancelled run is not answered
+
+- **WHEN** the run's abort signal fires while a tool call is in flight, and the tool rejects
+- **THEN** the rejection propagates and the turn ends. No error-status answer is recorded for the
+  call.
+
+#### Scenario: A script still receives the throw
+
+- **WHEN** code run by `archmax_eval` calls `tools.webSearch`, and that tool throws
+- **THEN** the script receives the thrown error and may catch it. The `archmax_eval` call itself
+  is answered with whatever the script produced.
+
+#### Scenario: A code state's script receives the throw
+
+- **WHEN** a code state that allows `web_search` runs a script calling `tools.web_search`, and that
+  tool throws
+- **THEN** the script receives the thrown error and may catch it, and the state fails only if the
+  script lets it escape
+
+## ADDED Requirements
+
+### Requirement: `archmax_advance` moves the session along a declared edge
+
+The runtime SHALL expose `archmax_advance({ to, reason, evidence? })`, rejecting an empty `reason`,
+and on a call SHALL in order: check the leaving state's `requires`; validate the edge against the
+declared transitions; then commit the position, an `agent` trail step with the reason, and a tool
+message saying the target's tools are now usable. A refusal SHALL answer
+`archmax_advance rejected: <reason>` — listing the valid target slugs for an undeclared edge — and
+leave the position unchanged; every such refusal is recoverable and leaves the agent to retry. The
+`to` parameter SHALL be described as a slug. A target that is an automated state SHALL run in place
+of the next model call. An automated state's own `archmax_advance` SHALL be validated the same way
+and SHALL commit when its run settles, with a `grader` or `code` trail step in place of the `agent`
+step (see the `automated-states` capability).
+
+#### Scenario: Valid transition
+
+- **WHEN** the agent calls `archmax_advance` with a declared target and a reason
+- **THEN** the position becomes the target, the trail records an `agent` step with the reason, and
+  `advance`, `state-leave` and `state-enter` are emitted
+
+#### Scenario: Requires gate refuses the move
+
+- **WHEN** the current state declares `requires: [order_id]` and `order_id` is unset
+- **THEN** the advance is refused naming `order_id` and `archmax_set_variables`, and the position is
+  unchanged
+
+#### Scenario: One transition per model step
+
+- **WHEN** one assistant message carries two `archmax_advance` calls
+- **THEN** the first is serviced and the rest are refused naming the state it landed in, so one
+  position is committed
+
+#### Scenario: A refused attempt leaves the step open
+
+- **WHEN** one assistant message calls `archmax_advance` on an undeclared target and then on a
+  declared one
+- **THEN** the first is refused and the second moves the session: only a transition that landed
+  claims the step
+
+### Requirement: A failed state routes to its `on_error` target
+
+A failed state SHALL route to its declared `on_error` target — failure being an exhausted budget, a
+timed-out model call, an automated state's failed run (it threw, timed out, exhausted its budget, or
+a non-terminal automated state finished without deciding; see the `automated-states` capability), a
+terminal kernel block or a failed delegation call that no later call recovered (see `delegation`).
+Routing SHALL append an `[error]` runtime note marked `error`, commit the new position and an
+`on_error` trail step, clear every park record, the committed rejection and every outstanding
+delegation failure, emit `state-error-routed`, `state-leave` and `state-enter`, and continue to the
+model; an automated `on_error` target SHALL run in place of that model call. A rejection a tool
+committed, and a delegation failure still outstanding, SHALL be routed once the model has finished
+in the failing state; the committed rejection is the reason when there is one, else every
+outstanding failure in the order they failed, each with the arguments of its call. A human `on_error`
+target SHALL be presented at once, owing a closing message. Without `on_error`, the turn SHALL end
+`rejected` with the reason. A session short of its trigger's `returns` is not a state failure and
+SHALL NOT route through `on_error`.
+
+#### Scenario: A code state's error routes to the error state
+
+- **WHEN** a code state declares `on_error: escalate` and its script throws
+- **THEN** the run routes to `escalate` with an `[error]` runtime note naming the failure
+
+#### Scenario: A recovered delegation failure does not route
+
+- **WHEN** a state declaring `on_error: failed` calls `archmax_workflow_enrich`, the child fails,
+  a later call of `enrich` from that state with the same arguments succeeds, and the model finishes
+- **THEN** the session completes in that state and no `state-error-routed` is emitted
+
+#### Scenario: A committed rejection still routes after a successful delegation
+
+- **WHEN** a call is blocked by an unresolvable `${{…}}` guard in a state declaring
+  `on_error: failed`, and a delegation call from that state then succeeds
+- **THEN** the run routes to `failed` with the guard's reason
+
+### Requirement: Terminal states complete the session
+
+A state with no transitions SHALL be terminal: `archmax_advance` is not disclosed there. The turn
+SHALL complete with `status: completed` and a `state-leave` event when the model finishes without
+tool calls in a terminal state that is not parked, or when a terminal code state's script returns
+without raising (see `automated-states`). Only the trigger's `returns` SHALL gate that completion
+(see "A completing session is held to its trigger's returns"), and no runtime note asks for a
+revision.
+
+#### Scenario: Finishing in a terminal state completes the session
+
+- **WHEN** the agent finishes in a terminal state with a text reply and no tool calls, and the
+  session is not parked
+- **THEN** the status is `completed`, `state-leave` is emitted, and no further model call is made
+
+#### Scenario: A terminal code state completes without a model call
+
+- **WHEN** an agent state advances into the terminal code state `answered`, whose script writes
+  `scratchpad/answer.json` and returns
+- **THEN** the session completes with `status: completed`, and the session's agent makes no model
+  call in `answered`
+
+### Requirement: `archmax_raise` ends the session failed from any state
+
+The runtime SHALL expose `archmax_raise({ code, reason })` in every state, terminal and automated
+states included. Calling it SHALL always mean failure; the tool SHALL take no argument that declares
+success. A session whose turn ends without `archmax_raise` SHALL be a success. `code` SHALL be a
+free-form string of 1 to 64 characters after trimming, holding no line break; `reason` SHALL be
+non-empty after trimming. An invalid argument SHALL be refused with an error-status tool message
+naming the field, and the session SHALL continue in place.
+
+The call SHALL be refused, and the session continue in place, when the assistant message that
+carries it carries any other tool call; the refusal SHALL tell the model to call `archmax_raise`
+alone, after the other work has settled. The reply-only turn and every `forbid_always` or
+`forbid` entry naming the tool SHALL refuse it as they refuse any other tool.
+
+An accepted call SHALL, in this order: commit the exit record (`code`, `reason`, the state it was
+called in) and `status: failed`; clear a pending rejection marker; emit `raised` (`state`,
+`sessionId`, `code`, `reason`, and the call's `callId`) and then `state-leave`; answer the call
+with a tool message saying the session has ended; and end the turn without another model call.
+The position SHALL be unchanged and no trail step SHALL be appended. A raise SHALL NOT consult
+`on_error` and SHALL NOT check the trigger's `returns`.
+
+In an automated state, `archmax_raise` SHALL be recorded as the state's decision and take effect
+when the run settles, committing the same exit record and `status: failed` and emitting the same
+`raised` event; the sibling-call rule above governs the session's agent only, and how the call is
+answered and noted is the `automated-states` capability's.
+
+The tool description and the platform prompt SHALL tell the model to call `archmax_raise` only when
+the task cannot be completed and recovery has been tried; never to finish work that succeeded; and
+never in place of `archmax_wait` (something has to arrive), `archmax_reset` (a wrong branch) or a
+human state (a person has to decide). They SHALL tell the model that any message for the person
+belongs in the text of the same assistant message.
+
+#### Scenario: A raise ends the session failed
+
+- **WHEN** the agent in `lookup` calls `archmax_raise({ code: "orders-unavailable", reason: "The
+  orders API failed three times." })` as the only call in its message
+- **THEN** the session's status is `failed`, its position is still `lookup`, `raised` is emitted
+  with the code, the reason and the call's `callId`, and no further model call is made in the turn
+
+#### Scenario: A session that never raises is a success
+
+- **WHEN** a turn completes in a terminal state without any `archmax_raise` call
+- **THEN** its status is `completed`, exactly as before this requirement
+
+#### Scenario: A raise beside another call is refused
+
+- **WHEN** one assistant message calls `read_file` and `archmax_raise`
+- **THEN** `archmax_raise` is answered with an error-status message telling the model to call it
+  alone, the status stays `running`, and the model is called again
+
+#### Scenario: An invalid code is refused
+
+- **WHEN** the agent calls `archmax_raise({ code: "", reason: "nothing found" })`
+- **THEN** the call is refused naming `code`, and the session continues in place
+
+#### Scenario: A raise bypasses on_error and returns
+
+- **WHEN** a state declaring `on_error: escalate` raises, in a session whose trigger declares
+  `returns: [summary]` and `summary` is unset
+- **THEN** the session ends `failed` in that state: it does not route to `escalate`, and the unset
+  return does not reject it
+
+#### Scenario: A raise replaces a pending rejection
+
+- **WHEN** a sub-run failed earlier in the turn, committing a rejection, and the agent then raises
+- **THEN** the session ends `failed` with the agent's code and reason, not `rejected`
+
+### Requirement: A completing session is held to its trigger's returns
+
+When the model finishes without tool calls in a state that is not parked, or a terminal code
+state's script returns without raising, the runtime SHALL check the `returns` of the trigger that
+started the turn, once, and hand nothing back: no runtime note, no further model call.
+
+- A session that set every declared return, each conforming to its type, SHALL complete.
+- A **sub-workflow child** that left declared returns unset SHALL complete; its caller gets every
+  declared return, the unset ones `null`, plus a `note` naming them (see `delegation`).
+- A **top-level session** that left declared returns unset SHALL end with `status: rejected` and a
+  reason naming the state, the unset names and the trigger, without consulting `on_error`.
+- A session holding a declared return whose value does not conform to its type SHALL be rejected
+  the same way, a child included.
+
+The check SHALL NOT run at a park, on a reply-only turn, or after `archmax_raise`. The rendered
+trigger signature SHALL tell the agent that the returns are set with `archmax_set_variables` before
+it finishes, and what finishing without every one does: for a child, that its caller gets the ones
+it set, and any left unset as empty, with a note naming them; otherwise, that the session ends
+rejected. It SHALL also tell the agent to set each once its final value is known, that moving to
+another state does not need it, and to lock one only when it is final.
+
+#### Scenario: A top-level session short of its returns is rejected at once
+
+- **WHEN** a top-level session started by a trigger declaring `returns: [enrichment_file]` finishes
+  with `enrichment_file` unset
+- **THEN** it ends `rejected` with "Completed in state '<state>' without setting 'enrichment_file',
+  which trigger 'manual' declares in its 'returns'. …", after one model call, with no runtime note,
+  and `on_error` is not consulted
+
+#### Scenario: A child short of its returns completes
+
+- **WHEN** a sub-workflow child whose trigger declares `returns: [enrichment_file, delayed]` finishes
+  with only `enrichment_file` set
+- **THEN** the child ends `completed` with no runtime note and no further model call
+
+#### Scenario: A mistyped return is rejected, a child's included
+
+- **WHEN** a session whose trigger declares `returns: [{ name: total, type: number }]` finishes with
+  `total` holding `"twelve"`, as a top-level session and as a child
+- **THEN** each ends `rejected` naming `total` and `number`
+
+#### Scenario: A terminal code state is held to the returns
+
+- **WHEN** a top-level session whose trigger declares `returns: [answer_file]` reaches a terminal
+  code state whose script returns with `answer_file` unset
+- **THEN** it ends `rejected` naming `answer_file`, and `on_error` is not consulted
+
+#### Scenario: A raise owes no returns
+
+- **WHEN** a session whose trigger declares `returns` calls `archmax_raise` before setting them
+- **THEN** it ends `failed` with no runtime note and no further model call
+
+#### Scenario: The prompt says what finishing short does
+
+- **WHEN** a run started by trigger `enrich`, which declares `returns: [delayed]`, is in its entry
+  state, once as a top-level session and once as a sub-workflow child
+- **THEN** the rendered signature says it must set `delayed` with `archmax_set_variables` before it
+  finishes, and says the top-level run ends rejected without it, while the child's caller gets what
+  it set and the rest empty, with a note naming them
+- **AND** both say to set it once its final value is known, that moving to another state does not
+  need it, and to lock it only when it is final
+
+## REMOVED Requirements
+
+### Requirement: Hook declaration shape
+
+**Reason**: `before` and `after` are removed from the state schema, and with them every hook shape
+(`{ script }`, `{ rubric }`, custom kinds registered through `hookExecutors`), the `max_iterations`
+sidecar and the `hooks/` path grammar. A leftover `before:` or `after:` now fails to load as the
+unrecognized key it is (see `workflow-spec`).
+
+**Migration**: Declare a code state (`type: code`, `script: scripts/<file>.js`) in front of the
+state for a `before` check and behind it for an `after` check, and connect them with transitions. A
+rubric becomes a grader state whose `instructions` are the rubric's criteria. A custom kind's
+executor becomes a code state's script or a grader state. Move the scripts from
+`workflows/<slug>/hooks/` to `workflows/<slug>/scripts/`.
+
+### Requirement: The hook function contract
+
+**Reason**: Hook scripts and their verdict vocabulary (`ok`, `veto`, `correct`, `defineHook`) are
+gone, and so is the runtime authority their `tools.*` calls ran on (`origin: "lifecycle"`), which
+reached every tool of the assembly outside the state's grants.
+
+**Migration**: Rewrite each hook script to the code-state script contract (see the
+`automated-states` and `sandbox` capabilities): the default export receives
+`{ state, trigger, variables, messages, trail, tools }`, its return value is not read, and it moves
+the session with `tools.archmax_advance({ to, reason })` or ends it with
+`tools.archmax_raise({ code, reason })`. Its `tools.*` reach only the code state's own surface, so
+grant the state every tool the script calls. Types come from `CodeStateInput` and `defineCodeState`
+in `@archmax-ai/harness/sandbox`.
+
+### Requirement: Hook sequencing and phases
+
+**Reason**: There are no `before`/`after` slots to order or gate. Entry gates and exit checks are
+states on the graph, entered and left with `archmax_advance`, and the `beforeDone` channel that
+recorded a gate as run is removed.
+
+**Migration**: Put each check in its own code or grader state and order the checks with
+transitions; consecutive code states run in order with no model call (see the `automated-states`
+capability). An entry gate becomes the trigger's entry state: a code state that advances to the
+state doing the work, or elsewhere with the reason.
+
+### Requirement: Corrections
+
+**Reason**: The `correct` verdict, `max_iterations` and the checkpointed `iterations` counts are
+removed. Sending work back is an ordinary `archmax_advance` to the state that does the work, and no
+runtime counter bounds it.
+
+**Migration**: Declare a grader state that sends the work back with `archmax_advance` and a reason,
+which the agent reads as a `grader` runtime note. A grader that must give up after N rounds says so
+in its `instructions`, counts its earlier send-backs from the trail `archmax_get_history` returns,
+and calls `archmax_raise`.
+
+### Requirement: Hooks fail closed
+
+**Reason**: Hooks are gone. Automated states fail closed instead: a script error, a timeout, an
+exhausted budget, or a non-terminal automated state finishing without `archmax_advance` or
+`archmax_raise` fails the state and routes through `on_error` (see the `automated-states`
+capability).
+
+**Migration**: Convert the hooks to code and grader states. A rubric's `model` becomes the grader
+state's `model`, resolved under the `grader` model role.
+
+### Requirement: `archmax_advance` is the only way to move
+
+**Reason**: The move ran the leaving state's `after` hooks and the target's `before` hooks between
+validating the edge and committing it, recorded the target's gate in `beforeDone`, and committed
+correction counts and terminal hook rejections. With hooks gone, a move is the `requires` check, the
+edge check and the commit, and every refusal is recoverable. The requirement is restated without the
+hook steps as "`archmax_advance` moves the session along a declared edge", which also covers an
+automated state's advance.
+
+**Migration**: None for workflows beyond replacing their hooks with code and grader states placed
+on the edge.
+
+### Requirement: `on_error` routing
+
+**Reason**: Its failure list named a hook execution error and exhausted corrections, which no longer
+exist. It is restated as "A failed state routes to its `on_error` target", where an automated
+state's failed run is the new failure source and an automated `on_error` target runs in place of
+the next model call.
+
+**Migration**: None. A state that relied on a hook failure to reach `on_error` reaches it through
+the failure of the code or grader state that replaces the hook.
+
+### Requirement: Terminal states and the terminal after hook
+
+**Reason**: The terminal `after` hook, its `[after]` revision note and its `correct`/`veto` loop at
+completion are removed. Terminal-state completion is restated as "Terminal states complete the
+session", which adds the completion of a terminal code state.
+
+**Migration**: A check that ran as a terminal state's `after` hook becomes a grader or code state
+that the work advances into before the terminal state. To end right after an approval with no
+further model call, approve into a terminal code state.
+
+### Requirement: `archmax_raise` ends the session as a failure
+
+**Reason**: It stated that a raise runs no `before` or `after` hook, and it offered the tool only
+with the agent's call shape in mind. It is restated as "`archmax_raise` ends the session failed from
+any state", without the hook clause and with an automated state's raise.
+
+**Migration**: None.
+
+### Requirement: A session short of its returns settles on what it set
+
+**Reason**: The returns check waited for a terminal state's `after` hooks to pass, and its
+scenarios referred to the `[after]` note and the terminal `after` hook. It is restated as "A
+completing session is held to its trigger's returns", which also checks the returns when a terminal
+code state completes.
+
+**Migration**: None.

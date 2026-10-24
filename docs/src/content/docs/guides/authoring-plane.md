@@ -1,6 +1,6 @@
 ---
 title: The authoring plane
-description: Why the agent cannot read the workflow that governs it or the rubric that grades it, where hook scripts and runtime scripts each live, and how the split is enforced.
+description: Why the agent cannot read the workflow that governs it or the criteria a grader holds it to, where code-state scripts and runtime scripts each live, and how the split is enforced.
 ---
 
 An archmax harness workspace has two planes. Which one a file belongs to is decided by a
@@ -8,7 +8,7 @@ single question: **who reads it?**
 
 | | Authoring plane | Agent workspace |
 | --- | --- | --- |
-| **Holds** | `workflows/<slug>/`: `workflow.yaml` (grading rubrics included), `WORKFLOW.md`, `hooks/`, `tests/` | `AGENTS.md`, `skills/`, and the session's `scratchpad/` |
+| **Holds** | `workflows/<slug>/`: `workflow.yaml` (grader states' criteria included), `WORKFLOW.md`, `scripts/`, `tests/` | `AGENTS.md`, `skills/`, and the session's `scratchpad/` |
 | **Read by** | the runtime | the agent |
 | **Served by** | the `authoring` backend | the workspace composite (mounts + session store) |
 | **Agent access** | none (no route exists) | read-only mounts, plus its own session zone |
@@ -20,8 +20,8 @@ agree by construction.
 
 ## The agent cannot read `workflows/**`
 
-The block covers its own spec, a sibling workflow's spec, the source of a hook
-that vetoes its transitions, and the cases grading it.
+The block covers its own spec, a sibling workflow's spec, the script of a code
+state that checks its work, and the cases testing it.
 
 The isolation is **structural**. The agent's workspace composite routes the
 declared mounts and the session zone, and the plane is served beside it by a
@@ -41,8 +41,8 @@ Declaring `workflows/**` in a state's `tools.allow` reaches that same empty
 zone, and so does a custom governance rule. A grant widens access along a route,
 and the composite carries none to the plane.
 
-Why it matters: an agent that can read the hook vetoing it can reason about how
-to get past it. Prompt injection turns "the model can see its own policy" from a
+Why it matters: an agent that can read the check its work must pass can reason
+about how to get past it. Prompt injection turns "the model can see its own policy" from a
 curiosity into an attack surface. What the agent knows about the machine is what
 the runtime renders into the system prompt, which already carries everything it
 legitimately needs.
@@ -58,25 +58,26 @@ Two rules follow when you author:
 
 ## One prefix, and a grader is inside it
 
-A **grading rubric** lives in `workflow.yaml` itself, inline on the hook that
-applies it, and the runtime alone dispatches it. So the criteria sit behind the
-prefix that already covers the spec, and one prefix is enough:
+A **grader state's** criteria are its `instructions`, in `workflow.yaml` itself,
+and the runtime alone runs the grader. So the criteria sit behind the prefix that
+already covers the spec, and one prefix is enough:
 
 ```ts
-await authoring.readText("workflows/order-lookup/workflow.yaml"); // "…after:\n  - rubric: …"
+await authoring.readText("workflows/order-lookup/workflow.yaml"); // "…type: grader\n    instructions: …"
 await workspace.readText("workflows/order-lookup/workflow.yaml"); // null
 await workspace.listDir("/");                                     // no `workflows` entry
 ```
 
-A session that could read there would find two things: the criteria of the rubric
-that vetoes its transitions, and the `max_iterations` budget saying how many
-attempts it gets before the veto is final. Those are the two facts most worth
-playing against.
+A session that could read there would find the standard its work is measured
+against, and how many send-backs the grader allows before it raises. Those are
+the two facts most worth playing against.
 
-The prompt keeps both back. The active state's block discloses one thing, that a
-phase of *that state* carries a hook of kind `rubric`. A rubric is identified by
-its position, so a prompt has no name to print, and `task` is the runtime's own
-dispatch, refused to every state that asks for it.
+The prompt keeps both back. From the state before a grader, the agent sees one
+line: the transition into it, marked `(grader)`, with its `description`. No part
+of the grader's `instructions`, `model` or `budget` reaches any prompt of the
+session's agent. The grader runs in a context of its own, and the agent reads what
+it decided only as a runtime note. The Deep Agents `task` tool is refused to every
+state that asks for it.
 
 Sometimes the agent legitimately needs some of a grader's content, such as a
 style guide it should follow while drafting. Put that content in a skill bundle
@@ -85,25 +86,31 @@ plane is the standard it will be *measured* against.
 
 ## Two kinds of script, two homes
 
-The plane split draws a clear line between two kinds of script. A **hook
+The plane split draws a clear line between two kinds of script. A **code-state
 script** and a **runtime script** have different executors, so they live in
 different places.
 
-| | Hook script | Runtime script |
+| | Code-state script | Runtime script |
 | --- | --- | --- |
-| **Run by** | the runtime, at a lifecycle point | the agent, via `archmax_run` |
-| **Lives in** | `workflows/<slug>/hooks/<check>.js` | `skills/<capability>/scripts/<script>.js` |
-| **Wired as** | `before: { script: hooks/<check>.js }` | `{ tool: archmax_run, paths: ["skills/<capability>/scripts/**"] }` |
+| **Run by** | the runtime, when the session enters the code state | the agent, via `archmax_run` |
+| **Lives in** | `workflows/<slug>/scripts/<check>.js` | `skills/<capability>/scripts/<script>.js` |
+| **Wired as** | `type: code` with `script: scripts/<check>.js` | `{ tool: archmax_run, paths: ["skills/<capability>/scripts/**"] }` |
 | **Agent can read it** | no | yes (through the `skills/` mount) |
 
-A hook's `script:` path is **workflow-relative**, confined to that workflow's
-`hooks/` directory. So `hooks/check-requester.js` resolves to
-`workflows/order-lookup/hooks/check-requester.js`. An absolute path, a `..` climb,
-or anything outside `hooks/` is a load error and a `validate` error.
+A code state's `script:` path is **workflow-relative**, confined to that
+workflow's `scripts/` directory. So `scripts/screen-request.js` resolves to
+`workflows/order-lookup/scripts/screen-request.js`. An absolute path, a `..` climb,
+or anything outside `scripts/` is a load error and a `validate` error. So is a
+path that does not end in `.js` or `.mjs`.
 
-A hook's *source* stays on the plane too. Prompts, event payloads and session
-artifacts all leave it out, so what a veto hands back is the verdict and the
-reason.
+A code state's *source* stays on the plane too. Prompts, event payloads and
+session artifacts all leave it out, so what the next state reads is the reason
+the script passed to `archmax_advance`.
+
+Being run by the runtime does not widen what a code-state script may do. Its
+`tools.*` calls are governed against its own code state, exactly as an
+`archmax_run` script's are against the active state. A code state that reads a
+bundle's data enables that bundle in its own `skills.allow`.
 
 ### `archmax_run` executes only skill-bundled scripts
 
@@ -114,11 +121,11 @@ non-overridable safety rule (`script.skill-only`), evaluated ahead of workflow
 ```
 archmax_run("skills/order-enrichment/scripts/fan-out.js")  → allowed
 archmax_run("scratchpad/generated.js")                     → blocked: script.skill-only
-archmax_run("workflows/order-lookup/hooks/check.js")       → blocked: script.skill-only
+archmax_run("workflows/order-lookup/scripts/check.js")     → blocked: script.skill-only
 ```
 
 So `archmax_run` reaches exactly the scripts a skill bundle ships. A file the
-agent just wrote and its own hook both fall outside that set. The rule sits
+agent just wrote and a code state's script both fall outside that set. The rule sits
 above every declaration, so `{ tool: archmax_run, paths: ["**"] }` grants nothing
 extra and `validate` reports it as inert. A state's own entry can still *narrow*
 execution within the bundles, which is the useful thing to write:
@@ -151,7 +158,7 @@ service, or a signed bundle:
 const agent = await createAgent({
   workflow: "order-lookup",
   authoring: myGovernanceBackend,
-  // specs (rubrics included), hooks, tests
+  // specs (graders' criteria included), code-state scripts, tests
   backend: myContentBackend,
   // what the agent may read
   mounts: { "/skills/": mountSubtree(myContentBackend, "skills") },
@@ -172,25 +179,25 @@ into the session zone and it comes back empty. A **script** naming the plane is
 told why, so you are spared debugging that empty read:
 
 ```js
-await tools.readFile("workflows/other/workflow.yaml");
-// blocked: zone.governance-plane — 'workflows/' holds machine specs, grading
-// rubrics, hook scripts, and test cases. The runtime reads it through the
-// authoring backend; nothing running inside a run can.
+await tools.readFile({ file_path: "workflows/other/workflow.yaml" });
+// blocked: zone.governance-plane — 'workflows/' holds machine specs, code-state
+// scripts, and test cases. The harness reads it through the authoring backend;
+// nothing running inside a run can.
 ```
 
 The diagnostic names the prefix it matched and what that prefix holds, so you
-see *which* plane content you reached for. Your own workflow's rubrics are in
-there too. The runtime dispatches those under a positional id, which leaves a
-script a verdict to receive and no file to open.
+see *which* plane content you reached for. A code state's script gets the same
+refusal: it runs from the plane, and still cannot read it.
 
 Ordinary reads from a script are unaffected:
 
 ```js
-await tools.readFile("skills/order-data/assets/orders.json"); // fine
+await tools.readFile({ file_path: "skills/order-data/assets/orders.json" }); // fine
 ```
 
 ## Related
 
-- [The workflow machine](/guides/workflow-machine/): hooks in the spec
+- [The workflow machine](/guides/workflow-machine/): states, transitions and governance
+- [Grader and code states](/guides/automated-states/): the states the runtime runs itself
 - [Code interpreter](/guides/code-interpreter/): `archmax_eval` and `archmax_run`
 - [Skills](/guides/skills/): capability bundles and skill governance

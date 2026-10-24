@@ -5,6 +5,7 @@ import { WorkflowMachine } from "../machine/machine.js";
 import type { MachineSpec } from "../machine/types.js";
 import type { WorkflowLifecycleEvent } from "../core/events.js";
 import type { GovernanceRule } from "../kernel/kernel.js";
+import { SUB_WORKFLOW_PARK, SubWorkflowError } from "../workflow/sub-workflow.js";
 import { createPtcToolGateway, PtcGovernanceError, type PtcToolGateway } from "./ptc-gateway.js";
 
 const SPEC: MachineSpec = {
@@ -123,7 +124,7 @@ describe("PTC tool gateway", () => {
 
   it("blocks a read-only-zone write whatever the origin", async () => {
     const { gateway } = setup();
-    for (const origin of ["script", "lifecycle"] as const) {
+    for (const origin of ["script", "agent"] as const) {
       const inner = fakeTool("write_file");
       const [wrapped] = gateway.wrap([inner], { origin, sessionId: "t1" });
       const err = await wrapped
@@ -135,14 +136,47 @@ describe("PTC tool gateway", () => {
     }
   });
 
-  it("lets a lifecycle call past the state's allow list", async () => {
-    const { gateway } = setup();
+  it("governs a grader's call against the state like a model's, its events unmarked", async () => {
+    // A grader is a model: its calls are `agent` origin, held to the same
+    // surface as a script's, and the tool events carry no `origin`, as the
+    // session agent's own do.
+    const { gateway, events } = setup();
     const inner = fakeTool("write_file");
-    const [wrapped] = gateway.wrap([inner], { origin: "lifecycle", sessionId: "t1" });
-    // Outside the state's `output/**` constraint — refused for a script,
-    // permitted for a hook running on harness authority.
-    await wrapped.invoke({ file_path: "other/a.md", content: "x" } as never);
+    const [wrapped] = gateway.wrap([inner], { origin: "agent", sessionId: "t1" });
+
+    await wrapped.invoke({ file_path: "output/a.md", content: "x" } as never);
+    await expect(wrapped.invoke({ file_path: "other/a.md", content: "x" } as never)).rejects.toBeInstanceOf(
+      PtcGovernanceError,
+    );
+
     expect(inner.calls).toHaveLength(1);
+    expect(toolEvents(events)).toEqual(["tool-called", "tool-result", "tool-blocked"]);
+    for (const event of events) expect(event, event.type).not.toHaveProperty("origin");
+  });
+
+  it("fails a sub-workflow park closed, naming who cannot wait for it", async () => {
+    // Nothing calling through the gateway can park: a script's frame is not
+    // durable, and a grader's run is not resumable.
+    for (const [origin, who] of [
+      ["script", "a script"],
+      ["agent", "a grader"],
+    ] as const) {
+      const { gateway, events } = setup();
+      const inner = fakeTool("write_file", () => {
+        const err = new Error("interrupted");
+        Object.defineProperty(err, SUB_WORKFLOW_PARK, {
+          value: { workflow: "enrich-order", identity: "i", dispatchId: "d", decision: null },
+        });
+        throw err;
+      });
+      const [wrapped] = gateway.wrap([inner], { origin, sessionId: "t1" });
+      const err = await wrapped.invoke({ file_path: "output/a.md" } as never).catch((e: unknown) => e);
+      expect(err, origin).toBeInstanceOf(SubWorkflowError);
+      expect((err as SubWorkflowError).kind, origin).toBe("parked");
+      expect((err as Error).message, origin).toContain("Sub-workflow 'enrich-order' stopped for a person");
+      expect((err as Error).message, origin).toContain(`${who} cannot wait for one`);
+      expect(events.at(-1), origin).toMatchObject({ type: "tool-result", status: "error" });
+    }
   });
 
   it("surfaces the governance reason in a catchable error", async () => {
@@ -247,6 +281,19 @@ describe("PTC tool gateway", () => {
     expect(inner.calls).toHaveLength(1);
   });
 
+  it("never serves a mock for a control tool: the runtime services every one", async () => {
+    const { gateway } = setup();
+    gateway.refresh("t1", {
+      state: "work",
+      config: { configurable: { thread_id: "t1", __toolMocks: [{ name: "archmax_advance", result: "MOCKED" }] } },
+    });
+    const inner = fakeTool("archmax_advance");
+    const [wrapped] = gateway.wrap([inner], { origin: "script", sessionId: "t1" });
+
+    expect(await wrapped.invoke({ to: "done", reason: "x" } as never)).toBe("ok");
+    expect(inner.calls).toHaveLength(1);
+  });
+
   it("refuses a mocked call the state forbids (governance precedes mocks)", async () => {
     const { gateway } = setup();
     gateway.refresh("t1", {
@@ -281,11 +328,12 @@ describe("PTC tool gateway", () => {
 });
 
 describe("PTC calls are not interpolated", () => {
-  // The agent's own arguments are substituted at `wrapToolCall`; a script's are
-  // not, even with variables in force. A script passes computed values and holds
-  // the run's variables as `args.variables`, so reference text reaching a
-  // `tools.*` call is data — substituting would refuse or rewrite it.
-  const passesThrough = async (origin: "script" | "lifecycle") => {
+  // The agent's own arguments are substituted at `wrapToolCall`, and a grader's
+  // by its own middleware; the gateway substitutes nothing, even with variables
+  // in force. A script passes computed values and holds the run's variables as
+  // `args.variables`, so reference text reaching a `tools.*` call is data —
+  // substituting would refuse or rewrite it.
+  const passesThrough = async (origin: "script" | "agent") => {
     const { gateway } = setup();
     gateway.refresh("t1", {
       state: "work",
@@ -305,8 +353,8 @@ describe("PTC calls are not interpolated", () => {
     });
   });
 
-  it("passes a lifecycle hook's reference text through untouched", async () => {
-    expect(await passesThrough("lifecycle")).toEqual({
+  it("passes a grader's call through untouched: the grader substitutes its own before the gateway", async () => {
+    expect(await passesThrough("agent")).toEqual({
       file_path: "output/a.json",
       content: "${{order_id}} and ${{not_a_var}}",
     });

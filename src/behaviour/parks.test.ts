@@ -16,6 +16,7 @@ import {
   assemble,
   cleanupWorkspaces,
   eventsOf,
+  freshSessionId,
   lastAgentText,
   messageType,
   statesEntered,
@@ -30,7 +31,7 @@ afterEach(cleanupWorkspaces);
 
 /** work → review [human] → approved | back to work (refine). */
 const REVIEW = {
-  runtime: { engine: "archmax-harness", version: "2" },
+  runtime: { engine: "archmax-harness", version: "3" },
   states: {
     work: {
       triggers: { manual: null },
@@ -263,7 +264,7 @@ describe("a human node", () => {
 
 /** clarify parks itself with archmax_wait; a delivery resumes it in place. */
 const CLARIFY = {
-  runtime: { engine: "archmax-harness", version: "2" },
+  runtime: { engine: "archmax-harness", version: "3" },
   states: {
     clarify: {
       triggers: {
@@ -491,7 +492,7 @@ describe("a tool call on the handoff turn", () => {
 describe("a decision that routes straight into another human state", () => {
   /** work → first [human] → second [human] → done. */
   const TWO_GATES = {
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       work: { triggers: { manual: null }, transitions: [{ to: "first", description: "Test edge to first." }] },
       first: {
@@ -618,32 +619,47 @@ describe("a delivery's variables", () => {
     expect((await agent.sessions.get("conv-1"))?.status).toBe("awaiting_input");
   });
 
-  it("does not re-run the parked state's entry gate on resume", async () => {
+  it("does not re-run the code state in front of the parked state on resume", async () => {
     const root = workspaceWith(
       {
         ...CLARIFY,
         states: {
-          clarify: { triggers: { manual: null }, before: { script: "hooks/gate.js" }, transitions: [{ to: "answer", description: "Test edge to answer." }] },
+          gate: {
+            type: "code",
+            script: "scripts/gate.js",
+            triggers: { manual: { session: "conversation_id" } },
+            transitions: [{ to: "clarify", description: "The request may be clarified." }],
+          },
+          clarify: {
+            triggers: { email_reply: { session: "conversation_id" } },
+            transitions: [{ to: "answer", description: "Test edge to answer." }],
+          },
           answer: {},
         },
       },
-      { "workflows/w/hooks/gate.js": "/** Passes. */\nexport default () => ok();\n" },
+      {
+        "workflows/w/scripts/gate.js":
+          "/** Passes. */\nexport default async function ({ tools }) {\n  await tools.archmax_advance({ to: 'clarify', reason: 'passed' });\n}\n",
+      },
     );
     const { agent, events, model } = await assemble(root, {
       turns: [{ tool: "archmax_wait", args: { reason: "waiting" } }],
     });
-    await turn(agent, "conv-9", "help");
-    const gatesBefore = eventsOf(events, "hook-start").length;
-    expect(gatesBefore).toBeGreaterThan(0);
+    const sessionId = freshSessionId("conv");
+    await turn(agent, sessionId, "help");
+    const gatesBefore = eventsOf(events, "code-start").length;
+    expect(gatesBefore).toBe(1);
+    expect((await agent.sessions.get(sessionId))?.status).toBe("awaiting_input");
     model.enqueue(advanceTo("answer"), { reply: "done" });
-    await agent.workflow.deliver("conv-9", { trigger: { id: "email_reply" } });
-    expect(eventsOf(events, "hook-start").length).toBe(gatesBefore);
+    const outcome = await agent.workflow.deliver(sessionId, { trigger: { id: "email_reply" } });
+    expect(outcome).toMatchObject({ workflowState: "answer", status: "completed" });
+    expect(eventsOf(events, "code-start").length).toBe(gatesBefore);
   });
 });
 
 describe("the park budget", () => {
   const budgeted = (onError?: string) => ({
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       clarify: {
         triggers: {
@@ -697,7 +713,7 @@ describe("the park budget", () => {
 describe("an on_error target that is a human node", () => {
   it("parks the run there awaiting a decision", async () => {
     const spec = {
-      runtime: { engine: "archmax-harness", version: "2" },
+      runtime: { engine: "archmax-harness", version: "3" },
       states: {
         start: { triggers: { manual: null }, budget: { maxTurns: 1 }, on_error: "review", transitions: [{ to: "done", description: "Test edge to done." }] },
         review: { type: "human", transitions: [{ to: "done", type: "approve", description: "Test edge to done." }] },
@@ -805,7 +821,7 @@ describe("a resumed turn honours the caller's config", () => {
   const MOCK_CONFIG = { configurable: { __toolMocks: [{ name: "write_file", result: MOCKED }] } };
 
   const WAIT = {
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       clarify: {
         triggers: { manual: null, email_reply: null },

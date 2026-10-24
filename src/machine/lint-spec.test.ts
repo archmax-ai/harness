@@ -212,3 +212,129 @@ describe("an owned variable the host supplies", () => {
     expect(diagnostics.map((d) => d.message)).toContainEqual(expect.stringContaining("which state 'triage' owns in 'locks'"));
   });
 });
+
+/**
+ * Keys a state's type never reads, and a grader that could not decide: the
+ * runtime tolerates both and `validate` fails, the pattern human states already
+ * follow. An automated state (a grader or a code state) is never offered the
+ * planning list, the sandbox entry points, parking or resetting, so a grant
+ * naming one is an error too.
+ */
+describe("automated states", () => {
+  type StateDecl = MachineSpec["states"][string];
+  const lintState = (state: StateDecl) =>
+    lintSpec(
+      specWith({
+        states: {
+          triage: { triggers: { manual: null }, instructions: "Route it.", transitions: [{ to: "check", description: "Drafted." }] },
+          check: state,
+          done: {},
+        },
+      }),
+    );
+  const errorsAt = (findings: ReturnType<typeof lintSpec>, field: string) =>
+    findings.filter((f) => f.severity === "error" && f.field === field);
+  const CODE: StateDecl = {
+    type: "code",
+    script: "scripts/check.js",
+    transitions: [{ to: "done", description: "The check passed." }],
+  };
+  const GRADER: StateDecl = {
+    type: "grader",
+    instructions: "Judge the tone.",
+    transitions: [{ to: "done", description: "The tone is right." }],
+  };
+
+  it("reports nothing for a clean code state and a clean grader", () => {
+    expect(lintState(CODE).filter((f) => f.severity === "error")).toEqual([]);
+    expect(
+      lintState({ ...GRADER, model: "large-model", budget: { maxTurns: 4, timeoutMs: 30_000 } }).filter(
+        (f) => f.severity === "error",
+      ),
+    ).toEqual([]);
+  });
+
+  it.each<[string, StateDecl, string]>([
+    ["instructions", { instructions: "Check the refund." }, "makes no model call"],
+    ["model", { model: "large-model" }, "makes no model call"],
+    ["budget", { budget: { maxTurns: 3 } }, "settings.timeoutMs"],
+    ["evidence", { evidence: ["scratchpad/refund.json"] }, "human state's decision record"],
+    ["approvers", { approvers: ["finance"] }, "human state's decision record"],
+  ])("errors on a code state declaring '%s'", (key, extra, why) => {
+    const [finding, ...rest] = errorsAt(lintState({ ...CODE, ...extra }), `states.check.${key}`);
+    expect(rest).toEqual([]);
+    expect(finding?.message).toContain(`Code state 'check' declares '${key}', which a code state never reads`);
+    expect(finding?.message).toContain(why);
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["blank", "  \n "],
+  ])("errors on a grader whose instructions are %s", (_label, instructions) => {
+    const [finding] = errorsAt(lintState({ ...GRADER, instructions }), "states.check.instructions");
+    expect(finding?.message).toContain("Grader state 'check' must declare 'instructions'");
+  });
+
+  it("errors on a grader with no transition, which could only approve by silence", () => {
+    const [finding] = errorsAt(lintState({ ...GRADER, transitions: [] }), "states.check.transitions");
+    expect(finding?.message).toContain("Grader state 'check' must declare at least one transition");
+    expect(finding?.message).toContain("approve by silence");
+  });
+
+  it.each<[string, StateDecl]>([
+    ["evidence", { evidence: ["scratchpad/reply.md"] }],
+    ["approvers", { approvers: ["support-lead"] }],
+  ])("errors on a grader declaring '%s'", (key, extra) => {
+    const [finding] = errorsAt(lintState({ ...GRADER, ...extra }), `states.check.${key}`);
+    expect(finding?.message).toContain(`Grader state 'check' declares '${key}', which a grader never reads`);
+  });
+
+  it("errors on a grader's park budget, and only that budget key", () => {
+    const findings = lintState({ ...GRADER, budget: { maxTurns: 4, maxParks: 2 } });
+    const [finding] = errorsAt(findings, "states.check.budget.maxParks");
+    expect(finding?.message).toContain("a grader cannot park");
+    expect(findings.filter((f) => f.severity === "error")).toHaveLength(1);
+  });
+
+  it.each(["write_todos", "archmax_eval", "archmax_run", "archmax_wait", "archmax_reset"])(
+    "errors on an automated state granting '%s', at the entry",
+    (tool) => {
+      for (const [type, base] of [
+        ["code", CODE],
+        ["grader", GRADER],
+      ] as const) {
+        const findings = lintState({ ...base, tools: { allow: ["read_file", { tool }] } });
+        const [finding, ...rest] = errorsAt(findings, "states.check.tools.allow.1");
+        expect(rest).toEqual([]);
+        expect(finding?.message).toContain(`State 'check' is a ${type} state, which is never offered '${tool}'`);
+        expect(errorsAt(findings, "states.check.tools.allow.0")).toEqual([]);
+      }
+    },
+  );
+
+  it("leaves an agent state's grant of those tools alone", () => {
+    const findings = lintState({
+      tools: { allow: ["write_todos", "archmax_eval", { tool: "archmax_run", paths: ["skills/**"] }, "archmax_wait"] },
+      transitions: [{ to: "done", description: "Done." }],
+    });
+    expect(findings.filter((f) => (f.field ?? "").startsWith("states.check.tools.allow") && f.severity === "error")).toEqual(
+      [],
+    );
+  });
+
+  // A routing decision without guidance is an agent's problem: a grader and a
+  // human state require instructions already, and a code state's script decides.
+  it("warns about several transitions without instructions on an agent state only", () => {
+    const twoEdges = [
+      { to: "done", description: "Approved." },
+      { to: "triage", description: "Send it back." },
+    ];
+    const warningsAt = (findings: ReturnType<typeof lintSpec>) =>
+      findings.filter(
+        (f) => f.severity === "warning" && f.field === "states.check.instructions" && /outgoing transitions/.test(f.message),
+      );
+    expect(warningsAt(lintState({ transitions: twoEdges }))).toHaveLength(1);
+    expect(warningsAt(lintState({ ...CODE, transitions: twoEdges }))).toEqual([]);
+    expect(warningsAt(lintState({ ...GRADER, instructions: undefined, transitions: twoEdges }))).toEqual([]);
+  });
+});

@@ -5,7 +5,7 @@
  *
  * Pure — no workspace, no backend, no machine — so an editor can show the same
  * findings inline that `archmax validate` prints, and the loader reports exactly
- * these. What needs more than the document (hook scripts on disk, sibling
+ * these. What needs more than the document (code-state scripts on disk, sibling
  * workflows, the skill registry, kernel probes) is `validate/validate.ts`.
  */
 import type { Diagnostic } from "./diagnostic.js";

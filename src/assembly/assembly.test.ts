@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { AGENT_DEFAULT_CONFIG } from "../agent.js";
-import { turnStepLimit } from "../core/deepagents.js";
 import { assertNoReservedToolNames, ReservedToolNameError } from "../machine/tool-names.js";
 import { createAgent } from "./index.js";
 import { resolveTrigger, UnknownTriggerError } from "../machine/triggers.js";
@@ -249,14 +248,14 @@ describe("createAgent model factory", () => {
       workspace: { rootDir: root },
     });
 
-    // Only the roles the assembly actually needs: a workflow declaring no rubric
-    // has no grader to build a model for, so the factory is asked once.
+    // Only the roles the assembly actually needs: a workflow declaring no grader
+    // state has no grader to build a model for, so the factory is asked once.
     expect(roles).toEqual(["agent"]);
     expect(runtime.graph).toBeDefined();
     vi.unstubAllEnvs();
   });
 
-  it("asks the factory for the rubric role, passing the id a rubric declares", async () => {
+  it("asks the factory for the grader role, passing the id a grader state declares", async () => {
     for (const key of ["ARCHMAX_API_BASE_URL", "ARCHMAX_API_KEY", "ARCHMAX_MODEL"]) {
       vi.stubEnv(key, "");
     }
@@ -265,7 +264,11 @@ describe("createAgent model factory", () => {
         "states:",
         "  start:",
         "    triggers: { manual: }",
-        "    after: { rubric: { instructions: judge the tone, model: grader-model } }",
+        "    transitions: [{ to: review, description: hand over }]",
+        "  review:",
+        "    type: grader",
+        "    instructions: judge the tone",
+        "    model: grader-model",
         "    transitions: [{ to: done, description: finish }]",
         "  done:",
       ].join("\n"),
@@ -283,7 +286,7 @@ describe("createAgent model factory", () => {
 
     expect(calls).toEqual([
       { role: "agent" },
-      { role: "rubric", requested: "grader-model" },
+      { role: "grader", requested: "grader-model" },
     ]);
     vi.unstubAllEnvs();
   });
@@ -1256,10 +1259,9 @@ describe("Deep Agents parity", () => {
     await agent.invoke({ messages: [] } as never, session);
     expect((seen[0]?.metadata as Record<string, unknown>)?.ls_integration).toBe( "archmax-harness");
     // A turn runs under a generous default bound: one invoke is one whole turn
-    // across states, and the authored budgets are the real limit. A governed
-    // agent's bound follows its turn budget, the default 50 calls here.
+    // across states, and LangGraph's recursion limit is what bounds it.
     expect(AGENT_DEFAULT_CONFIG.recursionLimit).toBe(400);
-    expect(seen[0]?.recursionLimit).toBe(turnStepLimit(50));
+    expect(seen[0]?.recursionLimit).toBe(400);
     // The runner drives the graph's native stream in values+messages mode.
     expect(seen[0]?.streamMode).toEqual(["values", "messages"]);
 

@@ -12,8 +12,9 @@
  *  - {@link ScriptedModel}: a fake chat model that replays a queue of turns —
  *    tool calls (`archmax_advance`, `archmax_wait`, `write_file`, a delegation
  *    tool, …) and final text replies — and records what it was bound with.
- *  - {@link makeWorkspace}: writes an authored workspace (workflow.yaml, hooks,
- *    skills) into a temp directory, cleaned up by {@link cleanupWorkspaces}.
+ *  - {@link makeWorkspace}: writes an authored workspace (workflow.yaml,
+ *    code-state scripts, skills) into a temp directory, cleaned up by
+ *    {@link cleanupWorkspaces}.
  *  - {@link assemble} / {@link turn}: assemble a governed agent over a memory
  *    session store with an event sink, and drive one conversational turn.
  */
@@ -281,22 +282,6 @@ export function skillMarkdown(name: string, description = `The ${name} skill.`):
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
 }
 
-/**
- * One inline rubric, as the value of a `{ rubric: … }` hook. A rubric is
- * declared on the hook that applies it, so a fixture builds the declaration and
- * drops it straight into a state's `before`/`after`.
- */
-export function rubricDeclaration(
-  opts: { maxIterations?: number; model?: string; instructions?: string; metadata?: unknown } = {},
-): Record<string, unknown> {
-  return {
-    instructions: opts.instructions ?? "Judge the reply. Reply with a JSON verdict.",
-    ...(opts.maxIterations !== undefined ? { max_iterations: opts.maxIterations } : {}),
-    ...(opts.model !== undefined ? { model: opts.model } : {}),
-    ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
-  };
-}
-
 /** The default persona file every workspace here carries. */
 export const AGENTS_MD = "# Agent\n\nDo what the workflow says.\n";
 
@@ -309,8 +294,8 @@ export interface AssembleOptions {
   turns?: ScriptedTurn[];
   /** A prebuilt model (e.g. to share across two assemblies). */
   model?: ScriptedModel;
-  /** A second scripted model for the `rubric` role (grading rubrics). */
-  rubricModel?: ScriptedModel | JudgeModel;
+  /** A second scripted model for the `grader` role (grader states). */
+  graderModel?: ScriptedModel;
   /**
    * Supplies the model per role and requested id, for a workflow that declares
    * models. Supplied, it replaces the explicit `model` — which would outrank
@@ -336,15 +321,15 @@ export async function assemble(root: string, opts: AssembleOptions = {}): Promis
   const model = opts.model ?? new ScriptedModel(opts.turns ?? []);
   const events: WorkflowLifecycleEvent[] = [];
   const store = opts.store ?? createMemorySessionStore();
-  const rubricModel = opts.rubricModel;
+  const graderModel = opts.graderModel;
   const agent = await createAgent({
     workflow: opts.workflow ?? "w",
     ...(opts.modelFactory
       ? { modelFactory: opts.modelFactory }
-      : rubricModel
+      : graderModel
         ? {
             modelFactory: (role) =>
-              (role === "agent" ? model : rubricModel) as unknown as BaseChatModel,
+              (role === "grader" ? graderModel : model) as unknown as BaseChatModel,
           }
         : { model: model as unknown as BaseChatModel }),
     onEvent: (event) => events.push(event),
@@ -464,7 +449,7 @@ export function forSession(
  */
 export function linearSpec(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       start: { triggers: { manual: null }, transitions: [{ to: "done", description: "Test edge to done." }] },
       done: {},
@@ -488,72 +473,6 @@ export function workspaceWith(
     "workflows/w/workflow.yaml": spec,
     ...extraFiles,
   });
-}
-
-// --- Judge model --------------------------------------------------------------
-
-/** A lifecycle judge's answer. */
-export interface JudgeVerdict {
-  verdict: "ok" | "correct" | "veto";
-  reason: string;
-}
-
-/**
- * A fake model for the `rubric` role that answers each dispatch with the next
- * scripted verdict. When the framework binds a structured-output tool
- * (`extract-*`) it is called with the verdict; otherwise the verdict is the reply
- * text as JSON — both reach the lifecycle runner as a parseable verdict.
- */
-export class JudgeModel extends BaseChatModel<BaseChatModelCallOptions> {
-  private cursor = 0;
-  private lastBound: string[] = [];
-  private seq = 0;
-  /** How many times the judge was asked. */
-  get dispatches(): number {
-    return this.calls;
-  }
-  private calls = 0;
-
-  constructor(
-    private readonly verdicts: JudgeVerdict[],
-    private readonly fallback: JudgeVerdict = { verdict: "ok", reason: "fine" },
-    /**
-     * Fail every dispatch instead of answering — how an unusable `model` id
-     * surfaces, since a bad id is refused at invocation, not construction.
-     */
-    private readonly failWith?: string,
-  ) {
-    super({});
-  }
-
-  _llmType(): string {
-    return "archmax-behaviour-judge";
-  }
-
-  bindTools(tools: unknown[]): BaseChatModel {
-    this.lastBound = (tools as Array<{ name?: string }>).map((t) => String(t?.name ?? ""));
-    return this as unknown as BaseChatModel;
-  }
-
-  /** The text of everything each dispatch was shown, one entry per dispatch. */
-  readonly prompts: string[] = [];
-
-  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
-    this.calls += 1;
-    this.prompts.push(messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n"));
-    if (this.failWith) throw new Error(this.failWith);
-    const verdict = this.verdicts[this.cursor++] ?? this.fallback;
-    const extract = this.lastBound.find((name) => name.startsWith("extract-"));
-    if (extract) {
-      const message = new AIMessage({
-        content: "",
-        tool_calls: [{ id: `judge-${++this.seq}`, name: extract, args: { ...verdict } }],
-      });
-      return { generations: [{ text: "", message }] };
-    }
-    const text = JSON.stringify(verdict);
-    return { generations: [{ text, message: new AIMessage(text) }] };
-  }
 }
 
 // --- Store access -------------------------------------------------------------
@@ -586,7 +505,7 @@ let sessionSeq = 0;
 /**
  * A session id no other test in this process has used. Sandbox REPL sessions
  * and other per-session resources are keyed by session id for the life of the
- * process, so tests that run hooks or scripts must not share one.
+ * process, so tests that run code states or scripts must not share one.
  */
 export function freshSessionId(prefix = "s"): string {
   return `${prefix}-${process.pid}-${++sessionSeq}`;

@@ -51,7 +51,7 @@ function call(
   state: string,
   tool: string,
   args: Record<string, unknown>,
-  opts: { spec?: MachineSpec; rules?: GovernanceRule[]; origin?: "agent" | "script" | "lifecycle" } = {},
+  opts: { spec?: MachineSpec; rules?: GovernanceRule[]; origin?: "agent" | "script" } = {},
 ) {
   const machine = WorkflowMachine.fromSpec(opts.spec ?? SPEC, HOST_ESSENTIAL, HOST_PATHS);
   return decide(
@@ -116,11 +116,10 @@ describe("declared paths: a host tool", () => {
     expect(v.reason).toContain("workflow 'parent'");
   });
 
-  it("is governed the same way from a script, and bound by the safety rules from a hook", () => {
+  it("is governed the same way from a script", () => {
     expect(call("reply", "get_markdown", { path: "contracts/x" }, { origin: "script" }).ruleId).toBe("mount.not-allowed");
-    expect(call("reply", "get_markdown", { path: "contracts/x" }, { origin: "lifecycle" }).decision).toBe("allow");
     expect(
-      call("reply", "archive_file", { source: "scratchpad/a", destination: "AGENTS.md" }, { origin: "lifecycle" }).ruleId,
+      call("reply", "archive_file", { source: "scratchpad/a", destination: "AGENTS.md" }, { origin: "script" }).ruleId,
     ).toBe("zone.read-only");
   });
 

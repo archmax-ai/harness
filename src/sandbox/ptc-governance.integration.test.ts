@@ -10,7 +10,8 @@ import { createPtcToolGateway } from "./ptc-gateway.js";
 import { SUB_WORKFLOW_PARK } from "../workflow/sub-workflow.js";
 
 /**
- * End-to-end coverage of the PTC path as scripts actually take it: a real
+ * End-to-end coverage of the PTC path as scripts actually take it — the
+ * agent's `archmax_eval`/`archmax_run` and a code state's script: a real
  * QuickJS session, the sandbox bridge's own `tools.*` injection, and
  * gateway-wrapped tools. The unit tests in `ptc-gateway.test.ts` call the
  * wrapped tool directly; these prove the wrap survives the bridge — which
@@ -170,33 +171,56 @@ describe("PTC governance through the sandbox", () => {
     expect(events.map((e) => e.type)).toEqual(["tool-called", "tool-result", "tool-blocked"]);
   });
 
-  it("lets a lifecycle hook past the state's allow list but not past a safety rule", async () => {
-    const write = recordingTool("write_file");
-    const { gateway, executor } = harness({
-      "/scripts/hook.js": `
-        const results = [];
-        try {
-          await tools.writeFile({ file_path: "elsewhere/a.md" });
-          results.push("outside-allow:ok");
-        } catch (err) { results.push("outside-allow:blocked"); }
-        try {
-          await tools.writeFile({ file_path: "AGENTS.md" });
-          results.push("read-only:ok");
-        } catch (err) { results.push("read-only:blocked"); }
-        results;
-      `,
+  it("governs a code state's script against its state, like any script: its grant and the safety rules", async () => {
+    const CODE_SPEC: MachineSpec = {
+      states: {
+        check: {
+          type: "code",
+          script: "scripts/check.js",
+          triggers: { manual: null },
+          tools: { allow: [{ tool: "write_file", args: { file_path: ["output/**"] } }] },
+          transitions: [{ to: "done", description: "Test edge to done." }],
+        },
+        done: {},
+      },
+    };
+    const machine = WorkflowMachine.fromSpec(CODE_SPEC);
+    const events: WorkflowLifecycleEvent[] = [];
+    const gateway = createPtcToolGateway({
+      machine,
+      mountPrefixes: { dirs: ["skills"], files: ["AGENTS.md"], writable: [], governed: [], unsearchable: [] },
+      emit: (event) => events.push(event as WorkflowLifecycleEvent),
     });
-    gateway.refresh("t4", { state: "work", config: { configurable: { thread_id: "t4" } } });
+    const executor = createScriptExecutor({
+      workspace: workspaceWith({
+        "/workflows/w/scripts/check.js": `
+          export default async function ({ tools }) {
+            const results = [];
+            for (const file_path of ["output/a.md", "elsewhere/a.md", "AGENTS.md"]) {
+              try { await tools.write_file({ file_path }); results.push("ok"); }
+              catch (err) { results.push("blocked"); }
+            }
+            console.log(JSON.stringify(results));
+          }
+        `,
+      }),
+    });
+    const write = recordingTool("write_file");
+    gateway.refresh("t4", { state: "check", config: { configurable: { thread_id: "t4" } } });
 
-    const outcome = await executor.runFile("scripts/hook.js", {
+    const outcome = await executor.runCodeState("workflows/w/scripts/check.js", {
       sessionId: "t4",
-      sessionNamespace: AGENT_SESSION,
-      tools: gateway.wrap([write.tool], { origin: "lifecycle", sessionId: "t4" }),
+      args: { state: "check" },
+      tools: gateway.wrap([write.tool], { origin: "script", sessionId: "t4" }),
+      surface: [...machine.disclosedTools("check")],
     });
     executor.dispose("t4");
 
-    expect(outcome.value).toEqual(["outside-allow:ok", "read-only:blocked"]);
-    expect(write.calls).toEqual([{ file_path: "elsewhere/a.md" }]);
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(JSON.parse(outcome.logs[0]!)).toEqual(["ok", "blocked", "blocked"]);
+    expect(write.calls).toEqual([{ file_path: "output/a.md" }]);
+    expect(events.filter((e) => e.type === "tool-blocked")).toHaveLength(2);
+    for (const event of events) expect(event).toMatchObject({ origin: "script", state: "check" });
   });
 
   it("serves a declarative tool mock to a script's PTC call", async () => {
@@ -476,7 +500,8 @@ describe("skill governance through the sandbox", () => {
     expect(outcome.value).toBe("/skills/order-data (directory)");
   });
 
-  it("leaves a lifecycle hook's listing whole", async () => {
+  it("holds a code state's script to the same enabled set and listing filter", async () => {
+    const read = recordingTool("read_file");
     const ls = {
       name: "ls",
       description: "ls",
@@ -486,34 +511,22 @@ describe("skill governance through the sandbox", () => {
       },
     } as unknown as StructuredTool;
     const { gateway, executor } = skillHarness({
-      "/scripts/list.js": `await tools.ls({ path: "skills/" });`,
+      "/workflows/w/scripts/probe.js": `${PROBE.replace(/results;\s*$/, "")}
+        console.log(JSON.stringify([results, await tools.ls({ path: "skills/" })]));`,
     });
-    gateway.refresh("s4", { state: "work", config: { configurable: { thread_id: "s4" } } });
-
-    const outcome = await executor.runFile("scripts/list.js", {
-      sessionId: "s4",
-      sessionNamespace: AGENT_SESSION,
-      tools: gateway.wrap([ls], { origin: "lifecycle", sessionId: "s4" }),
-    });
-    executor.dispose("s4");
-
-    expect(String(outcome.value).split("\n")).toHaveLength(2);
-  });
-
-  it("exempts a lifecycle hook's call from the enabled set", async () => {
-    const read = recordingTool("read_file");
-    const { gateway, executor } = skillHarness({ "/scripts/probe.js": PROBE });
     gateway.refresh("s2", { state: "work", config: { configurable: { thread_id: "s2" } } });
 
-    const outcome = await executor.runFile("scripts/probe.js", {
+    const outcome = await executor.runCodeState("workflows/w/scripts/probe.js", {
       sessionId: "s2",
-      sessionNamespace: AGENT_SESSION,
-      tools: gateway.wrap([read.tool], { origin: "lifecycle", sessionId: "s2" }),
+      args: {},
+      tools: gateway.wrap([read.tool, ls], { origin: "script", sessionId: "s2" }),
+      surface: ["read_file", "ls"],
     });
     executor.dispose("s2");
 
-    expect(outcome.value).toEqual(["ok", "ok"]);
-    expect(read.calls).toHaveLength(2);
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    expect(JSON.parse(outcome.logs[0]!)).toEqual([["ok", "blocked"], "/skills/order-data (directory)"]);
+    expect(read.calls).toEqual([{ file_path: "skills/order-data/assets/orders.json" }]);
   });
 });
 
@@ -580,20 +593,20 @@ describe("a script's tools follow its state", () => {
     expect(restored.value).toEqual(["alpha"]);
   });
 
-  it("refuses a hidden tool through governance, with its reason, and the script can catch it", async () => {
+  it("leaves a hidden tool undefined, so a call to it never reaches the tool or governance", async () => {
     const { executor, events, beta, evaluate, enter } = scopedHarness();
     enter("work");
     const outcome = await evaluate(`
       let caught = null;
-      try { await tools.beta({}); } catch (err) { caught = String(err.message); }
-      caught;
+      try { await tools.beta({}); } catch (err) { caught = err instanceof TypeError; }
+      [typeof tools.beta, "beta" in tools, caught];
     `);
     executor.dispose("v1");
 
     expect(outcome.ok, outcome.error?.message).toBe(true);
-    expect(String(outcome.value)).toMatch(/not allowed in state 'work'/);
+    expect(outcome.value).toEqual(["undefined", false, true]);
     expect(beta.calls).toHaveLength(0);
-    expect(events.map((e) => e.type)).toEqual(["tool-blocked"]);
+    expect(events).toEqual([]);
   });
 
   it("calls a visible tool as before", async () => {
@@ -606,21 +619,32 @@ describe("a script's tools follow its state", () => {
     expect(alpha.calls).toEqual([{ n: 1 }]);
   });
 
-  it("leaves a run without a surface — a hook's — listing every tool", async () => {
-    const machine = WorkflowMachine.fromSpec(SCOPED);
+  it("gives a code state's script its state's surface, its controls included", async () => {
+    const CODE_SCOPED: MachineSpec = {
+      states: {
+        work: { triggers: { manual: null }, tools: { allow: ["alpha"] }, transitions: [{ to: "check", description: "Check." }] },
+        check: { type: "code", script: "scripts/keys.js", tools: { allow: ["beta"] }, transitions: [{ to: "work", description: "Back." }] },
+      },
+    };
+    const machine = WorkflowMachine.fromSpec(CODE_SCOPED);
     const gateway = createPtcToolGateway({ machine, emit: () => {} });
-    gateway.refresh("h1", { state: "work", config: {} });
+    gateway.refresh("h1", { state: "check", config: {} });
     const executor = createScriptExecutor({
-      workspace: workspaceWith({ "/hooks/keys.js": "export default ({ tools }) => ok(Object.keys(tools).join(','));" }),
+      workspace: workspaceWith({
+        "/workflows/w/scripts/keys.js": `export default ({ tools }) => { console.log(JSON.stringify(Object.keys(tools).sort())); };`,
+      }),
     });
-    const outcome = await executor.runFile("hooks/keys.js", {
+    const registered = ["alpha", "beta", "archmax_advance", "archmax_raise", "archmax_eval"].map((n) => recordingTool(n).tool);
+    const outcome = await executor.runCodeState("workflows/w/scripts/keys.js", {
       sessionId: "h1",
-      sessionNamespace: "process",
-      lifecycle: true,
-      tools: gateway.wrap([recordingTool("alpha").tool, recordingTool("beta").tool], { origin: "lifecycle", sessionId: "h1" }),
+      args: { state: "check" },
+      tools: gateway.wrap(registered, { origin: "script", sessionId: "h1" }),
+      surface: [...machine.disclosedTools("check")],
     });
     executor.dispose("h1");
 
-    expect(outcome.value).toMatchObject({ verdict: "ok", reason: "alpha,beta" });
+    expect(outcome.ok, outcome.error?.message).toBe(true);
+    // `alpha` is the other state's, and `archmax_eval` no automated state offers.
+    expect(JSON.parse(outcome.logs[0]!)).toEqual(["archmaxAdvance", "archmaxRaise", "beta"]);
   });
 });

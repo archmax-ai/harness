@@ -12,8 +12,8 @@
  *
  * What is **not** here, because it cannot be pure: loading a spec from a
  * backend (`loadMachineSpec`), compiling one (`WorkflowMachine`), the full
- * validator (`validateWorkflow`, which also probes the kernel and reads hook
- * scripts), resolving a trigger against a machine, and every store and mount.
+ * validator (`validateWorkflow`, which also probes the kernel and reads
+ * code-state scripts), resolving a trigger against a machine, and every store and mount.
  * Those stay on the package root.
  *
  * Several names here are also on the root. That is deliberate: this subpath
@@ -37,7 +37,6 @@ export {
   transitionTypeSchema,
   stateTypeSchema,
   stateBudgetSchema,
-  workflowBudgetSchema,
   allowEntrySchema,
   forbidEntrySchema,
   /** The `*` entry a `forbid` list uses to refuse every tool. */
@@ -48,17 +47,15 @@ export {
   mountGrantEntrySchema,
   mountsBlockSchema,
   workflowMountsConfigSchema,
-  hookSchema,
-  hookSpecSchema,
-  rubricDeclarationSchema,
+  /** A code state's `script:` — a workflow-relative path confined to `scripts/`. */
+  codeScriptPathSchema,
   workflowToolsConfigSchema,
   workflowSkillsConfigSchema,
   machineSettingsSchema,
   machinePromptCacheSettingsSchema,
   workflowTestsConfigSchema,
   runtimeMetadataSchema,
-  specExtensionsSchema,
-  /** The loose slot for host metadata at the root, on a state and on a rubric. */
+  /** The loose slot for host metadata at the root and on a state. */
   specMetadataSchema,
   /** One `requires`/`returns` entry: a bare name, or `{ name, type?, description? }`. */
   signatureEntrySchema,
@@ -74,10 +71,7 @@ export type {
   MachineState,
   MachineTransition,
   TransitionType,
-  Hook,
-  HookSpec,
   StateBudget,
-  WorkflowBudget,
   AllowEntry,
   ForbidEntry,
   ToolsBlock,
@@ -94,9 +88,7 @@ export type {
   WorkflowTestsConfig,
   RuntimeMetadata,
   TriggerDeclaration,
-  SpecExtensions,
   SpecMetadata,
-  RubricDeclaration,
   SignatureEntryDeclaration,
 } from "../machine/types.js";
 /** Whether a spec declares itself out of service (`disabled: true`). */
@@ -125,19 +117,6 @@ export {
   /** The mount a glob can only ever match inside, or `null` when it is broader. */
   mountNameOfPattern,
 } from "../core/zones.js";
-
-// --- Hooks ------------------------------------------------------------------------
-
-export {
-  /** A `before:`/`after:` declaration as a flat list of hooks. */
-  normalizeHooks,
-  /** A hook's kind (`script`, `subagent`, a custom one). */
-  hookKind,
-  /** A hook's value: the script path, the rubric name. */
-  hookValue,
-  /** The keys that ride beside a hook's kind (`max_iterations`) rather than naming one. */
-  HOOK_SIDECAR_KEYS,
-} from "../lifecycle/hook-shape.js";
 
 // --- Slugs, triggers, variables --------------------------------------------------
 
@@ -301,16 +280,16 @@ export {
 
 export {
   DEFAULT_WORKFLOW,
-  /** Where a hook script lives, relative to its workflow directory. */
-  HOOKS_DIR,
+  /** Where a code state's script lives, relative to its workflow directory. */
+  SCRIPTS_DIR,
   /** Where a workspace may override the bundled platform prompt (`.platform/system/GRAPH_STATE.md`). */
   PLATFORM_PROMPT_PATH,
-  /** The authored paths of one workflow (`workflow.yaml`, `WORKFLOW.md`, `tests/`, `hooks/`). */
+  /** The authored paths of one workflow (`workflow.yaml`, `WORKFLOW.md`, `tests/`, `scripts/`). */
   workflowPaths,
   /** The runtime-internal layout of one session's folder. */
   sessionPaths,
-  /** Resolve a hook's declared `script:` to an authoring-backend path, or refuse it with a reason. */
-  resolveHookScript,
+  /** Resolve a code state's declared `script:` to an authoring-backend path, or refuse it with a reason. */
+  resolveCodeScript,
 } from "../workflow/paths.js";
 
 // --- Scripts -------------------------------------------------------------------------------

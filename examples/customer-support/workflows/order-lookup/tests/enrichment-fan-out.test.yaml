@@ -12,9 +12,9 @@
 # spending a model call on the children.
 title: Delegated enrichment fans out one sub-run per order
 description: >-
-  The enrichment_requested trigger starts the run at the state that may call
-  enrich-order; its script calls that workflow once per seeded order, records
-  what each returned, and the run reports them.
+  The run starts at the state that may call enrich-order; its script calls it
+  once per seeded order, a grader checks what was recorded, and the run
+  reports it.
 trigger:
   id: enrichment_requested
 variables:
@@ -62,6 +62,12 @@ steps:
   # `calledTool` asserts on the *model's* calls, and the point of driving the
   # fan-out from a script is that the model makes none of them.
   - reachedState: enrichment-reported
+  # The review-enrichment grader checked what the script recorded against the
+  # files the sub-runs returned, and approved it.
+  - trail:
+      to: enrichment-reported
+      kind: grader
+      count: 1
   # What the script recorded, which is the contract this case exists to pin: one
   # object per sub-run holding exactly the names enrich-order declares it
   # returns. Nothing captures this automatically any more — the state's

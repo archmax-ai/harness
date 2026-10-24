@@ -1,6 +1,6 @@
 ---
 title: Machine spec
-description: The workflow.yaml schema, covering states, rubrics, budget, on_error, governance, tests, extensions, and metadata.
+description: The workflow.yaml schema, covering states and their types, grader and code states, budgets, on_error, governance, tests, and metadata.
 sidebar:
   order: 3
 ---
@@ -8,8 +8,8 @@ sidebar:
 `workflows/<name>/workflow.yaml` is the enforced state machine, a pure YAML
 mapping with these top-level keys:
 
-`title`, `instructions`, `disabled`, `runtime`, `budget`, `settings`, `tests`, `tools`,
-`skills`, `mounts`, `extensions`, `metadata`, `states`.
+`title`, `instructions`, `disabled`, `runtime`, `settings`, `tests`, `tools`,
+`skills`, `mounts`, `metadata`, `states`.
 
 This page documents the schema fields, focusing on those added by the core
 refactor. For the conceptual model, see
@@ -84,8 +84,6 @@ states:
     summary: "Route the request to exactly one path."  # label for people and hosts; not in the prompt
     triggers:               # marks this as a start state; several keys name several (see Triggers)
       manual:
-    before: { script: hooks/check.js }  # tagged hook (see Lifecycle hooks)
-    after:  { rubric: { instructions: "Judge the reply's tone." } }
     skills:
       allow: [order-data]   # capability slugs THIS state adds (see skills.allow_always)
     mounts:
@@ -99,6 +97,15 @@ states:
     transitions:
       - to: orders-question
         description: "User is asking about orders."   # when to take it; omit to route on the target's instructions
+  review-enrichment:
+    type: grader            # an automated state: the runtime runs it (see type)
+    instructions: "Check the recorded enrichments against their files; approve them or send them back."
+    transitions:
+      - { to: enrichments-filed, description: "The enrichments are correct." }
+      - { to: enrich-order, description: "The enrichments are wrong; send them back." }
+  enrichments-filed:
+    type: code              # runs its script and completes, with no model call
+    script: scripts/enrichments-filed.js
 ```
 
 A state with **no `transitions`** is terminal. The turn ends when the agent
@@ -111,7 +118,7 @@ Each entry is `{ to, description?, type? }`:
 | Key | Value |
 | --- | --- |
 | `to` | a declared state's slug |
-| `description` | when this edge applies; omit it to route on the target's `instructions` |
+| `description` | when this edge applies; omit it to route on the target's `instructions` (never on an edge into a grader or code state) |
 | `type` | one of `approve`, `reject`, `refine`, `none` |
 
 The agent is disclosed the active state's outgoing edges, so the description is
@@ -131,7 +138,7 @@ The agent then routes on the target state's own `instructions`, which the edge's
 line carries in place of a description, quoted and introduced as what the agent
 will do once there. Use it when the next state's instructions already say when
 it applies, rather than paraphrasing them on every edge into it. Nothing else of
-the target is disclosed: not its `title`, `summary`, hooks or transitions.
+the target is disclosed: not its `title`, `summary` or transitions.
 
 ```yaml
 states:
@@ -142,23 +149,30 @@ states:
     instructions: Look the order up by its id and summarise its status.
 ```
 
-Three cases are **load errors**, each naming
+Four cases are **load errors**, each naming
 `states.<slug>.transitions.<index>.description`:
 
 - an undescribed edge whose target has no instructions, because there is nothing
   to route on;
+- an undescribed edge into a **grader** or a **code** state: a grader's
+  instructions are its criteria, never shown to the work it judges, and a code
+  state has none;
 - an undescribed transition of a **human state**, where the description is the
   label of the decision's button for the person deciding;
 - a `description` that is not a string.
+
+A code state's **own** edges may go undescribed: its script routes on them, and
+no model reads their descriptions.
 
 An undescribed edge *into* a human state discloses that state's instructions to
 the agent, and those are written for the reviewer. Describe the edge to keep them
 from the agent.
 
-An edge's rendered line marks a target that is a **human decision node** or
-**terminal**, because each changes the call or what follows it. Both marks mean
-the agent stops there. `evidence` may be attached when advancing to a human
-state, and there alone:
+An edge's rendered line marks a target that is a **human decision node**, a
+**grader**, a **code** state or **terminal**, because each changes the call or
+what follows it. A grader or a code state runs on its own and may send the work
+straight back; a human or terminal target means the agent stops there.
+`evidence` may be attached when advancing to a human state, and there alone:
 
 ```
 Transitions — choose one with `archmax_advance` when this state's work is done:
@@ -168,8 +182,10 @@ Transitions — choose one with `archmax_advance` when this state's work is done
 
 The line stops there. Everything else the target declares stays out of it:
 
-- its `title`, `summary` and `instructions`;
-- its hooks and its budget;
+- its `title` and `summary`, and its `instructions` unless the edge is
+  undescribed (never a grader's criteria, since an undescribed edge into a grader
+  is refused);
+- its `script`, `model` and budget;
 - its own transitions;
 - and every state no edge from here reaches.
 
@@ -279,7 +295,10 @@ workflow lists all twelve and removes only those it must not have.
 Every state also has the runtime controls `archmax_reset`, `archmax_wait`,
 `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, plus
 `archmax_advance` in non-terminal states, and any tool the host passes as
-[`essentialTools`](/reference/public-api/), whatever the workflow declares.
+[`essentialTools`](/reference/public-api/), whatever the workflow declares. A
+grader or a code state is the exception: it is never offered `write_todos`,
+`archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, even where the
+workflow-wide grant names one, and it adds `archmax_get_history`.
 Everything else is declared: consumer-supplied custom tools, sub-workflow
 delegation tools, and the rest.
 
@@ -319,8 +338,8 @@ reaches what the state already permits and no further. Its `tools.*` calls are
 decided against the active state by the same kernel that decides the agent's own
 calls. Withhold it by leaving it out of a declared `tools.allow_always`, or close
 it workflow-wide with
-[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). Hooks run in
-the same sandbox either way: they run on the runtime's authority, not the agent's.
+[`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). A grader or
+code state is never offered it.
 
 `archmax_run`, which executes an authored script **file**, is a default tool for
 the same reason: the script is a file the state could already read. Which files a
@@ -470,10 +489,10 @@ question. `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }` beside
 alone". `archmax_run` is otherwise granted unconstrained wherever the workflow-wide
 grant includes it, so a script the agent wrote into `scratchpad/` could be run.
 
-Lifecycle **hooks are exempt**, as they are from a state's `tools.allow`,
-because a hook runs on runtime authority. So a routing state can enable nothing
-while the `before` hook that enforces tenancy still reads the order records.
-The workflow's `skills.forbid_always` still binds its hooks.
+A **grader or a code state is held to its own list** like any other state. A
+code state that checks the request against the order records enables
+`order-data` itself, so the routing state after it can still enable nothing. No
+caller reads a bundle a state did not enable.
 
 [`archmax_run`](#toolsallow-closed-by-default-governance) executes scripts inside
 a bundle and nowhere else (`script.skill-only`). A state that enables no skill
@@ -612,26 +631,19 @@ exactly as a single-segment one is, and a sibling under the same first segment
 (`catalogs/uk`) matches neither. A file mount matches its exact path, so
 `AGENTS.md.bak` falls outside `AGENTS.md`.
 
-Lifecycle **hooks answer to the workflow's grants, not the state's.** A hook
-runs on runtime authority, so a state's `allow`, `forbid` and `access: read` do
-not bind it, just as `tools.allow` does not. Instead the grants of every state
-of its workflow, taken together, bind it:
+A **grader and a code state's script answer to their own state's grants**, as
+the agent does in that state: its `allow`, `forbid` and `access: read` bind
+them, and so does every `forbid_always`.
 
-- A hook reads a governed mount that `allow_always` or **any** state's `allow`
-  grants. So a routing state that enables nothing can still run a hook that
-  reads a mount a later state uses.
-- A governed mount no grant of the workflow names is refused with
-  `mount.not-allowed`. One table serves a session and every child it dispatches,
-  so it can hold a mount only a child grants. The caller's hooks cannot reach
-  it.
-- A hook writes a governed mount only where some grant of the workflow asks
-  `access: read_write`. An `access: read` in `allow_always` narrows any mount
-  for hooks, governed or not. The refusal is `mount.read-only`.
+One read answers to the **workflow's** grants instead: the runtime's own check
+that a `file` value names a file the session may read. That check reads a
+governed mount that `allow_always` or **any** state's `allow` grants, and refuses
+one no grant of the workflow names with `mount.not-allowed`. One table serves a
+session and every child it dispatches, so it can hold a mount only a child
+grants, and a caller's `file` value cannot name it.
 
-Rubric graders are exempt from a state's `forbid` and its reachable set.
-`mounts.forbid_always` **binds hooks and graders too**, along with the whole
-workflow and every child session it delegates to, naming the workflow that
-declared it.
+`mounts.forbid_always` binds the whole workflow, that check included, and every
+child session it delegates to, naming the workflow that declared it.
 
 `archmax validate` reports, given the host's table (pass it as
 `validateWorkflow({ mounts })`, the way skill sources are passed):
@@ -660,6 +672,12 @@ The state type:
 | --- | --- |
 | `agent` (default) | The model runs a turn and moves with `archmax_advance`. |
 | `human` | A person picks the outgoing edge (see [the workflow machine](/guides/workflow-machine/)). |
+| `grader` | The runtime runs a grader, an isolated subagent whose criteria are the state's `instructions`. It decides the edge with `archmax_advance`, or ends the session with `archmax_raise` (see [grader and code states](/guides/automated-states/#grader-states)). |
+| `code` | The runtime runs the state's [`script`](#script) in the sandbox, and the script decides the edge (see [grader and code states](/guides/automated-states/#code-states)). |
+
+`grader` and `code` are the **automated states**. The runtime runs one whenever
+the session reaches it, in place of the agent's next model call, and a chain of
+code states makes no model call at all. An automated state cannot park.
 
 A state that may run another workflow declares no state type for it. It names
 the target in `tools.allow` as `archmax_workflow_<slug>`, and calls it (see
@@ -675,7 +693,7 @@ are always presented. The agent advancing into the state may attach more for
 that one decision, with `archmax_advance`'s optional `evidence` argument (see
 [evidence](/guides/workflow-machine/#evidence-declared-plus-whatever-the-session-attached)).
 
-`agent` and `human` are the only state types. Delegation is a
+These four are the only state types. Delegation is a
 [sub-workflow](/guides/sub-workflows/) call, and waiting for an event is
 `archmax_wait` inside an agent state.
 
@@ -686,138 +704,96 @@ define is a **load error naming the key and its path**
 `transtions:` can never silently produce a terminal state.
 :::
 
-### `before` / `after` (lifecycle hooks)
+### `script`
 
-Tagged hooks the runtime runs deterministically (see
-[the workflow machine](/guides/workflow-machine/#lifecycle-hooks-before--after)):
-`{ script: <path> }`, `{ rubric: { instructions: … } }`, or a custom kind
-declared under `extensions.hooks`. A field may be a single hook or an ordered
-list.
-
-A hook may additionally carry the one reserved sidecar key, `max_iterations`.
-Kind detection ignores it: the hook's kind is its single other key. A hook with
-only the sidecar, or with two non-sidecar keys, is malformed.
-
-A **`script`** hook is a pure reference: `{ script: <path> }` and nothing more.
-The script is an **ordinary hand-authored `.js` file**. Its default export is
-called with the hook input:
-
-```
-{ state, phase, trigger, variables, messages, tools, from?, to?, reason? }
-```
-
-It returns `ok()`, `correct(reason)` or `veto(reason)`; see
-[the code interpreter](/guides/code-interpreter/#lifecycle-hooks).
-
-The yaml wires the reference, and the hook's logic lives in the file. A yaml
-`specification:` key on a hook is **not a recognized key**, so
-`{ script: x.js, specification: … }` is a malformed two-key tagged object. It
-fails loading and `archmax validate` with a "single-key tagged object" error.
+The file a **code state** runs, as a workflow-relative path inside the
+workflow's `scripts/` directory:
 
 ```yaml
 states:
-  refund-request:
-    after:
-      script: hooks/check-refund.js
+  check-refund:
+    type: code
+    script: scripts/check-refund.js   # workflows/<slug>/scripts/check-refund.js
+    skills:
+      allow: [order-data]             # what the script reads, granted like any state's
+    transitions:
+      - { to: refund-review, description: The decision matches the policy. }
+      - { to: refund-request, description: The decision contradicts the policy; send it back. }
 ```
 
-```js
-// workflows/order-lookup/hooks/check-refund.js
-/**
- * Veto unless the decision recorded in scratchpad/refund.json matches the
- * refund policy derived from skills/order-data/assets/orders.json.
- */
-import { ok, veto } from "@archmax-ai/harness/sandbox";
+The path must start with `scripts/`, end in `.js` or `.mjs`, and hold no `..`
+segment. A path that breaks any of those rules is a load error naming
+`states.<slug>.script`. A code state with no `script` is a load error, and so is
+a `script` on any other state type. `archmax validate` also reports a file the
+authoring backend does not hold, and an import from anything but
+`@archmax-ai/harness/*`.
 
-export default async function hook({ tools }) {
-  const orders = JSON.parse(await tools.readFile({ file_path: "skills/order-data/assets/orders.json" }));
-  const refund = JSON.parse(await tools.readFile({ file_path: "scratchpad/refund.json" }));
-  return matchesPolicy(refund, orders) ? ok() : veto("refund violates policy");
-}
-```
+The file is an ordinary hand-authored JavaScript module. Its default export is
+called with `{ state, trigger, variables, tools }`, reads the session with
+`tools.archmax_get_history()`, moves it with `tools.archmax_advance({ to, reason })`
+or ends it with `tools.archmax_raise({ code, reason })`, and its return value is
+not read. See
+[the script contract](/guides/automated-states/#the-script-contract).
 
-The `@archmax-ai/harness/sandbox` import carries types and nothing else. The prelude
-provides the globals, and the import line is stripped before evaluation, so a
-file that omits it is equally valid. A hook that throws vetoes.
+### Keys each state type reads
 
-A `before` hook runs **exactly once per entry** into its state. It runs at the
-`archmax_advance` that enters it: a veto refuses the advance, and the commit
-records the gate as passed for that visit.
+A key a state's type never reads is accepted by the loader and reported by
+`archmax validate` as an **error**:
 
-An entry by another route runs it before the state's first model call of that
-turn. Those routes are a turn opening in the state, an `on_error` route, and a
-human decision. Later model calls in the same visit skip it.
+| Type | Errors |
+| --- | --- |
+| `human` | no `instructions`; no transition; a transition to itself; two transitions of the same labelled `type` |
+| `grader` | no `instructions` (they are its criteria); no transition (a grader decides by advancing); `evidence`, `approvers` or `budget.maxParks` declared |
+| `code` | `instructions`, `model`, `budget`, `evidence` or `approvers` declared (a code state makes no model call; describe the script in its JSDoc header or the state's `summary`) |
+| `grader`, `code` | a `tools.allow` entry naming `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, which no automated state is offered |
 
-A **`rubric`** hook's value is a
-[rubric declaration](#grading-rubrics-declared-on-the-hook): the grader itself,
-written inline. Its `max_iterations` and `model` live inside that declaration.
-So the `max_iterations` sidecar is refused beside a `rubric` key. A `script`
-hook accepts it.
-
-```yaml
-states:
-  respond:
-    after:
-      rubric:
-        instructions: |-
-          Judge the reply. Return ok, correct or veto with a reason.
-```
-
-A **`max_iterations`** budget bounds an **`after`** hook's `correct` verdicts:
-how many times that hook may send the agent back before its rejection becomes a
-hard veto. A `script` hook carries the sidecar. A rubric hook declares the same
-budget inside its declaration. A custom kind takes string values, so it carries
-no sidecar and stays at the default. That default is `0`, so the first `correct`
-from an unbudgeted hook is a hard veto.
-
-The budget is counted **per hook**:
-
-- Two `after` hooks on one state retry independently, and a hook that passes
-  hands a sibling still asking for corrections no fresh budget.
-- A `correct` refused because the budget is spent grants no retry, so it
-  consumes nothing.
-- A state that exhausted its budget once enters its next visit with the full
-  allowance.
-
-`before` hooks are **ok/veto only**. A `correct` verdict from a before hook is
-treated as a veto with an explanatory reason and consumes no budget.
-`archmax validate` errors when a before hook declares `max_iterations`.
-
-```yaml
-states:
-  refund-request:
-    after:
-      script: hooks/check-refund.js
-      max_iterations: 2     # this script's `correct` verdicts get 2 retries
-```
+`before` and `after` are not state keys. A workflow that still declares either
+fails to load with the unrecognized-key error naming the key and its path
+(`states.orders-question: Unrecognized key: "after"`). A former `before` check
+becomes a code state in front of the state, a former `after` check a code state
+behind it, and a grading rubric a grader state (see the
+[changelog](/reference/changelog/#100)).
 
 ### `budget`
 
-Per-state execution budget bounding the turn:
+A state's execution budget:
 
 ```yaml
 states:
   research:
     budget:
-      maxTurns: 8       # model calls this state may make per visit
+      maxTurns: 8       # model calls this state may make once entered
       timeoutMs: 30000  # time budget per model call; the failure routes through on_error
       maxParks: 5       # how many times this state may park itself with archmax_wait
 ```
 
-- `maxTurns` bounds the model calls a state may make per visit.
+- `maxTurns` bounds the model calls a state may make, counted from its entry.
 - `timeoutMs` races each of the state's model calls against a timer. When the
   timer wins, the runtime stops waiting: the result is discarded, the state is
-  treated as failed, and it is routed through `on_error` at the next hook
-  boundary. The in-flight model request itself is **not aborted**, because Deep
+  treated as failed, and it is routed through `on_error`. The in-flight model request itself is **not aborted**, because Deep
   Agents exposes no per-call abort signal to middleware. It completes, and is
   billed, in the background.
 - `maxParks` bounds the "wait, re-check, wait again" loop a polling state forms.
   Parks are counted per state in the checkpoint, so the count survives restarts,
   and the park that would exceed the bound is refused.
 - Any exhaustion is treated as a **turn failure**, subject to `on_error`
-  routing. A state with no `budget` may make any number of model calls per visit,
-  within the workflow's [turn budget](#budget-the-turn-budget), and may park any
-  number of times.
+  routing. A state with no `budget` may make any number of model calls, and may
+  park any number of times.
+
+In a **grader state**, `maxTurns` bounds the grader's own model calls and
+`timeoutMs` its whole run; exhausting either fails the state. A grader cannot
+park, so `maxParks` there is an `archmax validate` error. A **code state**
+declares no `budget` at all (an error): it makes no model call, and its script is
+bounded by `settings.timeoutMs`.
+
+What bounds a whole turn, across every state, is LangGraph's `recursionLimit`: 400
+graph steps unless the caller's invoke config sets its own. Every model call, tool
+batch and automated state's run is a step. A state's `maxTurns` starts over on
+every entry, so an agent moving back and forth between states never exhausts it;
+the recursion limit is what stops that turn. Hitting it does not route through
+`on_error`: the turn throws, and the session ends `failed` with the code
+`recursion-limit` (see
+[a turn that throws](/reference/public-api/#a-turn-that-throws)).
 
 `archmax validate` checks that `maxTurns`, `timeoutMs` and `maxParks` are
 positive numbers.
@@ -854,8 +830,10 @@ so naming one costs no extra setup.
 - The id is **opaque**: nothing validates it against a list, so a new model needs
   no SDK release. The endpoint is what refuses an id it does not serve.
 - A state's model applies to its own turns and to the handoff message of a park
-  it holds. Grading rubrics keep their own [`model`](#grading-rubrics-declared-on-the-hook),
-  and the case grader keeps `tests.judge.model`. A
+  it holds. A grader state's `model` is the id its grader runs on, resolved under
+  the `grader` model role (see
+  [grader and code states](/guides/automated-states/#budget-and-model)), and
+  the case judge keeps `tests.judge.model`. A code state declares none. A
   [sub-workflow](/guides/sub-workflows/) resolves the ids its **own**
   spec declares.
 - A state that names the same id as `settings.model` gets an `archmax validate`
@@ -864,7 +842,7 @@ so naming one costs no extra setup.
   declared id: the SDK will not rebuild a host's model under another id. It
   emits one warning naming the ids it made inert. Pass
   [`modelFactory`](/reference/configuration/) instead, which is called
-  for the `agent` role with the declared id as `requested`.
+  for the `agent` and `grader` roles with the declared id as `requested`.
 - Prompt caching follows the model in force. LangChain's provider-**native**
   caching is graph-level, so it stays wired from the workflow's model. A state
   whose model wants a different native mechanism is named in an assembly
@@ -873,9 +851,16 @@ so naming one costs no extra setup.
 ### `on_error`
 
 A turn-failure route. A **terminal rejection** commits `rejected` to
-checkpointed state, ending the turn. Three things cause one: a lifecycle hook
-execution error, an exhausted correction budget, and an exhausted execution
-budget (`maxTurns`, `timeoutMs` or `maxParks`).
+checkpointed state, ending the turn. These cause one:
+
+- an automated state's failed run: its script threw or timed out, its grader
+  failed or exhausted its budget, or a non-terminal grader or code state finished
+  without calling `archmax_advance` or `archmax_raise`;
+- an exhausted execution budget (`maxTurns`, `timeoutMs` or `maxParks`);
+- a `${{…}}` guard that cannot be evaluated.
+
+An automated state's `on_error` is its own: a code state whose script throws
+routes to the target it declares.
 
 A [sub-workflow](/guides/sub-workflows/#failure-is-always-closed) call whose
 child fails is the calling state's failure too, but a recoverable one until the
@@ -890,9 +875,9 @@ explicit `[error]` [runtime
 note](/guides/sessions/#delivering-the-event) to the transcript
 and emits a `state-error-routed` diagnostic.
 
-**Recoverable** rejections are an invalid edge target, a deliberate veto, and an
-in-budget `correct`. They keep the agent in place to retry, and leave
-`on_error` untouched:
+**Recoverable** rejections are an invalid edge target and an unmet
+`requires`. They keep the caller in place to retry, the agent or an automated
+state alike, and leave `on_error` untouched:
 
 ```yaml
 states:
@@ -920,11 +905,11 @@ it could not do. Answers to the other calls of the same step are kept. A park
 raised inside a call still parks the session, and a cancelled run still ends
 the turn.
 
-An **agent-declared failure** never sees `on_error` either. When the agent calls
-`archmax_raise({ code, reason })` because the work cannot be completed, the
-session ends at once with the status `failed` and the agent's code and reason as
-its `exit`. No route is taken, no `before` or `after` hook runs (a terminal
-state's included), and the trigger's `returns` are not checked. A raise also
+A **declared failure** never sees `on_error` either. When the agent, a grader
+or a code state's script calls `archmax_raise({ code, reason })` because the work
+cannot be completed or accepted, the session ends at once with the status
+`failed` and that code and reason as its `exit`. No route is taken, no further
+state runs, and the trigger's `returns` are not checked. A raise also
 replaces a rejection still pending from earlier in the turn. Forbid the tool
 (`tools.forbid_always: [archmax_raise]`, or a state's `tools.forbid`) where the
 agent must not end the session itself.
@@ -938,7 +923,7 @@ ones empty (`null`) plus a `note` naming them.
 ### `locks`
 
 The variables this state **owns**. Only the owner may write a variable it owns,
-on any of its visits and in any turn, before or after the variable is set. A
+whenever it is entered and in any turn, before or after the variable is set. A
 write from any other state is refused, naming the owner:
 
 ```yaml
@@ -958,7 +943,7 @@ states:
 ```
 
 To change `order_id` once the session is in `act`, the agent goes back to
-`lookup`. The value is decided again under `lookup`'s tools, hooks and
+`lookup`. The value is decided again under `lookup`'s tools and
 `requires`, and every later state and guard reads the new value on the way
 forward. So give an owner an edge back from the states that act on its
 variables.
@@ -993,7 +978,7 @@ What refuses:
 | Ingress | Behavior |
 | --- | --- |
 | `archmax run` | refuses with one line, exits non-zero, starts nothing |
-| A host `invoke`, or a trigger firing on a fresh session | the turn is rejected at the turn boundary with `Refusing to start: workflow '<slug>' is disabled.`, before any state, hook, or model call |
+| A host `invoke`, or a trigger firing on a fresh session | the turn is rejected at the turn boundary with `Refusing to start: workflow '<slug>' is disabled.`, before any state runs or any model is called |
 | A caller's `archmax_workflow_<slug>` call | refused as a blocked call (sub-workflow refusal kind `disabled`) before a child is composed |
 | A follow-up message to a settled session | refused; a new turn is new work |
 | `archmax test` | **skips** the suite and exits **0**; retiring a workflow must not turn CI red |
@@ -1138,22 +1123,24 @@ Where the types are held:
   correctable tool refusal. The agent writes a conforming value and the session
   goes on. Undeclared and untyped names are written as before.
 - **At completion.** A session whose typed return holds a non-conforming value is
-  rejected like one that left it unset. In practice this catches script and hook
-  writes, which the write check does not see.
+  rejected like one that left it unset. The write check covers every
+  `archmax_set_variables` call, the agent's and a code state's alike, so this is
+  the backstop for a value that reached the session another way.
 
 A `file` value is held to more than its shape. The conformance rule checks the
 path alone, so a host can run it anywhere, but at each of those three places, and
 at a [delegation call](/guides/sub-workflows/#passing-files), the runtime also
 requires the path to name a **file** (not a folder) that the session **may read
-on runtime authority**. Runtime authority is the authority a hook runs on: the
-state's allow list and its skill and mount grants do not bind it. What does bind
-it:
+on runtime authority**. This check is the one thing the runtime decides on
+runtime authority: the state's allow and forbid lists and its skill and mount
+grants do not bind it. What does bind it:
 
 - the zone rules (`checkpoints/`, `artifacts/` and `_specs/` are never readable);
 - the workflow's mount grants, taken across every state, so a governed mount no
   grant of the workflow names is out of reach;
 - every workflow-wide denial, `forbid_always` lists inherited from a caller
-  included.
+  included;
+- consumer rules and every safety rule.
 
 A value naming a path with nothing there, a folder, or a path those rules deny is
 refused like a non-conforming one, naming the variable and the cause.
@@ -1293,8 +1280,8 @@ The governed mounts the workflow reaches in **every** state, and the ones it
 reaches nowhere: the mounts half of `tools.allow_always` /
 `tools.forbid_always`. A state's `mounts.allow` adds to the grant, and its
 `mounts.forbid` subtracts from it. `forbid_always` beats every grant anywhere,
-binds the workflow's own hooks, and binds every child session this workflow
-delegates to.
+binds the runtime's own `file`-value check, and binds every child session this
+workflow delegates to.
 
 An absent block leaves the workflow reaching no governed mount, and `validate`
 says so once, naming them. `allow_always: []` says so deliberately. Both keys
@@ -1351,10 +1338,10 @@ and a denial of `archmax_advance` in a workflow that has anywhere to move, since
 no run could leave its start state. The globs cover dotfiles, so a denial of
 `secrets/**` blocks a write to `secrets/.env`.
 
-**Hooks** are bound by a workflow-wide denial, and a state's denial leaves them
-free. A hook runs on runtime authority, outside the state's tool surface in both
-directions. That is the same exemption it already has from the state's `allow`
-list.
+A **grader or a code state** is bound by its own state's `forbid` and by every
+workflow-wide denial, like the agent in that state, and a denial can refuse even
+one of its control tools. The runtime's own `file`-value check is the one caller
+a state's denial leaves free; a workflow-wide denial binds it too.
 
 Workflow-wide denials **accumulate down a delegation chain**. A
 [sub-workflow](/guides/sub-workflows/) is bound by its own
@@ -1364,36 +1351,6 @@ caller's. A block from an inherited rule names the workflow that declared it.
 A child can narrow what is permitted, and re-granting is closed to it. The
 per-state `allow` and `forbid` lists stay local, inherited in neither
 direction.
-
-### `budget`: the turn budget
-
-The model calls one turn may make, counted across every state:
-
-```yaml
-budget:
-  maxModelCalls: 80   # default 50
-```
-
-A turn is one invocation: a message, a decision, a reply or a delivery. Each
-counts from zero. A state's `maxTurns` starts over every time the state is
-entered, so an agent moving back and forth between states never exhausts it.
-This bound is the one that ends such a turn.
-
-- The call that would exceed `maxModelCalls` is not made. The exhaustion is a
-  failure of the current state: it routes through that state's `on_error`, else
-  the turn ends rejected. It routes once per turn. The error handler then runs
-  under its own `maxTurns`.
-- While a fifth of the budget or less is left, every model call is told how many
-  calls the turn has left, and to finish its work and answer the person.
-- The turn's step limit (LangGraph's `recursionLimit`) follows the budget, so the
-  budget runs out first: `(maxModelCalls + 10) × 8` graph steps, never fewer
-  than 400. A host's own `recursionLimit` in the invoke config takes precedence.
-- A delegated child counts against its own workflow's budget, not its caller's.
-- A park's single reply-only call is not counted.
-
-Raise it for a workflow whose turns legitimately take more calls, such as a long
-chain of states or a review cycle the agent repeats on its own. `archmax validate`
-checks that it is a positive number.
 
 ### `tests`
 
@@ -1470,68 +1427,10 @@ it in [`tools.forbid_always`](#toolsforbid_always--toolsforbid-denial). `archmax
 checks the shape of every field. See
 [Token efficiency and cost](/guides/token-efficiency/).
 
-### `extensions.hooks`
-
-Declares custom lifecycle-hook kinds the runtime is expected to register
-executors for (see
-[`hookExecutors`](/reference/public-api/#hookexecutors-custom-lifecycle-hook-kinds)),
-so `archmax validate` accepts them statically:
-
-```yaml
-extensions:
-  hooks: [webhook]
-states:
-  approve:
-    after: { webhook: approvals/refund }
-```
-
-An undeclared hook kind is flagged by `archmax validate` as an error.
-
-### Grading rubrics: declared on the hook
-
-The standard a state's exit is measured against is declared **inline as the
-value of its `{ rubric: … }` hook**. There is no root block and no rubric name,
-so reading the state tells you the whole standard.
-
-A rubric is dispatched by the runtime and stays invisible to the session it
-grades; see the
-[grading rubrics guide](/guides/grading-rubrics/) for the whole
-story.
-
-```yaml
-states:
-  orders-question:
-    after:
-      - rubric:
-          max_iterations: 2                # optional: grade-and-retry budget
-          model: <a stronger model id>     # optional: the id the grader runs on
-          instructions: |-                 # required: criteria and the verdict
-            Judge only the tone of the last assistant message. Return `ok`,
-            `correct` or `veto`, always with a concise `reason`.
-      - script: hooks/check-facts.js       # a list mixes kinds freely
-```
-
-`instructions` is the only required key, and a rubric also accepts
-[`metadata`](#metadata-host-data). Three keys are deliberately absent:
-
-| Absent key | Why |
-| --- | --- |
-| `title` | nothing routes to a rubric |
-| `description` | a display label goes in `metadata` |
-| `response_format` | a rubric grades, so every dispatch requests the verdict schema |
-
-Two states wanting the same grader declare it twice. That is the accepted cost of
-a state being legible on its own.
-
-A rubric's identity is its **position**: state, phase, index in that phase's
-list. That is what the runtime dispatches it under, and what an operator event
-calls it (`rubric#0`). Its retry budget is keyed against the same position, so
-two graders on one state hold separate budgets.
-
 ### `metadata`: host data
 
-The one key the runtime never reads, accepted at **three** positions: the spec
-root, any state, and any rubric. An authoring UI, such as a workflow builder or
+The one key the runtime never reads, accepted at **two** positions: the spec
+root and any state. An authoring UI, such as a workflow builder or
 a graph editor, keeps its own state here. Per-node data lives on the node
 itself, so renaming a state carries its position along:
 
@@ -1560,8 +1459,8 @@ whoever wrote them. What the SDK guarantees is threefold:
   persisted [spec snapshot](/reference/public-api/) is the hashed
   document, so it omits the block too.
 
-This is one named key per position. The spec root, `extensions`, and the rest of
-every state stay strict, so any *other* unrecognized key is a load error naming
+This is one named key per position. The spec root and the rest of every state
+stay strict, so any *other* unrecognized key is a load error naming
 the key and its path.
 
 ### `runtime`
@@ -1571,20 +1470,20 @@ A workflow MAY declare the runtime contract it was authored against:
 ```yaml
 runtime:
   engine: archmax-harness
-  version: "2"
+  version: "3"
 ```
 
 This is a separate version axis from the npm package version. `runtime.version`
-names the stable authoring/runtime semantics a workspace expects. Versions `"1"`
-and `"2"` are supported, and an omitted `runtime` resolves to the default
-contract (`archmax-harness@1`).
+names the stable authoring/runtime semantics a workspace expects. Version `"3"`,
+the four state types with grader and code states and no `before`/`after` hooks,
+is the only one supported, and an omitted `runtime` resolves to it
+(`archmax-harness@3`).
 
 A workflow declaring an **unsupported** engine or version fails fast:
 `createAgent` throws an `UnsupportedRuntimeContractError` before any model work,
-and `archmax validate` reports it as an error diagnostic.
+naming the requested and the supported contracts, and `archmax validate` reports
+it as an error diagnostic. The retired versions `"1"` and `"2"` are refused the
+same way.
 
-Case files carry their own, independent version axis, with the same resolution
-shape: a per-file
-[`version` key](/guides/testing/#suite-configuration) naming the
-test spec schema version. An omitted key resolves to `"1"`. An unsupported one
-fails the test run before any case executes.
+The one contract also selects the sandbox script contract (version `3`) and the
+case format. A case file carries no version of its own.

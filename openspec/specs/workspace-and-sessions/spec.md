@@ -143,7 +143,7 @@ The workspace router SHALL dispatch `grep` and `glob` by where the search is add
 
 A `grep`'s match cap — the fourth argument, `maxCount`, which Deep Agents' `grep` tool passes as the call's `max_count` or its default of 1,000 — SHALL reach the backend of every route a search is served by: the session zone, a directory mount, a `mountSubtree` mount and a read-only mount alike. The total SHALL be capped and marked `truncated: true` when the cap is hit: by the composite on a search it serves, and by the router on a search delegated to an unsearchable mount, so a backend that ignores the cap still answers within it.
 
-With no unsearchable mount in the table, the search composite SHALL be the routing composite itself, so every existing table behaves byte-identically. The behaviour SHALL hold for every caller of the workspace backend — an agent tool, a hook or sandbox script's `tools.*` bridge, and the runtime's own discovery — since all of them reach the router.
+With no unsearchable mount in the table, the search composite SHALL be the routing composite itself, so every existing table behaves byte-identically. The behaviour SHALL hold for every caller of the workspace backend — a model's tool call (the session's agent's or a grader's), a sandbox script's `tools.*` bridge (an agent's `archmax_eval`/`archmax_run` script or a code state's script), and the runtime's own discovery — since all of them reach the router.
 
 The model-facing prompt SHALL disclose the posture wherever it names the mount: the "Mounts available in this state" section for a governed unsearchable mount, and the static "Workspace zones" section for an ungoverned one, SHALL mark it browse-only — list and read it, do not search it — and SHALL be unchanged for a table with no unsearchable mount.
 
@@ -156,6 +156,11 @@ The model-facing prompt SHALL disclose the posture wherever it names the mount: 
 
 - **WHEN** the same table's `contracts` backend answers every `glob` with `{ error }` and the agent globs `**/*.md` at `/`
 - **THEN** the result lists the session zone's and `skills/` files and the `contracts` backend's `glob` is never called
+
+#### Scenario: A code state's script searches like the agent
+
+- **WHEN** over the same table a code state's script calls `tools.grep({ pattern: "x", path: "/" })`
+- **THEN** it receives the matches from the session zone and `skills/`, no error, and the `contracts` backend's `grep` is never called
 
 #### Scenario: A grep addressed at the mount reaches its backend
 
@@ -209,7 +214,7 @@ The model-facing prompt SHALL disclose the posture wherever it names the mount: 
 
 ### Requirement: Reserved root names fail assembly when shadowed
 
-The session areas (`scratchpad`, `large_tool_results`, `conversation_history`, `checkpoints`, `artifacts`, `_specs`) and the authoring prefix (`workflows`) SHALL be reserved at the workspace root. A declared mount whose key names one of them — or whose first segment does — SHALL throw `MountCollisionError` at assembly, naming the collision. A writable mount served by the same backend as the authoring backend SHALL throw `AuthoringBackendExposedError`. The resolved `MountPrefixes` (`dirs`, `files`, `writable`, `governed`, `unsearchable`) SHALL be the single classification input shared by the router, the kernel, session operations and `validate`; a nested directory name in it SHALL be matched by longest prefix wherever a path is classified or a root name checked for reservation.
+The session areas (`scratchpad`, `large_tool_results`, `conversation_history`, `checkpoints`, `artifacts`, `_specs`) and the authoring prefix (`workflows`) SHALL be reserved at the workspace root. The authoring prefix SHALL hold what the runtime reads through the authoring backend alone: each workflow's `workflow.yaml` and `WORKFLOW.md`, its code-state scripts under `workflows/<slug>/scripts/`, and its cases under `workflows/<slug>/tests/`. The agent's workspace composite SHALL have no route to it, so no model's tool call and no sandbox script's `tools.*` call reaches a spec, a code-state script or a case. A declared mount whose key names one of the reserved names — or whose first segment does — SHALL throw `MountCollisionError` at assembly, naming the collision. A writable mount served by the same backend as the authoring backend SHALL throw `AuthoringBackendExposedError`. The resolved `MountPrefixes` (`dirs`, `files`, `writable`, `governed`, `unsearchable`) SHALL be the single classification input shared by the router, the kernel, session operations and `validate`; a nested directory name in it SHALL be matched by longest prefix wherever a path is classified or a root name checked for reservation.
 
 `subagents` SHALL NOT be reserved: no part of the runtime reads that prefix, so a workspace may mount a directory of that name as ordinary agent-visible content.
 
@@ -221,7 +226,12 @@ The session areas (`scratchpad`, `large_tool_results`, `conversation_history`, `
 #### Scenario: Mount over the authoring prefix refused
 
 - **WHEN** a consumer supplies a mount at `/workflows/` or `/workflows/order-lookup/`
-- **THEN** assembly throws `MountCollisionError` naming what that prefix holds
+- **THEN** assembly throws `MountCollisionError` naming what that prefix holds: workflow specs, `WORKFLOW.md`, code-state scripts and cases
+
+#### Scenario: A code state's script is not in the agent's workspace
+
+- **WHEN** the workflow declares a code state with `script: scripts/check-refund.js`, and the agent lists `/` and reads `workflows/order-lookup/scripts/check-refund.js`
+- **THEN** the listing holds no `workflows` entry, and the read is not served from the authoring backend
 
 #### Scenario: A former prefix is mountable
 
@@ -463,18 +473,19 @@ The runtime SHALL model a conversation as exactly one session: one checkpoint ch
 
 ### Requirement: Content-addressed spec snapshots
 
-`computeSpecHash(spec)` SHALL hash the spec with object keys sorted at every level and every runtime-inert `metadata` block removed — at the root, on each state, and inside each rubric declared on a state's hooks — so key order, formatting and canvas state never change the hash. A governing edit SHALL change it, a rubric's `instructions`, `max_iterations` or `model` included. At each turn boundary whose machine `specHash` differs from the one the session last recorded, the runtime SHALL write that governing spec (without any `metadata` block) to `_specs/<specHash>.json` at the store root unless the file exists; a losing create race SHALL be treated as success and any other write failure SHALL be a `warning` event, never a turn failure. `agent.getSpecSnapshot(hash)` SHALL return the persisted `MachineSpec` or `null`.
+`computeSpecHash(spec)` SHALL hash the spec with object keys sorted at every level and every runtime-inert `metadata` block removed — at the root and on each state, a grader or code state included — so key order, formatting and canvas state never change the hash. A governing edit SHALL change it, a grader state's `instructions` or `model` and a code state's `script` included. At each turn boundary whose machine `specHash` differs from the one the session last recorded, the runtime SHALL write that governing spec (without any `metadata` block) to `_specs/<specHash>.json` at the store root unless the file exists; a losing create race SHALL be treated as success and any other write failure SHALL be a `warning` event, never a turn failure. `agent.getSpecSnapshot(hash)` SHALL return the persisted `MachineSpec` or `null`.
 
-The persisted snapshot SHALL carry each state's inline rubrics: a grader governed the session being recorded, so the record of what governed it is incomplete without the standards its transitions were held to.
+The persisted snapshot SHALL carry each grader state's `instructions` and `model` and each code state's `script`: a grader or a code state governed the session being recorded, so the record of what governed it is incomplete without the standard each grader decided against and the script each code state ran.
 
 #### Scenario: Hash ignores host metadata at every position
 
-- **WHEN** two specs differ only in a `metadata` block at the root, on a state, or inside a rubric
+- **WHEN** two specs differ only in a `metadata` block at the root or on a state, a grader state included
 - **THEN** `computeSpecHash` is identical and the persisted snapshot omits every such block
 
-#### Scenario: A rubric edit is a governing edit
+#### Scenario: A grader's criteria edit is a governing edit
 
-- **WHEN** two specs differ only in the `instructions` of a rubric one state declares
+- **WHEN** two specs differ only in the `instructions` of one grader state, the standard its
+  grader decides against
 - **THEN** `computeSpecHash` differs and a snapshot is written for the new hash
 
 #### Scenario: Definition changes between turns
@@ -545,17 +556,27 @@ A `SessionSummary` SHALL carry `sessionId`, `status`, `classification`, `workflo
 
 ### Requirement: Audit trail
 
-The runtime SHALL record an ordered `auditTrail` in checkpointed state, one `TrailStep` (`to`, `kind`, `ts`, optional `reason`, and for `sub-workflow` steps `workflow` and `status: ok | error`) at every commit site: `trigger` at each turn boundary (`to` the opening state, `reason` the trigger id); `agent` on a committed `archmax_advance` with its reason; `human` on a decision at a human state (`to` the chosen target, or the parked state itself when the decision ends the session), with the comment as reason when given; `reset` on `archmax_reset`; `on_error` when a failure routes to the state's `on_error` target; `sub-workflow` once per child session, with `to` the calling state. A vetoed or invalid transition SHALL append nothing. The channel's fold SHALL treat an equal list as a no-op echo, an extension as a replacement, and anything else as an append, so every step a state commits is retained in commit order and the order is total. A child session's trail SHALL never be spliced into the parent's. The trail SHALL be exposed on every `Outcome`, on `SessionView.auditTrail`, and in `trail.json`; a checkpoint predating the field SHALL read as an empty trail.
+The runtime SHALL record an ordered `auditTrail` in checkpointed state, one `TrailStep` (`to`, `kind`, `ts`, optional `reason`, and for `sub-workflow` steps `workflow` and `status: ok | error`) at every commit site: `trigger` at each turn boundary (`to` the opening state, `reason` the trigger id); `agent` on a committed `archmax_advance` of the session's agent with its reason; `grader` and `code` on a committed move out of a grader or a code state, with its reason (see `automated-states`); `human` on a decision at a human state (`to` the chosen target, or the parked state itself when the decision ends the session), with the comment as reason when given; `reset` on `archmax_reset`; `on_error` when a failure, an automated state's included, routes to the state's `on_error` target; `sub-workflow` once per child session, with `to` the calling state. The step kinds SHALL be exactly `trigger`, `agent`, `human`, `grader`, `code`, `sub-workflow`, `reset` and `on_error`. A refused or invalid transition SHALL append nothing, and neither SHALL an automated state's advance that its run discards. The channel's fold SHALL treat an equal list as a no-op echo, an extension as a replacement, and anything else as an append, so every step a state commits is retained in commit order and the order is total. A child session's trail SHALL never be spliced into the parent's. The trail SHALL be exposed on every `Outcome`, on `SessionView.auditTrail`, in `trail.json`, and to a grader and a code state's script alike through `archmax_get_history`; a checkpoint predating the field SHALL read as an empty trail.
 
 #### Scenario: Turn opening recorded
 
 - **WHEN** a turn opens in state `identify-case` under trigger `manual`
 - **THEN** the trail gains `{ to: "identify-case", kind: "trigger", reason: "manual" }`
 
-#### Scenario: Vetoed transition leaves no step
+#### Scenario: Refused transition leaves no step
 
-- **WHEN** an `archmax_advance` is vetoed by an `after` hook
+- **WHEN** the agent's `archmax_advance` is refused because it names a state its state declares no transition to, or a target whose `requires` the variables do not meet
 - **THEN** no step is appended
+
+#### Scenario: Automated moves are recorded under their type
+
+- **WHEN** code state `check-refund` advances to `refund-review` with reason `matches the policy`, and in an enrichment session grader state `review-enrichment` advances to `enrichment-reported` with reason `every order has one matching enrichment`
+- **THEN** the first session's trail gains `{ to: "refund-review", kind: "code", reason: "matches the policy" }`, and the second's `{ to: "enrichment-reported", kind: "grader", reason: "every order has one matching enrichment" }`
+
+#### Scenario: A discarded advance leaves no code step
+
+- **WHEN** a code state's script calls `tools.archmax_advance` and then throws, and the state declares an `on_error` target
+- **THEN** no `code` step is appended, and an `on_error` step to that target is
 
 #### Scenario: Delegation recorded in the calling state
 
@@ -564,7 +585,7 @@ The runtime SHALL record an ordered `auditTrail` in checkpointed state, one `Tra
 
 ### Requirement: Token accounting
 
-After every model call the governance middleware SHALL read the provider's usage from the AI message (`usage_metadata` with `input_token_details.{cache_read,cache_creation}`, or the OpenAI-compatible and Anthropic raw shapes), treating a missing field as zero, and emit one `model-usage` event carrying `state`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, the `model` it was priced against, and `costUsd` when priced; the default model client SHALL request usage in its stream (`streamUsage: true`). The reported `inputTokens` SHALL be the **total** input count, of which `cacheReadTokens` and `cacheCreationTokens` are a breakdown: a provider shape that reports those counts beside an input count that excludes them SHALL be normalized to the inclusive total, so one reading holds whatever the provider sent. Cost SHALL come from a `PricingTable` (USD per million tokens; `input`, `output`, `cacheRead`, `cacheWrite`, a missing cache rate falling back to the input rate) resolved by exact model id, then the longest key that is a substring of the id, then `default`; the id resolved against SHALL be **the one the response reported, else the one the runtime asked the endpoint to run, else none** — a response that names no model SHALL NOT cost the call its price, and the id actually used SHALL appear on the event. Cost SHALL charge the input rate on the input tokens that were neither served from nor written to cache, and the cache rates on the remainder, never charging a cached token twice; a breakdown exceeding the reported total SHALL clamp the full-rate portion at zero rather than going negative. The `pricing` assembly option SHALL take precedence over `ARCHMAX_PRICE_INPUT`, `ARCHMAX_PRICE_OUTPUT`, `ARCHMAX_PRICE_CACHE_READ` and `ARCHMAX_PRICE_CACHE_WRITE` (which populate the `default` key); an unpriced model SHALL report tokens only and never a cost of zero. The session's cumulative `UsageSummary` SHALL be written to the checkpointed `usage` channel after each call, so totals survive parks and process restarts, and SHALL be read from the checkpoint onto `Outcome.usage`, `SessionSummary.usage` and `metadata.json` (the in-memory tracker is the fallback when the checkpoint holds none). The exported `createUsageTracker({ onEvent? })` SHALL accumulate `model-usage` events per session from the event envelope's `sessionId`, forward every event to the wrapped subscriber, and expose `totals(sessionId?)`, `bySession()` and `reset()`.
+After every model call the governance middleware SHALL read the provider's usage from the AI message (`usage_metadata` with `input_token_details.{cache_read,cache_creation}`, or the OpenAI-compatible and Anthropic raw shapes), treating a missing field as zero, and emit one `model-usage` event carrying `state`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, the `model` it was priced against, and `costUsd` when priced; the default model client SHALL request usage in its stream (`streamUsage: true`). A grader's model calls (see `automated-states`) SHALL be read, normalized and priced by the same rules, each emitting one `model-usage` event whose `state` is the grader state, and SHALL count toward the session's cumulative usage. The reported `inputTokens` SHALL be the **total** input count, of which `cacheReadTokens` and `cacheCreationTokens` are a breakdown: a provider shape that reports those counts beside an input count that excludes them SHALL be normalized to the inclusive total, so one reading holds whatever the provider sent. Cost SHALL come from a `PricingTable` (USD per million tokens; `input`, `output`, `cacheRead`, `cacheWrite`, a missing cache rate falling back to the input rate) resolved by exact model id, then the longest key that is a substring of the id, then `default`; the id resolved against SHALL be **the one the response reported, else the one the runtime asked the endpoint to run, else none** — a response that names no model SHALL NOT cost the call its price, and the id actually used SHALL appear on the event. Cost SHALL charge the input rate on the input tokens that were neither served from nor written to cache, and the cache rates on the remainder, never charging a cached token twice; a breakdown exceeding the reported total SHALL clamp the full-rate portion at zero rather than going negative. The `pricing` assembly option SHALL take precedence over `ARCHMAX_PRICE_INPUT`, `ARCHMAX_PRICE_OUTPUT`, `ARCHMAX_PRICE_CACHE_READ` and `ARCHMAX_PRICE_CACHE_WRITE` (which populate the `default` key); an unpriced model SHALL report tokens only and never a cost of zero. The session's cumulative `UsageSummary` SHALL be written to the checkpointed `usage` channel after each call (a grader's calls when its run commits), so totals survive parks and process restarts, and SHALL be read from the checkpoint onto `Outcome.usage`, `SessionSummary.usage` and `metadata.json` (the in-memory tracker is the fallback when the checkpoint holds none). The exported `createUsageTracker({ onEvent? })` SHALL accumulate `model-usage` events per session from the event envelope's `sessionId`, forward every event to the wrapped subscriber, and expose `totals(sessionId?)`, `bySession()` and `reset()`.
 
 #### Scenario: Cache detail captured while streaming
 
@@ -595,6 +616,11 @@ After every model call the governance middleware SHALL read the provider's usage
 
 - **WHEN** no `pricing` option and no `ARCHMAX_PRICE_*` variable is set
 - **THEN** every `model-usage` event, `Outcome.usage` and `SessionSummary.usage` carry token counts and no `costUsd`
+
+#### Scenario: A grader's calls count toward the session
+
+- **WHEN** in one turn the session's agent makes one model call and a grader state's grader makes two, each reporting usage
+- **THEN** three `model-usage` events are emitted, two of them naming the grader state, and `sessions.get(id).usage` holds the sum of all three
 
 #### Scenario: Totals survive park and resume
 
@@ -633,11 +659,12 @@ with a parameter) SHALL be relabelled `text/plain`, so `read_file` returns it as
 
 The refusal is the workspace's answer, not a governance verdict: no kernel rule fires and no
 `tool-blocked` event is emitted; the call settles as an ordinary tool result. It SHALL hold for every
-caller of `read` — the model's `read_file`, a sandbox or hook script's `tools.readFile`, which
-receives the error text as its string result — and for every route, the session zone, every mount
-and a consumer's custom backend alike, with one exception: with the `images` assembly option on, the
-model's own `read_file` of an image is answered as "An image the agent reads reaches the model"
-says. `readRaw` SHALL be unaffected.
+caller of `read` — the model's `read_file`, a sandbox script's `tools.readFile` (an agent's
+`archmax_eval`/`archmax_run` script or a code state's script), which receives the error text as its
+string result — and for every route, the session zone, every mount and a consumer's custom backend
+alike, with one exception: with the `images` assembly option on, the model's own `read_file` of an
+image is answered as "An image the agent reads reaches the model" says. `readRaw` SHALL be
+unaffected.
 
 The `read_file` description handed to the model, in a governed and a plain agent alike, SHALL NOT
 promise multimodal content: Deep Agents' lines saying images, audio, video and PDFs return
@@ -673,7 +700,7 @@ the tool result. When those lines are not found, the description SHALL be left u
 
 #### Scenario: A script gets the notice as text
 
-- **WHEN** an `archmax_eval` script calls `await tools.readFile({ file_path: "scratchpad/chart.png" })`, with or without `images`
+- **WHEN** an `archmax_eval` script or a code state's script calls `await tools.readFile({ file_path: "scratchpad/chart.png" })`, with or without `images`
 - **THEN** the promise resolves to the binary notice string, not JSON carrying base64
 
 #### Scenario: A custom backend's bytes are refused

@@ -45,7 +45,7 @@ describe("parseCodeDescription", () => {
   });
 
   it("returns null for a leading // line comment", () => {
-    expect(parseCodeDescription("// check-requester — lifecycle hook\ncode();")).toBeNull();
+    expect(parseCodeDescription("// screen-request — code state\ncode();")).toBeNull();
   });
 
   it("returns null when the file starts with code", () => {

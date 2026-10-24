@@ -12,13 +12,14 @@ const agent = await createAgent({
   workflow: "order-lookup",
   workspace: { rootDir, /* mounts?, sessionStore? */ },
   onEvent: (e) => { usage.handler(e); publish(e); },   // omit for the console subscriber
-  // model | modelFactory, tools, systemPrompt, middleware, backend, checkpointer,
-  // trigger, variables, promptCache, pricing, clock, hookExecutors …
+  // model | modelFactory (roles agent, judge, grader), tools, systemPrompt,
+  // middleware, backend, checkpointer, trigger, variables, promptCache, pricing,
+  // clock …
 });
 const sessionId = `run-${runId}`;
 const result = await agent.invoke(
   { messages: [{ role: "user", content: prompt }] },
-  { configurable: { thread_id: sessionId }, recursionLimit: 50 },
+  { configurable: { thread_id: sessionId } },   // recursionLimit: 400 unless you pass one
 );
 if (result.status === WORKFLOW_STATUSES.awaitingDecision) {
   // result.pendingDecision.transitions → show to a person, then:
@@ -81,13 +82,19 @@ agent.dispose(sessionId);
   `SessionSummary.exit` carries the same while the session is `failed`, and a
   later message is an ordinary new turn. `rejected` is governance ending it
   (`Outcome.rejected`, no `exit`). A host that read "not rejected" as success
-  must check `failed` too.
+  must check `failed` too. A turn that throws also ends the session `failed`,
+  with code `turn-error`, `turn-cancelled` or `recursion-limit` — LangGraph's
+  `recursionLimit` (400 unless the invoke config passes one) is the one bound on
+  a whole turn. `Outcome.reply` is every assistant text of the turn, in order.
 - **Events**: `onEvent` receives the one typed stream — `state-enter/leave`,
-  `advance`, `hook-verdict`, `parked/decided`, `raised` (the agent ended the
-  session failed: `state`, `code`, `reason`, `callId`), `tool-called/result/blocked`
-  (every governed call, `archmax_advance` included, grouped by `callId`),
-  `agent-text-delta`/`agent-text` (streaming by default, `messageId` groups
-  chunks), `model-usage` (provider counts per turn), `title-set`, warnings.
+  `advance`, `code-start/output/result` and `grader-start/result` (a code or
+  grader state's run; `status` `ok`/`error`, `reason` on a failure),
+  `parked/decided`, `raised` (the session ended failed: `state`, `code`,
+  `reason`, `callId`), `tool-called/result/blocked` (every governed call,
+  `archmax_advance` included, grouped by `callId`; a code state's carry
+  `origin: "script"`), `agent-text-delta`/`agent-text` (streaming by default,
+  `messageId` groups chunks; a grader's tokens never stream), `model-usage`
+  (provider counts per call, a grader's under its state), `title-set`, warnings.
   There is no run-end event; `invoke` returning is the end. Metrics are a
   fold over this stream; only cost is checkpointed (`sessions.get(id).usage`).
 - **Artifacts** per session under `sessions/<id>/artifacts/`: `graph.json`/`.mmd`,
@@ -98,7 +105,9 @@ agent.dispose(sessionId);
   target or a case with `mocks:` is refused before running.
 - **Model/caching**: `ARCHMAX_API_BASE_URL`, `ARCHMAX_API_KEY`, `ARCHMAX_MODEL`
   (+ `ARCHMAX_TEMPERATURE`, `ARCHMAX_MAX_TOKENS`, `ARCHMAX_STREAMING`) for any
-  OpenAI-compatible endpoint, or pass `model`. Prompt prefix is cache-marked
+  OpenAI-compatible endpoint, or pass `model`. A `modelFactory(role, env, id)`
+  serves each role its own model: `agent`, `judge` (case `grade:`), `grader`
+  (a grader state, asked for the state's `model` id). Prompt prefix is cache-marked
   by default (`promptCache: { enabled, ttl: "5m" | "1h" }`); watch
   `cacheReadTokens`. Pricing via `pricing: { "<model-substring>": { input, output, cacheRead, cacheWrite } }`
   or `ARCHMAX_PRICE_*`; without it report tokens, never a guessed cost. A keyed

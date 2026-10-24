@@ -161,7 +161,7 @@ no amendment, only the new `clock` section beside it.
 
 - **[Risk] The model's "today" and the sandbox's `Date` disagree under a pin, so a script the agent
   runs to count days since an order uses the real date.** → Mitigation: the testing guide and the
-  skill say so beside the case key. A script or hook that needs "today" should read it from a
+  skill say so beside the case key. A script or code state that needs "today" should read it from a
   variable the case seeds.
 - **[Risk] Under a pin, the model may give `archmax_wait` an absolute `until` that is in the real
   past, which the runtime treats as due now.** → Mitigation: documented with the case key. Wait

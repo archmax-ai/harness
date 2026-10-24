@@ -162,29 +162,26 @@ export const parkPhaseSchema = z.enum(["closing", "suspend"]);
 /** Model calls made in `state` since it was entered; `budget.maxTurns` is enforced against the visit. */
 export const stateTurnsSchema = z.object({ state: z.string(), count: z.number() });
 
-/**
- * Model calls made in the current invocation, across every state; the workflow's
- * `budget.maxModelCalls` is enforced against it. `exhausted` once that budget has
- * been routed, so the error handler it routed to is not routed again.
- */
-export const turnCallsSchema = z.object({ invocation: z.string(), count: z.number(), exhausted: z.boolean().optional() });
-
-/**
- * Where a visit began: the state entered and where the transcript stood at the
- * entry (a turn anchor), so the visit's messages are those after it. Appended on
- * every entry into a state; a turn, reply, delivery or sub-workflow return that
- * continues in the same state appends nothing.
- */
-export const visitStartSchema = z.object({
-  state: z.string(),
-  from: z.object({ id: z.string().optional(), count: z.number() }),
-});
-
-export type VisitStart = z.infer<typeof visitStartSchema>;
-
 // --- Trail --------------------------------------------------------------------
 
-export const TRAIL_STEP_KINDS = ["trigger", "agent", "human", "sub-workflow", "reset", "on_error"] as const;
+/**
+ * How a step was committed: a turn's arrival (`trigger`), a move by the session's
+ * agent, a person, a grader state or a code state, a sub-run, a reset, or an
+ * `on_error` route.
+ */
+export const TRAIL_STEP_KINDS = [
+  "trigger",
+  "agent",
+  "human",
+  "grader",
+  "code",
+  "sub-workflow",
+  "reset",
+  "on_error",
+] as const;
+
+/** The trail step kinds that record an `archmax_advance` — whoever made it. */
+export type MoveKind = Extract<(typeof TRAIL_STEP_KINDS)[number], "agent" | "grader" | "code">;
 
 /** One committed traversal step: the state entered, the kind of edge, and the rationale when given. */
 export const trailStepSchema = z.object({
@@ -230,8 +227,9 @@ const _usageParity: _UsageParity = true;
 void _usageParity;
 
 /**
- * What `archmax_raise` committed: the agent's own code and reason for ending the
- * session as a failure, and the state it raised in. Cleared at the next turn.
+ * What `archmax_raise` committed: the code and reason the session's agent, a
+ * grader or a code state gave for ending the session as a failure, and the state
+ * it raised in. Cleared at the next turn.
  */
 export const raiseRecordSchema = z.object({
   code: z.string(),
@@ -255,10 +253,8 @@ const workflowStateFields = {
    * model finishes, and cleared everywhere `rejected` is.
    */
   failedDelegations: z.array(delegationFailureSchema).nullable().optional(),
-  /** The failure the agent raised this turn (`status: failed`); cleared on every turn. */
+  /** The failure raised this turn (`status: failed`) — by the agent, a grader or a code state; cleared on every turn. */
   raised: raiseRecordSchema.nullable().optional(),
-  iterations: z.record(z.string(), z.number()).optional(),
-  beforeDone: z.record(z.string(), z.boolean()).optional(),
   /** The trigger that started (or last resumed) this run. Its input lives in `variables`. */
   trigger: z.object({ id: z.string() }).nullable().optional(),
   /** The state this run began in. Written once, so the reset tool has a fixed target. */
@@ -292,11 +288,9 @@ const workflowStateFields = {
   /** Parks per state, keyed by slug — what `budget.maxParks` is enforced against. */
   parkCounts: z.record(z.string(), z.number()).optional(),
   stateTurns: stateTurnsSchema.nullable().optional(),
-  turnCalls: turnCallsSchema.nullable().optional(),
   /** Ordered audit trail. Accumulates: a writer sends only the steps it adds. */
   auditTrail: z.array(trailStepSchema).optional(),
   /** Where each visit began, in order. Accumulates: a writer sends only the visit it starts. */
-  visits: z.array(visitStartSchema).optional(),
   /**
    * Cumulative token usage (and cost). A last-value channel: the one writer adds
    * its delta to the total it reads, because an additive reducer cannot tell a
@@ -357,21 +351,12 @@ export function foldTrail(
   acc: TrailStep[] | undefined,
   update: TrailStep[] | undefined,
 ): TrailStep[] {
-  return foldLog(acc, update, sameStep);
-}
-
-/** The visit log's fold, the trail's rule: an echo is a no-op, a writer's own visit is appended. */
-export function foldVisits(acc: VisitStart[] | undefined, update: VisitStart[] | undefined): VisitStart[] {
-  return foldLog(acc, update, deepEqual);
-}
-
-function foldLog<T>(acc: T[] | undefined, update: T[] | undefined, same: (a: T, b: T) => boolean): T[] {
   const current = acc ?? [];
   if (!update || update.length === 0) return current;
-  if (update.length === current.length && update.every((s, i) => same(s, current[i]!))) {
+  if (update.length === current.length && update.every((s, i) => sameStep(s, current[i]!))) {
     return current;
   }
-  if (update.length > current.length && current.every((s, i) => same(s, update[i]!))) {
+  if (update.length > current.length && current.every((s, i) => sameStep(s, update[i]!))) {
     return [...update];
   }
   const fresh = update.filter((step) => !current.includes(step));
@@ -497,12 +482,6 @@ export const workflowStateSchema = z.object({
     workflowStateFields.auditTrail,
     (acc, update) => foldTrail(acc as TrailStep[] | undefined, update as TrailStep[] | undefined),
     (): TrailStep[] => [],
-  ),
-  visits: reduced(
-    workflowStateFields.visits,
-    workflowStateFields.visits,
-    (acc, update) => foldVisits(acc as VisitStart[] | undefined, update as VisitStart[] | undefined),
-    (): VisitStart[] => [],
   ),
   // The wrap widens the reduced fields; what a hook reads and writes is the field's own shape.
 }) as unknown as z.ZodObject<typeof workflowStateFields>;

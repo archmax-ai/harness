@@ -10,7 +10,7 @@ import type { WorkflowEventEmitter } from "../core/events.js";
 import type { CompiledAgentGraph } from "../core/deepagents.js";
 import { contentToString, isAiMessage } from "../core/messages.js";
 import { currentWorkflowState, WORKFLOW_STATUSES } from "./state.js";
-import { DEFAULT_SESSION_ID, withInvocation } from "../sessions/scope.js";
+import { DEFAULT_SESSION_ID } from "../sessions/scope.js";
 
 /** Drives one turn on a session: the graph's `invoke`/`stream`/`streamEvents`, session-bound. */
 export interface TurnRunner {
@@ -61,10 +61,9 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
    * streamed so far as `agent-text` events flagged `partial`, since the
    * governance hooks that emit the final `agent-text` never ran for it.
    */
-  async function drive(input: unknown, invoked: RunnableConfig | undefined): Promise<Record<string, unknown>> {
-    const config = withInvocation(invoked);
+  async function drive(input: unknown, config: RunnableConfig | undefined): Promise<Record<string, unknown>> {
     const stream = await graph.stream(input, {
-      ...config,
+      ...(config ?? {}),
       streamMode: ["values", "messages"],
     } as never);
     let state = opts.entryState;
@@ -148,12 +147,12 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
     },
     stream(input, config) {
       return boundIterable(sessionIdOfConfig(config), bindSession, () =>
-        graph.stream(input, withInvocation(config) as never),
+        graph.stream(input, config as never),
       );
     },
     streamEvents(input, config, options) {
       return boundIterable(sessionIdOfConfig(config), bindSession, async () =>
-        graph.streamEvents(input, withInvocation(config), options),
+        graph.streamEvents(input, config, options),
       );
     },
   };

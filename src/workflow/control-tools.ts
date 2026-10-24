@@ -1,11 +1,14 @@
 /**
  * The control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`,
- * `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`.
+ * `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` — and
+ * `archmax_get_history`, which only a grader state is offered.
  *
  * Each is a declaration whose body never runs in a wired assembly: governance
- * intercepts the call in `wrapToolCall`, where checkpointed state is in hand, and
- * services it with the handler here. A handler returns the tool message the
- * model reads and, when the call changed the run, the `Command` committing it.
+ * intercepts the session's agent's call in `wrapToolCall`, where checkpointed
+ * state is in hand, and services it with the handler here. A handler returns the
+ * tool message the model reads and, when the call changed the run, the `Command`
+ * committing it. An automated state's controls (`automated-controls.ts`) reuse
+ * the same schemas, handlers and {@link transitionUpdate}.
  */
 import { ToolMessage } from "@langchain/core/messages";
 import type { StructuredTool } from "@langchain/core/tools";
@@ -20,7 +23,7 @@ import {
   type MountPrefixes,
   type WorkspaceZone,
 } from "../core/zones.js";
-import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
+import { decide } from "../kernel/kernel.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { signatureValueIssues } from "../machine/signature.js";
 import {
@@ -42,13 +45,13 @@ import {
 } from "../machine/variables.js";
 import { decisionRecordFor, inputRecordFor } from "./parks.js";
 import { fileValueIssues, type FileValueCheck } from "./signature-checks.js";
-import { messagesIn, visitStart } from "./visits.js";
 import {
   currentWorkflowState,
   NO_PENDING_FAILURE,
   readVariables,
   readWorkflowState,
   WORKFLOW_STATUSES,
+  type MoveKind,
   type PendingDecision,
   type PendingInput,
   type RaiseRecord,
@@ -227,8 +230,7 @@ export function createControlTools(opts: { child?: boolean } = {}): StructuredTo
       ADVANCE_TOOL,
       "Advance the workflow to the next state. Pick `to` from the current state's " +
         "transitions in the graph section above (a slug, never a title). The runtime " +
-        "validates the edge, runs this state's `after` hook, then unlocks the next " +
-        "state's tools.",
+        "validates the edge, then unlocks the next state's tools.",
       advanceSchema,
     ),
     declaration(
@@ -284,16 +286,98 @@ export function createControlTools(opts: { child?: boolean } = {}): StructuredTo
 
 // --- archmax_advance -----------------------------------------------------------
 
+/** One move along a declared edge, as a trail step and a park will record it. */
+export interface Move {
+  to: string;
+  /** Who moved the session: its agent, a grader state or a code state. */
+  kind: MoveKind;
+  reason: string;
+  /** Attached evidence paths, already validated; only into a human state. */
+  evidence?: readonly string[];
+}
+
+/**
+ * The update a move commits — the target position, the trail step, a cleared
+ * rejection marker and a fresh turn budget — plus, into a human state, the park
+ * record opened in its closing phase. The one derivation every mover shares: the
+ * session's agent through {@link handleAdvance}, and an automated state's run.
+ * Messages are the caller's (a tool reply, a runtime note).
+ */
+export function transitionUpdate(
+  machine: WorkflowMachine,
+  state: unknown,
+  move: Move,
+): { update: WorkflowUpdate; park?: PendingDecision } {
+  const fields = readWorkflowState(state);
+  const step: TrailStep = { to: move.to, kind: move.kind, reason: move.reason, ts: Date.now() };
+  const update: WorkflowUpdate = {
+    workflowState: move.to,
+    // A successful transition clears an earlier rejection marker and starts the target's turn budget afresh.
+    ...NO_PENDING_FAILURE,
+    stateTurns: null,
+    auditTrail: [step],
+  };
+  if (!machine.isHumanState(move.to)) return { update };
+  // Into a human state: the park record is committed with the transition, so a
+  // process that dies before the closing turn still sees a parked session.
+  const seq = (fields.decisionCount ?? 0) + 1;
+  const park = decisionRecordFor(machine, move.to, seq, move.evidence ?? []);
+  return {
+    update: {
+      ...update,
+      pendingDecision: park,
+      decisionCount: seq,
+      status: WORKFLOW_STATUSES.awaitingDecision,
+      parkPhase: "closing",
+    },
+    park,
+  };
+}
+
+/**
+ * Why `from` may not be left for `to` right now, or `undefined` when it may: the
+ * kernel's transition verdict — the state's `requires` against `variables`, then
+ * the declared edge. Every refusal is recoverable: the mover sets what is owed,
+ * or picks a valid target.
+ */
+export function transitionRefusal(
+  machine: WorkflowMachine,
+  from: string,
+  to: string,
+  variables: VariableStore,
+): string | undefined {
+  const verdict = decide(machine, { kind: "transition", from, to }, [], undefined, variables);
+  return verdict.decision === "block" ? (verdict.reason ?? `cannot advance from '${from}' to '${to}'.`) : undefined;
+}
+
+/**
+ * Evidence an advance attaches, validated for the target: accepted only into a
+ * human state, and only paths the session itself could read.
+ */
+export function advanceEvidence(
+  machine: WorkflowMachine,
+  to: string,
+  attached: readonly string[],
+  mounts: MountPrefixes = NO_MOUNTS,
+): EvidenceValidation {
+  if (attached.length === 0) return { ok: true, paths: [] };
+  if (!machine.isHumanState(to)) {
+    return {
+      ok: false,
+      reason:
+        `evidence can only be attached when advancing into a human decision state, and '${to}' ` +
+        `is not one — nothing would present it. Call again without 'evidence'.`,
+    };
+  }
+  return validateAdvanceEvidence(attached, mounts);
+}
+
 export interface AdvanceRequest {
   /** Tool call id, echoed on the resulting ToolMessage. */
   toolCallId: string;
-  /** The id this call is reported under on the event stream (the provider's, else the generated fallback). */
-  callId?: string;
   args: Record<string, unknown>;
   /** Checkpointed agent state at the time of the call. */
   state: unknown;
-  /** Lifecycle context; its `iterations` are seeded from state and committed back. */
-  ctx: LifecycleContext;
 }
 
 export interface AdvanceOutcome {
@@ -301,105 +385,53 @@ export interface AdvanceOutcome {
   moved?: {
     from: string;
     to: string;
+    reason: string;
     /** The decision record committed when `to` is a human state. */
     park?: PendingDecision;
   };
 }
 
 /**
- * Attempt a transition and commit the outcome: `workflowState` and the `agent`
- * trail step on success, `iterations` always, and — into a human state —
- * the pending-decision record with the park opened in its closing phase.
+ * Service the session's agent's `archmax_advance`: validate the arguments, the
+ * evidence and the transition, then commit {@link transitionUpdate} with the
+ * reply the agent reads. A refusal leaves the session exactly where it was — no
+ * trail step — and replies without erroring the message, so the agent corrects
+ * the call rather than reading a failed run.
  */
-export async function handleAdvance(
-  opts: { machine: WorkflowMachine; lifecycle: LifecycleRunner; mountPrefixes?: MountPrefixes },
+export function handleAdvance(
+  opts: { machine: WorkflowMachine; mountPrefixes?: MountPrefixes },
   request: AdvanceRequest,
-): Promise<AdvanceOutcome> {
-  const refuse = (text: string) => ({ message: refusal(ADVANCE_TOOL, request.toolCallId, text) });
-
+): AdvanceOutcome {
+  const reply = (text: string) => toolReply(ADVANCE_TOOL, request.toolCallId, text);
   const parsed = advanceSchema.safeParse(request.args);
   if (!parsed.success) {
-    return refuse(`${ADVANCE_TOOL} rejected: invalid arguments — ${schemaIssues(parsed.error)}`);
-  }
-
-  // Evidence is settled before the transition is attempted, so a refused
-  // attachment leaves the run exactly where it was: no hook run, no trail step.
-  const attached = parsed.data.evidence ?? [];
-  let evidence: string[] = [];
-  if (attached.length > 0) {
-    if (!opts.machine.isHumanState(parsed.data.to)) {
-      return refuse(
-        `${ADVANCE_TOOL} rejected: evidence can only be attached when advancing into a human ` +
-          `decision state, and '${parsed.data.to}' is not one — nothing would present it. ` +
-          `Call again without 'evidence'.`,
-      );
-    }
-    const validated = validateAdvanceEvidence(attached, opts.mountPrefixes);
-    if (!validated.ok) return refuse(`${ADVANCE_TOOL} rejected: ${validated.reason}`);
-    evidence = validated.paths;
-  }
-
-  const from = currentWorkflowState(request.state, opts.machine.entry);
-  const result = await opts.lifecycle.attemptTransition(
-    from,
-    parsed.data.to,
-    request.ctx,
-    parsed.data.reason,
-    request.callId ? { callId: request.callId } : undefined,
-  );
-
-  if (!result.ok) {
-    // A terminal rejection is committed as `rejected` so the run routes through
-    // `on_error`; a recoverable one keeps the agent in place, replying without
-    // erroring the message so it retries rather than reading a failed run.
     return {
-      message: commit({
-        iterations: { ...result.corrections },
-        ...(result.terminal ? { rejected: result.reason } : {}),
-        messages: [toolReply(ADVANCE_TOOL, request.toolCallId, `${ADVANCE_TOOL} rejected: ${result.reason}`)],
-      }),
+      message: refusal(ADVANCE_TOOL, request.toolCallId, `${ADVANCE_TOOL} rejected: invalid arguments — ${schemaIssues(parsed.error)}`),
     };
   }
+  const { to, reason } = parsed.data;
 
-  const fields = readWorkflowState(request.state);
-  const step: TrailStep = { to: result.to, kind: "agent", reason: parsed.data.reason, ts: Date.now() };
-  const moved: WorkflowUpdate = {
-    workflowState: result.to,
-    iterations: { ...result.corrections },
-    // The gate ran the target's `before` hook: recorded as done for this visit,
-    // so the target's first model call does not run it a second time.
-    beforeDone: { ...(fields.beforeDone ?? {}), [result.to]: true },
-    // A successful transition clears an earlier rejection marker and starts the target's turn budget afresh.
-    ...NO_PENDING_FAILURE,
-    stateTurns: null,
-    auditTrail: [step],
-    visits: visitStart(result.to, messagesIn(request.state)),
-    messages: [
-      toolReply(
-        ADVANCE_TOOL,
-        request.toolCallId,
-        `Advanced to state '${result.to}'. You may now use the tools allowed in this state.`,
-      ),
-    ],
-  };
+  // Evidence is settled before the transition is attempted, so a refused
+  // attachment leaves the run exactly where it was.
+  const evidence = advanceEvidence(opts.machine, to, parsed.data.evidence ?? [], opts.mountPrefixes);
+  if (!evidence.ok) return { message: refusal(ADVANCE_TOOL, request.toolCallId, `${ADVANCE_TOOL} rejected: ${evidence.reason}`) };
 
-  if (!opts.machine.isHumanState(result.to)) {
-    return { message: commit(moved), moved: { from, to: result.to } };
-  }
+  const from = currentWorkflowState(request.state, opts.machine.entry);
+  const refused = transitionRefusal(opts.machine, from, to, readVariables(request.state));
+  if (refused) return { message: reply(`${ADVANCE_TOOL} rejected: ${refused}`) };
 
-  // Into a human state: the park record is committed with the transition, so a
-  // process that dies before the closing turn still sees a parked session.
-  const seq = (fields.decisionCount ?? 0) + 1;
-  const park = decisionRecordFor(opts.machine, result.to, seq, evidence);
+  const { update, park } = transitionUpdate(opts.machine, request.state, {
+    to,
+    kind: "agent",
+    reason,
+    evidence: evidence.paths,
+  });
   return {
     message: commit({
-      ...moved,
-      pendingDecision: park,
-      decisionCount: seq,
-      status: WORKFLOW_STATUSES.awaitingDecision,
-      parkPhase: "closing",
+      ...update,
+      messages: [reply(`Advanced to state '${to}'. You may now use the tools allowed in this state.`)],
     }),
-    moved: { from, to: result.to, park },
+    moved: { from, to, reason, ...(park ? { park } : {}) },
   };
 }
 
@@ -549,9 +581,9 @@ export interface ResetOutcome {
 }
 
 /**
- * Service a reset: move back to the entry state and clear what gates progress
- * (correction budgets, `beforeDone`). Evidence — messages, files, variables, the
- * trail — is left alone: a reset moves the machine, not the history.
+ * Service a reset: move back to the entry state. Evidence — messages, files,
+ * variables, the trail — is left alone: a reset moves the machine, not the
+ * history.
  */
 export function handleReset(machine: WorkflowMachine, request: ResetRequest): ResetOutcome {
   const parsed = resetSchema.safeParse(request.args);
@@ -574,12 +606,9 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
   return {
     message: commit({
       workflowState: entry,
-      iterations: {},
-      beforeDone: {},
       ...NO_PENDING_FAILURE,
       stateTurns: null,
       auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
-      visits: visitStart(entry, messagesIn(request.state)),
       ...(released.length > 0
         ? {
             variables: Object.fromEntries(
@@ -591,8 +620,8 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
         toolReply(
           RESET_TOOL,
           request.toolCallId,
-          `Reset to state '${entry}'. Correction budgets are cleared and its entry gate runs ` +
-            `again; earlier work in the conversation and in scratchpad/ is untouched.` +
+          `Reset to state '${entry}'. Earlier work in the conversation and in scratchpad/ is ` +
+            `untouched.` +
             (released.length > 0
               ? ` The locks you set are released: ${released.map(([name]) => `'${name}'`).join(", ")} can be written again.`
               : ""),
@@ -639,9 +668,9 @@ function callsInMessageOf(state: unknown, toolCallId: string): number {
  * Service a raise: end the session as a failure in the state it was called in.
  * Commits the record and `status: failed`, and drops a pending rejection — the
  * agent's own account of the failure is what the session ends with. The turn
- * ends at the next model hook; nothing routes and no hook runs. Refused, with the
- * session left in place, for invalid arguments or a message making other calls:
- * those run concurrently, so a raise beside them could not mean one thing.
+ * ends at the next model hook; nothing routes and nothing further runs. Refused,
+ * with the session left in place, for invalid arguments or a message making other
+ * calls: those run concurrently, so a raise beside them could not mean one thing.
  */
 export function handleRaise(machine: WorkflowMachine, request: RaiseRequest): RaiseOutcome {
   const refuse = (text: string) => ({ message: refusal(RAISE_TOOL, request.toolCallId, text) });
@@ -882,10 +911,7 @@ export function setVariablesCommand(outcome: SetVariablesOutcome): Command | Too
   return commit({ variables: outcome.delta, messages: [outcome.message] });
 }
 
-/** The variables a state still owes before it may be left — its `requires` minus what is set. */
-export function unmetRequirements(required: string[], store: VariableStore): string[] {
-  return required.filter((name) => store[name] === undefined);
-}
+export { unmetRequirements } from "../kernel/kernel.js";
 
 /**
  * The wording for a `${{…}}` reference in the agent's own tool arguments that

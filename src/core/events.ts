@@ -3,12 +3,11 @@
  * machine-governed workflow runs. Every runtime diagnostic flows through this
  * single typed stream; callers subscribe via `onEvent` on
  * `CreateWorkflowAgentOptions`. With no subscriber, the harness installs
- * {@link consoleEventHandler} (`[workflow]` / `[interpreter]` / `[rubrics]`
- * console output).
+ * {@link consoleEventHandler} (`[workflow]` / `[interpreter]` console output).
  *
  * Two visual tiers: **node-change** events (`state-enter`, `state-leave`) render
- * at the outer level; **action** events (`hook-*`, `advance`, `agent-text`)
- * happen within a node and render indented beneath it.
+ * at the outer level; **action** events (`code-*`, `grader-*`, `advance`,
+ * `agent-text`) happen within a node and render indented beneath it.
  *
  * `callId` pairing rule: every event a tool call causes carries that call's
  * `callId` — its own `tool-called`/`tool-result` pair and the effects it produced
@@ -31,15 +30,16 @@ export type WorkflowEventLevel = "info" | "warn" | "error";
 export const SESSION_ORIGIN = "__start__";
 
 /**
- * Where a tool call came from, on the tool events. Absent means the model called
- * the tool directly; a value marks a programmatic call from inside a sandbox
- * script (`script`) or a lifecycle hook (`lifecycle`).
+ * Where a tool call came from, on the tool events. Absent means a model called
+ * the tool — the session's agent, or a grader in a grader state; `script` marks
+ * a programmatic call from inside a sandbox script — the agent's
+ * `archmax_eval`/`archmax_run`, or a code state's script.
  */
-export type ToolEventOrigin = "script" | "lifecycle";
+export type ToolEventOrigin = "script";
 
 /** How a programmatic tool call's origin reads in human-facing output. */
-export function originLabel(origin: ToolEventOrigin): string {
-  return origin === "script" ? "script" : "lifecycle hook";
+export function originLabel(_origin: ToolEventOrigin): string {
+  return "script";
 }
 
 /**
@@ -51,7 +51,6 @@ export type WorkflowEventPayload =
   // Assembly-time diagnostics.
   | { type: "interpreter-enabled" }
   | { type: "skills-loaded"; names: string[] }
-  | { type: "hooks-summary"; summary: string }
   | { type: "graph-topology"; topology: string }
   // Warnings (machine-spec load, prompt resolution, run artifacts).
   | { type: "warning"; scope: string; message: string }
@@ -60,25 +59,21 @@ export type WorkflowEventPayload =
   | { type: "state-enter"; state: string }
   | { type: "state-leave"; state: string; next: string }
   | { type: "state-error-routed"; state: string; to: string; reason: string }
-  // Per-node action diagnostics (inner tier).
-  | { type: "hook-start"; state: string; phase: "before" | "after"; label: string }
-  | { type: "hook-output"; state: string; line: string }
-  | { type: "hook-passed"; state: string; phase: "before" | "after" }
-  | {
-      type: "hook-verdict";
-      state: string;
-      phase: "before" | "after";
-      label: string;
-      /** The hook's verdict, kept as the exact kernel vocabulary (never widened). */
-      verdict: "ok" | "correct" | "veto";
-      reason: string;
-      missing?: string[];
-    }
-  | { type: "hook-rejected"; state: string; phase: "before" | "after"; reason: string }
-  // A state transition. Emitted for the agent's `archmax_advance` transitions
-  // (`from`/`to` are declared states, `reason` the agent's rationale) and once
-  // per run for the initial entry into the start state, where `from` is
-  // {@link SESSION_ORIGIN} (no prior state) and `reason` is absent.
+  // Per-node action diagnostics (inner tier). An automated state's run is
+  // bracketed: a code state's by `code-start`/`code-result` with one
+  // `code-output` per console line, a grader's by `grader-start`/`grader-result`.
+  // `status` is `ok` when the run settled on a decision or a completion, and
+  // `error` when the state failed (`reason` says why).
+  | { type: "code-start"; state: string; script: string }
+  | { type: "code-output"; state: string; line: string }
+  | { type: "code-result"; state: string; status: "ok" | "error"; durationMs: number; reason?: string }
+  | { type: "grader-start"; state: string }
+  | { type: "grader-result"; state: string; status: "ok" | "error"; durationMs: number; reason?: string }
+  // A state transition. Emitted for every `archmax_advance` that moved the
+  // session — the agent's, a grader's, a code state's (`from`/`to` are declared
+  // states, `reason` the mover's rationale) — and once per turn for the initial
+  // entry into its state, where `from` is {@link SESSION_ORIGIN} (no prior
+  // state) and `reason` is absent.
   | {
       type: "advance";
       from: string;
@@ -145,14 +140,15 @@ export type WorkflowEventPayload =
       to: string;
       sessionId: string;
     }
-  // The agent ended the session as a failure with `archmax_raise`: the session is
-  // `failed`, and a `state-leave` follows. Nothing routes, and no hook runs.
+  // The session was ended as a failure with `archmax_raise` — by its agent, a
+  // grader or a code state: the session is `failed`, and a `state-leave`
+  // follows. Nothing routes, and nothing further runs.
   | {
       type: "raised";
-      /** The state the agent raised in; the session's position stays there. */
+      /** The state the raise was made in; the session's position stays there. */
       state: string;
       sessionId: string;
-      /** The agent's own short code for what failed. */
+      /** The raiser's own short code for what failed. */
       code: string;
       reason: string;
       /** The `archmax_raise` call, matching its `tool-called`/`tool-result` pair. */
@@ -252,16 +248,7 @@ export type WorkflowEventPayload =
       args?: Record<string, unknown>;
       origin?: ToolEventOrigin;
     }
-  | { type: "rubric-start"; state: string; name: string; dispatchId: string }
-  | {
-      type: "rubric-result";
-      state: string;
-      name: string;
-      dispatchId: string;
-      status: "ok" | "error";
-      durationMs: number;
-    }
-  // One sub-workflow dispatch, bracketed like a rubric dispatch. Emitted for
+  // One sub-workflow dispatch, bracketed by a start and a result. Emitted for
   // **refused** dispatches too (depth, cycle, unloadable target, unresolvable
   // prompt): a run that attempted a delegation and was stopped should not be
   // indistinguishable from one that never tried.
@@ -371,11 +358,11 @@ function defaultLevel(event: WorkflowEventPayload): WorkflowEventLevel {
   switch (event.type) {
     case "warning":
     case "tool-blocked":
-    case "hook-rejected":
     case "raised":
       return "warn";
     case "tool-result":
-    case "rubric-result":
+    case "code-result":
+    case "grader-result":
     case "sub-workflow-result":
       return event.status === "error" ? "warn" : "info";
     default:
@@ -464,11 +451,9 @@ export function createWorkflowEventEmitter(handler?: WorkflowEventHandler): Work
 export function renderEventLine(event: WorkflowLifecycleEvent): string | null {
   switch (event.type) {
     case "interpreter-enabled":
-      return "[interpreter] enabled (ptc: all agent tools)";
+      return "[interpreter] enabled (ptc: the active state's tools)";
     case "skills-loaded":
       return `[skills] loaded: ${event.names.join(", ")}`;
-    case "hooks-summary":
-      return `[workflow] lifecycle: ${event.summary}`;
     case "graph-topology":
       return `[workflow] LangGraph graph:\n  ${event.topology}`;
     case "warning":
@@ -481,18 +466,20 @@ export function renderEventLine(event: WorkflowLifecycleEvent): string | null {
       return `[workflow] leaving node '${event.state}' -> workflowState=${event.next}`;
     case "state-error-routed":
       return `[workflow] '${event.state}' failed -> routing to on_error '${event.to}': ${event.reason}`;
-    case "hook-start":
-      return `[workflow] ${event.phase} '${event.state}': running ${event.label}`;
-    case "hook-output":
+    case "code-start":
+      return `[workflow] code state '${event.state}': running ${event.script}`;
+    case "code-output":
       return `[workflow:${event.state}] ${event.line}`;
-    case "hook-passed":
-      return `[workflow] '${event.state}' ${event.phase}-script passed`;
-    case "hook-verdict": {
-      const missing = event.missing?.length ? ` (missing: ${event.missing.join(", ")})` : "";
-      return `[workflow:${event.state}] ${event.label}: ${event.verdict.toUpperCase()} — ${event.reason}${missing}`;
-    }
-    case "hook-rejected":
-      return `[workflow] '${event.state}' ${event.phase} REJECTED: ${event.reason}`;
+    case "code-result":
+      return event.status === "ok"
+        ? `[workflow] code state '${event.state}' finished (${event.durationMs}ms)`
+        : `[workflow] code state '${event.state}' FAILED: ${event.reason ?? "unknown error"}`;
+    case "grader-start":
+      return `[workflow] grader state '${event.state}': grading`;
+    case "grader-result":
+      return event.status === "ok"
+        ? `[workflow] grader state '${event.state}' decided (${event.durationMs}ms)`
+        : `[workflow] grader state '${event.state}' FAILED: ${event.reason ?? "unknown error"}`;
     case "advance":
       return event.from === SESSION_ORIGIN
         ? `[workflow] entering start state '${event.to}'`
@@ -545,8 +532,6 @@ export function renderEventLine(event: WorkflowLifecycleEvent): string | null {
     case "agent-text":
     case "agent-text-delta":
     case "tool-result":
-    case "rubric-start":
-    case "rubric-result":
     case "model-usage":
       // Accounting is not console output: the CLI renders its own usage footer
       // from its own subscriber, so a line here would duplicate it.

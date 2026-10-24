@@ -24,7 +24,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /** Two host tools, each echoing its name. */
 function hostTools(): StructuredTool[] {

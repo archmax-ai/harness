@@ -164,7 +164,7 @@ describe("loadMachineSpec (no workflow.yaml)", () => {
  */
 describe("loadMachineSpec (host metadata)", () => {
   const WITH_EDITOR = `title: T
-runtime: { engine: archmax-harness, version: "2" }
+runtime: { engine: archmax-harness, version: "3" }
 metadata:
   nodes:
     a: { x: 1, y: 2 }

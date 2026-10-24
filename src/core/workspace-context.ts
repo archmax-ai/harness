@@ -66,7 +66,7 @@ export interface WorkspaceContextOptions {
   mounts?: Record<string, MountSpec>;
   /**
    * Backend serving the **authored governance plane** — `workflows/<slug>/`:
-   * machine specs, prose addenda, lifecycle hook scripts, and offline test
+   * machine specs, prose addenda, code-state scripts, and offline test
    * cases. Read by the runtime, never routed into the agent's workspace
    * composite, so no agent tool and no PTC call can address it.
    *

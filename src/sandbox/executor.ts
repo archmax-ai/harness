@@ -3,33 +3,33 @@ import { toCamelCase, transformForEval } from "@langchain/quickjs";
 import type { Workspace } from "../core/workspace.js";
 import { normalizeRelPath } from "../core/workspace.js";
 import { readPrelude } from "./prelude.js";
-import { prepareHookSource } from "./imports.js";
-import { TOOL_CALLS_QUERY } from "../machine/tool-names.js";
-import { DEFAULT_SANDBOX_VERSION, type SandboxContext } from "../runtime/contract.js";
+import { prepareScriptSource } from "./imports.js";
+import { DEFAULT_SANDBOX_VERSION } from "../runtime/contract.js";
 import { createQuickJsSandboxRuntime, type SandboxRuntime } from "./runtime.js";
 
 /**
  * Sandboxed execution for the two sandbox tools (`archmax_eval`, `archmax_run`)
- * and for lifecycle hooks.
+ * and for code states.
  *
  * Script *sources* are read through the {@link Workspace} backend (not the
  * local filesystem), so scripts work against whatever Deep Agents backend the
  * runtime is configured with. Inline code and an authored file evaluate in the
  * same REPL session for a scope and under the same PTC contract — the only
- * difference is where the source came from.
+ * difference is where the source came from. A code state's script runs in a
+ * REPL of its own, fresh per run.
  */
 
 const DEFAULT_TIMEOUT_MS = 5_000;
+/** The REPL namespace of the agent's own sandbox tools: one per session scope, kept across states. */
 export const AGENT_SESSION = "agent";
-export const PROCESS_SESSION = "process";
+/** The REPL namespace a code state's script runs in: fresh per run, disposed when it settles. */
+export const CODE_SESSION = "code";
 
 export interface ScriptRunParams {
   sessionId: string;
   sessionNamespace: string;
   args?: Record<string, unknown>;
   tools?: StructuredTool[];
-  /** Run as a lifecycle hook: the hook prelude, the hook input, a verdict back. */
-  lifecycle?: boolean;
   /**
    * `runCode` only: prepend the context's prelude, so inline code runs under
    * the same contract as an authored file. The agent's `archmax_eval` sets it;
@@ -37,10 +37,9 @@ export interface ScriptRunParams {
    */
   prelude?: boolean;
   /**
-   * The tool names a `ptc` script lists under `tools`: the active state's
-   * surface, re-applied at the start of this evaluation. Set by the agent's two
-   * sandbox tools only; absent, `tools` lists every tool the session injected,
-   * which is what a lifecycle hook keeps.
+   * The tool names a script lists and reaches under `tools`: the active state's
+   * surface, re-applied at the start of this evaluation. Absent, `tools` is
+   * every tool the session injected (a bare executor, in a test).
    */
   surface?: readonly string[];
   /**
@@ -58,9 +57,29 @@ export interface ScriptOutcome {
   formatted: string;
 }
 
+/** What a code state's run is given: its session, its input, its state's tools. */
+export interface CodeStateRunParams {
+  sessionId: string;
+  /** The state's input: the default export's argument (without `tools`) and the global `args`. */
+  args: Record<string, unknown>;
+  /** The code state's tools, already governed. */
+  tools: StructuredTool[];
+  /** The names `tools` lists and reaches — the code state's surface. */
+  surface: readonly string[];
+  /** The turn's abort signal: once it aborts, the run settles with an error. */
+  signal?: AbortSignal;
+}
+
 export interface ScriptExecutor {
   runFile(filePath: string, params: ScriptRunParams): Promise<ScriptOutcome>;
   runCode(code: string, params: ScriptRunParams): Promise<ScriptOutcome>;
+  /**
+   * Run a code state's script (`code` context) in a REPL of its own: fresh for
+   * the run and disposed when it settles, so its injected `tools` are exactly its
+   * state's and nothing it defines reaches the next run. The default export is
+   * called with `args` plus `tools`; its return value is not read.
+   */
+  runCodeState(filePath: string, params: CodeStateRunParams): Promise<ScriptOutcome>;
   dispose(sessionId: string, sessionNamespace?: string): void;
 }
 
@@ -78,11 +97,6 @@ export interface ScriptExecutorOptions {
 
 function errorOutcome(message: string): ScriptOutcome {
   return { ok: false, value: undefined, logs: [], error: { message }, formatted: `error: ${message}` };
-}
-
-/** Lifecycle hooks get the hook contract; everything else the PTC contract. */
-function sandboxContext(params: ScriptRunParams): SandboxContext {
-  return params.lifecycle ? "lifecycle-hook" : "ptc";
 }
 
 const argsAssignment = (args: Record<string, unknown> | undefined) =>
@@ -108,35 +122,28 @@ function ownNames(tools: readonly StructuredTool[]): Record<string, string> {
 }
 
 /**
- * The code a lifecycle hook runs as. The hook body is evaluated as its own
- * async IIFE (`transformForEval`) so its completion value can be read — a
- * bare-body hook may end in `veto("…")` — and a registered `export default`
- * function is then called with the hook input: the arguments plus `tools`.
- * Whatever came back is reduced to a verdict by the prelude.
+ * The code a code state's script runs as. The body is evaluated as its own
+ * async IIFE (`transformForEval`) — a bare-body script simply runs — and a
+ * registered `export default` function is then called with the state's input:
+ * the arguments plus the scoped `tools`. The value is `undefined` either way: a
+ * code state moves the session through its tools, never through a return.
  */
-function buildHookCode(prepared: string, filePath: string, prelude: string, args?: Record<string, unknown>): string {
-  const query = toCamelCase(TOOL_CALLS_QUERY);
+function buildCodeStateCode(
+  prepared: string,
+  filePath: string,
+  preamble: readonly string[],
+  args: Record<string, unknown>,
+): string {
   return [
-    prelude,
-    "globalThis.__hookDef = undefined;",
+    ...preamble,
+    "globalThis.__stateDef = undefined;",
     argsAssignment(args),
-    // The sandbox keeps the tools it was first handed: the `toolCalls` function is
-    // taken out of `tools` on the first run and kept, hidden, for every run after.
-    `if (typeof tools !== "undefined" && typeof tools.${query} === "function") {`,
-    `  const query = tools.${query};`,
-    `  delete tools.${query};`,
-    "  globalThis.__archmaxToolCalls = async (filter) => JSON.parse(await query(filter ?? {}));",
-    "}",
-    "globalThis.args.toolCalls = globalThis.__archmaxToolCalls;",
     `globalThis.__scriptPath = ${JSON.stringify(normalizeRelPath(filePath))};`,
-    `globalThis.__hookBody = await ${transformForEval(prepared)};`,
-    "globalThis.__hookVerdict(",
-    "  typeof globalThis.__hookDef === \"function\"",
-    "    ? await globalThis.__hookDef(Object.assign({}, globalThis.args, {",
-    "        tools: typeof tools === \"undefined\" ? undefined : tools,",
-    "      }))",
-    "    : globalThis.__hookBody,",
-    ");",
+    `await ${transformForEval(prepared)};`,
+    "if (typeof globalThis.__stateDef === \"function\") {",
+    "  await globalThis.__stateDef(Object.assign({}, globalThis.args, { tools }));",
+    "}",
+    "undefined;",
   ].join("\n");
 }
 
@@ -161,27 +168,12 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
     return session.eval(code, timeoutMs, params.signal);
   }
 
-  async function runHook(source: string, filePath: string, params: ScriptRunParams): Promise<ScriptOutcome> {
-    // Typed `@archmax-ai/harness/*` imports are stripped (the prelude provides the
-    // globals) and `export default` becomes the hook registration; any other
-    // import — or a source that does not parse — fails closed here, host-side.
-    let code: string;
-    try {
-      const prelude = readPrelude("lifecycle-hook", sandboxVersion);
-      code = buildHookCode(prepareHookSource(source, { file: filePath }), filePath, prelude, params.args);
-    } catch (err) {
-      return errorOutcome((err as Error).message);
-    }
-    return evalCode(code, params);
-  }
-
   return {
     async runFile(filePath, params) {
       const source = await workspace.readText(filePath);
       if (source == null) return errorOutcome(`cannot read script '${filePath}' from the agent workspace.`);
-      if (params.lifecycle) return runHook(source, filePath, params);
 
-      const prelude = readPrelude(sandboxContext(params), sandboxVersion);
+      const prelude = readPrelude("ptc", sandboxVersion);
       const code = [
         prelude,
         ...scopeCall(params.surface, params.tools),
@@ -196,12 +188,39 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
       if (!params.prelude) return evalCode(code, params);
       // Same contract as an authored file: the PTC prelude runs first so inline
       // code sees the same `SANDBOX_CONTRACT` marker, the same scoped `tools` and
-      // the same absence of the hook-only vocabulary.
-      const preamble = [
-        readPrelude(sandboxContext(params), sandboxVersion),
-        ...scopeCall(params.surface, params.tools),
-      ];
+      // the same absence of the code-state vocabulary.
+      const preamble = [readPrelude("ptc", sandboxVersion), ...scopeCall(params.surface, params.tools)];
       return evalCode(`${preamble.join("\n")}\n${code}`, params);
+    },
+
+    async runCodeState(filePath, params) {
+      const source = await workspace.readText(filePath);
+      if (source == null) return errorOutcome(`cannot read script '${filePath}' from the authoring backend.`);
+      // Typed `@archmax-ai/harness/*` imports are stripped (the prelude provides the
+      // globals) and `export default` becomes the state's registration; any
+      // other import — or a source that does not parse — fails closed here,
+      // host-side, before a REPL exists.
+      let code: string;
+      try {
+        const preamble = [readPrelude("code", sandboxVersion), ...scopeCall(params.surface, params.tools)];
+        code = buildCodeStateCode(prepareScriptSource(source, { file: filePath }), filePath, preamble, params.args);
+      } catch (err) {
+        return errorOutcome((err as Error).message);
+      }
+      // Fresh per run: a REPL keeps the tools it was first handed for good, and a
+      // code state's are its own state's.
+      const key = sessionKey(params.sessionId, CODE_SESSION);
+      runtime.dispose(key);
+      try {
+        return await evalCode(code, {
+          sessionId: params.sessionId,
+          sessionNamespace: CODE_SESSION,
+          tools: params.tools,
+          ...(params.signal ? { signal: params.signal } : {}),
+        });
+      } finally {
+        runtime.dispose(key);
+      }
     },
 
     dispose(sessionId, sessionNamespace) {
@@ -209,7 +228,7 @@ export function createScriptExecutor(opts: ScriptExecutorOptions): ScriptExecuto
         runtime.dispose(sessionKey(sessionId, sessionNamespace));
         return;
       }
-      for (const ns of [AGENT_SESSION, PROCESS_SESSION]) {
+      for (const ns of [AGENT_SESSION, CODE_SESSION]) {
         runtime.dispose(sessionKey(sessionId, ns));
       }
     },

@@ -5,14 +5,20 @@ import { normalizeAllowEntry } from "./allow.js";
 import { ALWAYS_ALLOWED_TOOLS, WorkflowMachine } from "./machine.js";
 import {
   ADVANCE_TOOL,
+  AGENT_ONLY_TOOLS,
+  AUTOMATED_STATE_CONTROL_TOOLS,
+  DEFAULT_TOOLS,
+  GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
   HARNESS_CONTROL_TOOLS,
   isReservedToolName,
   ARCHMAX_TOOL_PREFIX,
   EVAL_TOOL,
+  RAISE_TOOL,
   RESET_TOOL,
   RUN_TOOL,
   SET_VARIABLES_TOOL,
+  WAIT_TOOL,
   isWorkflowToolName,
   workflowSlugFromToolName,
   workflowToolName,
@@ -54,14 +60,50 @@ describe("harness control tool names", () => {
     expect(isReservedToolName("advance_state")).toBe(false);
   });
 
-  it("permits every control tool regardless of a state's allow list", () => {
+  it("permits every agent control in an agent state regardless of its allow list", () => {
     for (const tool of HARNESS_CONTROL_TOOLS) {
       // Both sandbox entry points are governed like ordinary tools: they are
       // default tools, granted like any other: a denial outranks the grant and
       // a state's own entry can narrow it.
       if (tool === RUN_TOOL || tool === EVAL_TOOL) continue;
+      // The history is a grader's control, offered in no other state type.
+      if (tool === GET_HISTORY_TOOL) continue;
       expect(ALWAYS_ALLOWED_TOOLS.has(tool)).toBe(true);
     }
+  });
+
+  // Reserved, so no host tool can shadow it, and a control, so no agent script
+  // can reach it through the PTC surface.
+  it("reserves archmax_get_history as a control tool, outside the agent's set", () => {
+    expect(GET_HISTORY_TOOL).toBe("archmax_get_history");
+    expect(HARNESS_CONTROL_TOOLS.has(GET_HISTORY_TOOL)).toBe(true);
+    expect(isReservedToolName(GET_HISTORY_TOOL)).toBe(true);
+    expect(ALWAYS_ALLOWED_TOOLS.has(GET_HISTORY_TOOL)).toBe(false);
+  });
+});
+
+/**
+ * An automated state — a grader or a code state alike — moves, fails, keeps the
+ * session's variables and reads its history; it never parks or resets.
+ */
+describe("the automated-state control set", () => {
+  it("is advance, raise, the variable tools and the history", () => {
+    expect([...AUTOMATED_STATE_CONTROL_TOOLS].sort()).toEqual(
+      [ADVANCE_TOOL, GET_HISTORY_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, SET_VARIABLES_TOOL].sort(),
+    );
+    expect(AUTOMATED_STATE_CONTROL_TOOLS.has(WAIT_TOOL)).toBe(false);
+    expect(AUTOMATED_STATE_CONTROL_TOOLS.has(RESET_TOOL)).toBe(false);
+  });
+
+  it("names every automated control among the harness's controls", () => {
+    for (const tool of AUTOMATED_STATE_CONTROL_TOOLS) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
+  });
+
+  it("withholds the planning list and both sandbox entry points from automated states", () => {
+    expect([...AGENT_ONLY_TOOLS].sort()).toEqual([EVAL_TOOL, RUN_TOOL, "write_todos"].sort());
+    // Each is a default tool of an agent: what an automated state loses, not what
+    // nobody had.
+    for (const tool of AGENT_ONLY_TOOLS) expect(DEFAULT_TOOLS.has(tool)).toBe(true);
   });
 });
 
@@ -76,6 +118,14 @@ states:
     transitions:
       - to: done
         description: Work is finished.
+      - to: review
+        description: The work needs grading.
+  review:
+    type: grader
+    instructions: Judge the work.
+    transitions:
+      - to: work
+        description: Send it back.
   done: {}
 `;
 
@@ -89,6 +139,17 @@ states:
     expect(disclosed.has(RUN_TOOL)).toBe(true);
     // The interpreter is a default tool — disclosed without any declaration here.
     expect(disclosed.has(EVAL_TOOL)).toBe(true);
+    // The history is a grader's alone.
+    expect(disclosed.has(GET_HISTORY_TOOL)).toBe(false);
+  });
+
+  it("discloses archmax_get_history in a grader state, under its namespaced name", async () => {
+    const machine = await machineFrom(YAML);
+    const disclosed = machine.disclosedTools("review");
+    expect(disclosed.has(GET_HISTORY_TOOL)).toBe(true);
+    expect(disclosed.has(ADVANCE_TOOL)).toBe(true);
+    expect(disclosed.has(RESET_TOOL)).toBe(false);
+    expect(disclosed.has(WAIT_TOOL)).toBe(false);
   });
 
   it("keeps framework built-ins un-namespaced", async () => {

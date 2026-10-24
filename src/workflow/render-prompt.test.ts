@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowMachine } from "../machine/machine.js";
 import type { MachineSpec } from "../machine/types.js";
-import { renderStateGraph, renderWorkflowPrompt } from "./render-prompt.js";
+import { renderStateGraph, renderTransitions, renderWorkflowPrompt } from "./render-prompt.js";
 
 /** Render the cacheable half the way the harness does: through the machine built from the spec. */
 const render = (spec: MachineSpec): string => renderWorkflowPrompt(WorkflowMachine.fromSpec(spec));
@@ -17,7 +17,6 @@ const SPEC: MachineSpec = {
     "identify-case": {
       triggers: { manual: null },
       instructions: "Route the request down exactly one path.",
-      before: { script: "hooks/check-requester.js" },
       transitions: [
         { to: "orders-question", description: "Order questions." },
         { to: "refund-review", description: "Refunds." },
@@ -25,7 +24,6 @@ const SPEC: MachineSpec = {
     },
     "orders-question": {
       instructions: "Answer from data/orders.json.",
-      after: { rubric: { instructions: "Grade the reply against the order data." } },
     },
     "refund-review": {
       type: "human",
@@ -63,8 +61,6 @@ describe("renderWorkflowPrompt — the cacheable half", () => {
       "start state",
       "human decision node",
       "terminal",
-      "Hooks:",
-      "rubric",
       "Order questions.",
       "support-lead",
       // A state's `instructions` body was never in the prefix and still is not.
@@ -162,7 +158,6 @@ describe("renderStateGraph — the volatile half", () => {
       "support-lead", // its approvers
       "- to `orders-question` (approve)", // its own outgoing edge
       "Answer from data/orders.json.", // the other target's instructions
-      "rubric", // the other target's hooks
     ]) {
       expect(text).not.toContain(absent);
     }
@@ -198,7 +193,7 @@ describe("renderStateGraph — the volatile half", () => {
           title: "Look up the order",
           summary: "Order lookup.",
           instructions: "Look the order up by its id.\n\n  - Summarise its status.  \n",
-          after: { script: "hooks/check.js" },
+          tools: { allow: ["web_fetch"] },
           transitions: [{ to: "closed", description: "Done." }],
         },
         "refund-review": { instructions: "Review the refund.", transitions: [{ to: "closed", description: "Done." }] },
@@ -232,7 +227,7 @@ describe("renderStateGraph — the volatile half", () => {
 
     it("discloses nothing else of the target", () => {
       const text = graph(UNDESCRIBED, "triage");
-      for (const absent of ["Look up the order", "Order lookup.", "hooks/check.js", "closed", "support-lead"]) {
+      for (const absent of ["Look up the order", "Order lookup.", "web_fetch", "closed", "support-lead"]) {
         expect(text).not.toContain(absent);
       }
     });
@@ -264,18 +259,74 @@ describe("renderStateGraph — the volatile half", () => {
     expect(text).not.toContain("Transitions");
   });
 
-  it("discloses a rubric hook by kind only", () => {
-    const text = graph(SPEC, "orders-question");
-    expect(text).toContain("Hooks: after: rubric");
-    expect(text).not.toContain("Grade the reply against the order data.");
+  /**
+   * A grader or a code state runs on its own once entered and may send the run
+   * straight back with a note — a consequence of taking the edge, so it is
+   * marked. What it checks is not: neither its instructions nor its script.
+   */
+  describe("automated targets", () => {
+    const automated: MachineSpec = {
+      states: {
+        draft: {
+          triggers: { manual: null },
+          transitions: [
+            { to: "review-reply", description: "The reply is drafted." },
+            { to: "check-refund", description: "A refund is recorded." },
+          ],
+        },
+        "review-reply": {
+          type: "grader",
+          instructions: "Grade the reply against the order data.",
+          transitions: [
+            { to: "draft", type: "reject", description: "Send it back." },
+            { to: "record", type: "approve", description: "Approve it." },
+          ],
+        },
+        "check-refund": {
+          type: "code",
+          script: "scripts/check-refund.js",
+          transitions: [{ to: "record", description: "The refund matches the policy." }],
+        },
+        record: { type: "code", script: "scripts/record.js" },
+      },
+    };
+
+    it("marks a grader target and a code target", () => {
+      const text = graph(automated, "draft");
+      expect(text).toContain("- to `review-reply` (grader) — The reply is drafted.");
+      expect(text).toContain("- to `check-refund` (code) — A refund is recorded.");
+    });
+
+    it("carries the declared type and terminality beside the marker", () => {
+      expect(graph(automated, "review-reply")).toContain("- to `record` (approve, code, terminal) — Approve it.");
+    });
+
+    it("discloses nothing of what the automated target checks", () => {
+      const text = graph(automated, "draft");
+      expect(text).not.toContain("Grade the reply against the order data.");
+      expect(text).not.toContain("scripts/");
+      expect(text).not.toContain("Send it back.");
+    });
+
+    it("leaves the cacheable half unaware of them", () => {
+      const text = render(automated);
+      for (const absent of ["grader", "code", "review-reply", "check-refund"]) {
+        expect(text).not.toContain(absent);
+      }
+    });
   });
 
-  it("discloses a script hook by its path, in phase order", () => {
-    expect(graph(SPEC, "identify-case")).toContain("Hooks: before: hooks/check-requester.js");
-  });
-
-  it("renders no hooks line for a state that declares none", () => {
-    expect(graph(SPEC, "refund-review")).not.toContain("Hooks:");
+  // A grader's task message renders the same lines, so what it may choose reads
+  // exactly as an agent in that state would read it.
+  it("renders each edge as one line, the lines the graph section lists", () => {
+    const machine = WorkflowMachine.fromSpec(SPEC);
+    expect(renderTransitions(machine, "identify-case")).toEqual([
+      "- to `orders-question` (terminal) — Order questions.",
+      "- to `refund-review` (human decision node) — Refunds.",
+    ]);
+    expect(graph(SPEC, "identify-case")).toContain(renderTransitions(machine, "identify-case").join("\n"));
+    expect(renderTransitions(machine, "orders-question")).toEqual([]);
+    expect(renderTransitions(machine, "ghost")).toEqual([]);
   });
 
   describe("the run's trigger signature", () => {

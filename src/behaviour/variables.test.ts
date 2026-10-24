@@ -184,7 +184,7 @@ describe("requires on a state", () => {
 describe("requires on a trigger", () => {
   // The signature is declared on the state the trigger enters.
   const spec = {
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       start: { triggers: { manual: { requires: ["order_id"] } }, transitions: [{ to: "done", description: "Test edge to done." }] },
       done: {},
@@ -221,7 +221,7 @@ describe("requires on a trigger", () => {
 
 describe("a typed trigger signature", () => {
   const typedSpec = (manual: Record<string, unknown>) => ({
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       start: { triggers: { manual }, transitions: [{ to: "done", description: "Test edge to done." }] },
       done: {},

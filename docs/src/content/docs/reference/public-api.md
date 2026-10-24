@@ -1,6 +1,6 @@
 ---
 title: Public API
-description: createAgent, the Agent surface, session storage (sessionStore), and the extension options (modelFactory, hookExecutors, policyRules, sandboxRuntime).
+description: createAgent, the Agent surface, session storage (sessionStore), and the extension options (modelFactory, policyRules, sandboxRuntime).
 sidebar:
   order: 5
 ---
@@ -18,7 +18,7 @@ scoped to what it needs:
 | --- | --- |
 | **`@archmax-ai/harness/testing`** | the case engine |
 | **`@archmax-ai/harness/cli`** | the state-flow renderer and styling |
-| **`@archmax-ai/harness/sandbox`** | hook and script authoring |
+| **`@archmax-ai/harness/sandbox`** | code-state script authoring |
 | **`@archmax-ai/harness/spec`** | the `workflow.yaml` schema, the pure validator and the grammars |
 | **`@archmax-ai/harness/messages`** | transcript readers |
 
@@ -51,11 +51,11 @@ Every resume reads a parked session through these three:
 
 ### Prompt and message plumbing
 
-`resolveSystemPrompt` `toolsFromMap` `AgentToolDescriptor` `ToolContext` `ToolPaths` `PathAccess` `ImageReadOptions` `contentToString` `isAiMessage` `isRuntimeNote` `runtimeNoteKind` `lastAgentText` `RuntimeNoteKind` `RubricDeclaration` `SpecMetadata` `parseCodeDescription`
+`resolveSystemPrompt` `toolsFromMap` `AgentToolDescriptor` `ToolContext` `ToolPaths` `PathAccess` `ImageReadOptions` `contentToString` `isAiMessage` `isRuntimeNote` `runtimeNoteKind` `lastAgentText` `RuntimeNoteKind` `SpecMetadata` `parseCodeDescription`
 
 ### The machine
 
-`loadMachineSpec` `WorkflowMachine` `validateWorkflow` `normalizeHooks` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`
+`loadMachineSpec` `WorkflowMachine` `validateWorkflow` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`
 
 ### Names a host must not hard-code
 
@@ -100,9 +100,9 @@ the notes below.
 Several of these names are also on the root. They are the same bindings, exported
 here for the weight of the import.
 
-- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `workflowBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `hookSchema` `hookSpecSchema` `rubricDeclarationSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specExtensionsSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `Hook` `HookSpec` `StateBudget` `WorkflowBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecExtensions` `SpecMetadata` `RubricDeclaration` `SpecSchemaIssue`.
+- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `codeScriptPathSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `StateBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecMetadata` `SpecSchemaIssue`.
 - **Validation:** `validateSpec` `lintSpec` `schemaIssueDiagnostic` `SpecValidation` `Diagnostic` `DiagnosticSeverity`.
-- **Mount grants and hooks:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern` `normalizeHooks` `hookKind` `hookValue` `HOOK_SIDECAR_KEYS`.
+- **Mount grants:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
 - **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
 - **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `DEFAULT_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
@@ -113,7 +113,7 @@ here for the weight of the import.
   from this table rather than a copy.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
 - **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `dispatchIdOf` `rootSessionIdOf`.
-- **Paths and scripts:** `DEFAULT_WORKFLOW` `HOOKS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveHookScript` `parseCodeDescription` `CodeDescription`.
+- **Paths and scripts:** `DEFAULT_WORKFLOW` `SCRIPTS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveCodeScript` `parseCodeDescription` `CodeDescription`. `resolveCodeScript(workflow, path)` places a code state's declared script path under `workflows/<slug>/scripts/`, or refuses it with the reason, exactly as the runtime and `archmax validate` do.
 
 ### Using the spec subpath
 
@@ -137,9 +137,9 @@ Keep SDK schemas out of your own compositions: no `.extend()`, no `.and()`, no
 SDK schema inside your `z.object`. The SDK's zod pin moves independently of
 yours, and a split between the two shows up at runtime rather than at typecheck.
 
-Host metadata has two homes that pass through intact. One is the three loose
-`specMetadataSchema` slots, at the root, on a state and on a rubric. The other is
-a trigger declaration's unknown keys.
+Host metadata has two homes that pass through intact. One is the two loose
+`specMetadataSchema` slots, at the root and on a state. The other is a trigger
+declaration's unknown keys.
 
 **Validation.** `validateSpec(value)` says everything the document alone can say:
 the shape, the cross-references and the lint, as one `SpecValidation` carrying
@@ -150,8 +150,8 @@ addressed by `field`, so a blank transition `description` or a misspelled state
 key shows inline. The loader runs this same function, which is why an editor and
 `archmax validate` always agree about a document.
 
-Whatever needs more than the document is `validateWorkflow` on the root: hook
-scripts, sibling workflows, the skill registry, kernel probes.
+Whatever needs more than the document is `validateWorkflow` on the root:
+code-state scripts, sibling workflows, the skill registry, kernel probes.
 
 **Session ids and triggers.** Three groups of names cover a firing:
 
@@ -245,14 +245,15 @@ transcript stays clear of LangGraph.
 ## Reading a transcript
 
 `isRuntimeNote` / `runtimeNoteKind` answer *who wrote this transcript message*.
-The runtime writes messages of its own into a session's transcript, in six kinds:
+The runtime writes messages of its own into a session's transcript, in seven kinds:
 
 | Kind | What it records |
 | --- | --- |
 | `decision` | a human decision at a human state |
 | `event` | a delivered trigger firing |
 | `error` | an `on_error` route |
-| `after` | a completion check asking for a revision |
+| `grader` | a grader state's move, carrying its reason to the next state, or its raise |
+| `code` | a code state's move, carrying its reason to the next state, or its raise |
 | `sub-workflow` | a resumed child's result |
 | `opening` | the message a child session opens with, listing the values of its scalar inputs |
 
@@ -298,9 +299,10 @@ if (agent.workflow) {
   outcome.pending;       // the park record, when parked
   outcome.delegation;    // when the pending decision is a delegated child's: which child, which call
   outcome.reply;         // what the agent said this turn, each text in order ("" when it said nothing)
-  outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed hook)
-  outcome.exit;          // SessionExit on a turn the agent ended: { success: true } when "completed",
-                         // { success: false, code, reason } when "failed" (the agent called archmax_raise)
+  outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed state)
+  outcome.exit;          // SessionExit on a turn that ended: { success: true } when "completed",
+                         // { success: false, code, reason } when "failed" (archmax_raise: the agent's,
+                         // a grader's or a code state's)
   // A turn may hand the session files: each is placed in its scratchpad/attachments/
   // and its variable seeded, locked, with the path — what a `file` input takes.
   await agent.workflow.send(sessionId, {
@@ -320,10 +322,9 @@ if (agent.workflow) {
 `deliver` return, is every text the agent wrote during this turn, in order, joined
 by a blank line. Text written next to an `archmax_advance`, `archmax_wait` or
 `archmax_raise` is part of it, because the agent is told to write what a person
-should read in that same message. A park's handoff message is part of it too. When
-a terminal state's completion check asks for a revision, the text before that
-request is dropped, so the person gets the revised answer and not the draft. A
-turn that said nothing has `reply: ""`, not the previous turn's text. For the last
+should read in that same message. A park's handoff message is part of it too, and
+so is a draft a grader or code state sent back, beside the corrected one. A turn
+that said nothing has `reply: ""`, not the previous turn's text. For the last
 thing the session ever said, read `lastAgentText(outcome.messages)`.
 
 **Handing a turn files.** `TurnInput.files` maps a variable to a `TurnFile`,
@@ -345,8 +346,8 @@ without `uploadFiles`). `sessions.seed` writes files without seeding anything;
 **Ungoverned by declaration.** Omitting `workflow` still *looks for* the default
 workflow (`DEFAULT_WORKFLOW`) on the authoring backend, and governs the agent
 when it is found. Pass `workflow: false` for an agent that is ungoverned on
-purpose. That reads no spec and discovers no rubric, so a stray `workflows/` tree
-under the resolved root leaves the agent alone.
+purpose. That reads no spec, so a stray `workflows/` tree under the resolved root
+leaves the agent alone.
 
 A plain agent behaves like a governed one in most other respects. It honours
 `middleware`. Every `invoke`, `stream` and `streamEvents` on it is bound to the
@@ -374,10 +375,10 @@ aborted turn, and `turn-error` for anything else, with the error's message as th
 reason. `sessions.get` reports it as `exit`, and the session's next message
 starts a fresh turn from where it stood.
 
-The step limit a governed turn runs under follows the workflow's turn budget:
-`(budget.maxModelCalls + 10) × 8` graph steps, and never fewer than 400. So the
-budget, which ends a runaway turn through `on_error`, runs out first. A
-`recursionLimit` the host passes in the invoke config takes precedence.
+The step limit is LangGraph's `recursionLimit`, which bounds a whole turn across
+states: 400 graph steps by default, or the `recursionLimit` the host passes in the
+invoke config. A turn that hits it ends the session `failed` with
+`recursion-limit`; it does not route through `on_error`.
 
 ### Cancelling a turn
 
@@ -451,12 +452,12 @@ await agent.invoke(
 
 Three things to know:
 
-- **A hook reads its visit from `messages`, newest last**: the conversation
-  since the session entered the state it is in, which can span turns. A hook
-  that keys off "the current request" should take the *last* `user` entry. A
-  message from an earlier state is not in it: what a hook needs from there is
-  stored in a variable, a file, or a tool result `toolCalls` returns. See
-  [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
+- **A code state reads the session's whole transcript with
+  `tools.archmax_get_history()`, newest last**, seeded history included. A
+  script that keys off "the current request" should take the *last* `user`
+  entry. What a check compares against is better read from a variable, a file,
+  or a tool result in the history than from what the model said. See
+  [the history](/guides/automated-states/#the-history).
 - **A definition edit is adopted.** A session takes its next turn under the
   `workflow.yaml` in force now. The recorded `specHash` is a record of which
   definition each turn ran under, resolvable via `getSpecSnapshot`, and it binds
@@ -485,9 +486,9 @@ supplies the id, and listening for external events is the host's job.
 A trigger may declare `returns:`: the variables a session started through it
 guarantees are set when it completes (see [triggers](/guides/triggers/)).
 A return is an ordinary variable, so it is read by name from `Outcome.variables`,
-or from a `SessionSummary`'s `variables`. The completion check hands a session
-that finishes with a declared return unset back once, then rejects it, so a host
-sees the full set or a failure. A sub-workflow hands its returns back on the
+or from a `SessionSummary`'s `variables`. The returns are checked once, as the
+session completes: one that finishes with a declared return unset is rejected,
+naming the state and the names, so a host sees the full set or a failure. A sub-workflow hands its returns back on the
 tool result instead.
 
 Every ingress enters through `MANUAL_TRIGGER`: a delegation, the CLI's `run`, a
@@ -561,7 +562,7 @@ key-order-insensitive hash of the `workflow.yaml` mapping, surfaced on a
 hash answers one question: whether two sessions used the same spec.
 
 `getSpecSnapshot(hash)` resolves it back to the full `MachineSpec`, with its
-states, tool `allow` lists, transitions and hooks. It returns the spec as
+states and their types, tool `allow` lists and transitions. It returns the spec as
 persisted the first time a session produced that hash, whatever `workflow.yaml`
 holds today:
 
@@ -688,8 +689,8 @@ A write into a mount the *host* serves read-only stays `zone.read-only`.
 
 ## The authoring backend: `authoring`
 
-`workflows/**` holds specs, `WORKFLOW.md`, `hooks/` and `tests/`, and the grading
-rubrics a spec's states declare are part of those specs.
+`workflows/**` holds specs, `WORKFLOW.md`, `scripts/` and `tests/`, and the
+criteria a spec's grader states declare are part of those specs.
 
 The runtime reads all of it through a **separate backend**, which is kept out of
 the agent's workspace routes. So a tool call and a PTC call alike stop at the
@@ -700,7 +701,7 @@ composite. The prefix is reserved too: declaring it as a mount key throws
 const agent = await createAgent({
   workflow: "order-lookup",
   authoring: myGovernanceBackend,
-  // specs (rubrics included), hook scripts, test cases
+  // specs (graders' criteria included), code-state scripts, test cases
   backend: myContentBackend,
   // what the agent may read
   mounts: { "/skills/": mountSubtree(myContentBackend, "skills") },
@@ -715,14 +716,14 @@ const agent = await createAgent({
   *read-only* mount may share the backend safely.
 - `createWorkspaceContext` returns it as `authoring`, a `Workspace` distinct from
   `workspace`.
-- Hook scripts are read here, from `workflows/<slug>/hooks/`, wired
-  workflow-relative (`{ script: hooks/check.js }`). Scripts the *agent* runs with
-  `archmax_run` stay in skill bundles and are confined there by the kernel's
-  `script.skill-only` rule.
-- Grading rubrics are read here too, as part of the spec. A rubric is declared
-  inline on the hook that applies it, and the runtime alone dispatches it. The
-  agent has no `task` tool, and `task()` is absent from every sandbox context. See
-  [grading rubrics](/guides/grading-rubrics/).
+- Code-state scripts are read here, from `workflows/<slug>/scripts/`, declared
+  workflow-relative (`type: code` with `script: scripts/check.js`). Scripts the
+  *agent* runs with `archmax_run` stay in skill bundles and are confined there by
+  the kernel's `script.skill-only` rule.
+- A grader state's criteria are read here too, as part of the spec, and the
+  runtime alone runs the grader. The agent has no `task` tool, and `task()` is
+  absent from every sandbox context. See
+  [grader and code states](/guides/automated-states/).
 
 See [The authoring plane](/guides/authoring-plane/).
 
@@ -1019,8 +1020,8 @@ const agent = await createAgent({
 
 The model-facing payload has **one** shape, and every option and spec setting
 leaves that rendering alone. The static prefix holds nothing of the graph's
-position: the active state's instructions, edges, markers and hooks arrive per
-turn. `task` is withheld in every state.
+position: the active state's instructions, edges and markers arrive per turn.
+`task` is withheld in every state.
 
 - **`promptCache`** marks the stable prefix so the provider serves it from cache.
   On by default. `{ enabled: false }`, `settings.prompt_cache`, or
@@ -1037,9 +1038,10 @@ measured savings, are in
 
 ### `modelFactory`: pluggable model provider
 
-Supply the chat model per role: `agent`, `judge` for the case grader, and
-`rubric`. The runtime can then run against any LangChain `BaseChatModel`. Example
-(Amazon Bedrock):
+Supply the chat model per role (`ModelRole`): `agent` for the session's agent,
+`judge` for the case judge that scores a `grade`, and `grader` for a
+[grader state](/guides/automated-states/#budget-and-model)'s grader. The runtime
+can then run against any LangChain `BaseChatModel`. Example (Amazon Bedrock):
 
 ```ts
 import { ChatBedrockConverse } from "@langchain/aws";
@@ -1047,8 +1049,8 @@ import { createAgent, type CreateAgentParams } from "@archmax-ai/harness";
 
 const modelFactory: CreateAgentParams["modelFactory"] = (role, env, requested) =>
   new ChatBedrockConverse({
-    // `requested` is the id a grading rubric declared, when it declared one.
-    model: requested ?? (role === "judge" ? "anthropic.claude-3-haiku" : "anthropic.claude-3-5-sonnet"),
+    // `requested` is the id a state (or `settings.model`) declared, when one did.
+    model: requested ?? (role === "agent" ? "anthropic.claude-3-5-sonnet" : "anthropic.claude-3-haiku"),
     region: "us-east-1",
   });
 
@@ -1064,59 +1066,18 @@ Call `env()` when you want to build on the env-configured settings:
 `(role, env) => createChatModel({ ...env(), model })`. It throws on a missing
 `ARCHMAX_API_BASE_URL`, exactly as it would have during a default assembly.
 
-The third argument is the model id a [grading
-rubric](/guides/grading-rubrics/) asked for, or `undefined`. It is
-additive, so a factory taking `(role, env)` behaves exactly as before and may
-ignore the request. The default path applies it over `ARCHMAX_MODEL`, keeping the
-configured endpoint and credentials.
+The third argument is the model id the workflow asked for, or `undefined`: for
+the `agent` role a state's `model` or `settings.model`, and for the `grader` role
+the grader state's `model`, else `settings.model`. It is resolved once per
+distinct id per composition. It is additive, so a factory taking `(role, env)`
+behaves exactly as before and may ignore the request. The default path applies it
+over `ARCHMAX_MODEL`, keeping the configured endpoint and credentials.
 
 With `model` and `modelFactory` both omitted, the runtime defaults to the
 env-configured OpenAI-compatible model for every role. With both given, `model`
-wins for the `agent` role and the factory supplies `judge` and `rubric`.
-
-### `hookExecutors`: custom lifecycle hook kinds
-
-Register executors for hook kinds beyond the built-in `script` and `rubric`,
-so `workflow.yaml` may declare hooks like `{ webhook: <path> }`:
-
-```ts
-import { createAgent, type CreateAgentParams } from "@archmax-ai/harness";
-
-type HookExecutors = NonNullable<CreateAgentParams["hookExecutors"]>;
-
-const webhook: HookExecutors[string] = async (hook, ctx, args) => {
-  // …call the webhook, return the script outcome shape (ok/value/logs/error/formatted)…
-  return { ok: true, value: { verdict: "ok" }, logs: [], formatted: "" };
-};
-
-await createAgent({ workflow: "…", hookExecutors: { webhook } });
-```
-
-Registering an executor under a built-in kind (`script`/`rubric`) fails assembly,
-and a hook whose kind has no executor vetoes fail-closed at runtime. Declare
-custom kinds under
-[`extensions.hooks`](/reference/machine-spec/#extensionshooks) so
-`archmax validate` accepts them.
-
-An executor's `value` is read as **the same verdict vocabulary a script hook
-returns**, whoever implements the kind:
-
-| `value` | Effect |
-| --- | --- |
-| `{ verdict: "ok" \| "correct" \| "veto", reason }` | That verdict. |
-| `false` | A veto (`"precondition not met"`). |
-| `undefined`, `null`, or any non-object | No opinion; the phase proceeds. |
-| any other object | **Fails closed**, terminally, with the object's keys named. |
-
-The last row is the one to know about. An executor's return value *is* its
-verdict, so an unrecognized object is a verdict the executor got wrong, and
-reading it as `ok` would silently permit what the hook meant to block.
-
-Return `{ ok: true, value: { verdict: "veto", reason } }` to block, and an
-`{ ok: false, error }` outcome for a call that could not be made at all.
-
-`ctx.signal` is the abort signal of the turn the hook runs in. An executor that
-does slow work should stop when it aborts, as a script hook does.
+wins for the `agent` role and the factory supplies `judge` and `grader`. A
+grader's model calls are reported as `model-usage` events under its grader state
+and added to the session's usage.
 
 ### `policyRules`: programmatic governance rules
 
@@ -1143,7 +1104,8 @@ permit, and the safety rules stand whatever it returns.
 Script execution targets the interface typed as
 `CreateAgentParams["sandboxRuntime"]`: namespaced sessions with an `eval`
 operation and disposal. That covers the agent's `archmax_eval` and `archmax_run`,
-along with hook scripts.
+along with code states' scripts, each of which runs in a fresh namespace of its
+own.
 
 Omit the option and the bundled QuickJS runtime runs them. Supply your own to run
 scripts in a worker or remotely:
@@ -1168,11 +1130,11 @@ Two more obligations come with the interface:
 
 ### `parseCodeDescription`: code description frontmatter
 
-An `archmax_run` script opens with a leading JSDoc block: a title line, a blank
-line, then prose describing what the code does and how. That block is the
+An `archmax_run` script or a code state's script opens with a leading JSDoc
+block: a title line, a blank line, then prose describing what the code does and
+how. That block is the
 [description frontmatter](/guides/code-interpreter/#description-frontmatter)
-an admin UI shows its users. Lifecycle hook scripts sit outside the convention,
-and their one check is that the referenced file exists.
+an admin UI shows its users.
 
 `parseCodeDescription` returns the whole block's prose, title included. It is the
 canonical extractor, so consumers can leave the comment parsing to it:
@@ -1180,9 +1142,9 @@ canonical extractor, so consumers can leave the comment parsing to it:
 ```ts
 import { parseCodeDescription } from "@archmax-ai/harness";
 
-const source = await readThroughYourBackend("workflows/order-lookup/hooks/check-refund.js");
+const source = await readThroughYourBackend("workflows/order-lookup/scripts/check-refund.js");
 const parsed = parseCodeDescription(source);
-// { description: "Veto unless the recorded decision matches the …" } or null
+// { description: "Refund policy check — the agent may not hand a refund …" } or null
 ```
 
 It is a pure string helper over the file's source, which you read through your
@@ -1193,7 +1155,7 @@ one with no prose, yields `null`.
 ## `runTests`: cases from a host
 
 `runTests` runs a workflow's [cases](/guides/testing/). It uses
-the same discovery, schema validation, host-side case interpretation, grader, and
+the same discovery, schema validation, host-side case interpretation, judge, and
 verdict reduction as `archmax test`. It is what the CLI's `test` subcommand
 calls:
 
@@ -1207,8 +1169,8 @@ It takes eight ordinary options: `workflow`, `rootDir`, `filter`, `onEvent`,
 `onCaseStart`, `onCaseResult`, `sandboxRuntime` and `modelFactory`. Three more,
 covered below, exist for hosts that assemble their own agent.
 
-`sandboxRuntime` reaches the **agent under test** alone, for its hooks and
-`archmax_run` sources. Case documents are YAML interpreted on the host, so running
+`sandboxRuntime` reaches the **agent under test** alone, for its code states'
+scripts and `archmax_run` sources. Case documents are YAML interpreted on the host, so running
 a suite creates no sandbox of its own.
 
 ### `authoring`: where the suite is read from
@@ -1302,8 +1264,8 @@ await runTests({
 });
 ```
 
-The hook receives the case file's workspace-relative path, and is invoked once
-per case file. A case is one conversation on one session, so per-file is the
+The callback receives the case file's workspace-relative path, and is invoked
+once per case file. A case is one conversation on one session, so per-file is the
 isolation unit being named. Name the session and you name the whole case: its
 checkpoints, its `scratchpad/…` files, and its token usage all resolve under an
 id you chose.
@@ -1388,12 +1350,12 @@ score. Four fields carry it:
 | Field | Meaning |
 | --- | --- |
 | `status` | `"passed"` when `score >= threshold`, `"failed"` otherwise. **This is the verdict**: the same comparison `reduceVerdict` makes, so a record can never contradict the verdict shown beside it. |
-| `score` | The grader's 0–1 score, clamped. Display it; do not re-decide from it. |
+| `score` | The judge's 0–1 score, clamped. Display it; do not re-decide from it. |
 | `threshold` | The case's declared `atLeast`. Non-null only for grade records, which makes `r.threshold != null` the way to select them. |
-| `detail` | `"<criterion>: <reason>"`, the grader's short explanation (it is instructed to keep it to 1–3 sentences). Where the grader could not run, this names the fix instead. |
+| `detail` | `"<criterion>: <reason>"`, the judge's short explanation (it is instructed to keep it to 1–3 sentences). Where the judge could not run, this names the fix instead. |
 
 The case author's declared `atLeast` decides the record, and the grading model's
-own `pass` boolean is advisory. So a grader returning `{ score: 0.6, pass: true }`
+own `pass` boolean is advisory. So a judge returning `{ score: 0.6, pass: true }`
 against `atLeast: 0.7` records `status: "failed"`, matching the verdict.
 
 A failed grade fails its case like any other assertion. There is one tier of
@@ -1401,12 +1363,15 @@ severity: `CaseVerdict.status` (`CaseStatus`) is `"passed"`, `"failed"`, or
 `"skipped"`, and `reduceVerdict` and `exitCodeForVerdict` each take no `strict`
 argument.
 
-A grader whose reply cannot be read as JSON is asked once more, JSON only, before
+A judge whose reply cannot be read as JSON is asked once more, JSON only, before
 its turn scores 0.
 
-What the grader scores is the turn's `JudgeEvidence`. That is the action's
+What the judge scores is the turn's `JudgeEvidence`. That is the action's
 `reply`, what the agent said during that turn, plus a bounded chronological record
-of the session's assistant messages and tool calls so far (see [what the grader sees](/guides/testing/#what-the-grader-sees)).
+of the session's assistant messages and tool calls so far (see
+[what the judge sees](/guides/testing/#what-the-judge-sees)). The judge is not a
+[grader state](/guides/automated-states/#grader-states): it runs host-side after
+the turn and decides nothing in the session.
 
 ```ts
 const judged = results[0].records.filter((r) => r.threshold != null);
@@ -1415,7 +1380,7 @@ for (const j of judged) {
 }
 ```
 
-A case's grader may fail to run at all, for want of a `tests.judge` in
+A case's judge may fail to run at all, for want of a `tests.judge` in
 `workflow.yaml` or through a model error. It then records `status: "failed"` with
 `score: 0` and an actionable `detail`.
 
@@ -1604,9 +1569,10 @@ and parked sessions](/guides/sessions/).
 
 ## Reserved tool names
 
-The runtime's own tools carry the `archmax_` prefix. Eight are fixed:
+The runtime's own tools carry the `archmax_` prefix. Nine are fixed:
 `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_eval`,
-`archmax_run`, `archmax_get_variables` and `archmax_set_variables`. One more,
+`archmax_run`, `archmax_get_variables`, `archmax_set_variables` and
+`archmax_get_history`, the last offered in grader and code states only. One more,
 `archmax_workflow_<slug>`, appears per sub-workflow a state allows.
 
 The namespace is a guarantee rather than a convention, so a tool passed through
@@ -1633,24 +1599,36 @@ agent target, a path the agent cannot read, and more than 20 paths. See
 One package entry point carries the sandbox authoring types (declared in the
 package `exports`):
 
-- **`@archmax-ai/harness/sandbox`** holds the verdict helpers `ok` / `veto` /
-  `correct`, `defineHook`, and the types `HookInput`, `HookArgs`, `HookMessage`,
-  `HookVerdict`, `SandboxTools`, `ToolCallRecord`, `ToolCallFilter`, `TrailStep`,
-  for hook scripts:
+- **`@archmax-ai/harness/sandbox`** holds `defineCodeState`, its one runtime
+  member, and the types of a [code state's](/guides/automated-states/#code-states)
+  input and of the history it reads: `CodeStateInput`, `CodeStateArgs`,
+  `CodeStateFn`, `HistoryMessage`, `SessionHistory`, `TrailStep` and
+  `SandboxTools`:
 
   ```js
-  import { ok, veto } from "@archmax-ai/harness/sandbox";
+  import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-  /** Vetoes a refund the policy forbids. */
-  export default async function hook({ variables, messages, toolCalls, tools }) {
+  /** Sends a refund the policy forbids back to the agent. */
+  export default defineCodeState(async ({ variables, tools }) => {
+    const { messages, trail } = JSON.parse(await tools.archmax_get_history());
     // …
-    return ok();
-  }
+    await tools.archmax_advance({ to: "refund-review", reason: "the decision matches the policy" });
+  });
   ```
 
-The import is a **type carrier only**. The prelude provides the globals, and the
-import line is stripped before QuickJS evaluation, so authoring against the bare
-globals stays fully valid.
+  `defineCodeState(fn)` is the identity: it marks the default export and changes
+  nothing at runtime. `CodeStateArgs` is `{ state, trigger?, variables }`, also
+  the global `args`; `CodeStateInput` adds `tools` (`SandboxTools`). The session
+  is read through `tools.archmax_get_history()`, whose JSON answer is a
+  `SessionHistory`, `{ messages, trail }`: `messages` is `HistoryMessage[]`
+  (`{ role, text, toolCalls?, tool?, id?, note? }`, a tool message carrying its
+  result in `text`) and `trail` is `TrailStep[]`. There is no verdict
+  vocabulary: the script moves the session with `tools.archmax_advance` or
+  `tools.archmax_raise`, and its return value is not read.
+
+The import is a **type carrier only**. The prelude provides `defineCodeState`,
+and the import line is stripped before QuickJS evaluation, so authoring against
+the bare globals stays fully valid.
 
 Every import specifier must start with `@archmax-ai/harness/`. Anything else is an
 error, flagged by `archmax validate` and rejected at execution. Cases are
@@ -1680,24 +1658,32 @@ One handler observing concurrent sessions can demultiplex them by `sessionId`.
 | Family | Events |
 | --- | --- |
 | State movement | `workflow-reset`, `state-enter`, `state-leave`, `state-error-routed`, `advance`, `raised` |
-| Hooks | `hook-start`, `hook-output`, `hook-passed`, `hook-verdict`, `hook-rejected` |
-| Parks | `parked`, `decided`, `delivered` |
-| Assembly and warnings | `interpreter-enabled`, `skills-loaded`, `hooks-summary`, `graph-topology`, `warning` |
+| Automated states | `code-start`, `code-output`, `code-result`, `grader-start`, `grader-result` |
+| Parks | `parked`, `decided`, `park-message`, `delivered` |
+| Sub-workflows | `sub-workflow-start`, `sub-workflow-result` |
+| Variables | `variables-set`, `title-set` |
+| Assembly and warnings | `interpreter-enabled`, `skills-loaded`, `graph-topology`, `prompt-shaping`, `warning` |
 
-`hook-verdict.verdict` is typed `"ok" | "correct" | "veto"`. Consume it
-directly. The `logJudgeVerdict`/`logLifecycleDecision` helpers are removed.
+An automated state's run is bracketed: a code state's by
+`code-start { state, script }` and `code-result { state, status, durationMs, reason? }`,
+with one `code-output { state, line }` per console line of its script, and a
+grader's by `grader-start { state }` and
+`grader-result { state, status, durationMs, reason? }`. `status` is `ok` when the
+run settled on a decision or a completion, and `error` when the state failed,
+with `reason` saying why. A move then emits `advance`, `state-leave` and
+`state-enter`, a raise `raised` and `state-leave`. These are operator-facing and
+reach no prompt. See [grader and code states](/guides/automated-states/#events).
 
 These events are telemetry aimed at GUIs and monitors. The default console
 subscriber and the CLI pass over them silently:
 
 | Event | Payload highlights |
 | --- | --- |
-| `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint. Emitted for **every** governed call, including the control tools the runtime services itself: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. |
+| `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint, and `origin: "script"` for a programmatic call (an agent's script or a code state's); absent for a model's call, the session's agent's or a grader's. Emitted for **every** governed call, including the control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`. |
 | `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason` (renamed from `message`). A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
 | `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
-| `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. Chunks a dispatched grading rubric generates are attributed to the dispatching state. A sub-workflow child's chunks are the child's own: they carry the child's `sessionId` and the dispatch's `subWorkflowDispatchId`, and never reach the caller as its text, so concurrent children cannot interleave into the caller's reply. |
-| `rubric-start` / `rubric-result` | Bracket every grading-rubric dispatch (a `{ rubric: … }` hook, which the runtime dispatches itself), paired by `dispatchId`, with the rubric's `name`, `status` and `durationMs`. Operator-facing: they reach no prompt |
-| `model-usage` | Per-turn tokens from the provider's own usage metadata: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model`, and `costUsd` when pricing is configured (the whole event is omitted when the endpoint reports no usage) |
+| `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. A grader's tokens never stream as the session's text. A sub-workflow child's chunks are the child's own: they carry the child's `sessionId` and the dispatch's `subWorkflowDispatchId`, and never reach the caller as its text, so concurrent children cannot interleave into the caller's reply. |
+| `model-usage` | Per-turn tokens from the provider's own usage metadata, a grader's model calls included, under its grader state: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model`, and `costUsd` when pricing is configured (the whole event is omitted when the endpoint reports no usage) |
 | `prompt-shaping` | Assembly-time summary of the model-facing payload: resolved prompt `profile`, the resolved prompt-cache mechanism, and any built-in tools `withheld` |
 
 A session's total is the caller's to aggregate. `invoke` returning is the end of
@@ -1760,15 +1746,15 @@ about twenty lines, written once, counting exactly what that host cares about:
 interface RunTally {
   toolCalls: number;
   toolBlocks: number;      // governance refusals
-  corrections: number;     // hook `correct` verdicts — rework
-  vetoes: number;
+  automatedRuns: number;   // grader and code state runs
+  failedRuns: number;      // automated runs that failed (routed through on_error)
   path: string[];          // ordered states
   humanDecisions: number;
 }
 
 function tally(): { handler: WorkflowEventHandler; totals: () => RunTally } {
   const t: RunTally = {
-    toolCalls: 0, toolBlocks: 0, corrections: 0, vetoes: 0, path: [], humanDecisions: 0,
+    toolCalls: 0, toolBlocks: 0, automatedRuns: 0, failedRuns: 0, path: [], humanDecisions: 0,
   };
   return {
     handler: (event) => {
@@ -1776,8 +1762,9 @@ function tally(): { handler: WorkflowEventHandler; totals: () => RunTally } {
         case "tool-called": t.toolCalls++; break;
         case "tool-blocked": t.toolBlocks++; break;
         case "state-enter": t.path.push(event.state); break;
-        case "hook-verdict": if (event.verdict === "correct") t.corrections++;
-                             if (event.verdict === "veto") t.vetoes++; break;
+        case "code-result":
+        case "grader-result": t.automatedRuns++;
+                              if (event.status === "error") t.failedRuns++; break;
         case "decided": t.humanDecisions++; break;
       }
     },

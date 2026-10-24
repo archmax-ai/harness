@@ -9,6 +9,173 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 1.0.0
+
+A breaking release: checking a state's work moves out of hooks and onto the graph.
+
+- **Grader and code states.** Two new state types, the **automated states**, are run by the
+  runtime itself:
+  - `type: grader` runs a grader, an isolated subagent whose criteria are the state's
+    `instructions`. It decides with `archmax_advance`, onward or back to the state that did the
+    work with what to change, or ends the session with `archmax_raise`. Its `budget.maxTurns`
+    and `budget.timeoutMs` bound its own run, and its `model` is resolved under the new `grader`
+    model role.
+  - `type: code` runs the file its new `script` key names, `scripts/<file>.js` in
+    `workflows/<slug>/scripts/`, in the sandbox. The default export receives
+    `{ state, trigger, variables, tools }` and moves the session with
+    `tools.archmax_advance({ to, reason })` or `tools.archmax_raise({ code, reason })`. Its
+    return value is not read.
+
+  Both read the session with the new `archmax_get_history` tool, which returns
+  `{ messages, trail }`: the whole transcript, a tool message carrying its call's result inline,
+  and the whole trail, read from the checkpointed session rather than the request a summary
+  shortened for the model. A script calls it as `tools.archmax_get_history()`; a sandbox tool
+  called with no argument is called with `{}`. Both automated types get one control set:
+  `archmax_advance` (absent in a terminal state), `archmax_raise`, `archmax_get_variables`,
+  `archmax_set_variables` and `archmax_get_history`, the last offered in no agent or human state.
+
+  An automated state runs on entry, in place of the agent's next model call, and a chain of code
+  states makes no model call at all. It is offered exactly its own state's tools, never
+  `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, and cannot
+  park. A move leaves a `grader` or `code` runtime note carrying the reason to the next state, and
+  a trail step of the same kind. A non-terminal automated state that finishes without deciding
+  fails closed through `on_error`, an error after an advance discards the move, and a terminal
+  code state completes the session when its script returns: approving into one ends the session
+  with no further model call. See [grader and code states](/guides/automated-states/).
+- **Breaking: hooks are removed.** `before` and `after` are no longer state keys. A workflow that
+  still declares either fails to load, and `archmax validate` fails, with the unrecognized-key
+  error naming the key and its path. With them go:
+  - the `{ script }`, `{ rubric }` and custom hook kinds, and the verdicts `ok`, `correct` and
+    `veto`;
+  - `max_iterations` and every retry budget. A grader that gives up after N rounds says so in its
+    `instructions` and counts the rounds from the trail;
+  - the root `extensions` block, and `createAgent`'s `hookExecutors` option with its
+    `HookExecutor` type;
+  - the checkpointed `iterations` and `beforeDone` channels, and the `after` runtime note kind;
+  - a hook's `toolCalls(filter?)`, the `ToolCallRecord` and `ToolCallFilter` types, and the visit
+    log behind them. An automated state reads the whole session with `archmax_get_history`
+    instead: `{ messages, trail }`, each tool result inline in its tool message. See
+    [the history](/guides/automated-states/#the-history).
+- **Breaking: the turn budget is removed.** The root `budget.maxModelCalls` and its turn budget
+  are gone, with the prompt's "calls left" warning and the `on_error` route for an exhausted turn.
+  A turn is bounded by LangGraph's `recursionLimit`: 400 graph steps by default; set your own in
+  the invoke config. A turn that hits it ends the session `failed` with `recursion-limit`. A
+  state's `maxTurns`, `timeoutMs` and `maxParks` are unchanged. **Migrate** by deleting the root
+  `budget` key: declaring it is now an unknown-key load error (`Unrecognized key: "budget"`). See
+  [`budget`](/reference/machine-spec/#budget).
+- **Breaking: a turn's `reply` is every text of the turn.** `reply` is every assistant text of the
+  turn, in order, joined by a blank line, and `""` when the turn said nothing. 0.9.0's rule that
+  dropped a draft a completion check asked to revise is gone, and no other revision rule takes its
+  place: a draft a grader or code state sent back stays in the reply beside the corrected one.
+  See [`Agent`, in detail](/reference/public-api/#agent-in-detail).
+- **An edge into a grader or code state needs a description.** An undescribed edge routes on its
+  target's instructions, which the agent is then shown. A grader's instructions are its criteria
+  and a code state has none, so `validate` refuses an undescribed edge into either. A code
+  state's own edges may go undescribed: its script routes on them.
+- **Breaking: runtime contract 3.** `runtime.version` is `"3"`, and an omitted `runtime` block
+  resolves to it. A workflow declaring `"1"` or `"2"` fails assembly with
+  `UnsupportedRuntimeContractError` and fails `archmax validate`, naming the supported contract.
+  The sandbox contract is 3 too, with the contexts `ptc` (the agent's scripts) and `code`.
+- **Breaking: an agent's script reaches only its state's tools.** In `archmax_eval` and
+  `archmax_run`, `tools.<name>` for a tool outside the active state's surface is now `undefined`,
+  as the listing already said. It used to be a function that governance then refused. A script
+  that caught that refusal now tests `typeof tools.lookupOrder === "function"` or
+  `"lookupOrder" in tools`. No script runs on runtime authority any more: the `lifecycle` origin
+  is gone, and the one read the runtime makes on its own authority is its check of a `file` value.
+  See [the code interpreter](/guides/code-interpreter/#two-entry-points-one-sandbox).
+- **Breaking: the `rubric` model role is now `grader`.** `ModelRole` is
+  `"agent" | "judge" | "grader"`. A grader state's model is `modelFactory("grader", env, id)`, `id`
+  being the state's `model`, else `settings.model`, and its calls are reported as `model-usage`
+  under the grader state. See
+  [`modelFactory`](/reference/public-api/#modelfactory-pluggable-model-provider).
+- **Breaking: events.** `hooks-summary`, `hook-start`, `hook-output`, `hook-passed`,
+  `hook-verdict`, `hook-rejected`, `rubric-start` and `rubric-result` are removed. New:
+  `code-start { state, script }`, `code-output { state, line }`,
+  `code-result { state, status, durationMs, reason? }`, `grader-start { state }` and
+  `grader-result { state, status, durationMs, reason? }`. The CLI's state flow renders a code
+  state's run as `› code <script>` and a grader's as `› grader grading`. See
+  [the event stream](/reference/public-api/#lifecycle-event-stream).
+- **Breaking: exports.**
+  - The root drops `normalizeHooks` and `RubricDeclaration`.
+  - `@archmax-ai/harness/spec` drops `hookSchema`, `hookSpecSchema`, `rubricDeclarationSchema`,
+    `specExtensionsSchema`, `Hook`, `HookSpec`, `SpecExtensions`, `RubricDeclaration`,
+    `normalizeHooks`, `hookKind`, `hookValue`, `HOOK_SIDECAR_KEYS`, `HOOKS_DIR`,
+    `resolveHookScript`, `workflowBudgetSchema` and `WorkflowBudget`. It adds
+    `codeScriptPathSchema`, `SCRIPTS_DIR` and `resolveCodeScript`.
+  - `@archmax-ai/harness/sandbox` drops `ok`, `veto`, `correct`, `defineHook`, the `Hook*` types,
+    `ToolCallRecord` and `ToolCallFilter`. It exports exactly `defineCodeState`, `CodeStateInput`,
+    `CodeStateArgs`, `CodeStateFn`, `HistoryMessage`, `SessionHistory`, `TrailStep` and
+    `SandboxTools`.
+  - `TrailStep.kind` and `RuntimeNoteKind` gain `grader` and `code`.
+
+  See [the public API](/reference/public-api/#the-complete-public-surface).
+- **Cases read automated states from what they committed.** `reachedState`, `trail` (with
+  `kind: grader` or `kind: code`), `raised` and `ranWorkflow` see an automated state's moves, raises
+  and dispatches. `calledTool`, `notCalledTool` and `usedNoTools` read the agent's transcript, which
+  a grader's and a code state's calls never enter. Mocks answer their calls as they answer the
+  agent's. See [testing workflows](/guides/testing/#assertions).
+- **The reference workspace is converted.** `order-lookup` screens each request in the
+  `screen-request` code state and sends a refused one to `decline`. It checks a refund decision in
+  the `check-refund` code state before the human review, escalating after two send-backs it counts
+  on the trail; `refund-closed` states the final decision in so many words. A live answer ends
+  where it is given: `orders-question` is terminal, and so is the triggered `report-requested`. The
+  grader sits on the triggered enrichment path, where no person is waiting: `enrich-order` records
+  the fan-out script's `enrichments` and advances to the `review-enrichment` grader state, which
+  reads `orders_to_enrich` and `enrichments` with `archmax_get_variables` and each returned
+  `enrichment_file` with `read_file`, and approves into the terminal agent state
+  `enrichment-reported` or sends the enrichments back to `enrich-order`, raising
+  `enrichment-incorrect` after two send-backs. The `enrichment-fan-out` case pins that approval as
+  a `grader` trail step.
+- **A case's `succeeded` reads the action's outcome.** `succeeded: true` passes when the outcome is
+  `completed`: not parked, raised, failed or rejected. It used to fail whenever any tool result in
+  the transcript had error status, so an agent's recovered `ls` of a missing directory failed an
+  otherwise completed turn, and a rejected turn whose tools all succeeded passed. A failure now
+  says why: the session is parked, the turn did not complete, or the code and reason it raised.
+  See [assertions](/guides/testing/#assertions).
+
+**Migrating a workspace.** Work through each workflow, then run `archmax validate` and
+`archmax test`:
+
+1. **Pin the contract.** Set `runtime: { engine: archmax-harness, version: "3" }`, or remove the
+   block.
+2. **A `before` check becomes a code state in front of the state.** Declare
+   `type: code` with `script: scripts/<check>.js`, with a transition to the state it guarded and
+   one to wherever a refusal goes, such as a terminal agent state that tells the person why. When
+   the state was a trigger's entry, move its `triggers:` onto the code state.
+3. **An `after` check becomes a code state behind the state.** Point the state's transition at the
+   code state, and give the code state an edge onward and an edge back to the state.
+4. **Rewrite each hook script as a code-state script.** Move it from `workflows/<slug>/hooks/` to
+   `workflows/<slug>/scripts/` and replace `defineHook` with `defineCodeState`. Then:
+   - `return ok()` becomes `await tools.archmax_advance({ to: "<next state>", reason })`;
+   - `return correct(reason)` becomes an advance back to the checked state with that reason, which
+     the agent reads as a `code` note;
+   - `return veto(reason)` becomes an advance to the state that handles the refusal, or
+     `await tools.archmax_raise({ code, reason })`.
+
+   The input is `{ state, trigger, variables, tools }`, with no `phase`, `from`, `to`, `reason`,
+   `messages` or `toolCalls`. A hook's `messages`, `toolCalls` and the move that led here become
+   `const { messages, trail } = JSON.parse(await tools.archmax_get_history())`: read the move from
+   `trail`, and a tool's result from its tool message's `text`, matched to the call by `id`. The
+   script no longer runs on runtime authority, so grant the code state every tool, skill and mount
+   the script reads, and write variables with `tools.archmax_set_variables`.
+5. **A rubric becomes a grader state behind the state.** The rubric's `instructions` become the
+   grader state's, rewritten to decide with `archmax_advance` (onward when the work passes, back
+   to the graded state with what to change when it does not) instead of returning a verdict. Its
+   `model` becomes the state's `model`. Replace `max_iterations: N` with a sentence in the
+   instructions: count the trail's `grader` steps back into the graded state, and raise after N.
+   Tell the graded state's agent to advance to the grader, and to fix the work when it is sent
+   back. To end right after an approval, approve into a terminal code state. Every draft the
+   agent writes stays in the turn's `reply`, so put the loop where no person is waiting on it.
+6. **A terminal state's `after` hook** becomes a grader or code state the work advances into
+   before that terminal state.
+7. **Delete the root `budget` block.** `budget.maxModelCalls` is an unknown key now. A turn that
+   needs more than 400 graph steps sets `recursionLimit` in the invoke config.
+8. **In the host:** answer the `grader` role where a `modelFactory` answered `rubric`. Remove
+   `hookExecutors`: a custom kind becomes a code state's script, with a host tool the code state
+   grants for anything outside the sandbox, or a grader state. Move event consumers from `hook-*`
+   and `rubric-*` to `code-*` and `grader-*`, and read the outcome of a run from its
+   `code-result`/`grader-result` `status` and the `advance` or `raised` that follows.
+
 ## 0.9.0
 
 - **Breaking: an outcome's `reply` is what the agent said this turn.** `reply` was
@@ -26,7 +193,7 @@ as it is today; the guides themselves describe only the present. Every release a
   was the session's last text, so a step whose turn said nothing was graded on an
   earlier turn's answer. It is now what that step's action said. The record beside
   it still covers the session so far. See
-  [what the grader sees](/guides/testing/#what-the-grader-sees).
+  [what the grader sees](/guides/testing/#what-the-judge-sees).
 - **`dispose` frees a session's checkpoints from memory.** The default checkpointer
   writes every checkpoint to the session store and also kept it in memory. Only
   `sessions.delete` cleared that copy, so a long-running host that disposed its
@@ -44,7 +211,7 @@ as it is today; the guides themselves describe only the present. Every release a
   the agent is told how many calls are left. The turn's step limit now follows the
   budget, so the budget runs out first. **Migrate** a workflow whose turns
   legitimately make more than 50 model calls by raising `budget.maxModelCalls`.
-  See [the turn budget](/reference/machine-spec/#budget-the-turn-budget).
+  Removed in [1.0.0](#100).
 - **A turn that throws no longer strands its session.** A turn that threw (a model
   provider failing, the step limit, a cancellation) left the session `running`, and
   every later message was refused with `SessionNotResumableError`. The session now
@@ -70,7 +237,7 @@ as it is today; the guides themselves describe only the present. Every release a
   like the person speaking. **Migrate** a hook that read a tool result's text
   from `messages` to `toolCalls({ name })`, and a hook that read an earlier
   state's messages to a variable, a file or `toolCalls`. See
-  [what a hook sees](/guides/workflow-machine/#what-a-hook-sees-its-visit-and-the-sessions-records).
+  [the history](/guides/automated-states/#the-history).
 - **An `args` guard matches a non-path argument as written.** Every argument
   value was cleaned up as a workspace path before matching, so no URL guard
   could ever match (`https://…` became `https:/…`), a stored value could fail to
@@ -107,7 +274,7 @@ as it is today; the guides themselves describe only the present. Every release a
   `userRequest` was the session's first message, so in a later turn the grader
   read turn 1's question and could refuse a correct answer to the current one.
   It is now the person's latest message, the one the reply answers. See
-  [grading rubrics](/guides/grading-rubrics/).
+  [grading rubrics](/guides/automated-states/).
 
 ## 0.8.0
 
@@ -622,8 +789,8 @@ The first release of `@archmax-ai/harness`: a governed layer over LangChain Deep
   See [sessions](/guides/sessions/).
 - **Hooks and the sandbox**: hook scripts, `archmax_eval` and `archmax_run` share one QuickJS
   sandbox with a governed tool bridge. See the [code interpreter guide](/guides/code-interpreter/).
-- **Cases** (`archmax test`) and rubric grading. See [testing](/guides/testing/) and
-  [grading rubrics](/guides/grading-rubrics/).
+- **Cases** (`archmax test`) and rubric grading, which grader states replaced in 0.8.0. See
+  [testing](/guides/testing/) and [grader and code states](/guides/automated-states/).
 - **Sub-workflows**, **skills** and **triggers**: see [sub-workflows](/guides/sub-workflows/),
   [skills](/guides/skills/) and [triggers](/guides/triggers/).
 - **The `archmax` CLI** (`run`, `test`, `validate`, `sessions`, `decide`, `reply`, `deliver`). See

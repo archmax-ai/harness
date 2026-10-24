@@ -2,7 +2,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import { findMock, mockPayload, readMocks } from "../core/tool-mocks.js";
-import { isWorkflowToolName } from "../machine/tool-names.js";
+import { HARNESS_CONTROL_TOOLS, isWorkflowToolName } from "../machine/tool-names.js";
 import { SubWorkflowError, subWorkflowParkOf } from "../workflow/sub-workflow.js";
 import { toolCallDetail, toolOutputPreview } from "../core/tool-telemetry.js";
 import { decide, PTC_EXCLUDED_TOOLS, type GovernanceRule, type ToolCallOrigin } from "../kernel/kernel.js";
@@ -13,23 +13,25 @@ import { NO_SKILLS, type SkillPrefixes } from "../core/skills.js";
 import { REDACTED_TOOLS, redactDisabledSkills } from "../core/skill-redact.js";
 
 /**
- * Governance and telemetry for programmatic tool calls (PTC) — the `tools.*`
- * namespace sandbox scripts call.
+ * Governance and telemetry for tool calls made outside the agent's tool node:
+ * the `tools.*` namespace sandbox scripts call, and an automated state's tools.
  *
- * The sandbox bridge calls `invoke(input)` on a tool directly, bypassing the
- * agent's tool node and `wrapToolCall`, so the gateway hands it *wrapped* tools:
- * each runs the kernel `decide()` pipeline, emits the same tool events, honours
- * declarative mocks and forwards the run's `RunnableConfig` before delegating to
- * the real tool. One wrap covers both PTC consumers — `archmax_eval`/`archmax_run`
- * code and lifecycle hooks.
+ * The sandbox bridge (and a grader's own agent) calls `invoke(input)` on a tool
+ * directly, bypassing the session's tool node and `wrapToolCall`, so the
+ * gateway hands it *wrapped* tools: each runs the kernel `decide()` pipeline
+ * against the session's live state, emits the same tool events, honours
+ * declarative mocks and forwards the turn's `RunnableConfig` before delegating
+ * to the real tool. One wrap covers every such consumer — the agent's
+ * `archmax_eval`/`archmax_run` code, a code state's script, and a grader.
  *
  * A script's call (`script` origin) is governed exactly as the model's own: the
  * run's variables — refreshed per model call — resolve the state's `${{name}}`
  * argument guards, so a guard admits from a script exactly what it admits from
- * the model. Unlike `wrapToolCall`, no `${{…}}` substitution is applied to a
- * script's arguments: a script passes computed values and reads the variables
- * as `args.variables`, so such text is ordinary data and passes through
- * verbatim — substituting would refuse or rewrite legitimate data.
+ * the model. No `${{…}}` substitution is applied here: a script passes computed
+ * values and reads the variables as `args.variables`, so such text is ordinary
+ * data and passes through verbatim. A grader's calls (`agent` origin) are
+ * substituted by the grader itself before they reach the gateway, as the
+ * session's agent's are in `wrapToolCall`.
  */
 
 /**
@@ -62,8 +64,8 @@ export interface PtcCallContext {
 }
 
 export interface PtcWrapOptions {
-  /** Which authority these tools run on; decides how the kernel governs them. */
-  origin: Extract<ToolCallOrigin, "script" | "lifecycle">;
+  /** Who calls these tools: a script, or a grader's model. Both are governed against the live state. */
+  origin: Extract<ToolCallOrigin, "script" | "agent">;
   /** The session whose live context these tools read on every call. */
   sessionId: string;
 }
@@ -116,30 +118,27 @@ export interface PtcToolGatewayOptions {
   /** The workspace's resolved mount keys, for the kernel's read-only rule. */
   mountPrefixes?: MountPrefixes;
   /**
-   * The workspace's resolved skill bundles, for the kernel's skill rule. A
-   * script's calls run on the model's authority, so the state's enabled set binds
-   * them; a hook's do not (the gateway passes `lifecycle` origin, which the rule
-   * exempts).
+   * The workspace's resolved skill bundles, for the kernel's skill rule. Every
+   * call through the gateway runs on the model's authority, so the state's
+   * enabled set binds it.
    */
   skills?: SkillPrefixes;
   emit: WorkflowEventEmitter;
 }
 
 /**
- * Filter a listing a script asked for to the state's enabled skills — the PTC
- * half of the invisibility rule the governance middleware applies to the model's
- * own calls, since `tools.ls` inside `archmax_eval` reaches the same tool by
- * another door. `lifecycle` origin is exempt, as it is from the rule itself: a
- * hook runs on harness authority.
+ * Filter a listing a script or a grader asked for to the state's enabled skills —
+ * the gateway's half of the invisibility rule the governance middleware applies
+ * to the model's own calls, since `tools.ls` inside `archmax_eval` reaches the
+ * same tool by another door.
  */
 function redactPtcListing(
   result: unknown,
   enabled: readonly string[],
   skills: SkillPrefixes,
   tool: string,
-  origin: ToolCallOrigin,
 ): unknown {
-  if (origin === "lifecycle" || skills.length === 0 || !REDACTED_TOOLS.has(tool)) return result;
+  if (skills.length === 0 || !REDACTED_TOOLS.has(tool)) return result;
   if (typeof result !== "string") return result;
   return redactDisabledSkills(result, enabled, skills);
 }
@@ -158,8 +157,8 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
   const surfaces = new Map<string, readonly string[]>();
   let callSeq = 0;
   const skillSlugs = skills.map((skill) => skill.slug);
-  const redactSkills = (result: unknown, state: string, tool: string, origin: ToolCallOrigin) =>
-    redactPtcListing(result, machine.enabledSkills(state, skillSlugs), skills, tool, origin);
+  const redactSkills = (result: unknown, state: string, tool: string) =>
+    redactPtcListing(result, machine.enabledSkills(state, skillSlugs), skills, tool);
 
   /** The session's stable context ref, created on first use. */
   function contextFor(sessionId: string): PtcCallContext {
@@ -183,6 +182,8 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
       // workflow state behind it moves with every `archmax_advance`.
       const { state, config: contextConfig, replyOnly, variables = {} } = context;
       const callId = `ptc:${++callSeq}`;
+      // The tool events mark a programmatic call; a grader's is a model's call, as the agent's is.
+      const marked = origin === "script" ? { origin } : {};
 
       const verdict = decide(
         machine,
@@ -197,7 +198,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
         // Gated on `warn` for parity with the agent path, where a non-warn
         // block (the inline-`eval` refusal) is deliberately silent.
         if (verdict.warn) {
-          emit({ type: "tool-blocked", state, tool, reason, callId, args, origin });
+          emit({ type: "tool-blocked", state, tool, reason, callId, args, ...marked });
         }
         throw new PtcGovernanceError(tool, verdict.ruleId, reason);
       }
@@ -209,7 +210,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
         tool,
         callId,
         args,
-        origin,
+        ...marked,
         ...(detail ? { detail } : {}),
       });
 
@@ -222,7 +223,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
           callId,
           status,
           durationMs: Date.now() - startedAt,
-          origin,
+          ...marked,
           ...toolOutputPreview(value),
         });
       };
@@ -232,32 +233,36 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
         // mock middleware sits inside the workflow middleware: a call the state
         // forbids is refused whether or not a test mocked it.
         // Delegation mocks belong to the dispatcher (see the mock middleware):
-        // serving one here would skip the dispatch and its record of itself.
-        const mock = isWorkflowToolName(tool)
-          ? undefined
-          : findMock(readMocks(contextConfig.configurable), tool, args);
+        // serving one here would skip the dispatch and its record of itself. A
+        // control tool is the runtime's own, never mocked — as on the agent's
+        // path, where governance services it before any mock is consulted.
+        const mock =
+          isWorkflowToolName(tool) || HARNESS_CONTROL_TOOLS.has(tool)
+            ? undefined
+            : findMock(readMocks(contextConfig.configurable), tool, args);
         const result = mock
           ? mockPayload(mock)
           : // The bridge passes no config of its own; the turn's gives the tool
             // the session id, signal and store an agent call would have had, and
             // `toolCallId` lets a delegation's telemetry trace back to this call.
             await inner.invoke(args as never, { ...(config ?? contextConfig), toolCallId: callId });
-        const served = redactSkills(result, state, tool, origin);
+        const served = redactSkills(result, state, tool);
         settle("ok", served);
         return served;
       } catch (err) {
-        // A delegated sub-run stopped for a person. A script cannot park — a
-        // QuickJS frame is not durable — so this fails closed as an error rather
-        // than letting a raw suspension escape: a script's park must never
-        // unwind the turn that ran it.
+        // A delegated sub-run stopped for a person. Nothing calling through the
+        // gateway can park — a QuickJS frame is not durable, and a grader's run
+        // is not resumable — so this fails closed as an error rather than letting
+        // a raw suspension escape: such a park must never unwind the turn that
+        // made the call.
         const parked = subWorkflowParkOf(err);
         if (parked) {
           const failure = new SubWorkflowError(
             "parked",
             parked.workflow,
-            `Sub-workflow '${parked.workflow}' stopped for a person, and a script cannot wait ` +
-              `for one: the sandbox has no way to resume. Call it from the state's agent, or ` +
-              `move the decision to a human node in the calling workflow.`,
+            `Sub-workflow '${parked.workflow}' stopped for a person, and a ${origin === "script" ? "script" : "grader"} ` +
+              `cannot wait for one: it has no way to resume. Call it from an agent state, or ` +
+              `move the decision to a human state in the calling workflow.`,
           );
           settle("error", failure.message);
           throw failure;

@@ -8,9 +8,7 @@
 import type { z } from "zod";
 import type {
   allowEntrySchema,
-  hookSchema,
   forbidEntrySchema,
-  hookSpecSchema,
   machinePromptCacheSettingsSchema,
   machineSettingsSchema,
   machineSpecSchema,
@@ -22,12 +20,9 @@ import type {
   mountsBlockSchema,
   mountAccessSchema,
   mountGrantEntrySchema,
-  specExtensionsSchema,
-  rubricDeclarationSchema,
   signatureEntryObjectSchema,
   specMetadataSchema,
   stateBudgetSchema,
-  workflowBudgetSchema,
   toolsBlockSchema,
   transitionTypeSchema,
   triggerDeclarationSchema,
@@ -57,35 +52,14 @@ export type TransitionType = z.infer<typeof transitionTypeSchema>;
 export type MachineTransition = z.infer<typeof machineTransitionSchema>;
 
 /**
- * A single lifecycle hook: a tagged object whose single key names its **kind**
- * (`script`, `rubric`, or a custom kind an executor is registered for) and
- * whose value is the kind's target, optionally beside the reserved
- * `max_iterations` sidecar (the bounded grade-and-retry budget of an `after`
- * hook). A rubric's grading criteria are its `instructions` in the spec's
- * `rubrics:` block, never a hook attribute.
- */
-export type Hook = z.infer<typeof hookSchema>;
-
-/** A `before`/`after` field: one hook or an ordered list run in sequence. */
-export type HookSpec = z.infer<typeof hookSpecSchema>;
-
-/**
- * Per-state execution budget. `maxTurns` bounds the model iterations of the
- * turn's agent loop; `timeoutMs` aborts the turn when exceeded; `maxParks` bounds
- * how many times the state may park itself with `archmax_wait`. Any exhaustion
- * is a turn failure subject to `on_error`.
+ * Per-state execution budget. `maxTurns` bounds the model calls of the state's
+ * visit — the session's agent in an agent state, the grader's own in a grader
+ * state; `timeoutMs` aborts a model call (an agent state) or the whole grader
+ * run (a grader state) when exceeded; `maxParks` bounds how many times an agent
+ * state may park itself with `archmax_wait`. Any exhaustion is a state failure
+ * subject to `on_error`. A code state takes no budget: it makes no model call.
  */
 export type StateBudget = z.infer<typeof stateBudgetSchema>;
-
-/**
- * Workflow-wide execution budget. `maxModelCalls` bounds the model calls of one
- * turn (an invocation: a message, a decision, a reply or a delivery) across every
- * state; exhausting it is a failure of the current state, subject to `on_error`.
- */
-export type WorkflowBudget = z.infer<typeof workflowBudgetSchema>;
-
-/** The turn budget a workflow runs under when it declares none. */
-export const DEFAULT_MAX_MODEL_CALLS = 50;
 
 /** One entry of a `tools.allow` list: a bare tool name, or a constrained shape. */
 export type AllowEntry = z.infer<typeof allowEntrySchema>;
@@ -140,7 +114,10 @@ export type MountsBlock = z.infer<typeof mountsBlockSchema>;
 /**
  * The kind of a state: `agent` (default) runs a Deep Agent turn that picks a
  * transition with `archmax_advance`; `human` parks the session and a person picks
- * the outgoing edge.
+ * the outgoing edge; `grader` runs an isolated grader subagent and `code` runs
+ * the state's `script` in the sandbox — the two **automated** types, which the
+ * runtime runs on entry with no model call of the session's agent and which
+ * leave by `archmax_advance` or end the session by `archmax_raise`.
  */
 export type StateType = z.infer<typeof stateTypeSchema>;
 
@@ -213,26 +190,12 @@ export type TriggerDeclaration = z.infer<typeof triggerDeclarationSchema>;
  */
 export type SignatureEntryDeclaration = z.infer<typeof signatureEntryObjectSchema>;
 
-/** Workspace-declared expectations the runtime cannot verify from the spec alone. */
-export type SpecExtensions = z.infer<typeof specExtensionsSchema>;
-
 /**
- * Host data, accepted at three positions: the spec root (an authoring UI's canvas
- * state), a state (a node's position), and a rubric (a display label). Preserved
- * across a load, never read by the runtime, and dropped before the spec is
- * hashed.
+ * Host data, accepted at two positions: the spec root (an authoring UI's canvas
+ * state) and a state (a node's position). Preserved across a load, never read by
+ * the runtime, and dropped before the spec is hashed.
  */
 export type SpecMetadata = z.infer<typeof specMetadataSchema>;
-
-/**
- * One grading rubric: the standard a state's exit is measured against, declared
- * in the same document as the state whose hook names it. `instructions` carries
- * the criteria and the verdict to return; `max_iterations` bounds the
- * grade-and-retry loop (a hook's own sidecar wins over it); `model` names the id
- * the grader runs on. A rubric is authoring-plane content: the agent it grades
- * can neither read it nor dispatch it.
- */
-export type RubricDeclaration = z.infer<typeof rubricDeclarationSchema>;
 
 /** The whole of `workflow.yaml`. */
 export type MachineSpec = z.infer<typeof machineSpecSchema>;
@@ -245,13 +208,6 @@ export interface HarnessSettings {
   maxResultChars?: number;
   /** Prompt-cache declaration, when present. */
   promptCache?: { enabled?: boolean; ttl?: string };
-}
-
-export interface LifecycleHook {
-  /** Normalized ordered `before` hooks (single spec wrapped in a list). */
-  before?: Hook[];
-  /** Normalized ordered `after` hooks (single spec wrapped in a list). */
-  after?: Hook[];
 }
 
 /**

@@ -2,8 +2,8 @@
  * The turn boundary: what happens once per invoke, before any model call.
  *
  * A turn boundary resets the turn's mechanics (rejected, failedDelegations,
- * raised, iterations, beforeDone, parkCounts, park records and phase,
- * replyOnly, the turn budget) and retains the conversation (position,
+ * raised, parkCounts, park records and phase, replyOnly, the turn budget) and
+ * retains the conversation (position,
  * entryState, variables, transcript, trail, files). Every ingress that begins
  * a turn arrives here; a park resumption re-enters at its own suspension
  * through a `Command` and never crosses this boundary — which is what makes "a
@@ -11,7 +11,6 @@
  * graph's shape.
  */
 import { SESSION_ORIGIN, type WorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
-import { lastTurn } from "../core/messages.js";
 import type { Workspace } from "../core/workspace.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { MANUAL_TRIGGER } from "../machine/triggers.js";
@@ -22,7 +21,6 @@ import {
   type VariableStore,
 } from "../machine/variables.js";
 import { decisionRecordFor } from "./parks.js";
-import { messagesIn, visitStart } from "./visits.js";
 import { requiresFileIssues, requiresRefusal, type FileValueCheck } from "./signature-checks.js";
 import { writeSpecSnapshotIfAbsent } from "./snapshot.js";
 import {
@@ -71,14 +69,20 @@ export async function openTurn(
 
   // A session's first turn enters the state its trigger declares; every later turn
   // continues where the conversation is. A retained position the current
-  // definition no longer declares reopens at the trigger's entry.
+  // definition no longer declares reopens at the trigger's entry — and so does
+  // one a session completed in at a terminal automated state: no agent stands
+  // there to take up a new message, and running the state again would complete
+  // the turn without answering it.
   const retained = fields.workflowState;
-  const reopening = retained == null || !Object.hasOwn(machine.spec.states, retained);
+  const reopening =
+    retained == null ||
+    !Object.hasOwn(machine.spec.states, retained) ||
+    (machine.isAutomatedState(retained) && machine.isTerminal(retained) && fields.status === WORKFLOW_STATUSES.completed);
   const position = reopening ? startState : retained;
   const entryState = fields.entryState ?? position;
 
   // A refused turn commits `rejected` with a reason rather than throwing, before
-  // any event narrates a turn beginning: nothing is entered, no hook runs.
+  // any event narrates a turn beginning: nothing is entered, nothing runs.
   const refuse = (reason: string, extra: WorkflowUpdate = {}): WorkflowUpdate => {
     emit({ type: "warning", scope: "workflow", message: reason });
     return {
@@ -166,8 +170,6 @@ export async function openTurn(
     workflowState: position,
     ...NO_PENDING_FAILURE,
     raised: null,
-    iterations: {},
-    beforeDone: {},
     parkCounts: {},
     // A new turn is not a resumed park: every park channel is cleared, and a
     // delegated child suspended on its own human state is abandoned by the turn
@@ -185,13 +187,6 @@ export async function openTurn(
     trigger,
     variables: openingVariables,
     auditTrail: [{ to: position, kind: "trigger", reason: trigger.id, ts: Date.now() } satisfies TrailStep],
-    // A turn that opens a state starts its visit with what the turn was told; one that continues adds none.
-    ...(reopening ? { visits: visitStart(position, openingAnchorOf(messagesIn(state))) } : {}),
     ...reparked,
   };
-}
-
-/** The transcript up to the turn's opening messages, so a visit the turn opens begins with them. */
-function openingAnchorOf(messages: unknown[]): unknown[] {
-  return messages.slice(0, messages.length - lastTurn(messages).length);
 }

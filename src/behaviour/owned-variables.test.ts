@@ -12,7 +12,7 @@ import { advanceTo, assemble, cleanupWorkspaces, toolResults, workspaceWith, typ
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 const set = (variables: Record<string, unknown>, lock?: boolean): ScriptedTurn => ({
   tool: "archmax_set_variables",
   args: { variables, ...(lock ? { lock } : {}) },
