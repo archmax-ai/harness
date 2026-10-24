@@ -4,7 +4,7 @@ import type { BackendProtocolV2, FileData, FileInfo } from "deepagents";
  * Single file-access layer for the runtime.
  *
  * Every read of a file in the agent workspace — machine config, system prompt,
- * hook scripts, `archmax_run` sources, lifecycle artifacts — flows
+ * code-state scripts, `archmax_run` sources, session artifacts — flows
  * through here so it is served by the configured LangChain Deep Agents
  * {@link BackendProtocolV2}. Swap the backend (filesystem, store, sandbox,
  * remote) and the whole runtime follows, with no direct `fs` coupling.

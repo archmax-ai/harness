@@ -250,7 +250,7 @@ const FAKE_ENV: AgentEnv = {
 
 describe("defaultModelFactory", () => {
   it("returns the env-configured model for every role (role-independent default)", () => {
-    for (const role of ["agent", "judge", "rubric"] as ModelRole[]) {
+    for (const role of ["agent", "judge", "grader"] as ModelRole[]) {
       const model = defaultModelFactory(role, () => FAKE_ENV) as { model?: string };
       expect(model.model).toBe("model-x");
     }

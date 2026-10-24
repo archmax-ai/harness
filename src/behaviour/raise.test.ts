@@ -2,8 +2,8 @@
  * `archmax_raise`: the agent ends its session as a failure. The session is
  * `failed`, the outcome carries the agent's code and reason, the turn ends
  * without another model call, and nothing routes or runs on the way out — no
- * `on_error`, no hook, no `returns` check. A session that never raises is a
- * success.
+ * `on_error`, no automated state, no `returns` check. A session that never
+ * raises is a success.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { workflowToolName } from "../index.js";
@@ -13,6 +13,7 @@ import {
   assemble,
   cleanupWorkspaces,
   eventsOf,
+  freshSessionId,
   linearSpec,
   makeWorkspace,
   statesEntered,
@@ -23,7 +24,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 const CODE = "orders-unavailable";
 const REASON = "The orders API failed three times.";
 const RAISE: ScriptedTurn = { tool: "archmax_raise", args: { code: CODE, reason: REASON } };
@@ -103,27 +104,27 @@ describe("a raise", () => {
     expect(answerTo(outcome.messages, "write_file")?.status).not.toBe("error");
   });
 
-  it("ends failed without routing on_error, running a hook or checking returns", async () => {
+  it("ends failed without routing on_error, running an automated state or checking returns", async () => {
     const spec = {
       runtime: RUNTIME,
       states: {
         start: {
           triggers: { manual: { returns: ["summary"] } },
           on_error: "escalate",
-          after: { script: "hooks/check.js" },
         },
-        escalate: {},
+        escalate: { type: "code", script: "scripts/escalate.js" },
       },
     };
     const root = workspaceWith(spec, {
-      "workflows/w/hooks/check.js": `/** Fails loudly if it ever runs. */\nexport default () => { throw new Error("the after hook ran"); };\n`,
+      "workflows/w/scripts/escalate.js": `/** Fails loudly if it ever runs. */\nexport default async function () { throw new Error("the code state ran"); }\n`,
     });
     const { agent, events } = await assemble(root, { turns: [RAISE] });
     const outcome = await agent.workflow.send("s1", { message: "go" });
 
     expect(outcome).toMatchObject({ kind: "failed", state: "start" });
     expect(outcome.exit).toEqual(FAILED_EXIT);
-    expect(eventsOf(events, "hook-start")).toEqual([]);
+    expect(outcome).not.toHaveProperty("rejected");
+    expect(eventsOf(events, "code-start")).toEqual([]);
     expect(eventsOf(events, "state-error-routed")).toEqual([]);
     expect(statesEntered(events)).toEqual(["start"]);
   });
@@ -141,12 +142,20 @@ describe("a raise", () => {
       },
       "workflows/enrich/workflow.yaml": {
         runtime: RUNTIME,
-        states: { work: { triggers: { manual: null }, before: { script: "hooks/deny.js" } } },
+        states: {
+          screen: {
+            type: "code",
+            script: "scripts/deny.js",
+            triggers: { manual: null },
+            transitions: [{ to: "work", description: "There is a customer to enrich." }],
+          },
+          work: {},
+        },
       },
-      "workflows/enrich/hooks/deny.js": `/** Always refuses. */\nexport default () => veto("no customer to enrich");\n`,
+      "workflows/enrich/scripts/deny.js": `/** Always fails. */\nexport default async function () { throw new Error("no customer to enrich"); }\n`,
     });
     const { agent, events } = await assemble(root, { turns: [{ tool: child, args: {} }, RAISE] });
-    const outcome = await agent.workflow.send("s1", { message: "go" });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "go" });
 
     expect(eventsOf(events, "sub-workflow-result")).toMatchObject([{ workflow: "enrich", status: "error" }]);
     expect(outcome.kind).toBe("failed");
@@ -155,7 +164,7 @@ describe("a raise", () => {
 
     // The control: the same failure, answered in text instead, ends the session rejected.
     const unraised = await assemble(root, { turns: [{ tool: child, args: {} }, { reply: "could not enrich" }] });
-    const rejected = await unraised.agent.workflow.send("s1", { message: "go" });
+    const rejected = await unraised.agent.workflow.send(freshSessionId(), { message: "go" });
     expect(rejected.kind).toBe("rejected");
     expect(rejected).not.toHaveProperty("exit");
   });

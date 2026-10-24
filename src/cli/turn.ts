@@ -152,7 +152,7 @@ export interface RunTurnInput {
 
 /**
  * Report a turn's {@link Outcome}: an answer, a park (with what resumes it), a
- * rejection, a failure the agent raised, or a resume's result. Returns the exit
+ * rejection, a failure the session raised, or a resume's result. Returns the exit
  * code: a park is a success, a rejection or a failure is not.
  */
 export function printOutcome(style: Style, machine: WorkflowMachine, sessionId: string, outcome: Outcome): number {

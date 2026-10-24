@@ -68,35 +68,45 @@ describe("createStateFlowRenderer", () => {
     const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: false }));
 
     renderer.onEvent({ type: "state-enter", state: "first" });
-    renderer.onEvent({ type: "hook-start", state: "first", phase: "before", label: "check.js" });
+    renderer.onEvent({ type: "code-start", state: "first", script: "scripts/check.js" });
 
     const nodeLine = stream.chunks.find((c) => c.includes(icons.inProgress))!;
-    const actionLine = stream.chunks.find((c) => c.includes("before"))!;
+    const actionLine = stream.chunks.find((c) => c.includes("scripts/check.js"))!;
     const leadingSpaces = (line: string) => line.match(/^ */)![0].length;
     expect(leadingSpaces(actionLine)).toBeGreaterThan(leadingSpaces(nodeLine));
   });
 
-  it("renders hook phases, verdicts, and rejections", () => {
+  it("renders a code state's run: its script, its output nested deeper, and a failure", () => {
     const stream = new FakeStream();
     const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: false }));
 
-    renderer.onEvent({ type: "hook-start", state: "s", phase: "before", label: "check.js" });
-    renderer.onEvent({ type: "hook-passed", state: "s", phase: "before" });
-    renderer.onEvent({
-      type: "hook-verdict",
-      state: "s",
-      phase: "after",
-      label: "judge",
-      verdict: "ok",
-      reason: "looks good",
-    });
-    renderer.onEvent({ type: "hook-rejected", state: "s", phase: "after", reason: "missing data" });
+    renderer.onEvent({ type: "code-start", state: "s", script: "scripts/check.js" });
+    renderer.onEvent({ type: "code-output", state: "s", line: "checked the requester" });
+    renderer.onEvent({ type: "code-result", state: "s", status: "error", durationMs: 3, reason: "requester unknown" });
 
-    const output = stream.chunks.join("");
-    expect(output).toContain("before");
-    expect(output).toContain("after");
-    expect(output).toContain("looks good");
-    expect(output).toContain("missing data");
+    const leadingSpaces = (line: string) => line.match(/^ */)![0].length;
+    const startLine = stream.chunks.find((c) => c.includes("scripts/check.js"))!;
+    expect(startLine).toContain(`${icons.bullet} code`);
+    const outputLine = stream.chunks.find((c) => c.includes("checked the requester"))!;
+    expect(leadingSpaces(outputLine)).toBeGreaterThan(leadingSpaces(startLine));
+    const failureLine = stream.chunks.find((c) => c.includes("requester unknown"))!;
+    expect(failureLine).toContain(`${icons.cross} code failed`);
+  });
+
+  it("renders a grader's run, and says nothing more for a run that settled", () => {
+    const stream = new FakeStream();
+    const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: false }));
+
+    renderer.onEvent({ type: "grader-start", state: "review" });
+    renderer.onEvent({ type: "grader-result", state: "review", status: "ok", durationMs: 9 });
+    renderer.onEvent({ type: "code-result", state: "answered", status: "ok", durationMs: 2 });
+    expect(stream.chunks).toHaveLength(1);
+    expect(stream.chunks[0]).toContain(`${icons.bullet} grader`);
+    expect(stream.chunks[0]).toContain("grading");
+
+    renderer.onEvent({ type: "grader-result", state: "review", status: "error", durationMs: 9, reason: "undecided" });
+    expect(stream.chunks.join("")).toContain(`${icons.cross} grader failed`);
+    expect(stream.chunks.join("")).toContain("undecided");
   });
 
   it("prints the advance reason indented under the node, without a target", () => {
@@ -284,23 +294,22 @@ describe("createStateFlowRenderer", () => {
     const stream = new FakeStream();
     const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: false }));
 
-    renderer.onEvent({ type: "hooks-summary", summary: "a(before)" });
     renderer.onEvent({ type: "graph-topology", topology: "START -> a" });
 
     expect(stream.chunks).toEqual([]);
   });
 
-  it("colors before and after phases differently", () => {
+  it("colors code and grader runs differently", () => {
     const stream = new FakeStream();
     const renderer = createStateFlowRenderer(stream, createStyle({ isTTY: true, env: {} }));
 
-    renderer.onEvent({ type: "hook-start", state: "s", phase: "before", label: "a" });
-    renderer.onEvent({ type: "hook-start", state: "s", phase: "after", label: "b" });
+    renderer.onEvent({ type: "code-start", state: "s", script: "scripts/a.js" });
+    renderer.onEvent({ type: "grader-start", state: "t" });
 
-    const before = stream.chunks.find((c) => c.includes("before"))!;
-    const after = stream.chunks.find((c) => c.includes("after"))!;
-    expect(before).toContain("\x1b[34m"); // blue
-    expect(after).toContain("\x1b[35m"); // magenta
+    const code = stream.chunks.find((c) => c.includes("scripts/a.js"))!;
+    const grader = stream.chunks.find((c) => c.includes("grading"))!;
+    expect(code).toContain("\x1b[34m"); // blue
+    expect(grader).toContain("\x1b[35m"); // magenta
   });
 });
 
@@ -409,12 +418,12 @@ describe("sub-workflow rendering", () => {
         dispatchId: "d1",
         status: "error",
         durationMs: 5,
-        reason: "the judge vetoed it",
+        reason: "the grader sent it back twice",
       },
     ]);
 
     expect(output).toContain("failed");
-    expect(output).toContain("the judge vetoed it");
+    expect(output).toContain("the grader sent it back twice");
   });
 
   it("names the depth once a dispatch is nested more than one deep", () => {

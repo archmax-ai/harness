@@ -6,7 +6,6 @@ import {
   lastAgentText,
   lastMessageIsHuman,
   messageTypeOf,
-  runContextFromMessages,
   runtimeNote,
   runtimeNoteKind,
   spokeSinceLastHumanMessage,
@@ -19,49 +18,6 @@ describe("contentToString", () => {
     expect(contentToString("plain")).toBe("plain");
     expect(contentToString([{ text: "a" }, "b", { type: "image" }])).toBe("ab");
     expect(contentToString(42)).toBe("");
-  });
-});
-
-describe("runContextFromMessages", () => {
-  it("maps roles, captures tool calls, and finds the user request", () => {
-    const ctx = runContextFromMessages([
-      { role: "system", content: "sys" },
-      { role: "human", content: "do it", tool_calls: [{ name: "ls", args: { a: 1 } }] },
-      { _getType: () => "ai", content: [{ text: "ok" }] },
-    ]);
-
-    expect(ctx.userRequest).toBe("do it");
-    expect(ctx.history.map((h) => h.role)).toEqual(["system", "user", "assistant"]);
-    expect(ctx.history[1].toolCalls).toEqual([{ name: "ls", args: { a: 1 } }]);
-    expect(ctx.history[2].content).toBe("ok");
-  });
-
-  it("keeps every message of the visit, however many", () => {
-    const many = Array.from({ length: 30 }, (_, i) => ({ role: "ai", content: `${i}` }));
-    expect(runContextFromMessages(many).history).toHaveLength(30);
-    expect(runContextFromMessages(many, 26).history.map((h) => h.content)).toEqual(["26", "27", "28", "29"]);
-  });
-
-  it("keeps the opening request when the visit starts after it", () => {
-    // A grader asked whether the reply satisfies the request must still see the
-    // request, which an earlier state usually received (issue #61).
-    const msgs: unknown[] = [{ role: "human", content: "ORIGINAL REQUEST" }];
-    for (let i = 0; i < 30; i++) msgs.push({ role: "ai", content: `step ${i}` });
-    const ctx = runContextFromMessages(msgs, 10);
-
-    expect(ctx.userRequest).toBe("ORIGINAL REQUEST");
-    expect(ctx.history).toHaveLength(21);
-    expect(ctx.history.some((h) => h.role === "user")).toBe(false);
-  });
-
-  it("reads the latest user message, which a later turn's reply answers", () => {
-    const ctx = runContextFromMessages([
-      { role: "human", content: "first" },
-      { role: "ai", content: "working" },
-      { role: "human", content: "second" },
-      { role: "ai", content: "answering the second" },
-    ]);
-    expect(ctx.userRequest).toBe("second");
   });
 });
 
@@ -170,13 +126,13 @@ describe("turnReply", () => {
     expect(turnReply([...before, { role: "human", content: "again" }], anchor)).toBe("");
   });
 
-  it("drops a draft a completion check asked to revise, and keeps text across other notes", () => {
+  it("drops a draft an automated state sent back once the agent speaks again, and keeps text across other notes", () => {
     const turn = [
       { role: "human", content: "go" },
       { role: "assistant", content: "first look" },
       ...runtimeNote("sub-workflow", "[sub-workflow] the child finished"),
       { role: "assistant", content: "draft" },
-      ...runtimeNote("after", "[after] did not pass: revise"),
+      ...runtimeNote("grader", "[grader] Moved to 'answer': cite the order"),
       { role: "assistant", content: "final" },
     ];
     expect(turnReply([...before, ...turn], anchor)).toBe("final");
@@ -187,6 +143,15 @@ describe("turnReply", () => {
       { role: "assistant", content: "handled" },
     ];
     expect(turnReply([...before, ...kept], anchor)).toBe("first look\n\nhandled");
+  });
+
+  it("keeps a draft an automated state passed when nothing is said after it", () => {
+    const turn = [
+      { role: "human", content: "go" },
+      { role: "assistant", content: "the answer" },
+      ...runtimeNote("code", "[code] Moved to 'done': checked"),
+    ];
+    expect(turnReply([...before, ...turn], anchor)).toBe("the answer");
   });
 
   it("finds the turn by the anchor's id when the list was rewritten ahead of it", () => {
@@ -304,18 +269,5 @@ describe("turn boundaries across the narration change", () => {
     const reply = { role: "human", content: "any news?" };
     expect(isRuntimeNote(reply)).toBe(false);
     expect(lastMessageIsHuman([ai("Waiting on the reviewer."), reply])).toBe(true);
-  });
-});
-
-describe("runContextFromMessages with narration", () => {
-  it("shows a hook the note as a tool result, not as the person asking", () => {
-    const ctx = runContextFromMessages([
-      { role: "human", content: "refund order 1042" },
-      ...runtimeNote("decision", "[decision] A human selected approve → 'refund'."),
-    ]);
-    expect(ctx.history.map((h) => h.role)).toEqual(["user", "assistant", "tool"]);
-    expect(ctx.history[1]!.toolCalls).toMatchObject([{ name: "archmax_note" }]);
-    expect(ctx.history[2]!.content).toContain("[decision]");
-    expect(ctx.userRequest).toBe("refund order 1042");
   });
 });

@@ -202,121 +202,115 @@ describe("tool-call origin", () => {
     expect(script.decision).toBe("block");
   });
 
-  it("skips the per-state allow list for a lifecycle call", () => {
-    const machine = machineOf(GATED_SPEC);
-    // `web_fetch` is outside the state's allow list and not an essential
-    // built-in: refused for the agent, permitted for a hook running on
-    // harness authority.
-    const args = { url: "https://example.test" };
-    expect(
-      decide(machine, { kind: "tool-call", state: "work", tool: "web_fetch", args }).decision,
-    ).toBe("block");
-    const lifecycle = decide(machine, {
-      kind: "tool-call",
-      state: "work",
-      tool: "web_fetch",
-      args,
-      origin: "lifecycle",
-    });
-    expect(lifecycle.decision).toBe("allow");
-  });
-
-  it("skips a state's argument constraints for a lifecycle call", () => {
+  /**
+   * The runtime's own `file`-value read runs on runtime authority: outside the
+   * state's allow list, its argument guards included, but held to every safety
+   * rule, the workflow's own denials and consumer rules.
+   */
+  it("skips the per-state allow list and its argument guards for the runtime's own read", () => {
     const machine = machineOf({
       states: {
-        work: { triggers: { manual: null }, tools: { allow: [{ tool: "write_file", args: { file_path: ["output/a.md"] } }] } },
+        work: { triggers: { manual: null }, tools: { allow: [{ tool: "read_file", args: { file_path: ["data/*.json"] } }] } },
       },
     });
-    const args = { file_path: "output/b.md" };
+    const args = { file_path: "reports/q3.md" };
     expect(
-      decide(machine, { kind: "tool-call", state: "work", tool: "write_file", args }).ruleId,
+      decide(machine, { kind: "tool-call", state: "work", tool: "read_file", args }).ruleId,
     ).toBe("tool.not-allowed");
     expect(
-      decide(machine, { kind: "tool-call", state: "work", tool: "write_file", args, origin: "lifecycle" })
+      decide(machine, { kind: "tool-call", state: "work", tool: "read_file", args, origin: "runtime" })
         .decision,
     ).toBe("allow");
   });
 
-  it("still binds a lifecycle call to the non-overridable safety rules", () => {
+  it("still binds the runtime's read to the non-overridable safety rules", () => {
     const machine = machineOf(GATED_SPEC);
     const verdict = decide(
       machine,
       {
         kind: "tool-call",
         state: "work",
-        tool: "write_file",
-        args: { file_path: "skills/x.md" },
-        origin: "lifecycle",
+        tool: "read_file",
+        args: { file_path: "checkpoints/cp-1.json" },
+        origin: "runtime",
       },
       [],
       MOUNTS,
     );
     expect(verdict.decision).toBe("block");
-    expect(verdict.ruleId).toBe("zone.read-only");
+    expect(verdict.ruleId).toBe("zone.runtime-internal");
   });
 
-  it("still binds a lifecycle call to the workflow's own denials", () => {
+  it("still binds the runtime's read to the workflow's own denials", () => {
     const machine = machineOf({
       tools: {
-        forbid_always: [{ tool: "web_fetch" }, { tool: "write_file", paths: ["logs/**"] }],
+        forbid_always: [{ tool: "read_file", paths: ["secrets/**"] }],
       },
       states: { work: { triggers: { manual: null }, tools: { allow: [{ tool: "read_file" }] } } },
     });
-    const forbiddenTool = decide(machine, {
-      kind: "tool-call",
-      state: "work",
-      tool: "web_fetch",
-      args: {},
-      origin: "lifecycle",
-    });
-    expect(forbiddenTool.ruleId).toBe("tool.forbidden");
     const forbiddenPath = decide(machine, {
       kind: "tool-call",
       state: "work",
-      tool: "write_file",
-      args: { file_path: "logs/audit.txt" },
-      origin: "lifecycle",
+      tool: "read_file",
+      args: { file_path: "secrets/key.txt" },
+      origin: "runtime",
     });
     expect(forbiddenPath.ruleId).toBe("tool.forbidden");
   });
 
+  it("is not bound by the state's own forbid, which governs that state's surface", () => {
+    const machine = machineOf({
+      states: {
+        work: {
+          triggers: { manual: null },
+          tools: { allow: ["read_file"], forbid: [{ tool: "read_file", paths: ["secret/**"] }] },
+        },
+      },
+    });
+    const read = (origin?: "runtime") =>
+      decide(machine, { kind: "tool-call", state: "work", tool: "read_file", args: { file_path: "secret/a" }, ...(origin ? { origin } : {}) });
+    expect(read().ruleId).toBe("tool.forbidden-here");
+    expect(read("runtime").decision).toBe("allow");
+  });
+
   /**
    * The kernel binds a workflow's own `mounts.forbid_always` and
-   * `skills.forbid_always` to its own hooks by itself: no caller has to compile
-   * them into rules, as it does to pass a caller's denials down to a child.
+   * `skills.forbid_always` to the runtime's own reads by itself: no caller has
+   * to compile them into rules, as it does to pass a caller's denials down to a
+   * child.
    */
-  it("binds a lifecycle call to the workflow's own mount and skill denials, with no rules passed", () => {
+  it("binds the runtime's read to the workflow's own mount and skill denials, with no rules passed", () => {
     const machine = machineOf({
       mounts: { forbid_always: ["reference"] },
       skills: { forbid_always: ["payroll"] },
       states: { work: { triggers: { manual: null } } },
     });
     const mounts: MountPrefixes = { dirs: ["reference", "skills"], files: [], writable: [], governed: [], unsearchable: [] };
-    const hook = (file_path: string) =>
+    const read = (file_path: string) =>
       decide(
         machine,
-        { kind: "tool-call", state: "work", tool: "read_file", args: { file_path }, origin: "lifecycle" },
+        { kind: "tool-call", state: "work", tool: "read_file", args: { file_path }, origin: "runtime" },
         [],
         mounts,
         {},
         [{ slug: "payroll", prefix: "skills/payroll" }],
       );
-    expect(hook("reference/rates.csv").ruleId).toBe("mount.forbidden");
-    expect(hook("skills/payroll/assets/rates.csv").ruleId).toBe("skill.forbidden");
+    expect(read("reference/rates.csv").ruleId).toBe("mount.forbidden");
+    expect(read("skills/payroll/assets/rates.csv").ruleId).toBe("skill.forbidden");
   });
 
-  it("still binds a lifecycle call to consumer rules", () => {
+  it("still binds the runtime's read to consumer rules", () => {
     const machine = machineOf(GATED_SPEC);
-    const blockLs: GovernanceRule = (action) =>
-      action.kind === "tool-call" && action.tool === "ls"
-        ? { decision: "block", ruleId: "custom.ls", reason: "no listing" }
+    const blockReads: GovernanceRule = (action) =>
+      action.kind === "tool-call" && action.tool === "read_file"
+        ? { decision: "block", ruleId: "custom.read", reason: "no reads" }
         : null;
     const verdict = decide(
       machine,
-      { kind: "tool-call", state: "work", tool: "ls", args: {}, origin: "lifecycle" },
-      [blockLs],
+      { kind: "tool-call", state: "work", tool: "read_file", args: { file_path: "data/a.json" }, origin: "runtime" },
+      [blockReads],
     );
-    expect(verdict.ruleId).toBe("custom.ls");
+    expect(verdict.ruleId).toBe("custom.read");
   });
 
   it("exposes the origin to consumer rules", () => {
@@ -326,7 +320,7 @@ describe("tool-call origin", () => {
       if (action.kind === "tool-call") seen.push(action.origin);
       return null;
     };
-    for (const origin of [undefined, "script", "lifecycle"] as const) {
+    for (const origin of [undefined, "script", "runtime"] as const) {
       decide(
         machine,
         {
@@ -339,7 +333,7 @@ describe("tool-call origin", () => {
         [record],
       );
     }
-    expect(seen).toEqual([undefined, "script", "lifecycle"]);
+    expect(seen).toEqual([undefined, "script", "runtime"]);
   });
 });
 

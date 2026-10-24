@@ -2,8 +2,8 @@
  * The turn boundary: what happens once per invoke, before any model call.
  *
  * A turn boundary resets the turn's mechanics (rejected, failedDelegations,
- * raised, iterations, beforeDone, parkCounts, park records and phase,
- * replyOnly, the turn budget) and retains the conversation (position,
+ * raised, parkCounts, park records and phase, replyOnly, the turn budget) and
+ * retains the conversation (position,
  * entryState, variables, transcript, trail, files). Every ingress that begins
  * a turn arrives here; a park resumption re-enters at its own suspension
  * through a `Command` and never crosses this boundary — which is what makes "a
@@ -71,14 +71,20 @@ export async function openTurn(
 
   // A session's first turn enters the state its trigger declares; every later turn
   // continues where the conversation is. A retained position the current
-  // definition no longer declares reopens at the trigger's entry.
+  // definition no longer declares reopens at the trigger's entry — and so does
+  // one a session completed in at a terminal automated state: no agent stands
+  // there to take up a new message, and running the state again would complete
+  // the turn without answering it.
   const retained = fields.workflowState;
-  const reopening = retained == null || !Object.hasOwn(machine.spec.states, retained);
+  const reopening =
+    retained == null ||
+    !Object.hasOwn(machine.spec.states, retained) ||
+    (machine.isAutomatedState(retained) && machine.isTerminal(retained) && fields.status === WORKFLOW_STATUSES.completed);
   const position = reopening ? startState : retained;
   const entryState = fields.entryState ?? position;
 
   // A refused turn commits `rejected` with a reason rather than throwing, before
-  // any event narrates a turn beginning: nothing is entered, no hook runs.
+  // any event narrates a turn beginning: nothing is entered, nothing runs.
   const refuse = (reason: string, extra: WorkflowUpdate = {}): WorkflowUpdate => {
     emit({ type: "warning", scope: "workflow", message: reason });
     return {
@@ -166,8 +172,6 @@ export async function openTurn(
     workflowState: position,
     ...NO_PENDING_FAILURE,
     raised: null,
-    iterations: {},
-    beforeDone: {},
     parkCounts: {},
     // A new turn is not a resumed park: every park channel is cleared, and a
     // delegated child suspended on its own human state is abandoned by the turn

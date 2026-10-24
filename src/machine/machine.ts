@@ -2,7 +2,6 @@ import { createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/e
 import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
 import { computeSpecHash } from "../workflow/snapshot.js";
-import { normalizeHooks } from "../lifecycle/hook-shape.js";
 import {
   argsSatisfy,
   normalizeAllowEntry,
@@ -23,14 +22,12 @@ import {
 } from "./triggers.js";
 import {
   ADVANCE_TOOL,
+  NOT_OFFERED_TO_AUTOMATED,
   ALWAYS_ALLOWED_TOOLS,
+  CODE_STATE_CONTROL_TOOLS,
+  GRADER_STATE_CONTROL_TOOLS,
   UNGRANTABLE_TOOLS,
   DEFAULT_TOOLS,
-  GET_VARIABLES_TOOL,
-  RESET_TOOL,
-  SET_VARIABLES_TOOL,
-  WAIT_TOOL,
-  RAISE_TOOL,
   workflowSlugFromToolName,
 } from "./tool-names.js";
 import {
@@ -47,9 +44,9 @@ import {
   type AllowEntry,
   type ForbidEntry,
   type HarnessSettings,
-  type LifecycleHook,
   type MachineSpec,
   type MachineTransition,
+  type StateType,
 } from "./types.js";
 
 export { ALWAYS_ALLOWED_TOOLS, DEFAULT_TOOLS, UNGRANTABLE_TOOLS };
@@ -74,7 +71,7 @@ export interface GuardContext {
   onUnresolved?: (failure: GuardResolutionFailure) => void;
 }
 
-/** Default per-eval timeout (ms) for interpreter and lifecycle scripts. */
+/** Default per-eval timeout (ms) for the agent's scripts and code states' scripts. */
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
@@ -420,11 +417,11 @@ export class WorkflowMachine {
   /**
    * The governed mounts this workflow grants **anywhere** — in
    * `mounts.allow_always` or in any state's `mounts.allow` — minus what
-   * `mounts.forbid_always` denies: the reach of a call on runtime authority (a
-   * hook script, the runtime's own `file` value check). Such a call runs outside
-   * every state's surface, so no state's `allow` or `forbid` narrows it, but never
-   * outside its own workflow's grants: a governed mount only another workflow in
-   * the tree grants stays out of reach, though one table serves both.
+   * `mounts.forbid_always` denies: the reach of a call on runtime authority (the
+   * runtime's own `file` value check). Such a call runs outside every state's
+   * surface, so no state's `allow` or `forbid` narrows it, but never outside its
+   * own workflow's grants: a governed mount only another workflow in the tree
+   * grants stays out of reach, though one table serves both.
    * Declaration order, `allow_always` first, then each state in spec order.
    */
   workflowGrantedMounts(governed: readonly string[]): string[] {
@@ -495,9 +492,51 @@ export class WorkflowMachine {
     return this.transitionTargets(state).length === 0;
   }
 
+  /** A state's type; `agent` when it declares none (or the slug is unknown). */
+  stateType(state: string): StateType {
+    return this.spec.states[state]?.type ?? "agent";
+  }
+
   /** Whether a state is a human decision state (a person picks the edge). */
   isHumanState(state: string): boolean {
-    return this.spec.states[state]?.type === "human";
+    return this.stateType(state) === "human";
+  }
+
+  /** Whether a state is a grader state (an isolated grader subagent decides the edge). */
+  isGraderState(state: string): boolean {
+    return this.stateType(state) === "grader";
+  }
+
+  /** Whether a state is a code state (its `script` decides the edge). */
+  isCodeState(state: string): boolean {
+    return this.stateType(state) === "code";
+  }
+
+  /**
+   * Whether a state is **automated** — a grader or a code state: the runtime runs
+   * it on entry, with no model call of the session's agent, and it leaves by
+   * `archmax_advance` or ends the session by `archmax_raise`.
+   */
+  isAutomatedState(state: string): boolean {
+    const type = this.stateType(state);
+    return type === "grader" || type === "code";
+  }
+
+  /**
+   * The control tools `state` is offered, by its type — the one answer the
+   * kernel's grant, disclosure and an automated state's tool list read. An agent
+   * or human state has every control; an automated state cannot park or reset,
+   * and only a grader reads the history.
+   */
+  controlTools(state: string): ReadonlySet<string> {
+    switch (this.stateType(state)) {
+      case "code":
+        return CODE_STATE_CONTROL_TOOLS;
+      case "grader":
+        return GRADER_STATE_CONTROL_TOOLS;
+      default:
+        return ALWAYS_ALLOWED_TOOLS;
+    }
   }
 
   /**
@@ -517,22 +556,6 @@ export class WorkflowMachine {
       if (errorTarget) queue.push(errorTarget);
     }
     return seen;
-  }
-
-  /** Each state's normalized `before`/`after` hook lists, for states declaring any. */
-  lifecycleHooks(): Record<string, LifecycleHook> {
-    const map: Record<string, LifecycleHook> = {};
-    for (const [slug, state] of Object.entries(this.spec.states)) {
-      const before = normalizeHooks(state.before);
-      const after = normalizeHooks(state.after);
-      if (before.length || after.length) {
-        map[slug] = {
-          ...(before.length ? { before } : {}),
-          ...(after.length ? { after } : {}),
-        };
-      }
-    }
-    return map;
   }
 
   /**
@@ -628,13 +651,17 @@ export class WorkflowMachine {
    * workflow-wide grant ({@link workflowGrant}); else the host's
    * `essentialTools`, unconstrained. The last two never name the same tool — a
    * workflow-wide entry for a host tool is inert — so their order is only the
-   * order a block message lists them in.
+   * order a block message lists them in. An automated state is never offered an
+   * agent-only tool, parking or resetting ({@link NOT_OFFERED_TO_AUTOMATED}), so
+   * an own or workflow-wide entry naming one grants it nothing there.
    */
   private effectiveEntries(state: string): NormalizedAllowEntry[] {
-    const own = this.allowEntries(state).map(normalizeAllowEntry);
+    const offered = (tool: string | undefined) =>
+      !(tool && this.isAutomatedState(state) && NOT_OFFERED_TO_AUTOMATED.has(tool));
+    const own = this.allowEntries(state).map(normalizeAllowEntry).filter((e) => offered(e.tool));
     const mentioned = new Set(own.map((e) => e.tool));
     const workflow = this.workflowGrant().filter(
-      (e) => e.tool && !mentioned.has(e.tool) && !this.extraEssential.has(e.tool),
+      (e) => e.tool && offered(e.tool) && !mentioned.has(e.tool) && !this.extraEssential.has(e.tool),
     );
     const host = [...this.extraEssential]
       .filter((tool) => !mentioned.has(tool))
@@ -644,8 +671,8 @@ export class WorkflowMachine {
 
   /**
    * Whether a tool call is statically permitted in `state`. Closed by default:
-   * the always-allowed controls pass; otherwise some effective entry must name
-   * the tool and match its arguments.
+   * the state type's controls pass ({@link controlTools}); otherwise some
+   * effective entry must name the tool and match its arguments.
    */
   checkAllowed(
     state: string,
@@ -653,7 +680,7 @@ export class WorkflowMachine {
     args: Record<string, unknown>,
     ctx?: GuardContext,
   ): boolean {
-    if (ALWAYS_ALLOWED_TOOLS.has(tool)) return true;
+    if (this.controlTools(state).has(tool)) return true;
     return this.effectiveEntries(state).some(
       (entry) => {
         if (entry.tool !== tool) return false;
@@ -669,24 +696,22 @@ export class WorkflowMachine {
   }
 
   /**
-   * The tool names disclosed to the model while `state` is active: every tool
-   * an effective entry names plus the controls (`archmax_advance` omitted for a
-   * terminal state, where every call to it would be rejected), minus the tools
-   * denied here by name. Name-level only — argument enforcement stays with the
-   * kernel at call time.
+   * The tool names offered while `state` is active — to the session's agent in
+   * an agent state, to the grader in a grader state, to the script in a code
+   * state: every tool an effective entry names plus the state type's controls
+   * (`archmax_advance` omitted for a terminal state, where every call to it
+   * would be rejected), minus the tools denied here by name. Name-level only —
+   * argument enforcement stays with the kernel at call time.
    */
   disclosedTools(state: string): Set<string> {
     const disclosed = new Set<string>();
     for (const { tool } of this.effectiveEntries(state)) if (tool) disclosed.add(tool);
-    if (!this.isTerminal(state)) disclosed.add(ADVANCE_TOOL);
-    // Reset, wait, raise and the variable tools are disclosed everywhere,
-    // terminal states included: restarting, parking for a reply, failing, and
-    // the run's working memory all still apply once a run has answered.
-    disclosed.add(RESET_TOOL);
-    disclosed.add(WAIT_TOOL);
-    disclosed.add(RAISE_TOOL);
-    disclosed.add(GET_VARIABLES_TOOL);
-    disclosed.add(SET_VARIABLES_TOOL);
+    // Every other control is offered in terminal states too: restarting,
+    // parking for a reply, failing, and the run's working memory all still
+    // apply once a run has answered.
+    for (const tool of this.controlTools(state)) {
+      if (tool !== ADVANCE_TOOL || !this.isTerminal(state)) disclosed.add(tool);
+    }
     // A bare denial removes the tool from the model's picture entirely; a
     // guarded one (`{ tool: write_file, paths: [...] }`) denies only some calls,
     // so the tool stays disclosed and the kernel refuses the call — the same
@@ -726,7 +751,7 @@ export class WorkflowMachine {
       .filter(({ tool }) => !tool || !denied.has(tool))
       .map((entry) => this.renderEntry(entry));
     const disclosed = this.disclosedTools(state);
-    for (const tool of ALWAYS_ALLOWED_TOOLS) if (disclosed.has(tool)) parts.push(tool);
+    for (const tool of this.controlTools(state)) if (disclosed.has(tool)) parts.push(tool);
     return parts.join(", ");
   }
 

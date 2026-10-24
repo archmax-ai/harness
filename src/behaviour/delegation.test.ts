@@ -33,7 +33,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 const CHILD_TOOL = workflowToolName("enrich");
 
 /** The parent: `start` may delegate to `enrich`, then finishes in `done`. */
@@ -1295,11 +1295,11 @@ describe("a pinned clock in a child session", () => {
     makeWorkspace({
       "AGENTS.md": AGENTS_MD,
       "workflows/w/workflow.yaml": {
-        runtime: { engine: "archmax-harness", version: "2" },
+        runtime: { engine: "archmax-harness", version: "3" },
         states: { start: { triggers: { manual: null }, tools: { allow: [child] } } },
       },
       "workflows/enrich/workflow.yaml": {
-        runtime: { engine: "archmax-harness", version: "2" },
+        runtime: { engine: "archmax-harness", version: "3" },
         states: { work: { triggers: { manual: null } } },
       },
     });

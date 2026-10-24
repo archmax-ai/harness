@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import type { StructuredTool } from "@langchain/core/tools";
 import { GraphInterrupt } from "@langchain/langgraph";
 import type { BackendProtocolV2 } from "deepagents";
-import { runtimeNote } from "../core/messages.js";
+import { runtimeNote, runtimeNoteKind } from "../core/messages.js";
 import { Workspace } from "../core/workspace.js";
 import { WorkflowMachine } from "../machine/machine.js";
-import type { ScriptExecutor, ScriptOutcome } from "../sandbox/executor.js";
-import type { WorkflowLifecycleEvent } from "../core/events.js";
+import type { CodeStateRunParams, ScriptExecutor, ScriptOutcome } from "../sandbox/executor.js";
+import { createPtcToolGateway } from "../sandbox/ptc-gateway.js";
+import { createWorkflowEventEmitter, type WorkflowLifecycleEvent } from "../core/events.js";
 import type { VariableStore } from "../machine/variables.js";
-import { createWorkflowInstrumentation } from "./middleware.js";
+import { automatedOutcomeOf } from "./automated.js";
+import { createWorkflowInstrumentation, type WorkflowMiddlewareOptions } from "./middleware.js";
+import { resolveCodeScript } from "./paths.js";
 import { returnsRejection } from "./signature-checks.js";
 import { mergeVariables, type TrailStep } from "./state.js";
 
@@ -32,7 +36,6 @@ const STATE_YAML = `
 states:
   g:
     triggers: { manual: }
-    after: { script: hooks/after.js }
     tools:
       allow:
         - { tool: write_file, args: { file_path: ["output/**"] } }
@@ -62,29 +65,56 @@ async function loadMachine(): Promise<WorkflowMachine> {
   return machine;
 }
 
-interface Tracker {
-  executor: ScriptExecutor;
-  calls: number;
-}
+const passOutcome: ScriptOutcome = { ok: true, value: null, logs: [], formatted: "" };
 
-function trackingExecutor(outcome: ScriptOutcome): Tracker {
-  const tracker: Tracker = {
-    calls: 0,
-    executor: {
-      async runFile() {
-        tracker.calls += 1;
-        return outcome;
-      },
-      async runCode() {
-        return outcome;
-      },
-      dispose() {},
+/**
+ * A code executor that records what it is asked to do. `script` stands in for a
+ * code state's script: a function of the governed tools the run was handed, by
+ * name. A throw settles the run with that error, as a failing script does.
+ * Omitted, the script does nothing.
+ */
+function recordingExecutor(script?: (tools: Record<string, StructuredTool>) => Promise<void> | void) {
+  const runs: { path: string; params: CodeStateRunParams }[] = [];
+  const disposed: string[] = [];
+  const executor: ScriptExecutor = {
+    async runFile() {
+      return passOutcome;
+    },
+    async runCode() {
+      return passOutcome;
+    },
+    async runCodeState(path, params) {
+      runs.push({ path, params });
+      try {
+        await script?.(Object.fromEntries(params.tools.map((tool) => [tool.name, tool])));
+        return { ...passOutcome, logs: [`ran ${path}`] };
+      } catch (err) {
+        const message = (err as Error).message;
+        return { ok: false, value: undefined, logs: [], error: { message }, formatted: `error: ${message}` };
+      }
+    },
+    dispose(sessionId, ns) {
+      disposed.push(`${sessionId}:${ns ?? "*"}`);
     },
   };
-  return tracker;
+  return { executor, runs, disposed };
 }
 
-const passOutcome: ScriptOutcome = { ok: true, value: null, logs: [], formatted: "" };
+/**
+ * What runs an automated state. Most machines here declare none, so the
+ * executor runs nothing and no grader model is ever asked for.
+ */
+function automation(
+  executor: ScriptExecutor = recordingExecutor().executor,
+): Pick<WorkflowMiddlewareOptions, "codeExecutor" | "resolveCodeScript" | "graderModel"> {
+  return {
+    codeExecutor: executor,
+    resolveCodeScript: (declared) => resolveCodeScript("w", declared),
+    graderModel: (state) => {
+      throw new Error(`no grader model in this test (asked for '${state}')`);
+    },
+  };
+}
 
 function toolRequest(name: string, args: Record<string, unknown>) {
   return {
@@ -100,12 +130,10 @@ async function callMiddleware(
   handler?: (r: unknown) => unknown,
 ) {
   const machine = await loadMachine();
-  const tracker = trackingExecutor(passOutcome);
   const events: WorkflowLifecycleEvent[] = [];
   const instrumentation = createWorkflowInstrumentation({
     machine,
-    executor: tracker.executor,
-    ptcNames: [],
+    ...automation(),
     onEvent: (e) => events.push(e),
   });
   const wrapToolCall = (
@@ -122,7 +150,7 @@ async function callMiddleware(
         return "HANDLER_RAN";
       }),
   );
-  return { result, handlerRan, tracker, events };
+  return { result, handlerRan, events };
 }
 
 describe("workflow middleware tool governance", () => {
@@ -167,42 +195,6 @@ describe("workflow middleware tool governance", () => {
   });
 });
 
-describe("a before hook's transcript", () => {
-  it("is the session's own, not the request a summary shortened for the model", async () => {
-    const machine = await WorkflowMachine.load(
-      machineWorkspace(STATE_YAML.replace("after: { script: hooks/after.js }", "before: { script: hooks/before.js }")),
-      SPEC_PATHS,
-    );
-    let seen: unknown;
-    const executor: ScriptExecutor = {
-      async runFile(_path, params) {
-        seen = (params.args as { messages?: unknown }).messages;
-        return passOutcome;
-      },
-      async runCode() {
-        return passOutcome;
-      },
-      dispose() {},
-    };
-    const instrumentation = createWorkflowInstrumentation({ machine: machine!, executor, ptcNames: [], onEvent: () => {} });
-    const wrapModelCall = (
-      instrumentation.middleware as unknown as {
-        wrapModelCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
-      }
-    ).wrapModelCall;
-    await wrapModelCall(
-      {
-        runtime: { configurable: { thread_id: "t1" } },
-        tools: [],
-        messages: [new HumanMessage("SUMMARY of the conversation so far")],
-        state: { messages: [new HumanMessage({ id: "m1", content: "cancel order 42" })] },
-      },
-      () => new AIMessage("AI"),
-    );
-    expect(seen).toEqual([{ role: "user", text: "cancel order 42" }]);
-  });
-});
-
 describe("workflow middleware progressive tool disclosure", () => {
   function fakeTool(name: string) {
     return { name } as unknown as import("@langchain/core/tools").StructuredTool;
@@ -210,11 +202,9 @@ describe("workflow middleware progressive tool disclosure", () => {
 
   async function seenByModel(tools: string[], workflowState?: string): Promise<string[]> {
     const machine = await loadMachine();
-    const tracker = trackingExecutor(passOutcome);
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: tracker.executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
     });
     const wrapModelCall = (
@@ -263,8 +253,7 @@ describe("workflow middleware progressive tool disclosure", () => {
     const machine = await loadMachine();
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
     });
     const wrapModelCall = (
@@ -313,8 +302,7 @@ describe("workflow middleware progressive tool disclosure", () => {
     const machine = await loadMachine();
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
       ...(pins.clock ? { promptShaping: { clock: pins.clock } } : {}),
     });
@@ -568,8 +556,7 @@ describe("workflow middleware model-result narrowing", () => {
     const machine = await loadMachine();
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
     });
     const wrapModelCall = (
@@ -684,8 +671,7 @@ describe("workflow middleware tool telemetry", () => {
     const events: WorkflowLifecycleEvent[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: (e) => events.push(e),
     });
     const wrapToolCall = (
@@ -769,10 +755,10 @@ describe("workflow middleware tool telemetry", () => {
   });
 
   it("refuses an agent's task call rather than bracketing it as a dispatch", async () => {
-    // `task` exists in the tool list because registered rubrics put it there for
-    // the runtime. It is not the agent's to call: the kernel refuses it, so the
-    // turn produces a block and no dispatch pair. A rubric's own dispatch is
-    // bracketed by the bridge instead (see sandbox/bridge.test.ts).
+    // `task` exists in the tool list because Deep Agents always registers it —
+    // even a state naming it (as `g` does) grants nothing. The kernel refuses it,
+    // so the turn produces a block and no dispatch pair, and the refusal points
+    // the agent at what the workflow declares instead.
     const { events, handlerRan, result } = await callMiddleware("task", {
       description: "judge it",
       subagent_type: "quality-judge",
@@ -780,9 +766,10 @@ describe("workflow middleware tool telemetry", () => {
 
     expect(handlerRan).toBe(false);
     expect(JSON.stringify(result)).toContain("not a tool");
+    expect(JSON.stringify(result)).toContain("grader state");
     const types = events.map((e) => e.type);
-    expect(types).not.toContain("rubric-start");
-    expect(types).not.toContain("rubric-result");
+    expect(types).not.toContain("tool-called");
+    expect(types).not.toContain("tool-result");
   });
 });
 
@@ -800,43 +787,18 @@ describe("workflow middleware session isolation and dispose", () => {
     };
   }
 
-  function advanceRequest(sessionId: string) {
+  /** A permitted call in `g`, which resolves only where `write_file` is registered. */
+  function writeRequest(sessionId: string) {
     return {
-      toolCall: { name: "archmax_advance", args: { to: "done", reason: "done" }, id: "call-1" },
+      toolCall: { name: "write_file", args: { file_path: "output/a.json" }, id: "call-1" },
       runtime: { configurable: { thread_id: sessionId } },
       state: { messages: [], workflowState: "g" },
     };
   }
 
-  /** Executor that records the PTC tool names passed to each lifecycle-hook run. */
-  function toolRecordingExecutor(): {
-    executor: ScriptExecutor;
-    toolsSeen: string[][];
-    disposed: string[];
-  } {
-    const toolsSeen: string[][] = [];
-    const disposed: string[] = [];
-    return {
-      toolsSeen,
-      disposed,
-      executor: {
-        async runFile(_filePath, params) {
-          toolsSeen.push((params.tools ?? []).map((t) => t.name));
-          return passOutcome;
-        },
-        async runCode() {
-          return passOutcome;
-        },
-        dispose(sessionId, ns) {
-          disposed.push(`${sessionId}:${ns ?? "*"}`);
-        },
-      },
-    };
-  }
-
   async function makeInstrumentation(executor: ScriptExecutor) {
     const machine = await loadMachine();
-    const instrumentation = createWorkflowInstrumentation({ machine, executor, ptcNames: [] });
+    const instrumentation = createWorkflowInstrumentation({ machine, ...automation(executor) });
     const mw = instrumentation.middleware as unknown as {
       wrapModelCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
       wrapToolCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
@@ -844,62 +806,52 @@ describe("workflow middleware session isolation and dispose", () => {
     return { instrumentation, mw };
   }
 
-  it("gives each session's lifecycle hook only its own segment context", async () => {
-    const { executor, toolsSeen } = toolRecordingExecutor();
-    const { mw } = await makeInstrumentation(executor);
+  it("resolves a called name against its own session's tools, never another's", async () => {
+    const { mw } = await makeInstrumentation(recordingExecutor().executor);
 
     // Two sessions run model calls with different tool surfaces, interleaved.
-    await mw.wrapModelCall(modelRequest("t1", [fakeTool("alpha")]), () => new AIMessage("AI"));
-    await mw.wrapModelCall(modelRequest("t2", [fakeTool("beta")]), () => new AIMessage("AI"));
+    await mw.wrapModelCall(modelRequest("t1", [fakeTool("write_file")]), () => new AIMessage("AI"));
+    await mw.wrapModelCall(modelRequest("t2", [fakeTool("read_file")]), () => new AIMessage("AI"));
 
-    // Each `archmax_advance` runs the departing state's `after` hook, which reads
-    // the session's own segment tool surface.
-    await mw.wrapToolCall(advanceRequest("t1"), () => "OK");
-    await mw.wrapToolCall(advanceRequest("t2"), () => "OK");
-
-    // Beside the session's own surface, every hook is handed its `toolCalls` query.
-    expect(toolsSeen).toEqual([
-      ["alpha", "archmax_tool_calls"],
-      ["beta", "archmax_tool_calls"],
-    ]);
+    expect(await mw.wrapToolCall(writeRequest("t1"), () => "OK")).toBe("OK");
+    // `t2` registered no `write_file`: t1's surface is not what it resolves against.
+    const refused = await mw.wrapToolCall(writeRequest("t2"), () => "OK");
+    expect(String((refused as ToolMessage).content)).toContain("'write_file' is not a tool");
   });
 
-  it("clears segment context on dispose, including mid-segment aborts", async () => {
-    const { executor, toolsSeen, disposed } = toolRecordingExecutor();
+  it("clears the session's context on dispose, including mid-turn aborts", async () => {
+    const { executor, disposed } = recordingExecutor();
     const { instrumentation, mw } = await makeInstrumentation(executor);
 
-    // Segment starts (context populated) and is then aborted: no afterAgent.
-    await mw.wrapModelCall(modelRequest("t1", [fakeTool("alpha")]), () => new AIMessage("AI"));
+    // A turn starts (context populated) and is then aborted: no afterAgent.
+    await mw.wrapModelCall(modelRequest("t1", [fakeTool("read_file")]), () => new AIMessage("AI"));
     instrumentation.dispose("t1");
 
-    // The lifecycle interpreter session was released for the session.
-    expect(disposed).toContain("t1:process");
+    // The session's code-state interpreter was released.
+    expect(disposed).toContain("t1:code");
 
-    // A later lifecycle hook on the same session sees no stale tool surface.
-    await mw.wrapToolCall(advanceRequest("t1"), () => "OK");
-    expect(toolsSeen).toEqual([["archmax_tool_calls"]]);
+    // A later call on the same session is not resolved against the stale surface.
+    expect(await mw.wrapToolCall(writeRequest("t1"), () => "OK")).toBe("OK");
   });
 
   it("is idempotent on double dispose", async () => {
-    const { executor, disposed } = toolRecordingExecutor();
+    const { executor, disposed } = recordingExecutor();
     const { instrumentation } = await makeInstrumentation(executor);
 
     instrumentation.dispose("t1");
     instrumentation.dispose("t1");
 
-    expect(disposed).toEqual(["t1:process", "t1:process"]);
+    expect(disposed).toEqual(["t1:code", "t1:code"]);
   });
 });
 
 describe("workflow middleware tool-call events", () => {
   async function callWithEvents(name: string, args: Record<string, unknown>) {
     const machine = await loadMachine();
-    const tracker = trackingExecutor(passOutcome);
     const events: { type: string; tool?: string; detail?: string }[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: tracker.executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: (e) => events.push(e as { type: string; tool?: string; detail?: string }),
     });
     const wrapToolCall = (
@@ -944,12 +896,10 @@ states:
 `;
     const machine = await WorkflowMachine.load(machineWorkspace(openYaml), SPEC_PATHS);
     if (!machine) throw new Error("failed to load open machine");
-    const tracker = trackingExecutor(passOutcome);
     const events: { type: string; tool?: string }[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: tracker.executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: (e) => events.push(e as { type: string; tool?: string }),
     });
     const wrapToolCall = (
@@ -975,15 +925,13 @@ states:
   done:
 `;
 
-  it("commits the transition and checkpointed corrections via a Command", async () => {
+  it("commits the transition and its trail step via a Command", async () => {
     const { Command } = await import("@langchain/langgraph");
     const machine = await WorkflowMachine.load(machineWorkspace(OPEN_YAML), SPEC_PATHS);
     if (!machine) throw new Error("failed to load open machine");
-    const tracker = trackingExecutor(passOutcome);
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: tracker.executor,
-      ptcNames: [],
+      ...automation(),
     });
     const wrapToolCall = (
       instrumentation.middleware as unknown as {
@@ -996,8 +944,8 @@ states:
       {
         toolCall: { name: "archmax_advance", args: { to: "done", reason: "all set" }, id: "call-9" },
         runtime: { configurable: { thread_id: "t1" } },
-        // Corrections recorded in an earlier segment live in checkpointed state.
-        state: { messages: [], workflowState: "g", iterations: { g: 1 } },
+        // A rejection an earlier step committed is cleared by the move.
+        state: { messages: [], workflowState: "g", rejected: "an earlier refusal" },
       },
       () => {
         handlerRan = true;
@@ -1009,7 +957,10 @@ states:
     expect(result).toBeInstanceOf(Command);
     const update = (result as InstanceType<typeof Command>).update as Record<string, unknown>;
     expect(update.workflowState).toBe("done");
-    expect(update.iterations).toEqual({ g: 1 });
+    expect(update.auditTrail).toMatchObject([{ to: "done", kind: "agent", reason: "all set" }]);
+    expect(update.rejected).toBeNull();
+    // The target's turn budget starts afresh.
+    expect(update.stateTurns).toBeNull();
     const [message] = update.messages as ToolMessage[];
     expect(String(message.content)).toContain("Advanced to state 'done'");
     expect(message.tool_call_id).toBe("call-9");
@@ -1044,8 +995,7 @@ states:
     const events: WorkflowLifecycleEvent[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: (e) => events.push(e),
     });
     const wrapToolCall = (
@@ -1156,6 +1106,15 @@ states:
       to: "done",
       callId: "a1",
     });
+    // The move is announced inside the call's pair, as the call's effect; the
+    // state left and entered follow once the call has settled.
+    expect(events.map((e) => e.type)).toEqual([
+      "tool-called",
+      "advance",
+      "tool-result",
+      "state-leave",
+      "state-enter",
+    ]);
     // The id on the events is the id on the message the model reads back, so the
     // stream and the transcript name this call the same way.
     const update = (results[0] as { update: { messages: ToolMessage[] } }).update;
@@ -1180,33 +1139,27 @@ states:
     expect(events.some((e) => e.type === "advance")).toBe(false);
   });
 
-  it("settles a vetoed archmax_advance as an error", async () => {
-    // Nothing wrong with the edge — the departing state's `after` hook refuses
-    // the transition. The reply the model reads is still not an error message, so
-    // only reading the committed outcome gets this right.
-    const vetoYaml = `
+  it("settles an archmax_advance refused for an unmet `requires` as an error", async () => {
+    // Nothing wrong with the edge — the state still owes a value, which the
+    // kernel's transition verdict checks before the edge. The reply the model
+    // reads is still not an error message, so only reading the committed outcome
+    // gets this right.
+    const requiresYaml = `
 states:
   g:
     triggers: { manual: }
-    after:
-      script: hooks/review.js
+    requires: [verdict]
     transitions:
       - to: done
         description: finish
   done:
 `;
-    const machine = await WorkflowMachine.load(machineWorkspace(vetoYaml), SPEC_PATHS);
-    if (!machine) throw new Error("failed to load veto machine");
+    const machine = await WorkflowMachine.load(machineWorkspace(requiresYaml), SPEC_PATHS);
+    if (!machine) throw new Error("failed to load requires machine");
     const events: WorkflowLifecycleEvent[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor({
-        ok: true,
-        value: { verdict: "veto", reason: "not ready" },
-        logs: [],
-        formatted: "",
-      }).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: (e) => events.push(e),
     });
     const wrapToolCall = (
@@ -1214,22 +1167,32 @@ states:
         wrapToolCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
       }
     ).wrapToolCall;
+    const advance = (id: string, variables: VariableStore) =>
+      wrapToolCall(
+        {
+          toolCall: { name: "archmax_advance", args: { to: "done", reason: "finished" }, id },
+          runtime: { configurable: { thread_id: "t1" } },
+          state: { messages: [], workflowState: "g", variables },
+        },
+        () => "HANDLER_RAN",
+      );
 
-    await wrapToolCall(
-      {
-        toolCall: { name: "archmax_advance", args: { to: "done", reason: "finished" }, id: "a1" },
-        runtime: { configurable: { thread_id: "t1" } },
-        state: { messages: [], workflowState: "g", variables: {} },
-      },
-      () => "HANDLER_RAN",
+    const refused = await advance("a1", {});
+    expect(refused).toBeInstanceOf(ToolMessage);
+    expect((refused as ToolMessage).status).toBeUndefined();
+    expect(String((refused as ToolMessage).content)).toContain(
+      "archmax_advance rejected: cannot leave 'g' yet: 'verdict' is not set.",
     );
-
     expect(events.find((e) => e.type === "tool-result")).toMatchObject({
       tool: "archmax_advance",
       callId: "a1",
       status: "error",
     });
     expect(events.some((e) => e.type === "advance")).toBe(false);
+
+    // Once the value is recorded, the same call moves the run.
+    const moved = await advance("a2", { verdict: { value: "ok", locked: false } });
+    expect((moved as { update?: { workflowState?: string } }).update?.workflowState).toBe("done");
   });
 
   it("commits the park a wait call asks for, and names the call on the parked event", async () => {
@@ -1368,8 +1331,7 @@ states:
     const ledger: { workflow: string; status: "ok" | "error" }[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
       subWorkflows: {
         refusal: async () => undefined,
@@ -1448,8 +1410,7 @@ states:
       let taken = 0;
       const instrumentation = createWorkflowInstrumentation({
         machine: machine!,
-        executor: trackingExecutor(passOutcome).executor,
-        ptcNames: [],
+        ...automation(),
         onEvent: () => {},
         subWorkflows: {
           refusal: async () => undefined,
@@ -1521,8 +1482,7 @@ states:
       if (!machine) throw new Error("failed to load delegating machine");
       const instrumentation = createWorkflowInstrumentation({
         machine,
-        executor: trackingExecutor(passOutcome).executor,
-        ptcNames: [],
+        ...automation(),
         onEvent: () => {},
         subWorkflows: {
           refusal: async () => undefined,
@@ -1661,8 +1621,7 @@ states:
     const events: WorkflowLifecycleEvent[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: (e) => events.push(e),
     });
     const mw = instrumentation.middleware as unknown as {
@@ -1741,8 +1700,7 @@ states:
     if (!machine) throw new Error("failed to load state machine");
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
     });
     const wrapToolCall = (
@@ -1783,8 +1741,7 @@ describe("the model a state's call runs on", () => {
     const machine = await loadMachine();
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       promptShaping: shaping,
       ...(stateModels ? { stateModels } : {}),
       onEvent: () => {},
@@ -1856,8 +1813,7 @@ describe("workflow middleware prompt shaping", () => {
     const warnings: string[] = [];
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       promptShaping: shaping,
       onEvent: (e) => {
         if (e.type === "warning") warnings.push(e.message);
@@ -1980,8 +1936,7 @@ async function parkInstrumentation() {
   if (!machine) throw new Error("failed to load state machine");
   return createWorkflowInstrumentation({
     machine,
-    executor: trackingExecutor(passOutcome).executor,
-    ptcNames: [],
+    ...automation(),
     onEvent: () => {},
   });
 }
@@ -2282,8 +2237,7 @@ states:
     if (!machine) throw new Error("failed to load skills machine");
     return createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       skills: REGISTRY,
       mountPrefixes: { dirs: ["skills"], files: [], writable: [], governed: [], unsearchable: [] },
       onEvent: () => {},
@@ -2527,8 +2481,7 @@ states:
     if (!machine) throw new Error("failed to load mounts machine");
     return createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       skills: new Map(),
       mountPrefixes: MOUNT_PREFIXES,
       onEvent: () => {},
@@ -2716,8 +2669,7 @@ async function callWithVariables(
   const events: WorkflowLifecycleEvent[] = [];
   const instrumentation = createWorkflowInstrumentation({
     machine,
-    executor: trackingExecutor(passOutcome).executor,
-    ptcNames: [],
+    ...automation(),
     onEvent: (e) => events.push(e),
   });
   const wrapToolCall = (
@@ -2848,8 +2800,7 @@ describe("workflow middleware agent-argument interpolation", () => {
     if (!machine) throw new Error("failed to load state machine");
     const instrumentation = createWorkflowInstrumentation({
       machine,
-      executor: trackingExecutor(passOutcome).executor,
-      ptcNames: [],
+      ...automation(),
       onEvent: () => {},
     });
     const wrapToolCall = (
@@ -2910,7 +2861,6 @@ const FORK_YAML = `
 states:
   g:
     triggers: { manual: }
-    after: { script: hooks/after.js }
     transitions:
       - to: b
         description: one way
@@ -2925,9 +2875,9 @@ describe("one transition per model step", () => {
   async function forkRunner() {
     const machine = await WorkflowMachine.load(machineWorkspace(FORK_YAML), SPEC_PATHS);
     if (!machine) throw new Error("failed to load fork machine");
-    const tracker = trackingExecutor(passOutcome);
+    const events: WorkflowLifecycleEvent[] = [];
     const mw = (
-      createWorkflowInstrumentation({ machine, executor: tracker.executor, ptcNames: [] })
+      createWorkflowInstrumentation({ machine, ...automation(), onEvent: (e) => events.push(e) })
         .middleware as unknown as {
         wrapToolCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
       }
@@ -2954,6 +2904,7 @@ describe("one transition per model step", () => {
         ],
       };
       const results: unknown[] = [];
+      const seen = events.length;
       for (const [i, to] of targets.entries()) {
         results.push(
           await mw(
@@ -2966,7 +2917,7 @@ describe("one transition per model step", () => {
           ),
         );
       }
-      return { results, afterHookRuns: tracker.calls };
+      return { results, moves: events.slice(seen).filter((e) => e.type === "advance").length };
     };
   }
 
@@ -2974,20 +2925,19 @@ describe("one transition per model step", () => {
   const committed = (result: unknown) =>
     (result as { update?: { workflowState?: string } }).update?.workflowState;
 
-  it("honours the first advance, refuses its siblings, and runs the after hook once", async () => {
+  it("honours the first advance, refuses its siblings, and announces one move", async () => {
     // Both siblings used to pass edge validation against the same `from`, each
-    // running `g`'s `after` hook and each committing a position to a last-value
-    // channel — so the hook double-executed and the run landed wherever the
-    // last writer said (issue #66).
+    // committing a position to a last-value channel — so the run landed wherever
+    // the last writer said (issue #66).
     const step = await forkRunner();
-    const { results, afterHookRuns } = await step("ai-1", "g", ["b", "c"]);
+    const { results, moves } = await step("ai-1", "g", ["b", "c"]);
 
     expect(committed(results[0])).toBe("b");
     expect(committed(results[1])).toBeUndefined();
     expect(results[1]).toBeInstanceOf(ToolMessage);
     expect(String((results[1] as ToolMessage).content)).toContain("already moved");
     expect(String((results[1] as ToolMessage).content)).toContain("'b'");
-    expect(afterHookRuns).toBe(1);
+    expect(moves).toBe(1);
   });
 
   it("scopes the guard to the message, so a later step may move again", async () => {
@@ -3006,6 +2956,287 @@ describe("one transition per model step", () => {
 
     expect(committed(results[0])).toBeUndefined();
     expect(committed(results[1])).toBe("b");
+  });
+});
+
+const AUTOMATED_YAML = `
+states:
+  screen:
+    type: code
+    script: scripts/screen.js
+    triggers: { manual: }
+    on_error: escalate
+    transitions:
+      - to: answer
+        description: the request names an order
+      - to: review
+        description: a person decides
+      - to: record
+        description: nothing to answer
+  answer:
+  review:
+    type: human
+    title: Reviewer check
+    transitions:
+      - to: answer
+        type: approve
+        description: approve it
+  record:
+    type: code
+    script: scripts/record.js
+  escalate:
+`;
+
+/**
+ * An automated state is serviced in place of the model call: `wrapModelCall`
+ * runs it and returns a marker carrying the outcome, and `afterModel` strips the
+ * marker and commits that outcome. A code state here, run by the recording
+ * executor; what it calls goes through a real gateway, so the kernel decides
+ * every call as it would in an assembly.
+ */
+describe("workflow middleware — automated states", () => {
+  function fakeTool(name: string) {
+    return { name } as unknown as StructuredTool;
+  }
+
+  /** What the agent's tool node registered: more than a code state is ever offered. */
+  const REGISTERED = ["read_file", "write_todos", "archmax_eval", "archmax_wait", "archmax_advance", "web_fetch"];
+  const runtime = { configurable: { thread_id: "auto" } };
+
+  async function automatedRunner(
+    script?: (tools: Record<string, StructuredTool>) => Promise<void> | void,
+    opts: { gateway?: boolean } = {},
+  ) {
+    const machine = await WorkflowMachine.load(machineWorkspace(AUTOMATED_YAML), SPEC_PATHS);
+    if (!machine) throw new Error("failed to load automated machine");
+    const events: WorkflowLifecycleEvent[] = [];
+    const onEvent = (e: WorkflowLifecycleEvent) => events.push(e);
+    const recorder = recordingExecutor(script);
+    const instrumentation = createWorkflowInstrumentation({
+      machine,
+      ...automation(recorder.executor),
+      ...(opts.gateway === false
+        ? {}
+        : { ptcGateway: createPtcToolGateway({ machine, emit: createWorkflowEventEmitter(onEvent) }) }),
+      onEvent,
+    });
+    const mw = instrumentation.middleware as unknown as {
+      beforeModel: { hook: (s: unknown, r: unknown) => unknown };
+      wrapModelCall: (req: unknown, handler: (r: unknown) => unknown) => Promise<unknown>;
+      afterModel: { hook: (s: unknown, r: unknown) => Promise<Record<string, unknown> | undefined> };
+    };
+
+    /** One step in `workflowState`: the call serviced in place of the model's, then its commit. */
+    async function step(workflowState: string, requestMessages?: unknown[]) {
+      const session = {
+        messages: [new HumanMessage("refund order 1042")],
+        workflowState,
+        auditTrail: [{ to: "screen", kind: "trigger", reason: "manual", ts: 1 }],
+      };
+      let modelCalled = false;
+      const marker = (await mw.wrapModelCall(
+        { runtime, tools: REGISTERED.map(fakeTool), messages: requestMessages ?? session.messages, state: session },
+        () => {
+          modelCalled = true;
+          return new AIMessage("AI");
+        },
+      )) as AIMessage;
+      const update = (await mw.afterModel.hook({ ...session, messages: [...session.messages, marker] }, runtime)) ?? {};
+      return { marker, update, modelCalled };
+    }
+    return { step, events, runs: recorder.runs, mw };
+  }
+
+  /** A script that records a variable and moves the run on to `to`. */
+  const advancing = (to: string) => async (tools: Record<string, StructuredTool>) => {
+    await tools.archmax_set_variables!.invoke({ variables: { order_id: "1042" } });
+    await tools.archmax_advance!.invoke({ to, reason: "the request names an order" });
+  };
+
+  /** The text of the runtime note an update adds, by kind. */
+  const noteText = (update: Record<string, unknown>, kind: string) =>
+    (update.messages as unknown[])
+      .filter((m) => m instanceof ToolMessage && runtimeNoteKind(m) === kind)
+      .map((m) => String((m as ToolMessage).content));
+
+  it("runs the state instead of calling the model, and offers it exactly its state's tools", async () => {
+    const { step, runs } = await automatedRunner(advancing("answer"));
+    const { marker, modelCalled } = await step("screen");
+
+    expect(modelCalled).toBe(false);
+    expect(automatedOutcomeOf(marker)).toEqual({
+      state: "screen",
+      type: "code",
+      result: { kind: "advanced", to: "answer", reason: "the request names an order" },
+      variables: { order_id: { value: "1042", locked: false } },
+    });
+    expect(runs).toHaveLength(1);
+    const [{ path, params }] = runs as [(typeof runs)[number]];
+    expect(path).toBe("workflows/w/scripts/screen.js");
+    // The registered tools its surface names, then its own controls bound to the run.
+    expect(params.tools.map((tool) => tool.name)).toEqual([
+      "read_file",
+      "archmax_advance",
+      "archmax_raise",
+      "archmax_get_variables",
+      "archmax_set_variables",
+    ]);
+    expect(params.surface).toContain("read_file");
+    for (const absent of ["write_todos", "archmax_eval", "archmax_run", "archmax_wait", "archmax_reset", "archmax_get_history", "web_fetch"]) {
+      expect(params.surface).not.toContain(absent);
+    }
+    expect(params.args).toMatchObject({
+      state: "screen",
+      variables: {},
+      messages: [{ role: "user", text: "refund order 1042" }],
+      trail: [{ to: "screen", kind: "trigger" }],
+    });
+  });
+
+  it("reads the session's own transcript, not the request a summary shortened for the model", async () => {
+    const { step, runs } = await automatedRunner(advancing("answer"));
+    await step("screen", [new HumanMessage("SUMMARY of the conversation so far")]);
+
+    const [{ params }] = runs as [(typeof runs)[number]];
+    expect(params.args.messages).toEqual([{ role: "user", text: "refund order 1042" }]);
+    // Its `toolCalls` query is handed beside its tools, never among them.
+    expect(params.toolCalls?.name).toBe("archmax_tool_calls");
+    expect(params.tools.map((tool) => tool.name)).not.toContain("archmax_tool_calls");
+  });
+
+  it("narrates the move once the run has settled, under the call that made it", async () => {
+    const { step, events } = await automatedRunner(advancing("answer"));
+    await step("screen");
+
+    expect(events.map((e) => e.type)).toEqual([
+      "code-start",
+      "tool-called",
+      "variables-set",
+      "tool-result",
+      "tool-called",
+      "tool-result",
+      "code-output",
+      "code-result",
+      "advance",
+      "state-leave",
+      "state-enter",
+    ]);
+    expect(events[0]).toMatchObject({ type: "code-start", state: "screen", script: "scripts/screen.js" });
+    const advanceCall = events.filter((e) => e.type === "tool-called")[1] as { callId: string; origin?: string };
+    expect(advanceCall).toMatchObject({ tool: "archmax_advance", origin: "script" });
+    expect(events.find((e) => e.type === "advance")).toMatchObject({
+      from: "screen",
+      to: "answer",
+      reason: "the request names an order",
+      callId: advanceCall.callId,
+    });
+    expect(events.find((e) => e.type === "code-result")).toMatchObject({ state: "screen", status: "ok" });
+  });
+
+  it("commits the move after the model node: drops the marker, notes why, and calls the next state", async () => {
+    const { step } = await automatedRunner(advancing("answer"));
+    const { marker, update } = await step("screen");
+
+    const [removed] = update.messages as unknown[];
+    expect(removed).toBeInstanceOf(RemoveMessage);
+    expect((removed as RemoveMessage).id).toBe(marker.id);
+    expect(noteText(update, "code")).toEqual([
+      "[code] 'screen' moved the run to 'answer': the request names an order. You are now in 'answer'.",
+    ]);
+    expect(update).toMatchObject({
+      workflowState: "answer",
+      variables: { order_id: { value: "1042", locked: false } },
+      rejected: null,
+      // The agent's call about to be made is its state's first.
+      stateTurns: { state: "answer", count: 1 },
+      jumpTo: "model",
+    });
+    expect(update.auditTrail).toMatchObject([{ to: "answer", kind: "code", reason: "the request names an order" }]);
+  });
+
+  // The jump to the model skips `beforeModel`, where a park's closing turn would
+  // otherwise start — so the commit opens it.
+  it("opens a human target's park straight into its closing turn", async () => {
+    const { step, events } = await automatedRunner(advancing("review"));
+    const { update } = await step("screen");
+
+    expect(update).toMatchObject({
+      workflowState: "review",
+      pendingDecision: { state: "review", title: "Reviewer check" },
+      status: "awaiting_decision",
+      parkPhase: "suspend",
+      replyOnly: true,
+      jumpTo: "model",
+    });
+    expect(update.stateTurns).toBeNull();
+    expect(events.find((e) => e.type === "parked")).toMatchObject({ state: "review", awaiting: "decision" });
+  });
+
+  it("ends the session on a raise, with no jump", async () => {
+    const { step, events } = await automatedRunner(async (tools) => {
+      await tools.archmax_raise!.invoke({ code: "no-order", reason: "The request names no order." });
+    });
+    const { update } = await step("screen");
+
+    expect(update).toMatchObject({
+      raised: { code: "no-order", reason: "The request names no order.", state: "screen" },
+      status: "failed",
+    });
+    expect(update.jumpTo).toBeUndefined();
+    expect(update.workflowState).toBeUndefined();
+    expect(noteText(update, "code")).toEqual([
+      "[code] 'screen' ended the session as failed ('no-order'): The request names no order.",
+    ]);
+    expect(events.find((e) => e.type === "raised")).toMatchObject({ state: "screen", code: "no-order" });
+  });
+
+  it("routes a run that finished undecided through on_error", async () => {
+    const { step, events } = await automatedRunner();
+    const { update } = await step("screen");
+
+    const reason = "code state 'screen' finished without calling archmax_advance or archmax_raise";
+    expect(update).toMatchObject({ workflowState: "escalate", jumpTo: "model" });
+    expect((update.messages as unknown[])[0]).toBeInstanceOf(RemoveMessage);
+    expect(noteText(update, "error")[0]).toContain(reason);
+    expect(events.find((e) => e.type === "code-result")).toMatchObject({ status: "error", reason });
+    expect(events.find((e) => e.type === "state-error-routed")).toMatchObject({ state: "screen", to: "escalate" });
+  });
+
+  it("discards a move when the script throws after making it", async () => {
+    const { step, events } = await automatedRunner(async (tools) => {
+      await advancing("answer")(tools);
+      throw new Error("boom");
+    });
+    const { marker, update } = await step("screen");
+
+    expect(automatedOutcomeOf(marker)?.result).toEqual({ kind: "failed", reason: "boom" });
+    expect(update.workflowState).toBe("escalate");
+    expect(events.some((e) => e.type === "advance")).toBe(false);
+  });
+
+  it("completes a terminal code state as any finishing state completes", async () => {
+    const { step, events } = await automatedRunner();
+    const { marker, update } = await step("record");
+
+    expect(automatedOutcomeOf(marker)?.result).toEqual({ kind: "completed" });
+    expect(update).toMatchObject({ status: "completed" });
+    expect(update.jumpTo).toBeUndefined();
+    expect(update.messages).toEqual([expect.any(RemoveMessage)]);
+    expect(events.at(-1)).toMatchObject({ type: "state-leave", state: "record", next: "record" });
+  });
+
+  it("counts no agent turn in an automated position", async () => {
+    const { mw } = await automatedRunner();
+    const messages = [new HumanMessage("go")];
+    expect(mw.beforeModel.hook({ workflowState: "screen", messages }, runtime)).toBeUndefined();
+    expect(mw.beforeModel.hook({ workflowState: "answer", messages }, runtime)).toEqual({
+      stateTurns: { state: "answer", count: 1 },
+    });
+  });
+
+  it("refuses to stand in for the model call when nothing is wired to run the state", async () => {
+    const { step } = await automatedRunner(undefined, { gateway: false });
+    await expect(step("screen")).rejects.toThrow(/'screen' is a code state, and this assembly wires nothing to run one/);
   });
 });
 

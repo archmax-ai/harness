@@ -20,7 +20,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 const write = (n: number): ScriptedTurn => ({
   tool: "write_file",
   args: { file_path: `scratchpad/note-${n}.md`, content: String(n) },

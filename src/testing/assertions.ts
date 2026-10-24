@@ -166,8 +166,7 @@ export async function evaluateExpectations(
         break;
       case "reachedState":
         // Committed transitions only (any kind except `trigger`): the arrival
-        // step is recorded before the entry state's `before` gate runs, so a
-        // vetoed-entry session never "reaches" the state the gate refused.
+        // step records where the session started, not a state it reached.
         records.push(
           gate(
             "reachedState",
@@ -259,7 +258,7 @@ export async function evaluateExpectations(
         break;
       }
       case "noTraversal":
-        // A veto at entry leaves nothing but trigger-arrival steps.
+        // A session that never moved leaves nothing but trigger-arrival steps.
         records.push(
           gate(
             "noTraversal",

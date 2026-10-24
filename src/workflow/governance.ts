@@ -1,7 +1,8 @@
 /**
  * Governance of the two calls the model makes: `wrapModelCall` shapes the
  * payload (per-state tool disclosure, the volatile prompt section, the cache
- * breakpoint, the `before` hook, the time budget) and `wrapToolCall` decides
+ * breakpoint, the time budget) — or, in an automated state, services the call
+ * itself by running the state (`automated.ts`) — and `wrapToolCall` decides
  * every tool call (variable substitution, the kernel's verdict, the calls the
  * runtime services itself, telemetry, skill redaction). The hooks that wire
  * these into the agent live in `middleware.ts`.
@@ -13,7 +14,6 @@ import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages"
 import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
 import { Command, isGraphBubbleUp } from "@langchain/langgraph";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
-import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { readClockPin } from "../core/clock.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
@@ -26,7 +26,6 @@ import {
   readAuditTrail,
   readVariables,
   readWorkflowState,
-  type PendingDecision,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
 import { CALLING_STATE_KEY, invocationOf, releaseScopes } from "../sessions/scope.js";
@@ -59,7 +58,7 @@ import { replyOnlyDirective } from "./parks.js";
 import { renderStateGraph } from "./render-prompt.js";
 import { blockedMessage, createToolService } from "./tool-service.js";
 import { buildRunnableConfig } from "./runtime-config.js";
-import { messagesIn, visitSpans } from "./visits.js";
+import { runAutomatedStep, type AutomatedStatesContext } from "./automated.js";
 
 export { buildRunnableConfig } from "./runtime-config.js";
 
@@ -103,7 +102,6 @@ export interface PromptShaping {
 export interface GovernanceContext {
   machine: WorkflowMachine;
   emit: WorkflowEventEmitter;
-  lifecycle: LifecycleRunner;
   policyRules: GovernanceRule[];
   mountPrefixes: MountPrefixes;
   skills: SkillRegistry;
@@ -116,6 +114,11 @@ export interface GovernanceContext {
   child?: boolean;
   /** The `file` type's runtime check for a session in a state; omitted, a `file` value is held to its shape alone. */
   files?: (state: string, variables: VariableStore) => FileValueCheck;
+  /**
+   * What runs an automated state. Omitted, an automated position has nothing to
+   * run it, and its model call is refused as a failure of the state.
+   */
+  automated?: Omit<AutomatedStatesContext, "dispatchSteps" | "machine" | "emit" | "mountPrefixes" | "files" | "ptcGateway">;
   sessionIdOf(runtime: unknown): string;
 }
 
@@ -131,28 +134,20 @@ export interface Governance {
   /**
    * Reserve the session's checkpointed dispatch count and return how many
    * dispatch numbers it has now taken: what a hook site outside the tool node
-   * commits, so a number a hook took is never taken again.
+   * commits, so a number an automated state's calls took is never taken again.
    */
   dispatchCount(sessionId: string, state: unknown): number;
-  /** A hook context for one request, from the model context captured for the session. */
-  lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext;
-  reportMove(sessionId: string, moved: { from: string; to: string; park?: PendingDecision }): void;
-  /** End the session's turn: drop its model context and return the `beforeDone` entries staged this turn. */
-  endTurn(sessionId: string): Record<string, boolean> | undefined;
+  /** End the session's turn: drop its model context. */
+  endTurn(sessionId: string): void;
   /** Release the session and every sub-run scope nested beneath it; returns the scopes released. */
   release(sessionId: string): string[];
 }
 
 /**
- * Per-session context captured from the most recent model request: lifecycle
- * hooks need the tool surface (for PTC) and the `task` tool (for subagent
- * judges), which are only visible on model requests.
+ * Per-session context captured from the most recent model request: the
+ * registered tool names a called name is resolved against.
  */
 interface ModelContext {
-  tools: StructuredTool[];
-  taskTool?: StructuredTool;
-  config: RunnableConfig;
-  messages: unknown[];
   /** Every registered tool name, BEFORE per-state disclosure narrows it. */
   toolNames: string[];
 }
@@ -311,9 +306,6 @@ function applySystemMessage(
 /** Where a model call that ran out of its state's time budget says so. */
 const BUDGET_EXHAUSTED_KEY = "archmax_budget_exhausted";
 
-/** Where a reply standing in for a model call a `before` hook refused says so. */
-const BEFORE_VETO_KEY = "archmax_before_veto";
-
 /** The reason kwarg `key` carries on `message`, when it carries one. */
 function markerReason(message: unknown, key: string): string | undefined {
   const kwargs = (message as { additional_kwargs?: Record<string, unknown> } | undefined)
@@ -327,19 +319,8 @@ export function budgetExhaustedReason(message: unknown): string | undefined {
   return markerReason(message, BUDGET_EXHAUSTED_KEY);
 }
 
-/**
- * The reason a `before` hook refused the state this message stands in for, if it
- * did. The refusal is a fail-closed rejection like any other, so `afterModel`
- * routes it through `on_error` instead of letting the turn settle as completed
- * (issue #29) — the marker is how it tells the refusal apart from an ordinary
- * reply, since the model never ran.
- */
-export function beforeVetoReason(message: unknown): string | undefined {
-  return markerReason(message, BEFORE_VETO_KEY);
-}
-
 export function createGovernance(ctx: GovernanceContext): Governance {
-  const { machine, emit, lifecycle, policyRules, mountPrefixes, skills, ptcGateway, subWorkflows } = ctx;
+  const { machine, emit, policyRules, mountPrefixes, skills, ptcGateway, subWorkflows } = ctx;
   const skillTable = skillPrefixes(skills);
   const skillSlugs = [...skills.keys()];
   const enabledSkillsIn = (state: string) => machine.enabledSkills(state, skillSlugs);
@@ -352,19 +333,31 @@ export function createGovernance(ctx: GovernanceContext): Governance {
 
   // Keyed by session id; a sub-run is its own session.
   const modelContexts = new Map<string, ModelContext>();
-  const pendingBeforeDone = new Map<string, Record<string, boolean>>();
   // Fallback ids for tool calls the model supplied no id for.
   let generatedCallSeq = 0;
 
   const service = createToolService({
     machine,
     emit,
-    lifecycle,
     mountPrefixes,
     ...(subWorkflows ? { subWorkflows } : {}),
     ...(ctx.files ? { files: ctx.files } : {}),
-    lifecycleCtx,
   });
+
+  // An automated state runs through the same gateway, dispatcher and file check
+  // the session's own calls use.
+  const automated: AutomatedStatesContext | undefined =
+    ctx.automated && ptcGateway
+      ? {
+          ...ctx.automated,
+          machine,
+          emit,
+          mountPrefixes,
+          ptcGateway,
+          ...(ctx.files ? { files: ctx.files } : {}),
+          dispatchSteps: service.dispatchSteps,
+        }
+      : undefined;
 
   /**
    * Filter a scoped listing (`ls`, `glob`, `grep`) to what the state can reach:
@@ -403,28 +396,6 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       additional_kwargs: result.additional_kwargs,
       response_metadata: result.response_metadata,
     }) as T;
-  }
-
-  function lifecycleCtx(sessionId: string, state: unknown, signal?: AbortSignal): LifecycleContext {
-    const context = modelContexts.get(sessionId);
-    const fields = readWorkflowState(state);
-    // The session's own transcript, never the request prepared for the model, which summarization may have shortened.
-    const messages = messagesIn(state);
-    return {
-      sessionId,
-      tools: context?.tools ?? [],
-      messages,
-      visits: visitSpans(messages, state),
-      taskTool: context?.taskTool,
-      config: context?.config ?? {},
-      iterations: { ...(fields.iterations ?? {}) },
-      ...(fields.trigger ? { trigger: fields.trigger } : {}),
-      variables: Object.fromEntries(
-        Object.entries(readVariables(state)).map(([name, entry]) => [name, entry.value]),
-      ),
-      variableStore: readVariables(state),
-      ...(signal ? { signal } : {}),
-    };
   }
 
   /**
@@ -520,35 +491,44 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     const sessionId = ctx.sessionIdOf(request.runtime);
     const tools: StructuredTool[] = asStructuredTools(request.tools);
     const workflowState = currentWorkflowState(request.state, machine.entry);
-    const config = buildRunnableConfig(request.runtime ?? {});
+    const base = buildRunnableConfig(request.runtime ?? {});
+    // The state rides on the config, so a delegation a script or an automated
+    // state makes names the state it was made from.
+    const config: RunnableConfig = {
+      ...base,
+      configurable: { ...(base.configurable ?? {}), [CALLING_STATE_KEY]: workflowState },
+    };
     const replyOnly = isReplyOnly(request.state);
-    // A `before` hook below may dispatch: it numbers above what the session has taken.
+    // An automated state's calls may dispatch: they number above what the session has taken.
     subWorkflows?.reserve(sessionId, readWorkflowState(request.state).dispatchCount ?? 0);
+    modelContexts.set(sessionId, { toolNames: tools.map((t) => t.name) });
+
+    // An automated state is serviced here, in place of the agent's model: the
+    // state runs, and the marker standing in for the call carries its outcome to
+    // `afterModel`. A parked session never stands in one.
+    if (!replyOnly && machine.isAutomatedState(workflowState)) {
+      if (!automated) {
+        throw new Error(
+          `state '${workflowState}' is a ${machine.stateType(workflowState)} state, and this ` +
+            `assembly wires nothing to run one (no automated-state runner and PTC gateway)`,
+        );
+      }
+      return runAutomatedStep(automated, {
+        sessionId,
+        session: request.state,
+        tools,
+        config,
+        ...(request.runtime?.signal ? { signal: request.runtime.signal } : {}),
+      });
+    }
 
     // Point every wrapped PTC tool at the state, config and variables in force
-    // now; the state rides on the config so a script's delegation names it, and
-    // the variables are what a script call's `${{name}}` guards resolve against.
+    // now; the variables are what a script call's `${{name}}` guards resolve against.
     ptcGateway?.refresh(sessionId, {
       state: workflowState,
-      config: {
-        ...config,
-        configurable: { ...(config.configurable ?? {}), [CALLING_STATE_KEY]: workflowState },
-      },
+      config,
       replyOnly,
       variables: readVariables(request.state),
-    });
-
-    // Captured from the UNFILTERED surface: lifecycle hooks keep full access
-    // regardless of what the model is shown.
-    const lifecycleTools = lifecycle.resolvePtcTools(tools);
-    modelContexts.set(sessionId, {
-      tools: ptcGateway
-        ? ptcGateway.wrap(lifecycleTools, { origin: "lifecycle", sessionId })
-        : lifecycleTools,
-      taskTool: tools.find((t) => t.name === "task"),
-      config,
-      messages: request.messages ?? [],
-      toolNames: tools.map((t) => t.name),
     });
 
     // Progressive disclosure: the active state's surface in registration order (a
@@ -578,28 +558,6 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       volatileSection(request, workflowState, replyOnly),
       strategy === "anthropic-compat" ? cacheControl(cacheTtl) : undefined,
     );
-
-    // A reply-only turn enters nothing, so no `before` hook gates it.
-    const beforeDone = {
-      ...(readWorkflowState(request.state).beforeDone ?? {}),
-      ...(pendingBeforeDone.get(sessionId) ?? {}),
-    };
-    if (!replyOnly && !beforeDone[workflowState]) {
-      const veto = await lifecycle.runPhase(
-        workflowState,
-        "before",
-        lifecycleCtx(sessionId, request.state, request.runtime?.signal),
-      );
-      if (veto) {
-        // The refusal is the person's answer *and* a rejection: the text is the
-        // reply, the marker is what `afterModel` routes on.
-        return new AIMessage({
-          content: `Request rejected before the '${workflowState}' state could run: ${veto.reason}`,
-          additional_kwargs: { [BEFORE_VETO_KEY]: veto.reason },
-        });
-      }
-      pendingBeforeDone.set(sessionId, { ...beforeDone, [workflowState]: true });
-    }
 
     // Narrowed rather than forwarded blind: this middleware is innermost, so the
     // agent node blames it for whatever the handler returned.
@@ -660,8 +618,8 @@ export function createGovernance(ctx: GovernanceContext): Governance {
    * checkpointed `dispatchCount`. The model's delegation calls in one batch are
    * numbered in tool-call order from the count the step read, so a node
    * replayed from its checkpoint gives each call the same number — the same
-   * child. That count plus the batch is reserved first, so a script or hook
-   * dispatching in the same step numbers above every one of them. The call's
+   * child. That count plus the batch is reserved first, so a script dispatching
+   * in the same step numbers above every one of them. The call's
    * result carries the count it leaves, so the next step, and the next turn on
    * a fresh agent, continue from it.
    */
@@ -762,10 +720,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     const serviced = await service.serviceControlTool(request, call, args);
     if (serviced) return serviced;
 
-    // Governed call telemetry. A rubric dispatch is *not* bracketed here: only
-    // the runtime reaches `task`, through the bridge, which emits its own
-    // `rubric-start`/`rubric-result` pair — an agent-initiated call never gets
-    // this far, because the kernel refuses it.
+    // Governed call telemetry.
     service.emitToolCalled(workflowState, toolName, callId, args);
     const startedAt = Date.now();
     const settle = (status: "ok" | "error", preview: { output: string; truncated: boolean }) => {
@@ -812,20 +767,12 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       subWorkflows.reserve(sessionId, readWorkflowState(state).dispatchCount ?? 0);
       return subWorkflows.dispatchCount(sessionId);
     },
-    lifecycleCtx,
-    reportMove: service.reportMove,
     endTurn(sessionId) {
-      const staged = pendingBeforeDone.get(sessionId);
       modelContexts.delete(sessionId);
-      pendingBeforeDone.delete(sessionId);
       service.releaseSession(sessionId);
-      return staged;
     },
     release(sessionId) {
-      const scopes = [
-        ...releaseScopes(modelContexts, sessionId),
-        ...releaseScopes(pendingBeforeDone, sessionId),
-      ];
+      const scopes = releaseScopes(modelContexts, sessionId);
       for (const scope of new Set([...scopes, sessionId])) service.releaseSession(scope);
       return scopes;
     },

@@ -19,14 +19,14 @@ instructions: |-
 
 runtime:
   engine: archmax-harness
-  version: "2"
+  version: "3"
 
 settings:
   timeoutMs: 15000
 
 # Free-form host data the runtime never reads: not rendered into the prompt, no
 # part of governance, and excluded from the spec hash — so moving a state on a
-# canvas mints no new spec version. Accepted here, on any state, and on a rubric.
+# canvas mints no new spec version. Accepted here and on any state.
 metadata:
   canvas: { zoom: 1, pan: { x: 0, y: 0 } }
 
@@ -73,21 +73,60 @@ skills:
 # Each key under `states` is the state's slug — the token every `to`, `on_error`,
 # trigger and archmax_advance call resolves it by. `title` is a label only.
 states:
-  identify-case:
-    metadata: { x: 40, y: 180 }
-    title: Identify case
-    summary: Route the request to exactly one path.
+  screen-request:
+    metadata: { x: 40, y: 60 }
+    title: Screen the request
+    summary: Check the requester and tenancy before any model call.
+    # A code state: the runtime runs its script on entry, with no model call. It
+    # merges the requester check and the tenancy check — the requester must be
+    # known, and may only reach their own company's orders — and moves the
+    # session itself, to identify-case or to decline with the reason.
+    #
     # Entry for both triggers a conversation can begin with; the state does not
     # branch on which one fired. A trigger is declared where it enters, and
     # `session:` is a dotted path over the run's variables — so both mail
     # triggers reading `conversation_id` land in the session the first email
     # started, and `email_reply` resumes a parked conversation or starts a fresh
     # run here when the conversation is unknown.
+    type: code
+    script: scripts/screen-request.js
     triggers:
       manual:
         session: conversation_id
       email_reply:
         session: conversation_id
+    # A code state's script is governed by its own state's grants like any
+    # other caller: it reads the order records because this state enables them.
+    skills:
+      allow: [order-data]
+    # The order database could not be read: nothing is looked up or disclosed.
+    on_error: escalation
+    transitions:
+      - to: identify-case
+        description: >-
+          The requester is known and asks only about their own company's orders.
+      - to: decline
+        description: >-
+          The request names no known requester, or reaches for another
+          company's orders.
+
+  decline:
+    title: Decline the request
+    summary: Tell the person why the request cannot be served.
+    # Terminal; entered only from screen-request, whose reason arrives as a
+    # runtime note. No skill is enabled, so nothing can be looked up here.
+    skills:
+      allow: []
+    instructions: >-
+      The request was declined before any order was looked up; the note above
+      says why. Tell the person, politely and in one or two sentences, that the
+      request was rejected and why, using that reason. Do not look up, name or
+      describe any order. This state is terminal.
+
+  identify-case:
+    metadata: { x: 40, y: 180 }
+    title: Identify case
+    summary: Route the request to exactly one path.
     instructions: >-
       Route the request down exactly one path by calling archmax_advance - never
       answer directly from here. Order questions (status, tracking, totals, a
@@ -101,16 +140,9 @@ states:
       so any answer would be a guess; a request that names none of those but
       can be answered by listing the requester's orders is an order question,
       not a clarification.
-    # A hook list runs in order and stops at the first veto: the requester must
-    # be known before tenancy is worth checking. Each script's docblock is its contract.
-    before:
-      - script: hooks/check-requester.js
-      - script: hooks/check-tenancy.js
-    # The model routes and reads nothing; the hooks above still read the order
-    # records, because a hook runs on runtime authority — exempt from this
-    # state's enabled set in both directions, its `forbid` included. An empty
-    # `allow` grants nothing here; had the workflow granted a bundle in every
-    # state, `skills: { forbid: [...] }` is what would take it away again.
+    # The model routes and reads nothing. An empty `allow` grants nothing here;
+    # had the workflow granted a bundle in every state, `skills: { forbid: [...] }`
+    # is what would take it away again.
     skills:
       allow: []
     transitions:
@@ -133,56 +165,81 @@ states:
   orders-question:
     title: Answer order question
     summary: Answer an order/status question from the order data.
-    # Terminal: the judge runs as the `after` hook at completion.
     instructions: >-
       Find the orders matching the user's request by customer name, order id,
-      and/or status (delivered, shipped, processing, delayed). The identify-case
-      gate rejects cross-tenant requests before you get here, but the tenancy
-      rule in the workflow instructions still applies to what you disclose.
-      Open your reply by naming the requester's company and directly answering
-      the question they asked, then include every matching order id explicitly
-      with its relevant fields (status, placed date, total). This state is
-      terminal - once you have answered, stop. Your reply is graded as the run
-      completes; if the grader asks for a correction, resend an updated reply
-      that addresses what it named.
+      and/or status (delivered, shipped, processing, delayed). The
+      screen-request check rejects cross-tenant requests before you get here,
+      but the tenancy rule in the workflow instructions still applies to what
+      you disclose. Open your reply by naming the requester's company and
+      directly answering the question they asked, then include every matching
+      order id explicitly with its relevant fields (status, placed date,
+      total). Send the reply in a message that also calls archmax_advance to
+      review-reply, which grades its tone. If the review sends the reply back,
+      its note names what to change: write a corrected reply that addresses it
+      and advance again.
     # Enabling the skill is the grant: reading skills/order-data/** needs no `tools.allow` entry.
     skills:
       allow: [order-data]
-    after:
-      - rubric:
-          # How many times a `correct` verdict may send the agent back before it
-          # becomes a hard veto.
-          max_iterations: 2
-          instructions: |-
-            You are a customer support reply tone judge.
+    transitions:
+      - to: review-reply
+        description: >-
+          The reply answering the question has been sent to the customer.
 
-            You receive a JSON task payload with `userRequest`, `history` (conversation
-            messages), `state`, and `phase`.
+  review-reply:
+    title: Review the reply's tone
+    summary: Grade the order answer's tone; approve it or send it back.
+    # A grader state: an isolated grader subagent reads the session with
+    # archmax_get_history and decides with archmax_advance — or ends the session
+    # with archmax_raise. There is no retry budget: the instructions say when to
+    # give up, and the grader counts the rounds on the trail.
+    type: grader
+    # Reading the history and deciding is two model calls; this leaves headroom.
+    budget:
+      maxTurns: 4
+    on_error: escalation
+    skills:
+      allow: []
+    instructions: |-
+      You are a customer support reply tone judge.
 
-            Judge only the **tone** of the reply. Do **not** read `skills/order-data/assets/orders.json` or any
-            other file, and do not verify order IDs, totals, dates, or any factual content —
-            another check owns correctness. Your sole job is whether the reply *sounds*
-            friendly and professional.
+      Judge only the **tone** of the reply. Do not read the order records or any
+      other file, and do not verify order IDs, totals, dates, or any factual
+      content — another check owns correctness. Your sole job is whether the
+      reply *sounds* friendly and professional.
 
-            ## Steps
+      ## Steps
 
-            1. Find the **last assistant message** in `history`. That is the reply to judge.
-            2. Decide whether it is friendly and professional:
-               - Polite and courteous, with a warm, helpful tone.
-               - No rude, dismissive, curt, or robotic phrasing.
-               - Reads like a considerate human support agent, not a raw data dump.
+      1. Call `archmax_get_history`. The reply to judge is the **last assistant
+         message** with text in `messages`.
+      2. Decide whether it is friendly and professional:
+         - Polite and courteous, with a warm, helpful tone.
+         - No rude, dismissive, curt, or robotic phrasing.
+         - Reads like a considerate human support agent, not a raw data dump.
 
-            ## Verdict
+      ## Decision
 
-            Return exactly one of:
+      - Friendly and professional: advance to `answered`.
+      - Understandable but the tone is off (curt, cold or blunt): advance back to
+        `orders-question`, saying exactly what to change.
+      - Count the steps in `trail` with `kind: "grader"` and `to:
+        "orders-question"`: if there are already two, the reply has been sent
+        back twice — raise `reply-tone` instead of sending it back again.
+      - Rude, hostile, or otherwise unacceptable in tone: raise `reply-tone`.
+    transitions:
+      - to: answered
+        description: >-
+          The reply is friendly and professional.
+      - to: orders-question
+        description: >-
+          The reply's tone is off: send it back, naming exactly what to change.
 
-            - **`ok`** — the reply is friendly and professional.
-            - **`correct`** — the reply is understandable but the tone is off (e.g. curt,
-              cold, or blunt) and could be warmer. The main agent gets another chance to
-              rephrase it more kindly.
-            - **`veto`** — the reply is rude, hostile, or otherwise unacceptable in tone.
-
-            Always include a concise `reason` explaining the tone assessment.
+  answered:
+    title: Record the approved reply
+    summary: Record the approved answer and complete the session.
+    # Terminal code state: the session completes when its script returns, so
+    # approving a reply costs no further model call.
+    type: code
+    script: scripts/answered.js
 
   refund-request:
     # Per-state host data lives on the state, so renaming the slug carries it along.
@@ -198,37 +255,52 @@ states:
       order exists. Record the decision in scratchpad/refund.json as
       { "orderId": "<id, or null if none matched>", "decision": "approved" or
       "denied", "reason": "<one sentence the customer can understand>" } -
-      write_file creates it; if it already exists (e.g. the reviewer sent the
-      case back for changes), read it and update it with edit_file instead.
-      Tell the customer the decision with the order id, its exact status, and
-      the reason, and send it in a message that also calls archmax_advance to
-      refund-review, so a human reviews the recorded decision. The call is what
-      requests the review: a message holding the decision and no
-      archmax_advance call ends the conversation with nothing reviewed, however
-      it is worded. If you wrote anything the reviewer should see beyond
-      scratchpad/refund.json (working notes under scratchpad/, for example), attach
-      it on that call: evidence: ["scratchpad/<file>"]. refund.json itself is
-      already declared on the review state, so it is shown either way.
-    # Re-derives the policy from the records before the transition commits.
-    after:
-      script: hooks/check-refund.js
+      write_file creates it; if it already exists (e.g. the reviewer or the
+      policy check sent the case back), read it and update it with edit_file
+      instead. Tell the customer the decision with the order id, its exact
+      status, and the reason, and send it in a message that also calls
+      archmax_advance to check-refund. That call is what requests the review:
+      the policy check hands the recorded decision to a human reviewer, or
+      sends it back to you naming what is wrong. A message holding the decision
+      and no archmax_advance call ends the conversation with nothing reviewed,
+      however it is worded.
     skills:
       allow: [order-data, refund-policy]
-    # No `tools` block: refund.json lands in scratchpad/, writable wherever
-    # write_file is granted (here, every state); what holds the agent to one
-    # correct file is the after hook.
-    # `budget` bounds the segment with headroom for a probe or a retry (the
-    # shortest route is ~5 turns); a segment failure routes to `escalation`.
+    # No `tools` block: refund.json lands in scratchpad/, writable in every
+    # state; what holds the agent to one correct file is the check-refund state.
+    # `budget` bounds the state with headroom for a probe or a retry (the
+    # shortest route is ~5 model calls); a state failure routes to `escalation`.
     budget:
       maxTurns: 12
     on_error: escalation
     transitions:
+      - to: check-refund
+        description: >-
+          The refund decision has been recorded in scratchpad/refund.json and
+          explained to the customer.
+
+  check-refund:
+    title: Check the refund against policy
+    summary: Re-derive the refund policy before a person reviews the decision.
+    # A code state between the agent and the human review: it re-derives the
+    # policy from the records and either hands the recorded decision to the
+    # reviewer or sends it back with the fix — escalating after two send-backs.
+    type: code
+    script: scripts/check-refund.js
+    skills:
+      allow: [order-data]
+    on_error: escalation
+    transitions:
       - to: refund-review
         description: >-
-          The refund decision has been recorded in refund.json and explained to
-          the customer. The check-refund.js after hook re-derives the policy and
-          vetoes the transition if the recorded decision does not match; a human
-          then reviews the recorded decision before the case closes.
+          The recorded decision matches the refund policy.
+      - to: refund-request
+        description: >-
+          The recorded decision is missing, malformed, or contradicts the
+          policy: send it back naming the fix.
+      - to: escalation
+        description: >-
+          The decision still fails the policy check after two corrections.
 
   refund-review:
     title: Review refund decision
@@ -317,15 +389,15 @@ states:
   escalation:
     title: Escalate to a human agent
     summary: Hand the case to a human agent after a failed segment.
-    # Terminal error handler, entered only through an `on_error` route; the
-    # failure reason arrives as a runtime note.
+    # Terminal error handler, entered through an `on_error` route or from
+    # check-refund; the reason arrives as a runtime note.
     skills:
       allow: []
     instructions: >-
-      The refund workflow could not complete automatically. Apologize briefly,
-      tell the customer their request has been escalated to a human agent, and
-      summarize what was attempted. Do not decide the refund yourself. This
-      state is terminal.
+      The request could not be completed automatically; the note above says
+      why. Apologize briefly, tell the customer their request has been
+      escalated to a human agent, and summarize what was attempted. Do not
+      decide a refund or disclose order data yourself. This state is terminal.
 
   report-requested:
     title: Compile delayed-orders report

@@ -72,6 +72,9 @@ describe("createInterpreter dispose", () => {
       async runCode() {
         return outcome;
       },
+      async runCodeState() {
+        return outcome;
+      },
       dispose(sessionId, sessionNamespace) {
         disposals.push([sessionId, sessionNamespace]);
       },
@@ -115,6 +118,9 @@ describe("createInterpreter run-scope isolation", () => {
           sessionId: opts.sessionId,
           tools: (opts.tools ?? []).map((t) => (t as { name: string }).name),
         });
+        return outcome;
+      },
+      async runCodeState() {
         return outcome;
       },
       dispose(sessionId, sessionNamespace) {
@@ -211,6 +217,9 @@ describe("archmax_run argument contract", () => {
       async runCode() {
         return outcome;
       },
+      async runCodeState() {
+        return outcome;
+      },
       dispose() {},
     };
     const interpreter = createInterpreter({ executor, ptcNames: [] });
@@ -240,6 +249,9 @@ describe("the surface a script is scoped to", () => {
       },
       async runCode(_code, opts) {
         surfaces.push(opts.surface);
+        return outcome;
+      },
+      async runCodeState() {
         return outcome;
       },
       dispose() {},

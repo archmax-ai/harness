@@ -48,23 +48,22 @@ named workflow has no usable spec, rather than running an ungoverned agent.
 `workflow.yaml` SHALL be defined by a single Zod schema (`src/machine/spec-schema.ts`) from
 which the exported TypeScript types are inferred. Every object in it SHALL be strict except
 the documented loose slots (a `states.<slug>.triggers.<id>` declaration, and `metadata` at the
-root, on a state and on a rubric): an unrecognized
-key at any level is a load error naming the key and its dotted path
-(`states.review.transtions`). Document-level rules (`refineSpec`) SHALL run only once the
-shape holds, and the same `parseMachineSpec` SHALL back loading and `archmax validate`, so a
-spec that validates cleanly loads and a spec that fails to load fails `validate` with the same
-message. When the shape holds but a document-level rule fails, the typed spec SHALL still be
-handed to the lint so one dangling target does not hide every advisory behind it. The machine
-SHALL expose a stable content hash of the governing spec — every key except `metadata` at any
-of its positions,
-serialized with sorted object keys and ordered arrays — written into a session's first
-checkpoint and its `_specs/<hash>.json` snapshot; any governing edit changes it, including an
-edit to a rubric, and a cosmetic one (key order, whitespace, `metadata`) does not.
+root and on a state): an unrecognized key at any level is a load error naming the key and its
+dotted path (`states.review.transtions`). Document-level rules (`refineSpec`) SHALL run only
+once the shape holds, and the same `parseMachineSpec` SHALL back loading and `archmax validate`,
+so a spec that validates cleanly loads and a spec that fails to load fails `validate` with the
+same message. When the shape holds but a document-level rule fails, the typed spec SHALL still
+be handed to the lint so one dangling target does not hide every advisory behind it. The machine
+SHALL expose a stable content hash of the governing spec — every key except `metadata` at the
+root and on a state, serialized with sorted object keys and ordered arrays — written into a
+session's first checkpoint and its `_specs/<hash>.json` snapshot; any governing edit changes it,
+including an edit to a grader state's `instructions` or to a code state's `script`, and a
+cosmetic one (key order, whitespace, `metadata`) does not.
 
 A retired key SHALL be diagnosed as exactly what it is — an unrecognized key at its path — with
 no mapping to its replacement. The schema carries no memory of a former spelling, so `editor`,
-`max_corrections`, a root `name`, a root `triggers`, a state's `trigger`, and
-`{ subagent: … }` are reported the way a typo is.
+a root `name`, a root `triggers`, a root `extensions`, a state's `trigger`, and a state's
+`before` and `after` are reported the way a typo is.
 
 #### Scenario: A misspelled key is caught with its path
 
@@ -74,8 +73,8 @@ no mapping to its replacement. The schema carries no memory of a former spelling
 
 #### Scenario: A retired key is caught the same way
 
-- **WHEN** a spec declares `editor:`, a root `name:`, a root `triggers:`, a state's `trigger:`,
-  or `max_corrections` on a hook or a rubric
+- **WHEN** a spec declares `editor:`, a root `name:`, a root `triggers:`, a root `extensions:`, a
+  state's `trigger:`, or a state's `before:` or `after:`
 - **THEN** loading fails with the same unrecognized-key diagnostic naming the key and its path,
   carrying no suggestion of a replacement
 
@@ -85,32 +84,39 @@ no mapping to its replacement. The schema carries no memory of a former spelling
 - **THEN** the diagnostic comes from the schema, addressed by key path, in `validate` and at
   load alike
 
+#### Scenario: An automated state's definition is part of the hash
+
+- **WHEN** two specs differ only in a grader state's `instructions`, or only in a code state's
+  `script`
+- **THEN** their spec hashes differ, while two specs differing only in a state's `metadata` hash
+  equal
+
 ### Requirement: Root keys
 
 The spec root SHALL accept exactly: `title` (string, a human label — the workflow's identity
 is its directory slug), `instructions` (non-empty string of standing guidance rendered into
 the system prompt for the whole session), `disabled` (boolean), `runtime`, `budget`,
 `settings`, `tools` (`allow_always`, `forbid_always`), `skills` (`allow_always`, `forbid_always`),
-`mounts` (`allow_always`, `forbid_always`), `tests`, `extensions`,
-`metadata`, and `states` — a mapping of state slug to state, which SHALL be present and
-non-empty. A spec with no `instructions` SHALL load with a lint warning that the workflow
-ships no standing guidance. There SHALL be no root `triggers`: a trigger is declared on the
-state it enters.
+`mounts` (`allow_always`, `forbid_always`), `tests`, `metadata`, and `states` — a mapping of
+state slug to state, which SHALL be present and non-empty. A spec with no `instructions` SHALL
+load with a lint warning that the workflow ships no standing guidance. There SHALL be no root
+`triggers`: a trigger is declared on the state it enters. There SHALL be no root `extensions`
+block: it held only the custom hook kinds, which no longer exist.
 
 #### Scenario: Empty states rejected
 
 - **WHEN** a spec declares no `states`, or `states: {}`
 - **THEN** loading fails with "Machine spec is missing or has empty 'states'"
 
-#### Scenario: metadata is a recognized root key, rubrics and triggers are not
+#### Scenario: metadata is a recognized root key; rubrics, triggers and extensions are not
 
 - **WHEN** a spec declares `metadata:` at the root
 - **THEN** it is accepted, and a misspelling (`metadatas:`) is a load error naming the key and its
   path
 
-- **WHEN** a spec declares `rubrics:` or `triggers:` at the root
-- **THEN** loading fails naming the unrecognized key: a rubric is declared on the hook that applies
-  it and a trigger on the state it enters, neither as a first-order item
+- **WHEN** a spec declares `rubrics:`, `triggers:` or `extensions: { hooks: [audit] }` at the root
+- **THEN** loading fails naming the unrecognized key: grading is a grader state on the graph, a
+  trigger is declared on the state it enters, and there is no extensions block
 
 #### Scenario: The root governance blocks accept their own keys and no others
 
@@ -135,21 +141,31 @@ state it enters.
 
 ### Requirement: State keys
 
-Each state SHALL accept exactly: `type` (`agent`, the default, or `human`), `title`
-(non-empty string), `instructions`, `summary` (a one-line authoring and host label, rendered
-into no part of the prompt), `evidence` (list of paths),
+Each state SHALL accept exactly: `type` (`agent`, the default, `human`, `grader` or `code`),
+`title` (non-empty string), `instructions`, `summary` (a one-line authoring and host label,
+rendered into no part of the prompt), `evidence` (list of paths),
 `approvers` (list of strings, presented to a reviewer and otherwise uninterpreted),
-`triggers`, `before`, `after`, `budget`, `model` (a non-empty model id this state's turns run
-on), `on_error` (a state slug), `tools` (`allow`, `forbid`),
-`skills` (`allow`, `forbid`), `mounts` (`allow`, `forbid`), `requires` (list of variable names),
-`locks` (list of variable names the state owns),
-`metadata` (the loose, runtime-inert host slot), and `transitions`. A bare `done:` (YAML
-`null`) SHALL be read as an empty state — terminal, `agent`, always-on tools only.
+`triggers`, `script` (a code state's script path), `budget`, `model` (a non-empty model id the
+state's model calls run on — the agent's turns, or a grader's calls), `on_error` (a state slug),
+`tools` (`allow`, `forbid`), `skills` (`allow`, `forbid`), `mounts` (`allow`, `forbid`),
+`requires` (list of variable names), `locks` (list of variable names the state owns), `metadata`
+(the loose, runtime-inert host slot), and `transitions`. `grader` and `code` states are
+**automated states**: the runtime runs one on entry with no model call of the session's agent (see
+`automated-states`). Which of these keys each type reads is held by lint (see "Keys a state type
+never reads are lint errors"). A bare `done:` (YAML `null`) SHALL be read as an empty state —
+terminal, `agent`, with the workflow-wide grant only.
 
 #### Scenario: Unknown state type
 
-- **WHEN** a state declares `type: wait` or `type: workflow`
-- **THEN** loading fails naming the type and the two accepted kinds, `agent` and `human`
+- **WHEN** a state declares `type: wait`, `type: workflow` or `type: hook`
+- **THEN** loading fails naming the type and the four accepted kinds, `agent`, `human`, `grader`
+  and `code`
+
+#### Scenario: Every state type loads
+
+- **WHEN** a spec declares an `agent` state, a `human` state, a `grader` state with
+  `instructions` and a transition, and a `code` state with `script: scripts/check.js`
+- **THEN** it loads clean and each state's type survives on the parsed spec
 
 #### Scenario: A state's metadata is accepted and inert
 
@@ -191,9 +207,10 @@ on), `on_error` (a state slug), `tools` (`allow`, `forbid`),
 
 #### Scenario: Routing context advisory
 
-- **WHEN** a non-human state with several transitions declares no `instructions`
+- **WHEN** an `agent` state with several transitions declares no `instructions`
 - **THEN** the lint warns, because the agent has nothing telling it how to classify the request
-  before it routes
+  before it routes; a human or grader state without instructions is a lint error instead, and a
+  code state routes by its script
 
 #### Scenario: Singular trigger is not a state key
 
@@ -203,18 +220,16 @@ on), `on_error` (a state slug), `tools` (`allow`, `forbid`),
 ### Requirement: Slugs are identity, titles are labels
 
 A state's key in `states` SHALL be its slug — the only token that resolves it, in `to`,
-`on_error`, the `to`
-the agent passes to `archmax_advance`, events, artifacts and case assertions. A workflow's slug
-SHALL be its `workflows/<slug>/` directory name and the CLI argument. A trigger id SHALL be the
-key of a `states.<slug>.triggers` entry, and a trigger SHALL have no key of its own anywhere
-else in the document. A rubric SHALL have no
-slug at all: it is declared inline and identified by position. The rest SHALL take the
-shape `^[a-z0-9]+(-[a-z0-9]+)*$` (`SLUG_PATTERN`), enforced by `archmax validate` as an error
-(empty key reported as a missing identity, nonconforming key as a shape error); the loader and
-the runtime SHALL treat a slug as opaque so a nonconforming slug still runs. A `title` on the
-root or a state SHALL be presentational only: never unique, never a routing target, rendered
-beside the slug in the graph section and carried in a human state's decision record. A rubric
-SHALL have no `title`: nothing routes to one and nothing labels one in the prompt.
+`on_error`, the `to` passed to `archmax_advance` (by the agent, a grader or a code state's
+script), events, artifacts and case assertions. A workflow's slug SHALL be its
+`workflows/<slug>/` directory name and the CLI argument. A trigger id SHALL be the key of a
+`states.<slug>.triggers` entry, and a trigger SHALL have no key of its own anywhere else in the
+document. State and workflow slugs SHALL take the shape `^[a-z0-9]+(-[a-z0-9]+)*$`
+(`SLUG_PATTERN`), enforced by `archmax validate` as an error (empty key reported as a missing
+identity, nonconforming key as a shape error); the loader and the runtime SHALL treat a slug as
+opaque so a nonconforming slug still runs. A `title` on the root or a state SHALL be
+presentational only: never unique, never a routing target, rendered beside the slug in the graph
+section and carried in a human state's decision record.
 
 Per-node host data SHALL live on the node — a state's own `metadata` — rather than in a
 root-level table keyed by state slug, so a renamed state carries its host data with it and no
@@ -227,8 +242,8 @@ second reference to the former slug is left behind.
 
 #### Scenario: Nonconforming slugs reported statically
 
-- **WHEN** a spec declares states keyed `Identify Case`, `snake_case` or `double--hyphen`, a
-  or the workflow directory is `order_lookup`
+- **WHEN** a spec declares states keyed `Identify Case`, `snake_case` or `double--hyphen`, or
+  the workflow directory is `order_lookup`
 - **THEN** `archmax validate` reports an error for each naming the kebab-case shape, and the
   workflow still loads and runs
 
@@ -249,16 +264,19 @@ A state's `transitions` SHALL be a list of `{ to, description?, type? }` where `
 declared state, `description` is a string, and `type` is one of `approve`, `reject`, `refine`,
 `none`. An absent, empty or whitespace-only `description` SHALL mark the edge **undescribed**: the
 agent routes on the target state's `instructions` instead (see the `governance` capability). A
-non-string `description`, and an undescribed edge whose target has no non-blank `instructions`,
-SHALL each be a load error addressed to `states.<slug>.transitions.<index>.description`, which
-names the edge, stating that the agent routes on the description or else on the target's
-instructions, and what to write instead. A state
-with no transitions SHALL be terminal: the session completes when the agent finishes there and
-`archmax_advance` is not disclosed in it. `on_error`, when declared, SHALL name a declared
-state; a state's failure (an exhausted budget, a terminal hook rejection) routes there, and a
-state without one ends the session rejected. Transitions carry no preconditions of their own:
-an edge is decided only by its existence, the state's `requires`, and the verdicts of the
-`after`/`before` hooks.
+non-string `description`, an undescribed edge whose target has no non-blank `instructions`, and an
+undescribed edge into a grader or code state SHALL each be a load error addressed to
+`states.<slug>.transitions.<index>.description`, which names the edge, stating that the agent
+routes on the description or else on the target's instructions, and what to write instead: a
+grader's instructions are its criteria, never shown to the work it judges, and a code state has
+none. A code state's own edges MAY go undescribed, whatever their target: its script routes on
+them, and nothing reads their descriptions. A state with no transitions SHALL be terminal: the
+session completes when the state's work finishes there — the agent's last turn in an agent state,
+the script's return in a code state — and `archmax_advance` is not disclosed or offered in it.
+`on_error`, when declared, SHALL name a declared state; a state's failure (an exhausted budget, or
+an automated state that errors, times out or finishes without deciding) routes there, and a state
+without one ends the session rejected. Transitions carry no preconditions of their own: an edge is
+decided only by its existence and the state's `requires`, whoever takes it.
 
 #### Scenario: Missing description rejected
 
@@ -286,21 +304,40 @@ an edge is decided only by its existence, the state's `requires`, and the verdic
 - **THEN** the spec loads with no error and no warning about the edge, and `description: ""` on the
   same edge loads the same way
 
+#### Scenario: An automated state's failure takes the error route
+
+- **WHEN** a code state declaring `on_error: escalate` has a script that throws
+- **THEN** the session moves to `escalate`; with no `on_error`, the session ends rejected
+
+#### Scenario: An undescribed edge into an automated state is refused
+
+- **WHEN** an agent state declares `transitions: [{ to: review-reply }]`, where `review-reply` is a
+  grader state with `instructions`, or `transitions: [{ to: check-refund }]`, where `check-refund`
+  is a code state
+- **THEN** loading fails with one error addressed to that transition's `description`, saying that
+  a grader's instructions are its criteria and never shown to the work it judges, or that a code
+  state has none, and `archmax validate` fails with the same error
+
+#### Scenario: A code state's own edges may go undescribed
+
+- **WHEN** a code state declares `transitions: [{ to: answer }, { to: decline }]`, with no
+  `description` on either
+- **THEN** the spec loads with no error and no warning about the edges, whatever `answer` and
+  `decline` declare
+
 ### Requirement: Human-state rules are split between schema and lint
 
 A `type: human` state parks the session for a person's decision, so it SHALL declare
 `instructions` describing the decision, at least one transition, at most one transition of each
-labeled `type` (`approve`/`reject`/`refine`), no transition to itself, and no `before`/`after`
-hook (a human state runs no agent turn in which a hook could fire). These SHALL be **lint
-errors**: the runtime tolerates them and the spec still loads, while `archmax validate` fails on
-them. The shape rules a human state shares with every state — the `type` enum, the transition
-`type` enum, an existing `to` — remain schema errors, and so does a non-empty `description` on
-each of a human state's own transitions, which an agent state's edge may omit: there it is the
-decision's button label for a person, so a human state's decision button labels are guaranteed by
-the schema rather than by lint. The
-decision record SHALL be built from the state's `title`, `instructions`, declared `evidence`
-(leading, deduplicated with any evidence the advancing call attached) and its transitions'
-`to`/`description`/`type`.
+labeled `type` (`approve`/`reject`/`refine`), and no transition to itself. These SHALL be
+**lint errors**: the runtime tolerates them and the spec still loads, while `archmax validate`
+fails on them. The shape rules a human state shares with every state — the `type` enum, the
+transition `type` enum, an existing `to` — remain schema errors, and so does a non-empty
+`description` on each of a human state's own transitions, which an agent state's edge may omit:
+there it is the decision's button label for a person, so a human state's decision button labels
+are guaranteed by the schema rather than by lint. The decision record SHALL be built from the
+state's `title`, `instructions`, declared `evidence` (leading, deduplicated with any evidence the
+advancing call attached) and its transitions' `to`/`description`/`type`.
 
 #### Scenario: Human state without a button label
 
@@ -308,55 +345,30 @@ decision record SHALL be built from the state's `title`, `instructions`, declare
 - **THEN** loading fails under the strict schema naming that transition's `description` and saying
   that it is the decision's button label, even though the target declares `instructions`
 
-#### Scenario: Hook on a human state
+#### Scenario: A leftover hook key on a human state
 
 - **WHEN** a `type: human` state declares `after: { rubric: { instructions: … } }`
-- **THEN** `archmax validate` reports an error stating the hook can never run and naming the
-  agent state it belongs on
+- **THEN** loading fails with the standard unrecognized-key diagnostic naming `after` and its
+  path, as it does on every state type, and no human-state lint is reported for it
 
-### Requirement: Hook shape
+#### Scenario: Human state with nowhere to route
 
-A `before` or `after` SHALL be one hook or an ordered list of hooks. A hook SHALL be a
-single-key tagged object — `{ script: <path> }`, `{ rubric: <declaration> }`, or
-`{ <custom-kind>: <target> }` for an executor registered at assembly through `hookExecutors` —
-optionally beside the one sidecar `max_iterations` (integer, at least 0), which bounds
-`correct` verdicts on an `after` hook. A `script` path SHALL be workflow-relative, inside
-`hooks/`, ending in `.js` or `.mjs`, with no `..` segment (`hooks/check.js` resolves to
-`workflows/<slug>/hooks/check.js`); the custom-kind branch SHALL NOT rescue a malformed
-built-in. A `before` hook declaring `max_iterations` SHALL be a document-level
-error, because `before` hooks are ok/veto only.
-
-A `{ rubric: … }` hook's value SHALL be a **rubric declaration**, not a name: the grader is
-declared where it is applied (see the `grading-rubrics` capability). Its `max_iterations` and
-`model` live inside that declaration, so the `max_iterations` sidecar SHALL be refused beside a
-`rubric` key while remaining accepted beside a `script` or custom kind. No `instructions` sidecar
-SHALL be accepted on any hook.
-
-#### Scenario: Confined script path
-
-- **WHEN** a hook declares `{ script: skills/x/scripts/check.js }`, `{ script: /abs/check.js }`
-  or `{ script: hooks/../escape.js }`
-- **THEN** loading fails naming the required location inside `hooks/`
-
-#### Scenario: Iteration budget on the wrong phase
-
-- **WHEN** a state declares `before: { script: hooks/x.js, max_iterations: 2 }`
-- **THEN** loading fails stating that the budget applies to `after` hooks
-
-#### Scenario: A rubric is a declaration, not a reference
-
-- **WHEN** a state declares `after: { rubric: tone-check }` — a name rather than a declaration
-- **THEN** loading fails, and `validate` reports the same diagnostic, because there is no named
-  rubric to resolve
+- **WHEN** a `type: human` state declares no transitions
+- **THEN** the spec loads, and `archmax validate` reports an error that the state must declare at
+  least one outgoing transition the person can route to
 
 ### Requirement: Budgets
 
 A state's `budget` SHALL accept `maxTurns`, `timeoutMs` and `maxParks`, each a positive
-integer when present and unbounded when absent. `maxTurns` counts the state's model turns,
-`timeoutMs` bounds a model call in the state, `maxParks` counts the state's `archmax_wait`
-parks; exhausting any of them fails the state, which routes through `on_error` when declared
-and otherwise rejects the session. The root `budget` SHALL accept only `maxModelCalls`, a
-positive integer bounding the model calls of one turn across every state, `50` when absent.
+integer when present and unbounded when absent. In an agent state, `maxTurns` counts the state's
+model turns, `timeoutMs` bounds a model call in the state, and `maxParks` counts the state's
+`archmax_wait` parks. In a grader state, `maxTurns` bounds the grader's own model calls and
+`timeoutMs` bounds the grader's run; the session agent's turn budget is not spent there. A
+`budget.maxParks` on a grader and any `budget` on a code state are lint errors (see "Keys a
+state type never reads are lint errors"). Exhausting any budget fails the state, which routes
+through `on_error` when declared and otherwise rejects the session. The root `budget` SHALL accept
+only `maxModelCalls`, a positive integer bounding the session agent's model calls of one turn
+across every state, `50` when absent; an automated state's run spends none of it.
 
 #### Scenario: Non-positive budget rejected
 
@@ -367,6 +379,19 @@ positive integer bounding the model calls of one turn across every state, `50` w
 
 - **WHEN** a spec declares `budget: { maxModelCalls: 0 }` at the root
 - **THEN** loading fails with "must be a positive number" addressed to that field
+
+#### Scenario: A grader's turn budget bounds the grader
+
+- **WHEN** a grader state declares `budget: { maxTurns: 3 }` and its grader has made three model
+  calls without calling `archmax_advance` or `archmax_raise`
+- **THEN** the grader's run fails, and the failure routes through the state's `on_error` when
+  declared and otherwise rejects the session
+
+#### Scenario: A grader's timeout bounds the run
+
+- **WHEN** a grader state declares `budget: { timeoutMs: 30000 }` and its grader has not decided
+  30 seconds after it started
+- **THEN** the grader's run fails the same way
 
 ### Requirement: Allow entries and the tools blocks
 
@@ -388,7 +413,11 @@ workflow-wide grant SHALL be the **default tools** (`ls`, `read_file`, `write_fi
 A state with no `tools` block permits the workflow-wide grant only. A state entry naming a tool the
 workflow grants narrows it there (`{ tool: archmax_run, paths: [skills/x/scripts/**] }`), and a state
 entry naming a default tool that a declared `allow_always` omits grants it in that state. A default
-tool listed in `allow_always`, bare or guarded, SHALL be an ordinary grant and draw no warning.
+tool listed in `allow_always`, bare or guarded, SHALL be an ordinary grant and draw no warning. In
+a grader or code state the workflow-wide grant SHALL leave out the agent-only tools
+(`write_todos`, `archmax_eval`, `archmax_run`) and `archmax_wait` and `archmax_reset`, whether
+they arrive as default tools or are listed in a declared `allow_always` (see the `governance`
+capability).
 
 A workflow that declares `tools.allow_always` and names none of the default tools there or in any
 state's `tools.allow` SHALL draw one lint warning. The warning SHALL name the default tools and say
@@ -809,24 +838,23 @@ the table declares) under every key, and:
 - **THEN** `validate` reports an error: no state can leave itself, so no run can reach a terminal
   state
 
-### Requirement: Settings, tests, runtime, extensions and metadata
+### Requirement: Settings, tests, runtime and metadata
 
 `settings` SHALL accept `model` (a non-empty model id every state of this workflow runs on),
 `timeoutMs` (default 15000 ms for sandbox execution),
 `memoryLimitBytes`, `maxPtcCalls` (integer at least 0, or `null`), `maxResultChars`, and
 `prompt_cache: { enabled?, ttl? }`; omitted fields take the runtime default. `tests` SHALL
 accept `maxConcurrency` (positive integer; a value above 1 is a document-level error because
-cases run sequentially), `caseTimeoutMs`, and the grader's model configuration under the key
-`judge: { model?, modelOptions? }` — a case grader's model, which `settings.model` SHALL NOT
-change. `runtime` SHALL accept `engine` and `version` (string or
-number), preserved verbatim; omitted, the contract is `archmax-harness@1`, and a contract outside the
-supported set (`archmax-harness@1`, `archmax-harness@2`) is a `validate` error and an assembly failure. `extensions`
-SHALL accept `hooks`, the list of custom hook kinds `validate` accepts offline. `metadata`
-SHALL be a loose mapping of host data, accepted at the spec root, on every state and inside every
-rubric declaration: preserved on the parsed spec, never read by
-the runtime, never rendered into the prompt, taking no part in governance, routing or
-validation, and excluded from the spec hash, so a canvas edit mints no new spec version.
-Everywhere else the root stays strict, and `metadata` SHALL NOT be nested under `extensions`.
+cases run sequentially), `caseTimeoutMs`, and, under the key `judge: { model?, modelOptions? }`,
+the model a case's `grade` assertion scores with, which `settings.model` SHALL NOT change and
+which no grader state runs on. `runtime` SHALL accept `engine` and `version` (string or
+number), preserved verbatim; omitted, the contract is `archmax-harness@3`, and a contract
+outside the supported set (`archmax-harness@3` only) is a `validate` error and an assembly
+failure. `metadata` SHALL be a loose mapping of host data, accepted at the spec root and on
+every state: preserved on the parsed spec, never read by the runtime, never rendered into the
+prompt, taking no part in governance, routing or validation, and excluded from the spec hash,
+so a canvas edit mints no new spec version. Everywhere else the root stays strict, and there is
+no `extensions` block.
 
 #### Scenario: Unsupported runtime contract
 
@@ -834,20 +862,28 @@ Everywhere else the root stays strict, and `metadata` SHALL NOT be nested under 
 - **THEN** `archmax validate` reports an unsupported contract naming the supported set, and
   assembly fails closed
 
+#### Scenario: A retired contract version is refused
+
+- **WHEN** a spec declares `runtime: { engine: archmax-harness, version: 2 }` or `version: 1`
+- **THEN** `archmax validate` reports an unsupported contract naming `archmax-harness@3` as the
+  supported set, and assembly fails closed; a spec with no `runtime` block resolves to
+  `archmax-harness@3`
+
 #### Scenario: No governance key hides in settings
 
-- **WHEN** a spec declares `settings: { forbid_tools: [...] }` or `extensions: { policy: … }`
+- **WHEN** a spec declares `settings: { forbid_tools: [...] }`
 - **THEN** loading fails naming the unrecognized key: tool and skill governance is declared only in
   the `tools` and `skills` blocks
 
 #### Scenario: The workflow model and the grader's model are separate
 
-- **WHEN** a spec declares `settings: { model: small-model }` and `tests: { judge: { model: grader-model } }`
-- **THEN** the workflow's turns run on `small-model` and the case grader runs on `grader-model`
+- **WHEN** a spec declares `settings: { model: small-model }` and `tests: { judge: { model: judge-model } }`
+- **THEN** the workflow's turns and its grader states run on `small-model`, and every case
+  `grade` assertion is scored on `judge-model`
 
 #### Scenario: Metadata is inert at every position
 
-- **WHEN** a spec carries `metadata` at the root, on two states and on a rubric
+- **WHEN** a spec carries `metadata` at the root and on two states
 - **THEN** it loads clean, every block survives on the parsed spec, the prompt carries none of
   them, and the spec hash equals that of the same spec without them
 
@@ -858,14 +894,16 @@ Everywhere else the root stays strict, and `metadata` SHALL NOT be nested under 
 
 ### Requirement: A workflow and a state may name the model they run on
 
-A spec SHALL be able to name the model its turns run on at two positions: `settings.model` at
-the root, applying to every state of that workflow, and `model` on a state, applying to that
-state's turns. Each SHALL be a non-empty string naming a **model id only** — never an object,
+A spec SHALL be able to name the model its model calls run on at two positions: `settings.model`
+at the root, applying to every state of that workflow, and `model` on a state, applying to that
+state's model calls — the agent's turns in an agent or human state, the grader's calls in a
+grader state. Each SHALL be a non-empty string naming a **model id only** — never an object,
 never an endpoint, never credentials, and never sampling knobs — so that a declared model is
-resolved over the endpoint and credentials already configured for the assembly, exactly as a
-rubric's `model` is. Precedence SHALL be, most specific first: the state's `model`, the spec's
-`settings.model`, then whatever the assembly resolved with no id (an explicit `model`, a
-`modelFactory`, or `ARCHMAX_MODEL`). A spec naming neither SHALL behave exactly as before.
+resolved over the endpoint and credentials already configured for the assembly. Precedence
+SHALL be, most specific first: the state's `model`, the spec's `settings.model`, then whatever
+the assembly resolved with no id (an explicit `model`, a `modelFactory`, or `ARCHMAX_MODEL`). A
+spec naming neither SHALL behave exactly as before. A code state makes no model call, so a
+`model` on one is a lint error (see "Keys a state type never reads are lint errors").
 
 The ids SHALL be opaque to the runtime: no allow-list, no provider inference, no validation
 beyond the non-empty string, so a new model id needs no SDK release. Neither key SHALL take any
@@ -885,6 +923,13 @@ state may use — and both SHALL be part of the spec hash, because they change w
   `ARCHMAX_MODEL` names another id
 - **THEN** every state's turns run on `small-model` over the endpoint and credentials
   `ARCHMAX_API_BASE_URL` / `ARCHMAX_API_KEY` configure
+
+#### Scenario: A grader state's model
+
+- **WHEN** a spec declares `settings: { model: small-model }`, grader state `review-reply`
+  declares `model: careful-model`, and grader state `check-tone` declares none
+- **THEN** the `review-reply` grader's model calls run on `careful-model` and the `check-tone`
+  grader's on `small-model`
 
 #### Scenario: An unknown id is not the schema's business
 
@@ -1205,8 +1250,9 @@ something sets it, and there is no `variables:` block in the spec. A name SHALL 
 a call argument, `requires`/`returns`, and `archmax_set_variables`. Two names are reserved.
 `trigger` holds the id of the current turn's arrival, set by the runtime and locked, re-stamped
 at every arrival boundary (turn start and delivery), refused to every write, and available
-before the start state's `before` hook runs, so a guard may reference `${{trigger}}` without
-a seed. `title` is a short label for the session's task, agent-owned: never locked by any
+from the turn boundary on, before the start state does anything — a code start state's script
+included — so a guard may reference `${{trigger}}` without a seed. `title` is a short label for
+the session's task, agent-owned: never locked by any
 route (a seed stores it unlocked; `archmax_set_variables` refuses `lock: true` with it),
 shape-checked on write (non-empty, single-line, at most 200 characters after trimming, stored
 trimmed; a bad seed throws `InvalidTitleError` at the seeding boundary), treated as an opening
@@ -1241,16 +1287,24 @@ sub-workflow's child SHALL read neither.
   the prompt says to judge that against the whole conversation rather than the latest message and
   that a follow-up on the same subject keeps the title
 
+#### Scenario: A code start state reads the trigger
+
+- **WHEN** a code state declaring `triggers: { manual: , email_reply: }` runs as the first step of
+  a session started through `email_reply`
+- **THEN** its script reads `trigger` as `email_reply`, and a guard in that state referencing
+  `${{trigger}}` resolves without a seed
+
 ### Requirement: Seeds are locked; locking is monotonic
 
 Every host-supplied variable SHALL be seeded locked (`title` excepted) through one
 construction, `buildSeededVariables`, whether it arrives as `createAgent`'s `variables`, a
 delivery's variables or a call's arguments, so a guard bound to a seed cannot be invalidated
-by the agent. A locked variable SHALL NOT be unlocked, deleted or rewritten by any tool, hook
-or script; only a host seeding boundary (a turn start or a delivery) replaces a locked entry,
-re-establishing the session's facts, and only `archmax_reset` unlocks one: the locks the agent
-set with `archmax_set_variables`, never a host's. A lock SHALL record whether the agent set it; a
-lock recorded without that is a host's. Variables SHALL be checkpointed with the session and survive transitions,
+by the agent. A locked variable SHALL NOT be unlocked, deleted or rewritten by any tool, script
+or grader; only a host seeding boundary (a turn start or a delivery) replaces a locked entry,
+re-establishing the session's facts, and only `archmax_reset` unlocks one: the locks set with
+`archmax_set_variables` (by the agent, a grader or a code state's script), never a host's. A lock
+SHALL record whether `archmax_set_variables` set it; a lock recorded without that is a host's.
+Variables SHALL be checkpointed with the session and survive transitions,
 parks and turn boundaries; successive writes in one state accumulate.
 
 #### Scenario: Delivery re-seeds a locked name
@@ -1263,6 +1317,11 @@ parks and turn boundaries; successive writes in one state accumulate.
 - **WHEN** a session seeded `customer_email` (locked by the host), the agent set `case_id` with
   `lock: true`, and the agent then calls `archmax_reset`
 - **THEN** `case_id` keeps its value and can be written again, while `customer_email` stays locked
+
+#### Scenario: An automated state cannot rewrite a seed
+
+- **WHEN** a code state's script or a grader calls `archmax_set_variables` for a locked seed
+- **THEN** the call is refused naming the variable, and nothing is written
 
 ### Requirement: References
 
@@ -1278,7 +1337,9 @@ recursive. Resolution SHALL fail closed: a literal `${{…}}` never reaches a to
 unresolvable reference in a **guard** makes the entry match nothing and is a terminal
 governance failure (an authoring defect); an unresolvable reference in an **agent-written
 argument** is a correctable tool refusal naming the reference and the reason, with no partial
-substitution delivered. Script- and hook-originated calls are not substituted.
+substitution delivered. A grader's tool arguments SHALL be substituted as the agent's are. Calls
+a script makes — an agent's `archmax_eval` or `archmax_run` script, or a code state's script —
+are not substituted.
 
 #### Scenario: Negative index and prototype guard
 
@@ -1291,6 +1352,11 @@ substitution delivered. Script- and hook-originated calls are not substituted.
 - **WHEN** `order` holds an object and the agent passes `"${{order}}"`
 - **THEN** the call is refused naming the non-scalar result and the session continues
 
+#### Scenario: A code state's script argument is not substituted
+
+- **WHEN** a code state's script calls `tools.read_file({ file_path: "scratchpad/${{case_id}}.json" })`
+- **THEN** the argument reaches governance verbatim, with no lookup
+
 ### Requirement: The variable tools
 
 `archmax_get_variables` SHALL take optional `name` and `path`; a blank or whitespace-only
@@ -1301,8 +1367,9 @@ to whole value; any JSON value, no sub-path write) and optional `lock`; it creat
 each variable and locks them all when `lock` is true. A call SHALL be refused atomically —
 nothing written — when it names no variables, uses an invalid name, targets a locked variable,
 targets a variable another state owns (naming that state, so the agent can go back there), locks
-`title` or a variable a state owns, or writes a malformed `title`. Both tools SHALL be disclosed in every state,
-terminal states included.
+`title` or a variable a state owns, or writes a malformed `title`. Both tools SHALL be offered in
+every state of every type, terminal states included — to the agent, to a grader and to a code
+state's script — with the same arguments and refusals.
 
 #### Scenario: Blank name reads everything
 
@@ -1326,6 +1393,12 @@ terminal states included.
 - **WHEN** the agent in `lookup`, which owns `order_id`, writes it with `lock: true`
 - **THEN** nothing is written and the reason says `lookup` owns `order_id`, so it stays
   changeable there
+
+#### Scenario: A code state's script reads what it wrote
+
+- **WHEN** a code state's script calls `tools.archmax_set_variables({ variables: { case_id: "K-9" } })`
+  and then `tools.archmax_get_variables({ name: "case_id" })`
+- **THEN** the read returns `K-9`
 
 ### Requirement: A state may own variables
 
@@ -1361,10 +1434,12 @@ own variables of the child session only.
 
 A state's `requires` SHALL list variable names that must be set before the state may be left.
 The kernel SHALL block `archmax_advance` out of the state while any is unset (rule
-`transition.requires`, evaluated before the edge and its hooks), naming the unset variables;
-the block is recoverable — the agent sets them and retries — and neither rejects the session
-nor routes `on_error`. A seeded variable satisfies it without agent action. The lint SHALL
-warn on a duplicated entry, and SHALL NOT diagnose a required name nothing references. A
+`transition.requires`, evaluated before the edge), naming the unset variables, whoever calls it:
+the agent, a grader or a code state's script. The block is recoverable — the caller sets them
+and retries — and itself neither rejects the session nor routes `on_error`; an automated state
+that then finishes without deciding fails as any undecided run does (see `automated-states`). A
+seeded variable satisfies it without any action. The lint SHALL warn on a duplicated entry, and
+SHALL NOT diagnose a required name nothing references. A
 `${{…}}` guard reference that no seed, no `requires` (state or trigger) and not the built-in
 `trigger` guarantees SHALL be a warning — at assembly, where the seeds are known, and in
 `validate` without them — stating that the guard then rests on the agent having set it; an
@@ -1375,7 +1450,14 @@ warn on a duplicated entry, and SHALL NOT diagnose a required name nothing refer
 - **WHEN** the active state declares `requires: [case_id]`, nothing set it, and the agent
   advances
 - **THEN** the transition is refused naming `case_id`; once the agent sets it, the advance
-  proceeds through the normal `after`-hook path
+  proceeds
+
+#### Scenario: A code state's advance is held to requires
+
+- **WHEN** a code state declares `requires: [case_id]` and its script calls
+  `tools.archmax_advance({ to: "review", reason: "…" })` while `case_id` is unset
+- **THEN** the call is refused naming `case_id` and nothing moves; once the script sets
+  `case_id` and advances again, the transition is taken
 
 #### Scenario: Unguaranteed guard reference
 
@@ -1390,27 +1472,40 @@ skills? })` and `archmax validate [workflow] [--root <dir>] [--json]` return dia
 `severity` `error` or `warning`, a message, and where known a `file` and dotted `field` — with
 `valid` false when any error is present. Beyond the schema and lint (reported in the loader's
 words), validation SHALL check: the workflow slug shape; the runtime contract; every state
-slug; each hook's referent — a `script` that resolves inside `hooks/`, exists on the authoring
-backend and imports only from `@archmax-ai/harness/*`, a custom kind listed under `extensions.hooks`
-(a `rubric` has no referent to check: the grader is the hook's own value); every skills list against the
-registry; kernel probes of `tools.allow` and `tools.allow_always` entries the runtime would refuse (a write
-into a runtime-owned or offload area, the read-only authored zone, a path or tool a `forbid_always` or
-`forbid` list denies, an entry naming `task`, an `archmax_run` path outside every skill bundle, a path that names the authoring
-backend, a path inside a bundle the state does not enable), each an error; sibling workflows
-named by `archmax_workflow_<slug>` entries (missing or unusable spec, no `manual` entry, a
-non-slug target, a cycle, a chain past the dispatcher's depth bound — errors; a disabled
-target — warning); and each `tests/*.test.yaml` case (schema errors, a `trigger` id no start
-state declares, a `from:` fixture missing or escaping `tests/`). It SHALL inspect no grader directory and report no unloadable-grader advisory,
-because a grader either resolves in the document or the spec does not load. The CLI SHALL print
-diagnostics to stderr, the verdict line (or, with `--json`, `{ workflow, valid, diagnostics }`)
-to stdout, and exit 0 when valid, 1 when not, 2 on a usage error; with no workflow argument it
-SHALL validate the workspace's only workflow and refuse when there are several or none.
+slug; each code state's `script` — that it resolves inside the workflow's `scripts/`, exists on
+the authoring backend and imports only from `@archmax-ai/harness/*`; every skills list against
+the registry; kernel probes of `tools.allow` and `tools.allow_always` entries the runtime would
+refuse (a write into a runtime-owned or offload area, the read-only authored zone, a path or
+tool a `forbid_always` or `forbid` list denies, an entry naming `task`, an `archmax_run` path
+outside every skill bundle, a path that names the authoring backend, a path inside a bundle the
+state does not enable), each an error; sibling workflows named by `archmax_workflow_<slug>`
+entries (missing or unusable spec, no `manual` entry, a non-slug target, a cycle, a chain past
+the dispatcher's depth bound — errors; a disabled target — warning); and each
+`tests/*.test.yaml` case (schema errors, a `trigger` id no start state declares, a `from:`
+fixture missing or escaping `tests/`). It SHALL read no grader definition outside the spec and
+report no unloadable-grader advisory, because a grader state is declared whole in the document.
+The CLI SHALL print diagnostics to stderr, the verdict line (or, with `--json`,
+`{ workflow, valid, diagnostics }`) to stdout, and exit 0 when valid, 1 when not, 2 on a usage
+error; with no workflow argument it SHALL validate the workspace's only workflow and refuse when
+there are several or none.
 
-#### Scenario: Missing hook script
+#### Scenario: A leftover hook's script is not checked
 
-- **WHEN** a state declares `{ script: hooks/x.js }` and `workflows/<slug>/hooks/x.js` does
+- **WHEN** a state declares `before: { script: hooks/x.js }` and `workflows/<slug>/hooks/x.js`
+  does not exist
+- **THEN** `validate` reports the unrecognized-key error for `before` and nothing about the
+  file: no hook referent is resolved or checked
+
+#### Scenario: Missing code-state script
+
+- **WHEN** a code state declares `script: scripts/x.js` and `workflows/<slug>/scripts/x.js` does
   not exist
-- **THEN** `validate` reports an error naming the state, phase and resolved path
+- **THEN** `validate` reports an error naming the state and the resolved path
+
+#### Scenario: A code-state script with a foreign import
+
+- **WHEN** a code state's script imports from `node:fs`
+- **THEN** `validate` reports an error naming the state, the script and the import
 
 #### Scenario: No grader directory is consulted
 
@@ -1439,14 +1534,14 @@ SHALL validate the workspace's only workflow and refuse when there are several o
 
 ### Requirement: A typed return is checked where it is written
 
-When the agent writes a variable with `archmax_set_variables` that the current turn's trigger
-declares as a **typed** entry of its `returns`, the runtime SHALL refuse the call — atomically,
-nothing written — if the value does not conform to the declared type, naming the variable, its
-type, the trigger that declares it and the kind of value that arrived. The refusal SHALL be a
-correctable tool refusal, not a governance failure: the session continues and the agent may
-write a conforming value. A variable no typed return of the current turn's trigger names SHALL
-be written as today, whatever it holds, and a script- or hook-originated write SHALL remain
-subject only to the completion check.
+When an `archmax_set_variables` call — the agent's, a grader's or a code state's script's —
+writes a variable that the current turn's trigger declares as a **typed** entry of its
+`returns`, the runtime SHALL refuse the call — atomically, nothing written — if the value does
+not conform to the declared type, naming the variable, its type, the trigger that declares it
+and the kind of value that arrived. The refusal SHALL be a correctable tool refusal, not a
+governance failure: the session continues and the caller may write a conforming value. A
+variable no typed return of the current turn's trigger names SHALL be written as today, whatever
+it holds.
 
 #### Scenario: A mistyped return is refused at the write
 
@@ -1464,6 +1559,13 @@ subject only to the completion check.
 
 - **WHEN** the agent writes `scratch: { a: 1 }` and no typed return names `scratch`
 - **THEN** the write succeeds
+
+#### Scenario: A code state's mistyped return is refused the same way
+
+- **WHEN** under the same trigger a code state's script calls
+  `tools.archmax_set_variables({ variables: { approved: "yes" } })`
+- **THEN** the call is refused naming `approved`, `boolean` and the trigger, and nothing is
+  written
 
 ### Requirement: One mapping from a signature to JSON Schema
 
@@ -1565,3 +1667,151 @@ return, the completion check, and a delegation call.
   session's workflow grants it in no state, and a `file` value names `invoices/a.xml`
 - **THEN** it is refused naming the variable, `file` and `mount.not-allowed`, at whichever boundary
   it crosses
+
+### Requirement: A leftover before or after key fails loading
+
+`before` and `after` SHALL NOT be state keys. A state that still declares either SHALL fail to
+load with the standard unrecognized-key error naming the key and its dotted path
+(`states.<slug>.after`), and `archmax validate` SHALL report the identical diagnostic. There
+SHALL be no special-cased message and no migration shim: the key's value is not read, converted
+or rewritten, whatever it holds.
+
+#### Scenario: A leftover after key fails loading
+
+- **WHEN** state `draft` declares `after: { script: hooks/check.js }`
+- **THEN** loading fails with the unrecognized-key diagnostic naming `after` at
+  `states.draft.after`, `createAgent` throws `WorkflowLoadError`, and `archmax validate` reports
+  the identical diagnostic
+
+#### Scenario: The value is never read
+
+- **WHEN** a state declares `before: [{ rubric: { instructions: "Check the tone." } }]` or
+  `before: { script: hooks/x.js, max_iterations: 2 }`
+- **THEN** the diagnostic names only the unrecognized key and its path, says nothing about the
+  value's shape, and suggests no replacement
+
+#### Scenario: Every state type refuses the keys alike
+
+- **WHEN** an `agent`, `human`, `grader` or `code` state declares `before:` or `after:`
+- **THEN** loading fails with the same unrecognized-key diagnostic, because the keys exist on no
+  state type
+
+### Requirement: A code state declares its script
+
+A `type: code` state SHALL declare `script`: a workflow-relative path inside `scripts/`, ending
+in `.js` or `.mjs`, with no `..` segment, confined segment by segment (`scripts/check.js`
+resolves to `workflows/<slug>/scripts/check.js`). A malformed path SHALL be a schema error at
+`states.<slug>.script`. A code state without `script`, and a state of any other type that
+declares one, SHALL each be a document-level (`refineSpec`) error, because the runtime cannot
+run either.
+
+#### Scenario: A code state names its script
+
+- **WHEN** state `check-refund` declares `type: code` and `script: scripts/check-refund.js`
+- **THEN** the spec loads and the script resolves to `workflows/<slug>/scripts/check-refund.js`
+  on the authoring backend
+
+#### Scenario: Confined script path
+
+- **WHEN** a code state declares `script: skills/x/scripts/check.js`, `script: /abs/check.js`,
+  `script: scripts/../escape.js`, `script: hooks/check.js` or `script: scripts/check.ts`
+- **THEN** loading fails addressed to `states.<slug>.script`, naming the required location
+  inside `scripts/` and the accepted extensions
+
+#### Scenario: A code state without a script
+
+- **WHEN** a state declares `type: code` and no `script`
+- **THEN** loading fails naming the state and stating that a code state must declare `script`,
+  and `archmax validate` reports the identical message
+
+#### Scenario: A script on another state type
+
+- **WHEN** an `agent` state (declared or by default), a `human` state or a `grader` state
+  declares `script: scripts/check.js`
+- **THEN** loading fails naming the state and stating that only a code state runs a script
+
+### Requirement: A grader state declares instructions and at least one transition
+
+A `type: grader` state SHALL declare non-empty `instructions`, which the grader judges by, and
+at least one transition. Each SHALL be a **lint error**: the spec loads and the runtime
+tolerates it, while `archmax validate` fails. A grader decides, as a person at a human state
+does, and a grader with nowhere to send the session could only approve by finishing silently,
+which would fail open.
+
+#### Scenario: A grader without instructions
+
+- **WHEN** a `type: grader` state declares no `instructions`, or whitespace-only ones
+- **THEN** the spec loads, and `archmax validate` reports an error naming the state and stating
+  that a grader needs instructions to judge by
+
+#### Scenario: A grader with no transitions
+
+- **WHEN** a `type: grader` state declares no `transitions`
+- **THEN** the spec loads, and `archmax validate` reports an error naming the state and stating
+  that a grader must declare at least one transition to decide between
+
+#### Scenario: A well-formed grader validates clean
+
+- **WHEN** grader state `review-reply` declares `instructions` and transitions to `answered` and
+  back to `orders-question`
+- **THEN** `archmax validate` reports no diagnostic about the state
+
+### Requirement: Keys a state type never reads are lint errors
+
+`archmax validate` SHALL report an **error** for a key the state's type never reads, while the
+spec still loads and runs: on a `code` state, `instructions`, `model`, `budget`, `evidence` and
+`approvers`; on a `grader` state, `evidence`, `approvers` and `budget.maxParks`. Each diagnostic
+SHALL name the state, the key and the state's type.
+
+#### Scenario: Instructions on a code state
+
+- **WHEN** a `type: code` state declares `instructions:`
+- **THEN** the spec loads, and `archmax validate` reports an error naming the state and
+  `instructions`, because a code state makes no model call
+
+#### Scenario: A model or a budget on a code state
+
+- **WHEN** a `type: code` state declares `model: small-model` or `budget: { timeoutMs: 5000 }`
+- **THEN** `archmax validate` reports an error naming the state and the key
+
+#### Scenario: Evidence and approvers on an automated state
+
+- **WHEN** a code or grader state declares `evidence: [scratchpad/answer.json]` or
+  `approvers: [support-lead]`
+- **THEN** `archmax validate` reports an error naming the state and the key: both belong to a
+  human state's decision record
+
+#### Scenario: A park budget on a grader
+
+- **WHEN** a `type: grader` state declares `budget: { maxParks: 1 }`
+- **THEN** `archmax validate` reports an error naming `budget.maxParks`, while
+  `budget: { maxTurns: 4, timeoutMs: 60000 }` on the same grader draws no diagnostic
+
+### Requirement: An automated state's allow list names no tool it is never offered
+
+In a `grader` or `code` state, a `tools.allow` entry naming `write_todos`, `archmax_eval`,
+`archmax_run`, `archmax_wait` or `archmax_reset` SHALL be a **lint error** naming the state and
+the tool. No automated state is offered those tools, so the entry grants nothing: the spec still
+loads, and the runtime leaves the tool off the state's surface. A `tools.allow_always` entry naming
+one of those tools SHALL draw no such error: it grants the tool in the workflow's agent and human
+states, and every automated state is left without it.
+
+#### Scenario: A workflow-wide sandbox grant skips the automated states
+
+- **WHEN** the root declares `tools: { allow_always: [read_file, archmax_eval] }` and the workflow
+  has a code state
+- **THEN** `archmax validate` reports no error for the entry, the agent states are granted
+  `archmax_eval`, and the code state's script is offered `read_file` and not `archmax_eval`
+
+#### Scenario: A sandbox grant on a code state
+
+- **WHEN** a `type: code` state declares
+  `tools: { allow: [{ tool: archmax_run, paths: ["skills/x/scripts/**"] }] }`
+- **THEN** the spec loads, `archmax validate` reports an error naming the state and
+  `archmax_run`, and the state's script is not offered `archmax_run`
+
+#### Scenario: A park tool on a grader
+
+- **WHEN** a `type: grader` state declares `tools: { allow: [archmax_wait] }`
+- **THEN** `archmax validate` reports an error naming the state and `archmax_wait`, because an
+  automated state never parks

@@ -67,9 +67,9 @@ event and lands in the checkpointed transcript. A message a person sends *to* a
 parked session, and the answer it gets, are the `park-message` events (`inbound`
 and `outbound`). Those move the session nowhere.
 
-`archmax_wait` is available in every state, terminal ones included. A session that
+`archmax_wait` is available in every agent and human state, terminal ones included. A session that
 has answered and now awaits a reply parks where it answered, and stays open.
-`policy.forbid_tools: ["archmax_wait"]` removes it workflow-wide.
+`tools: { forbid_always: [archmax_wait] }` removes it workflow-wide.
 
 ## Delivering the event
 
@@ -90,7 +90,8 @@ archmax deliver th_01HZ… --trigger email_reply --variables '{"reply_body":"It'
 
 A delivery carries the same two channels a session *starts* with: a trigger id,
 and variables carrying what the event brought. The id becomes the session's
-current trigger, read by hooks as `args.trigger` and by guards as `${{trigger}}`.
+current trigger, read by a code state's script as `trigger` and by guards as
+`${{trigger}}`.
 
 The delivered values are seeded as **locked** session variables, `title` excepted,
 exactly like a host's `variables`. A downstream `tools.allow` guard can then bind
@@ -406,7 +407,7 @@ A finished turn ends one of three ways, and the outcome says which:
 | --- | --- | --- |
 | `completed` | the agent finished its work | `exit: { success: true }` |
 | `failed` | the agent called `archmax_raise({ code, reason })` | `exit: { success: false, code, reason }` |
-| `rejected` | governance or the runtime (a failed hook, a missing return, an exhausted budget with no `on_error`) | `rejected`, the reason; no `exit` |
+| `rejected` | governance or the runtime (a refused start, a missing return, a failed state or an exhausted budget with no `on_error`) | `rejected`, the reason; no `exit` |
 
 A session is a success unless the agent says otherwise: `archmax_raise` is the
 agent's one way to declare that the work **could not be done**, and it is only
@@ -421,8 +422,9 @@ if (outcome.kind === "failed" && !outcome.exit?.success) {
 ```
 
 A raise ends the session at once, in the state it was made in, with no further
-model call. It does not route through `on_error`, runs no hook and is not held
-to the trigger's `returns`. The session's summary (`agent.sessions.get`) carries
+model call. It does not route through `on_error`, runs no further state and is
+not held to the trigger's `returns`. A grader or a code state raises the same way,
+and its code and reason are the outcome's `exit`. The session's summary (`agent.sessions.get`) carries
 the same record as `exit` while the session is `failed`. A parked outcome has no
 `exit`: the session has not ended.
 
@@ -438,10 +440,10 @@ Session statuses partition explicitly:
 `SessionSummary` carries the classification, and `isFinished(status)` is exported,
 so hosts and the CLI share one definition of it.
 
-The park lifecycle event says which channel a session awaits, and for an agent
-park, the reason it gave. An `onEvent` subscriber can therefore tell "turn ended"
-from "session waiting" straight from the stream. `archmax run` prints a waiting
-verdict and exits zero, because waiting is a successful outcome.
+The `parked` event says which channel a session awaits, and for an agent park,
+the reason it gave. An `onEvent` subscriber can therefore tell "turn ended" from
+"session waiting" straight from the stream. `archmax run` prints a waiting
+outcome line and exits zero, because waiting is a successful outcome.
 
 A firing that arrives after a turn finished is simply the **next turn** of the same
 session. It continues in the state the previous turn ended in, so the transcript
@@ -453,8 +455,8 @@ turn still runs there, under that state's tool governance.
 When the current state can serve the new message, the agent answers there, with no
 reset. When what was asked needs a path the current state cannot reach, the agent
 calls **`archmax_reset`** to return to the state the conversation began in.
-`archmax_reset` is available in every state, and it keeps the transcript, the
-variables and the files. A workflow that expects follow-ups can also declare the
+`archmax_reset` is available in every agent and human state, and it keeps the
+transcript, the variables and the files. A workflow that expects follow-ups can also declare the
 re-entry transitions it wants.
 
 The prompt says so outright. A model sitting in a terminal state it moved into would
@@ -470,8 +472,7 @@ follow-ups in place.
 A turn boundary resets the turn's own mechanics:
 
 - the pending rejection, and the failure a previous turn raised;
-- hook-correction counters;
-- `before`-hook marks;
+- the turn budget's count of model calls in the current state;
 - per-state park counts.
 
 Everything belonging to the conversation carries forward: position, variables,

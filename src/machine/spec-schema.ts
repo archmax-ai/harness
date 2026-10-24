@@ -8,7 +8,6 @@
  */
 import { z } from "zod";
 import { normalizeAllowEntry } from "./allow.js";
-import { normalizeHooks } from "../lifecycle/hook-shape.js";
 import { isSlug } from "./slug.js";
 import { SIGNATURE_TYPES } from "./signature.js";
 import { MANUAL_TRIGGER, parseSessionPath, stateTriggerIds } from "./triggers.js";
@@ -41,7 +40,7 @@ const positiveInt = z.number({ error: POSITIVE }).int(POSITIVE).positive(POSITIV
 
 /**
  * A model id, and only an id: the one spelling of "which model runs this" in the
- * schema, shared by `settings.model`, a state's `model` and a rubric's. Never an
+ * schema, shared by `settings.model` and a state's `model`. Never an
  * endpoint, credentials or sampling knobs — a declared id is resolved over the
  * endpoint and credentials the assembly is already configured with, so an object
  * value is refused with the sentence that says where those belong. The id itself
@@ -161,117 +160,33 @@ const sessionPath = z
  *
  * One loose, named slot for host data the runtime never reads (an authoring UI's
  * canvas state, a node's position) — rather than a `.catchall()`, which would
- * switch off the strictness this file exists for. Accepted at three positions:
- * the spec root, a state, and a rubric declaration.
+ * switch off the strictness this file exists for. Accepted at two positions:
+ * the spec root and a state.
  */
 export const specMetadataSchema = z.looseObject({});
 
-/**
- * @see RubricDeclaration
- *
- * A grading rubric: the standard a state's exit is measured against, declared
- * **inline on the hook that applies it**. `instructions` is the only required
- * key — the same word a state uses for the prose telling a model what to do.
- *
- * There is deliberately no name: a rubric is not a first-order item a hook
- * points at, it is part of the state's own declaration, so reading the state
- * tells you the whole standard without a lookup. The cost is duplication when
- * two states want the same grader, which is accepted: a state is legible on its
- * own, and nothing silently changes what one state grades against by editing
- * something elsewhere. There is no `title` either (nothing routes to a rubric)
- * and no `description`; a host label goes in `metadata`.
- */
-export const rubricDeclarationSchema = z
-  .object({
-    instructions: nonEmptyString,
-    max_iterations: z.number().int().min(0).optional(),
-    model: modelId.optional(),
-    metadata: specMetadataSchema.optional(),
-  })
-  .strict();
+// --- Code-state scripts ---------------------------------------------------------
 
-// --- Hooks ---------------------------------------------------------------------
-
-/** Keys a hook may carry *alongside* its kind, which therefore never name one. */
-const RESERVED_HOOK_KEYS = new Set(["max_iterations"]);
-
-const HOOK_SCRIPT_PATH = /^hooks\/[^/].*\.(js|mjs)$/;
+const CODE_SCRIPT_PATH = /^scripts\/[^/].*\.(js|mjs)$/;
 
 /**
- * Whether a hook script path stays inside the workflow's `hooks/` directory.
- * Checked by segment, not only by prefix: `hooks/../escape.js` satisfies a naive
- * "starts with hooks/" rule while resolving outside it.
+ * Whether a code state's script path stays inside the workflow's `scripts/`
+ * directory. Checked by segment, not only by prefix: `scripts/../escape.js`
+ * satisfies a naive "starts with scripts/" rule while resolving outside it.
  */
-function isConfinedHookScript(path: string): boolean {
-  return HOOK_SCRIPT_PATH.test(path) && !path.split("/").includes("..");
+function isConfinedCodeScript(path: string): boolean {
+  return CODE_SCRIPT_PATH.test(path) && !path.split("/").includes("..");
 }
 
-const hookScriptPath = z
-  .string()
+/** @see MachineState.script — the file a code state runs. */
+export const codeScriptPathSchema = z
+  .string({ error: "must be a workflow-relative path string (e.g. 'scripts/check-refund.js')" })
   .refine(
-    isConfinedHookScript,
-    "must be a workflow-relative path inside 'hooks/' ending in .js or .mjs, with " +
-      "no '..' segment (e.g. 'hooks/check-requester.js'). Runtime scripts the agent " +
-      "runs with archmax_run live in a skill bundle instead.",
+    isConfinedCodeScript,
+    "must be a workflow-relative path inside 'scripts/' ending in .js or .mjs, with no '..' " +
+      "segment (e.g. 'scripts/check-refund.js'). Scripts the agent runs with archmax_run live in " +
+      "a skill bundle instead.",
   );
-
-/**
- * The one wording for a hook that is not a usable tagged object.
- *
- * Deliberately free of per-key special cases: a retired spelling
- * (`subagent`, `max_corrections`) is reported as the unrecognized key it is, the
- * way a typo is, so the schema carries no memory of every name it ever had.
- */
-function describeHookInput(input: unknown): string {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return "must be a { script } or { rubric } entry";
-  }
-  const record = input as Record<string, unknown>;
-  const kinds = Object.keys(record).filter((key) => !RESERVED_HOOK_KEYS.has(key));
-  if (kinds.length !== 1) {
-    return "must be a single-key tagged object (plus an optional 'max_iterations' sidecar)";
-  }
-  return (
-    "must be a hook: { script: 'hooks/<file>.js' }, { rubric: { instructions: … } }, or " +
-    "{ <custom-kind>: '<target>' } for an executor registered at assembly"
-  );
-}
-
-/**
- * One lifecycle hook. The built-in kinds are strict; the custom-kind branch (a
- * record of strings, for an executor registered at assembly) is fenced so it
- * cannot rescue a malformed built-in — `{ script: <bad path> }` must fail the
- * script branch and stay failed.
- */
-export const hookSchema = z.union(
-  [
-    z
-      .object({ script: hookScriptPath, max_iterations: z.number().int().min(0).optional() })
-      .strict(),
-    // A rubric hook carries the whole grader inline, so its budget is declared
-    // inside the declaration rather than as a sidecar beside it: there is only
-    // one place to put it, which is the point of inlining.
-    z.object({ rubric: rubricDeclarationSchema }).strict(),
-    z
-      .record(z.string(), z.string())
-      .refine(
-        (value) =>
-          !("script" in value) &&
-          !("rubric" in value) &&
-          Object.keys(value).filter((key) => !RESERVED_HOOK_KEYS.has(key)).length === 1,
-        { error: (issue) => describeHookInput(issue.input) },
-      ),
-  ],
-  { error: (issue) => describeHookInput(issue.input) },
-);
-
-/** @see HookSpec */
-export const hookSpecSchema = z.union([hookSchema, z.array(hookSchema)], {
-  error: (issue) =>
-    Array.isArray(issue.input)
-      ? "every entry must be a { script } or { rubric } entry"
-      : describeHookInput(issue.input),
-});
 
 // --- States --------------------------------------------------------------------
 
@@ -287,10 +202,14 @@ export const transitionTypeSchema = z.enum(["approve", "reject", "refine", "none
  * **undescribed** edge (absent, empty or blank) — the target state's own
  * `instructions`, which the edge then discloses in its place. An edge with
  * neither hands the agent a bare slug and asks it to route: an unnavigable graph,
- * which is worse to warn about than to refuse, so {@link refineSpec} refuses it,
- * and refuses an undescribed transition of a human state, where the description
- * is the person's button label. A non-string is a typo and refused here. The
- * issue path (`states.<slug>.transitions.<index>.description`) names the edge.
+ * which is worse to warn about than to refuse, so {@link refineSpec} refuses it.
+ * It refuses an undescribed transition of a human state, where the description
+ * is the person's button label, and an undescribed edge into a grader or a code
+ * state: a grader's instructions are its criteria, which the work it judges is
+ * never shown, and a code state has none. A code state's own edges are exempt —
+ * its script routes, and nothing reads their descriptions. A non-string is a
+ * typo and refused here. The issue path
+ * (`states.<slug>.transitions.<index>.description`) names the edge.
  */
 const TRANSITION_DESCRIPTION =
   `must be a string: what the agent routes on when it considers this edge. Say when to take it ` +
@@ -303,6 +222,19 @@ function undescribedEdgeMessage(target: string): string {
     `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
     `none, on the target state's instructions — and '${target}' declares none. Say when to take ` +
     `this edge (e.g. 'Refunds over $50'), or give '${target}' instructions.`
+  );
+}
+
+/** An undescribed edge into an automated state: there are no instructions the agent may be shown. */
+function undescribedAutomatedEdgeMessage(target: string, type: "grader" | "code"): string {
+  const why =
+    type === "grader"
+      ? `'${target}' is a grader, whose instructions are its criteria and never shown to the work it judges`
+      : `'${target}' is a code state, which has none`;
+  return (
+    `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
+    `none, on the target state's instructions — and ${why}. Say when to take this edge ` +
+    `(e.g. 'The reply is drafted').`
   );
 }
 
@@ -432,8 +364,9 @@ export const mountsBlockSchema = z
   .strict();
 
 /** @see StateType */
-export const stateTypeSchema = z.enum(["agent", "human"], {
-  error: (issue) => `unknown state type '${String(issue.input)}' (expected 'agent' or 'human')`,
+export const stateTypeSchema = z.enum(["agent", "human", "grader", "code"], {
+  error: (issue) =>
+    `unknown state type '${String(issue.input)}' (expected 'agent', 'human', 'grader' or 'code')`,
 });
 
 // --- Triggers ------------------------------------------------------------------
@@ -644,8 +577,7 @@ export const machineStateSchema = z
     evidence: z.array(z.string()).optional(),
     approvers: z.array(z.string()).optional(),
     triggers: stateTriggersSchema.optional(),
-    before: hookSpecSchema.optional(),
-    after: hookSpecSchema.optional(),
+    script: codeScriptPathSchema.optional(),
     budget: stateBudgetSchema.optional(),
     model: modelId.optional(),
     on_error: nonEmptyString.optional(),
@@ -768,11 +700,6 @@ export const runtimeMetadataSchema = z
   })
   .strict();
 
-/** @see SpecExtensions */
-export const specExtensionsSchema = z
-  .object({ hooks: z.array(z.string()).optional() })
-  .strict();
-
 /** The whole of `workflow.yaml`. @see MachineSpec */
 export const machineSpecSchema = z
   .object({
@@ -793,7 +720,6 @@ export const machineSpecSchema = z
     skills: workflowSkillsConfigSchema.optional(),
     mounts: workflowMountsConfigSchema.optional(),
     tests: workflowTestsConfigSchema.optional(),
-    extensions: specExtensionsSchema.optional(),
     metadata: specMetadataSchema.optional(),
     states: z.record(z.string(), authoredStateSchema, {
       error: "Machine spec is missing or has empty 'states'",
@@ -878,10 +804,14 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
         );
         return;
       }
-      if (!isUndescribed(transition)) return;
+      // A code state's script routes: nothing reads its edges' descriptions.
+      if (!isUndescribed(transition) || state.type === "code") return;
+      const target = states[transition.to];
       if (state.type === "human") {
         issue(`${at}.transitions.${index}.description`, HUMAN_TRANSITION_DESCRIPTION);
-      } else if (!states[transition.to]?.instructions?.trim()) {
+      } else if (target?.type === "grader" || target?.type === "code") {
+        issue(`${at}.transitions.${index}.description`, undescribedAutomatedEdgeMessage(transition.to, target.type));
+      } else if (!target?.instructions?.trim()) {
         issue(`${at}.transitions.${index}.description`, undescribedEdgeMessage(transition.to));
       }
     });
@@ -889,13 +819,20 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
       issue(`${at}.on_error`, `State '${slug}' on_error routes to undefined state '${state.on_error}'`);
     }
 
-    // Before hooks gate entry with ok/veto only — there is no retry loop for an
-    // iteration budget to bound, so the sidecar would enforce nothing.
-    if (normalizeHooks(state.before).some((hook) => "max_iterations" in hook)) {
+    // A code state *is* its script: without one there is nothing to run, and a
+    // script anywhere else would be read by nothing.
+    if (state.type === "code" && state.script === undefined) {
       issue(
-        `${at}.before`,
-        `State '${slug}' 'before' hook declares 'max_iterations', but before hooks are ok/veto ` +
-          `only ('correct' is treated as a veto); the budget applies to 'after' hooks`,
+        `${at}.script`,
+        `Code state '${slug}' declares no 'script': a code state runs the file it names ` +
+          `(e.g. 'script: scripts/${slug}.js'), and without one it has nothing to run.`,
+      );
+    }
+    if (state.type !== "code" && state.script !== undefined) {
+      issue(
+        `${at}.script`,
+        `State '${slug}' declares 'script', which only a code state runs; this state is ` +
+          `type '${state.type ?? "agent"}'. Declare 'type: code' to run the script, or drop the key.`,
       );
     }
 

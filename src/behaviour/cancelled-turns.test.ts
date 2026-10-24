@@ -27,7 +27,7 @@ import {
   type ScriptedTurn,
 } from "./support.js";
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 /** Far beyond the test's own timeout: a script that ran to it would fail the test. */
 const SCRIPT_TIMEOUT_MS = 60_000;
 

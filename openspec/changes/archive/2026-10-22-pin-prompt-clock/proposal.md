@@ -68,6 +68,6 @@ _None._
 - **README.md**: no change. It lists no `createAgent` options beyond the basics and documents no
   case keys; both live in the docs and the skill.
 - **Authoring skill** (`skills/archmax-harness/`): `references/cases.md` and
-  `references/hook-and-test-scripts.md` (the top-level keys tables, and when to pin a case's
+  `references/code-state-and-test-scripts.md` (the top-level keys tables, and when to pin a case's
   clock), `references/backend-integration.md` (the options table) and `references/wiring.md` (the
   option in the `createAgent` sketch).

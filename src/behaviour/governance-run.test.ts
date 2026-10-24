@@ -9,7 +9,7 @@ import {
   workspaceWith,
 } from "./support.js";
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /**
  * `archmax_run` is always-on, but which scripts it may execute is governed by the

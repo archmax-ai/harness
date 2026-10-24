@@ -7,9 +7,9 @@ sidebar:
 
 A **sub-workflow** is another workflow in the same workspace, run to completion
 from inside a session as a **child session**. It is a whole machine: its own
-states, its own per-state `tools.allow`, its own lifecycle hooks. That is what
-separates it from a script, which is deterministic work with no model call, and
-from a grading rubric, which is a verdict on work already done.
+states, its own per-state `tools.allow`, its own grader and code states. That is
+what separates it from a script, which is deterministic work with no model call,
+and from a grader state, which judges work already done.
 
 Delegate to one when the work you are handing off is itself a *process*, or when
 the same process is reused by more than one workflow.
@@ -18,9 +18,9 @@ the same process is reused by more than one workflow.
 
 | Use | When |
 | --- | --- |
-| **Subagent** | isolated reasoning inside one state; no states, no governance boundary |
-| **Script** | deterministic work with no model call, including a delegation that must happen, or a fan-out computed from data |
-| **Sub-workflow** | the delegated work has states, governance, or hooks of its own; or it is reused |
+| **Grader state** | a model's judgement of work already done, in an isolated context, deciding where the session goes next |
+| **Script** (an `archmax_run` script or a code state) | deterministic work with no model call, including a delegation that must happen, or a fan-out computed from data |
+| **Sub-workflow** | the delegated work has states, governance, or grader and code states of its own; or it is reused |
 
 ## Delegation is a tool call
 
@@ -104,8 +104,8 @@ result reaches the caller then. `note` is reserved, so a `returns` list may not
 declare it.
 
 The tool surface is closed by default, so a state reaches exactly the targets it
-names. Delegation needs no rule of its own. `policy.forbid_tools` blocks it like
-any other tool.
+names. Delegation needs no rule of its own. `tools.forbid_always` (or a state's
+`tools.forbid`) blocks it like any other tool.
 
 ### Nothing captures the result
 
@@ -234,7 +234,7 @@ the inputs and keeps the entry state's guards `validate`-clean.
 ## What crosses, and what does not
 
 A child session is **the same agent**: same model, backend, host tools. It has its
-own grading rubrics, read from its own spec, and it is governed by the **child's**
+own grader and code states, read from its own spec, and it is governed by the **child's**
 machine, starting with a fresh transcript.
 
 | Direction | Crosses |
@@ -256,8 +256,8 @@ arguments (down) and `file` returns (up).
 The count is part of the calling session's checkpointed state, so it continues
 whichever agent or worker runs the next turn: a host that builds an agent per turn
 never hands two dispatches one child. The model's delegation calls in one batch are
-numbered in the order it made them, and a script's or a hook's dispatch takes the
-next number free.
+numbered in the order it made them, and a dispatch made by a script, a code state
+or a grader takes the next number free.
 
 **A host tool's file work inside a child belongs to the child.** A host tool called
 in a child session is handed the child's workspace and, as `ToolContext.sessionId`,
@@ -533,8 +533,9 @@ re-assembly.
 Concurrent calls fail independently: one failure leaves the others' results
 intact.
 
-Denials compose downward and accumulate. Every ancestor's `policy.forbid_tools` /
-`forbid_paths` binds inside the child: the root's and each intermediate caller's.
+Denials compose downward and accumulate. Every ancestor's `tools.forbid_always`,
+`skills.forbid_always` and `mounts.forbid_always` bind inside the child: the root's
+and each intermediate caller's.
 The block reason names the workflow that declared the rule. A child may narrow
 what is permitted, and widening it takes a change upstream.
 

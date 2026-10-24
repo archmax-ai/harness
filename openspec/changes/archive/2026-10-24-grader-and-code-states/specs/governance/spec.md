@@ -1,0 +1,1053 @@
+## ADDED Requirements
+
+### Requirement: The kernel decides a transition on its requirements and its edge
+
+The kernel SHALL decide a transition (`{ from, to, reason? }`) on the leaving state's `requires`
+and the declared edge alone: first `transition.requires` (recoverable, naming each unset
+variable), then `transition.no-edge` (listing the valid targets), otherwise allow. The same
+verdict SHALL decide every `archmax_advance`, whoever calls it: the session's agent, a grader or a
+code state's script.
+
+#### Scenario: Requires before the edge
+
+- **WHEN** the model calls `archmax_advance` out of a state whose `requires` names an unset variable
+- **THEN** the verdict is a recoverable block naming that variable, whether or not the target is a
+  declared edge
+
+#### Scenario: Undeclared edge
+
+- **WHEN** `archmax_advance` names a `to` that is not one of the current state's `transitions`
+- **THEN** the transition is blocked with `transition.no-edge`, whatever the state's `tools.allow` says
+
+#### Scenario: An automated state's advance gets the same verdict
+
+- **WHEN** a code state's script calls `tools.archmax_advance({ to: "closed", reason })` and
+  `closed` is not one of the code state's `transitions`
+- **THEN** the call is refused with `transition.no-edge`, listing the valid targets, exactly as the
+  agent's own call would be
+
+### Requirement: An automated state is governed by its own state's surface
+
+Every call an automated state makes SHALL be decided by `decide` against that state: a grader's
+with origin `agent`, as the agent's would be there, and a code state's script calls with origin
+`script`. Every tool it is offered SHALL pass that decision, its control tools included, so a
+`forbid` entry, a consumer rule and every safety rule bind its controls too. Only the state's own
+grants SHALL count, never another state's. A refused grader call SHALL reach the grader as an
+error tool result, and the tool SHALL NOT run.
+
+#### Scenario: A grader is held to its own state's grants
+
+- **WHEN** agent state `orders-question` grants `lookup_orders`, advances to grader state
+  `review-reply`, which grants no host tool, and the grader calls `lookup_orders`
+- **THEN** the call is blocked with `tool.not-allowed` naming `review-reply`, the grader receives
+  an error tool result, and `lookup_orders` does not run
+
+#### Scenario: The previous state's grant does not follow into a code state
+
+- **WHEN** `refund-request` grants `lookup_orders` and advances to code state `check-refund`,
+  which grants no host tool
+- **THEN** `tools.lookup_orders` is `undefined` in `check-refund`'s script, and `decide` blocks
+  `lookup_orders` in `check-refund` with `tool.not-allowed`
+
+### Requirement: Only the runtime's own file-value read runs on runtime authority
+
+The kernel's `runtime` origin SHALL be used only for the runtime's own check that a `file` value
+names a file the session may read, decided as a `read_file` of the path. No script or grader SHALL
+be decided on it, there SHALL be no `lifecycle` origin, and the runtime SHALL make no write on it.
+A `runtime`-origin call SHALL skip the per-state allow rule, the state's `tools.forbid`,
+`skills.forbid` and `mounts.forbid`, and the skill enablement check. Every `forbid_always` list
+(its own workflow's and every ancestor's), the consumer's rules and every safety rule SHALL still
+bind it.
+
+#### Scenario: A state's denial does not bind the runtime's read
+
+- **WHEN** state `route` declares `tools: { forbid: [read_file] }`, the root declares
+  `tools: { forbid_always: [{ tool: read_file, paths: [scratchpad/private/**] }] }`, and in `route`
+  the agent records `file` returns naming `scratchpad/report.pdf` and
+  `scratchpad/private/salaries.pdf`, both present
+- **THEN** the runtime's check admits the first and refuses the second with `tool.forbidden`
+
+### Requirement: The runtime's read meets mount grants on workflow scope
+
+A `runtime`-origin call SHALL meet the mount grants of its **workflow**, not of the active state. A
+governed mount SHALL be reachable when some grant of the workflow names it (`mounts.allow_always`
+or any state's `mounts.allow`), and otherwise refused with `mount.not-allowed`, saying no grant of
+the workflow names it. The workflow's `mounts.forbid_always` SHALL refuse it with
+`mount.forbidden`. A state's `mounts.allow`, `mounts.forbid` and `access: read` SHALL NOT bind it,
+and a grant of another workflow in the same tree SHALL never count.
+
+#### Scenario: The runtime's read admits a mount its workflow grants in another state
+
+- **WHEN** the table governs `catalogs/eu`, only state `triage` enables it, and in state `intake`
+  the agent records a `file` return naming `catalogs/eu/skus.csv`, which exists
+- **THEN** the runtime's check admits the value, while the agent's own `read_file` of that path in
+  `intake` is blocked with `mount.not-allowed`
+
+#### Scenario: The runtime's read cannot reach a mount only another workflow grants
+
+- **WHEN** the table mounts `invoices` governed because a child workflow grants it, the calling
+  workflow grants it nowhere, and a `file` value of the calling workflow names `invoices/a.xml`
+- **THEN** the check refuses it with `mount.not-allowed`, naming `invoices` and saying no grant of
+  the workflow names it
+
+#### Scenario: A workflow's own mount denial binds the runtime's read
+
+- **WHEN** the root declares `mounts: { forbid_always: [reference] }` and a `file` value of that
+  workflow names `reference/rates.csv`
+- **THEN** the check refuses it with `mount.forbidden`, while a state's `mounts.forbid` naming the
+  same mount would not bind the check
+
+### Requirement: A governed mount is reachable only where the acting state enables it
+
+A mount the host declares governed (`MountSpec.governed`) SHALL be reachable from a state only when
+that state enables it: the union of the state's `mounts.allow` and the root's `mounts.allow_always`,
+minus what `mounts.forbid_always` or the state's `mounts.forbid` names. An ungoverned mount SHALL be
+reachable in every state unless a `forbid` names it. One resolution
+(`WorkflowMachine.enabledMounts(state, governed)`) SHALL be the single answer every governed reader
+consults: the kernel's mount rule, the middleware's listing redaction, prompt disclosure and
+`validate`.
+
+A grant SHALL also decide **what** the state may do there: a governed mount is writable in a state
+only when the host declared it writable, some grant of the machine's own spec asks
+`access: read_write` for it, and no applicable grant narrowed it to `access: read`
+(`WorkflowMachine.mountWritable(state, name, prefixes)`, the second reader beside the enabled set).
+The host's posture is the ceiling: `access: read_write` opens nothing the wiring serves read-only.
+A narrowing at either level holds, so no narrower level widens it back. One workflow's `read_write`
+never widens another's bare grant of the same route, though one table serves both.
+
+The kernel SHALL block a file tool call — `read_file`, `ls`, `glob`, `grep`, `write_file`, `edit_file`
+and every sandbox tool call on the same origins the skill rule governs — whose canonical path falls
+under a mount the active state does not enable, in every state whatever it allows, evaluated among the
+safety rules after the zone rules so a write into a hidden read-only mount is still refused as
+read-only, the more useful reason. A refusal SHALL distinguish its cause — `mount.forbidden` when a
+list denies the name (naming the workflow that denied it when the denial is inherited),
+`mount.not-allowed` when nothing enabled it, and `mount.read-only` when the state has the mount
+but a grant narrowed it to reads or no grant of the workflow asks to write it, saying which — and SHALL name the mount and say the state does not have it,
+never that the path is missing. A write into a mount the **host** serves read-only SHALL stay
+`zone.read-only`, so a refusal names the level an author would fix: the wiring or the grant. A
+grader's calls and a code state's script calls SHALL be decided on the enabled mounts and access of
+their own state, exactly as the agent's are in that state.
+
+Listing results SHALL be redacted to the state's enabled mounts: an `ls`, `glob` or `grep` result
+handed to the model, to a grader or to a script SHALL carry no entry under a mount the state does
+not enable, the workspace root listing included, so no caller is shown a directory it then cannot
+read. Every call SHALL still be decided by the kernel whether or not the mount was listed.
+
+#### Scenario: A governed mount is hidden where nothing enables it
+
+- **WHEN** the table governs `catalogs/eu`, state `intake` does not enable it and the model calls
+  `read_file` on `catalogs/eu/skus.csv`, `ls` on `/`, and `grep` over `/`
+- **THEN** the read is blocked with `mount.not-allowed`, the root listing shows no `catalogs/eu`
+  entry, and the grep result carries no match under it
+
+#### Scenario: The same mount is served where a state enables it
+
+- **WHEN** state `triage` declares `mounts: { allow: [catalogs/eu] }`
+- **THEN** in `triage` the same read succeeds, `ls /` lists `catalogs/eu/`, and a write there is
+  refused with `zone.read-only`
+
+#### Scenario: A grant narrows a writable mount to reads
+
+- **WHEN** the table mounts `shared` writable and governed, state `edit` enables it as
+  `{ mount: shared, access: read_write }` and state `review` enables it as
+  `{ mount: shared, access: read }`
+- **THEN** a write in `edit` succeeds, the same write in `review` is blocked with
+  `mount.read-only` naming the mount, and `review` still reads and lists it in full
+
+#### Scenario: A forbid says so
+
+- **WHEN** the root declares `mounts: { forbid_always: [reference] }` and the model reads
+  `reference/rates.csv`
+- **THEN** the call is blocked with `mount.forbidden`, naming `reference` and the denying workflow
+
+#### Scenario: An ungoverned mount needs no grant
+
+- **WHEN** the table mounts `skills/` ungoverned and a state declares no `mounts` block
+- **THEN** reads and listings under `skills/` are governed only by the skill rules, as today
+
+#### Scenario: Undisclosed mount still governed
+
+- **WHEN** the model calls `read_file` on a path under a governed mount that was redacted from its
+  listing
+- **THEN** the kernel blocks it with the mount rule's message, whether or not the listing showed it
+
+#### Scenario: A write no grant of the workflow asks for is refused
+
+- **WHEN** the table mounts `exports` writable and governed, and the workflow grants it only bare
+- **THEN** a write under `exports/` is blocked with `mount.read-only`, naming the mount and saying
+  no grant of this workflow asks for `access: read_write`
+
+#### Scenario: An automated state is held to its own state's mounts
+
+- **WHEN** the table governs `catalogs/eu`, only state `triage` enables it, and the script of code
+  state `screen-request` and the grader of grader state `review-reply` each read
+  `catalogs/eu/skus.csv` and list `/`
+- **THEN** both reads are blocked with `mount.not-allowed`, and neither listing shows a
+  `catalogs/eu` entry
+
+### Requirement: The graph is disclosed only from the active state
+
+The graph SHALL be disclosed the way the tool surface is: only from where the agent stands. On
+every model call of the session's agent the runtime SHALL disclose the active state's **outgoing
+transitions and nothing else of the graph** — one line per edge carrying the target's slug, its
+declared `type` when not `none`, and its required `description`. No other state's slug, `title`,
+`summary`, `instructions`, `model`, `script`, `triggers`, `budget`, `requires` or transitions
+SHALL reach any model call of the session's agent, and neither SHALL a count of the states, so a
+state the agent cannot advance to is a state it cannot name. What a grader's own model calls are
+told is specified by the `automated-states` capability.
+
+An edge's line SHALL mark a target that is a **human decision node** or a **terminal** state,
+because each changes what the call itself must carry or what follows it — evidence may be attached
+only when advancing to a human state, and both mean the agent stops rather than continues. Nothing
+further about the target SHALL be rendered: the marker discloses the consequence of taking the
+edge, not the state on the other side of it.
+
+The active state's own markers SHALL be disclosed in the same block: that it is terminal. The
+trigger signature SHALL be disclosed for the **run's own trigger only** — the `requires` it was
+started with and the `returns` it must set before it completes — never for the triggers of states
+this run did not enter.
+
+A reply-only turn SHALL be disclosed no transitions at all, because it cannot move the session.
+
+#### Scenario: Only the active state's edges are disclosed
+
+- **WHEN** a workflow declares states `triage`, `refund-review`, `escalate` and `closed`, and the
+  session is in `triage` with one transition to `refund-review`
+- **THEN** the model call names `refund-review` and its description, and the prompt contains
+  neither `escalate` nor `closed` anywhere
+
+#### Scenario: A description is what the agent routes on
+
+- **WHEN** the active state declares `- to: refund-review, description: "Refunds over $50."`
+- **THEN** the disclosed line carries that description verbatim, and carries nothing of
+  `refund-review`'s own `title`, `summary` or `instructions`
+
+#### Scenario: A human target is marked, and only that
+
+- **WHEN** a transition's target is a `type: human` state with `instructions`, `approvers` and
+  three transitions of its own
+- **THEN** the edge is marked as leading to a human decision node, and none of that state's
+  `instructions`, `approvers` or transitions appear in the prompt
+
+#### Scenario: An automated target's declaration is not disclosed
+
+- **WHEN** a transition's target is a grader state with `instructions` and a `model`, and another
+  transition's target is a code state with a `script`
+- **THEN** each edge's line carries the target's slug and the edge's description, and no model call
+  of the session's agent carries the grader's `instructions` or `model`, or the code state's
+  `script` path
+
+#### Scenario: A terminal target is marked
+
+- **WHEN** a transition's target declares no transitions of its own
+- **THEN** the edge is marked terminal, so the agent finishes the work before advancing rather
+  than advancing and expecting another turn
+
+#### Scenario: The active state's terminality is stated, not inferred
+
+- **WHEN** the active state declares no transitions
+- **THEN** the block states that the state is terminal and no transition leads out of it, rather
+  than leaving the agent to infer it from an absent list, and `archmax_advance` is not disclosed
+
+#### Scenario: Only the run's own trigger signature is disclosed
+
+- **WHEN** a workflow declares triggers `manual` and `inbound-email` on two different states and
+  the session was started by `manual`
+- **THEN** the block carries `manual`'s `requires` and `returns` and never mentions
+  `inbound-email` or the state it enters
+
+#### Scenario: A parked session is disclosed no edges
+
+- **WHEN** a session parked at a human state is handed a reply and spends its reply-only model call
+- **THEN** no transition is disclosed, because a reply-only turn cannot move the session
+
+### Requirement: A script's tool calls are governed against the state it runs for
+
+Every `tools.*` call a script makes SHALL run through the same `decide` pipeline as a model call,
+via one gateway that wraps the script's tool surface and reads the live state per call. Every such
+call SHALL be `script`-origin and SHALL be governed as a model call in the state the script runs
+for: code from `archmax_eval` or `archmax_run` in the active state, and a code state's script in
+that code state (see the `automated-states` capability). It is bound by that state's allow and
+forbid lists, its skill and mount grants, the workflow-wide denials (its own workflow's and every
+ancestor's), the consumer's rules and every safety rule. No script SHALL run on runtime authority,
+and no grant of another state SHALL count for it.
+
+A script's `tools` SHALL expose exactly its state's surface: `tools.<name>` for a tool outside it
+SHALL be `undefined`, as the tool is absent from the listing, rather than a function governance then
+refuses. The kernel SHALL still decide every call that is made, so the two gates stay independent.
+A refused call SHALL throw a catchable `PtcGovernanceError` carrying the tool, rule id and reason,
+and the tool SHALL never run; declarative mocks SHALL be consulted only after governance permits.
+
+The kernel SHALL own the set of tools excluded from an agent script's surface — the control tools
+(`archmax_get_history` among them), both sandbox tools, and bare `eval` — consumed by the sandbox
+tool selection, even for an explicit allow-list; agent scripts read variables through
+`args.variables`. A code state's script SHALL be offered no sandbox tool and no bare `eval`, and
+SHALL be offered its own state's control tools as the runtime builds them for that state (see the
+`automated-states` capability). A delegation tool SHALL NOT be excluded: a script reaches
+`archmax_workflow_<slug>` exactly as any tool the state grants.
+
+#### Scenario: Script bound by the state
+
+- **WHEN** a state declares `{ tool: write_file, paths: ["output/**"] }` and `archmax_eval` code
+  calls `tools.writeFile` on `notes/x.md`
+- **THEN** the call is refused with the verdict a model-initiated `write_file` would receive
+
+#### Scenario: A tool outside the surface is undefined
+
+- **WHEN** state `route` declares `tools: { forbid: [write_file] }` and does not grant the host tool
+  `send_email`, which another state grants, and `archmax_eval` code in `route` reads
+  `tools.writeFile` and `tools.send_email`
+- **THEN** both are `undefined`, and neither name appears in `Object.keys(tools)`
+
+#### Scenario: An agent script is offered no control tool
+
+- **WHEN** `archmax_eval` code in any state lists `Object.keys(tools)`
+- **THEN** no control tool appears, `archmax_get_history` included, and neither sandbox tool does
+
+#### Scenario: A code state's script meets the safety rules
+
+- **WHEN** a code state's script calls `tools.writeFile` on a read-only mount path
+- **THEN** the call throws a `PtcGovernanceError` with `zone.read-only`, and nothing is written
+
+#### Scenario: A code state's own denial binds its script
+
+- **WHEN** code state `route` declares `tools: { forbid: [{ tool: read_file, paths: [secrets/**] }] }`
+  and its script calls `tools.readFile("secrets/a.txt")`
+- **THEN** the call throws a `PtcGovernanceError` with `tool.forbidden-here`, while a read
+  elsewhere the state permits runs
+
+### Requirement: The authoring backend is never served inside a session
+
+The runtime SHALL read `workflows/` (specs, `WORKFLOW.md`, code-state scripts, cases) through the
+authoring backend — `authoring` at assembly, else the custom `backend`, else a `FilesystemBackend`
+over the workspace root — and that prefix SHALL have no route in the agent's workspace composite: a
+file tool call on it resolves in the session's own folder, finds no authored content, receives no
+governance message, and the root listing shows no entry. A mount table declaring the prefix as a
+key SHALL fail assembly with `MountCollisionError` naming the prefix, what it holds and the
+`authoring` option; a writable mount served by the same backend as the authoring backend SHALL fail
+assembly with `AuthoringBackendExposedError`. A `script`- or `runtime`-origin call whose path
+canonicalizes under the prefix SHALL be blocked with `zone.governance-plane`, naming the tool, path
+and prefix, in every state whatever it allows.
+
+The set of authoring prefixes SHALL remain a set, though it now holds one member: the classification
+is the contract and its cardinality is incidental. Of the machine, the agent SHALL know what the
+prompt renders and nothing else. Of an automated state, that is at most its slug: as the target of
+an edge out of the active state, or as the state a runtime note names. It SHALL never be a grader's
+`instructions` or `model`, nor a code state's `script` path or source, and no tool SHALL read
+either.
+
+#### Scenario: Spec unreadable by the model
+
+- **WHEN** the model calls `read_file` on `workflows/order-lookup/workflow.yaml`
+- **THEN** no authored content is returned and the result reports the file as absent, with no governance message
+
+#### Scenario: Mounting the prefix is refused
+
+- **WHEN** a consumer supplies a mount at `/workflows/`
+- **THEN** assembly throws `MountCollisionError` naming specs, code-state scripts and cases, and the `authoring` option
+
+#### Scenario: A former prefix is ordinary content
+
+- **WHEN** a consumer supplies a mount at `/subagents/`
+- **THEN** the mount is accepted and served as ordinary agent-visible content, because no part of the
+  runtime reads that prefix
+
+#### Scenario: A code state's script reads the authoring prefix
+
+- **WHEN** a code state's script calls `tools.readFile("workflows/other/workflow.yaml")` or
+  `tools.readFile("workflows/order-lookup/scripts/check-refund.js")`
+- **THEN** both calls fail with `zone.governance-plane` and a reason naming `workflows/`
+
+### Requirement: Skill-bundle scripts and code-state scripts have disjoint executors
+
+Code-state scripts SHALL live at `workflows/<slug>/scripts/<file>.js|.mjs`, declared
+workflow-relative on the code state (`script: scripts/check-refund.js`). The schema SHALL reject a
+path outside `scripts/`, with a `..` segment, or absolute. The runtime SHALL resolve the declared
+path with the same confinement, and an unresolvable script SHALL fail the code state closed (see
+the `automated-states` capability). Code-state scripts SHALL be read through the authoring backend
+and run only by the runtime, when a session enters their code state; no tool SHALL run one.
+
+Scripts the model runs with `archmax_run` SHALL be read through the agent workspace and SHALL be
+confined by the safety rule `script.skill-only` to paths inside a bundle of the resolved skill
+registry — classified through the registry's prefixes, not a literal `skills/` — so an empty
+registry blocks every `archmax_run`, and no path under a workflow's `scripts/` is ever runnable by
+`archmax_run`. A state entry MAY narrow execution within the bundles and SHALL NOT extend it.
+`archmax_eval` SHALL be unaffected by this rule.
+
+#### Scenario: A code state's script runs from its workflow directory
+
+- **WHEN** a code state declares `script: scripts/check-refund.js`
+- **THEN** the runtime reads `workflows/<slug>/scripts/check-refund.js` from the authoring backend
+  and runs it when a session enters the state
+
+#### Scenario: Agent cannot run a code-state script or a scratchpad file
+
+- **WHEN** the model calls `archmax_run` on `workflows/order-lookup/scripts/screen-request.js` or on `scratchpad/x.js`
+- **THEN** the call is blocked with `script.skill-only` and the file is never read
+
+## MODIFIED Requirements
+
+### Requirement: One pure decision function
+
+The kernel SHALL expose a single pure, synchronous function, `decide(machine, action, policyRules,
+mountPrefixes, variables, skills)`, that returns a typed verdict for a proposed action: a tool call
+(`{ state, tool, args, origin?, replyOnly? }`) or a transition (`{ from, to, reason? }`). The kernel
+SHALL decide no state entry, and a transition SHALL carry nothing beyond its edge and its reason. A
+tool call's `origin` SHALL be one of:
+
+- `agent`, a model's call, the session's agent's or a grader's. It is the default when absent.
+- `script`, a call from an agent's sandbox script or from a code state's script.
+- `runtime`, the runtime's own `file`-value read check.
+
+A verdict SHALL carry `decision` (`allow` or `block`), a stable `ruleId`, and on a block a
+`reason`; it MAY mark the block `terminal` (retrying cannot recover it) or `warn` (it surfaces as
+a warn-level event). The kernel SHALL hold no list of authored directory names and SHALL discover
+no skills: the resolved mount prefixes and skill table are inputs supplied by the caller, so the
+runtime and `archmax validate` reach identical verdicts from identical inputs.
+
+#### Scenario: Purity
+
+- **WHEN** `decide` is called twice with the same machine, action, rules, mount prefixes, variables and skills
+- **THEN** it returns the same verdict with the same `ruleId` and has no side effects
+
+### Requirement: Tool-call verdicts come from an ordered rule pipeline
+
+The kernel SHALL decide a tool call by folding an ordered pipeline of pure rules, each returning a
+verdict or abstaining; the first verdict wins and every rule abstaining means allow. The order SHALL
+be: the non-overridable safety rules — the authoring-backend refusal for `script`- and
+`runtime`-origin calls (`zone.governance-plane`), the skill-bundle confinement of `archmax_run`
+(`script.skill-only`), the reply-only refusal (`tool.reply-only`), the bare-`eval` block
+(`tool.eval`), the read-only mount write block (`zone.read-only`), the runtime-internal area block
+(`zone.runtime-internal`), the offload-area write block (`zone.runtime-managed`), and the
+disabled-skill block (`skill.not-allowed`, `skill.forbidden`) — then the workflow-wide denials
+(`tool.forbidden`), then the active state's denials (`tool.forbidden-here`), then the consumer's
+`policyRules`, then the always-open session access rules (`tool.scratchpad`, `tool.offload-read`), and
+last the per-state allow default (`tool.allowed`, `tool.not-allowed`, `tool.unresolved-variable`).
+
+Every declared denial therefore precedes every grant and every consumer rule: **deny beats allow, and
+no narrower level widens a denial.**
+
+#### Scenario: Safety rules cannot be loosened
+
+- **WHEN** a call matches a safety rule and also a permitting rule — a consumer rule, the scratchpad
+  rule, an `allow_always` entry or a state `tools.allow` entry
+- **THEN** the safety rule's block wins, because it is evaluated first
+
+#### Scenario: A declared denial cannot be loosened either
+
+- **WHEN** a call matches `tools.forbid_always` or the active state's `tools.forbid` and also a
+  permitting rule — a consumer rule, the scratchpad rule, an `allow_always` entry or the state's own
+  `tools.allow`
+- **THEN** the denial wins, because both denial stages are evaluated ahead of every grant
+
+### Requirement: Consumer governance rules
+
+`createAgent` SHALL accept `policyRules`: pure functions over the proposed action and a read-only
+`RuleApi` (`machine`, `variables`, `mountPrefixes`, `skills`), inserted after the safety rules and
+the workflow's and state's declared denials, and before the always-open access and per-state
+defaults. A consumer rule MAY block a call a state would permit and SHALL NOT loosen a safety rule
+or a declared denial. The same rules SHALL govern calls made through the sandbox bridge and every
+call an automated state makes, its control tools included. Every rule SHALL see the call's
+`origin`: `agent` when absent (the session's agent's or a grader's call), `script` (an agent's
+sandbox script or a code state's script), or `runtime` (the runtime's own `file`-value read check).
+
+#### Scenario: Custom rule blocks in every state
+
+- **WHEN** a consumer rule blocks `web_fetch` for a non-allowlisted URL and the model calls it in a
+  state whose `tools.allow` names `web_fetch`
+- **THEN** the call is blocked with the rule's reason
+
+#### Scenario: A rule sees each caller's origin
+
+- **WHEN** a consumer rule records the `origin` of each call it decides, in a session whose agent
+  runs `archmax_eval` code, enters a code state and a grader state, and records a `file` return
+- **THEN** the rule sees `agent` for the agent's and the grader's own calls, `script` for the
+  `archmax_eval` code's and the code state's script calls, and `runtime` for the `file` check alone
+
+### Requirement: Workflow and state denials
+
+A workflow SHALL declare denial in the same two positions it declares a grant:
+`tools.forbid_always` at the root and `tools.forbid` on a state, taking the same entries as their
+`allow` counterparts. There SHALL be no `policy` block: a root `policy:` key is an
+unrecognized-key load error.
+
+`tools.forbid_always` SHALL block each entry in every state — the always-on tools and the control
+tools included — and a state's `tools.forbid` SHALL block each entry while that state is active,
+subtracting from the workflow's `allow_always`, the state's own `allow` and the always-on surface
+alike. Both SHALL bind every caller in the state they apply to: the session's agent, the agent's
+scripts, and an automated state's grader or script, the automated state's control tools included.
+A forbid entry MAY name the tool `*`, meaning every tool, which is how a path is denied
+across the board. An entry's argument guards narrow what it denies: `{ tool: write_file, paths:
+[logs/**] }` denies that tool on those globs and nothing else.
+
+A sub-workflow SHALL inherit every ancestor's workflow-wide denials — `tools.forbid_always` and
+`skills.forbid_always`, the root's and each intermediate caller's, accumulated down the delegation
+chain — ahead of its own rules, and a block produced by an inherited rule SHALL name the workflow
+that declared it. Neither per-state `allow` nor per-state `forbid` SHALL be inherited in either
+direction.
+
+Every path glob the runtime matches — a forbid entry's and an `allow` entry's `paths`/`args` alike —
+SHALL match dot-prefixed path segments: `secrets/**` SHALL cover `secrets/.env` and `**` SHALL cover
+`.env`. A workspace path is not a shell word, so a wildcard that skipped dotfiles would make a
+denial bypassable and an allowance incomplete.
+
+#### Scenario: A forbidden dotfile
+
+- **WHEN** the workflow declares `tools: { forbid_always: [{ tool: "*", paths: [secrets/**] }] }`
+  and the model calls `write_file` on `secrets/.env`
+- **THEN** the call is blocked with `tool.forbidden`
+
+#### Scenario: A forbidden always-on tool
+
+- **WHEN** the workflow declares `tools: { forbid_always: [archmax_eval] }` and the model calls
+  `archmax_eval`
+- **THEN** the call is blocked naming the workflow's denial, and the tool is not disclosed in any
+  state
+
+#### Scenario: A state's denial is scoped to that state
+
+- **WHEN** state `route` declares `tools: { forbid: [write_file] }` while the root grants
+  `write_file` in every state
+- **THEN** the call is blocked in `route` with `tool.forbidden-here` and the tool is not disclosed
+  there, while another state's call succeeds
+
+#### Scenario: A guarded denial denies only what it names
+
+- **WHEN** the root declares `tools: { forbid_always: [{ tool: write_file, paths: [logs/**] }] }`
+- **THEN** a write under `logs/` is blocked in every state, a write elsewhere the state grants
+  succeeds, and `write_file` stays disclosed because the denial is argument-scoped
+
+#### Scenario: A state's denial binds an automated state's control
+
+- **WHEN** code state `check-refund` declares
+  `tools: { forbid: [{ tool: archmax_advance, args: { to: [refund-review] } }] }` and its script
+  calls `tools.archmax_advance({ to: "refund-review", reason })`
+- **THEN** the call is refused with `tool.forbidden-here` and no decision is recorded, while an
+  advance to `refund-request` is accepted
+
+#### Scenario: A workflow-wide denial withholds a control from automated states
+
+- **WHEN** the root declares `tools: { forbid_always: [archmax_set_variables] }`
+- **THEN** no grader is offered `archmax_set_variables`, `tools.archmax_set_variables` is
+  `undefined` in every code state's script, and `decide` blocks the tool in every state with
+  `tool.forbidden`
+
+#### Scenario: Inherited denial
+
+- **WHEN** the root workflow declares `tools: { forbid_always: [send_email] }` and a sub-workflow's
+  state allows `send_email`
+- **THEN** the child's call is blocked and the reason names the root workflow
+
+#### Scenario: An intermediate caller's denial binds its grandchild
+
+- **WHEN** root delegates to `mid`, `mid` declares `tools: { forbid_always: [write_file] }` and
+  delegates to `leaf`, and `leaf` calls `write_file`
+- **THEN** the call is blocked in `leaf` and the reason names `mid`
+
+#### Scenario: A state denial is not inherited
+
+- **WHEN** a caller's state declares `tools: { forbid: [send_email] }` and dispatches a sub-workflow
+  whose own state grants `send_email`
+- **THEN** the child's call succeeds: a state's denial governs that state's turns, not a child
+  session
+
+### Requirement: The tool surface is allow-only and closed by default
+
+A state SHALL permit only: the always-on tools of its type, the workflow's `tools.allow_always`
+entries, the state's own `tools.allow` entries, and the control tools of its type.
+
+The always-on tools of an agent or human state SHALL be the file tools (`ls`, `read_file`,
+`write_file`, `edit_file`, `glob`, `grep`), the runtime's file operations (`copy_file`,
+`move_file`, `remove_file`), `write_todos`, the sandbox tools (`archmax_eval`, `archmax_run`), and
+any name the consumer passes as `essentialTools`. Those of an automated state (a grader or code
+state) SHALL be the same set without the agent-only tools `write_todos`, `archmax_eval` and
+`archmax_run`.
+
+The control tools SHALL be, by type:
+
+| State type    | Control tools                                                                                              |
+| ------------- | ---------------------------------------------------------------------------------------------------------- |
+| agent, human  | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` |
+| code          | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`                       |
+| grader        | the code set and `archmax_get_history`                                                                     |
+
+`archmax_get_history` SHALL be a control tool like the others: one of the reserved control tools
+(`HARNESS_CONTROL_TOOLS`), never part of an agent script's surface, and permitted only in a grader
+state. No state of an automated type SHALL permit a tool no automated state offers: `write_todos`,
+`archmax_eval`, `archmax_run`, `archmax_wait` and `archmax_reset`.
+
+Every other call SHALL be blocked with a reason naming the tool, the state and what the state
+permits. A state with no `tools` block and one with an empty `allow` list SHALL behave identically,
+and no syntax SHALL declare a fully open state. The control tools SHALL never need listing: a
+transition target is checked against the state's `transitions` and a variable write against
+whether the variable is locked. A `forbid_always` or `forbid` entry SHALL still block any of them,
+and a tool named bare `eval` SHALL always be blocked with a message pointing at `archmax_eval`.
+
+One derivation (`WorkflowMachine.disclosedTools(state)` and `checkAllowed`) SHALL answer what a
+state permits, for every state type. The kernel, prompt disclosure, the agent scripts' listing and
+the tool surface an automated state is offered SHALL all read it unchanged, so what a code state
+may call cannot drift from what its script sees.
+
+`task` SHALL be neither always-on nor grantable. Deep Agents always registers it for its
+general-purpose subagent. The runtime registers no subagent and dispatches nothing through it: a
+grade is a grader state, and delegated work is a sub-workflow reached through a declared
+`archmax_workflow_<slug>` tool. A `task` call SHALL be blocked in every state, whatever the state
+or the workflow declares, with a refusal that points at grader states and the workflow's declared
+`archmax_workflow_<slug>` tools.
+
+#### Scenario: Undeclared tool blocked
+
+- **WHEN** a state declares `tools.allow: [alpha]` and the model calls `beta`
+- **THEN** the call is blocked with a reason matching `not allowed in state`, the tool result is an
+  error marked `governance_blocked`, and no `tool-called` event is emitted for it
+
+#### Scenario: Forbidden control tool
+
+- **WHEN** `tools.forbid_always` lists `archmax_wait` and a state's `tools.allow` omits it
+- **THEN** `archmax_wait` is blocked in every state, because the denial stages run ahead of the per-state defaults
+
+#### Scenario: Raise is permitted without a grant and forbiddable per state
+
+- **WHEN** a state with no `tools` block calls `archmax_raise`, and another state whose
+  `tools.forbid` names `archmax_raise` calls it
+- **THEN** the first call is permitted and the second is blocked
+
+#### Scenario: The control set follows the type
+
+- **WHEN** `decide` is asked about `archmax_get_history` in an agent state, and about
+  `archmax_wait`, `archmax_reset` and `archmax_eval` in a code state and in a grader state, none of
+  which a `tools` block names
+- **THEN** each is blocked with `tool.not-allowed`, while `archmax_raise` is permitted in all three
+  states and `archmax_get_history` in the grader state
+
+#### Scenario: task is blocked in every state
+
+- **WHEN** the model calls `task` in a state with no `tools` block and in a state whose
+  `tools.allow` names `task`
+- **THEN** both calls are blocked, and the refusal points at grader states and the declared
+  `archmax_workflow_<slug>` tools
+
+#### Scenario: The file operations need no grant and close by name
+
+- **WHEN** a state with no `tools` block is entered, and another state's `tools.forbid` names `copy_file`
+- **THEN** `copy_file`, `move_file` and `remove_file` are disclosed in the first, and in the second
+  `copy_file` is neither disclosed nor callable (`tool.forbidden-here`) while the other two are
+
+### Requirement: Effective entries and precedence
+
+The entries that govern a state SHALL be derived once, in precedence order, and read by both
+enforcement and disclosure: the state's own `tools.allow` entries; then the always-on tools of the
+state's type that the state does not mention, unconstrained; then `tools.allow_always` entries for
+tools the state does not mention and that are not always-on. A tool SHALL be decided by exactly
+one tier, so a state entry naming an always-on tool narrows it, and an `allow_always` entry for a
+tool the state mentions or that is always-on SHALL be inert.
+
+In an automated state, an entry naming a tool no automated state offers (`write_todos`,
+`archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`) SHALL be dropped, whether it is the
+state's own or an `allow_always` one, so it neither grants nor narrows there. `validate` reports the
+state's own such entry as an error (see "Validation decides through the same kernel").
+
+#### Scenario: State entry narrows an always-on tool
+
+- **WHEN** a state declares `{ tool: write_file, paths: ["output/**"] }` and the model writes `notes/private.md`
+- **THEN** the call is blocked, while a write to `output/report.md` is permitted
+
+#### Scenario: State constraint beats allow_always
+
+- **WHEN** `tools.allow_always` lists `read_file` and the state declares
+  `{ tool: read_file, args: { file_path: ["skills/**"] } }`
+- **THEN** a read outside `skills/` is blocked despite the `allow_always` grant
+
+#### Scenario: An agent-only entry grants nothing in an automated state
+
+- **WHEN** code state `check-refund` declares `tools.allow: [archmax_eval]` and the root declares
+  `tools: { allow_always: [archmax_run] }`
+- **THEN** neither tool is offered in `check-refund` and `decide` blocks both there with
+  `tool.not-allowed`, while every agent state still permits both
+
+### Requirement: Agent argument substitution precedes governance
+
+On an agent-originated call — the session's agent's, or a grader's — the runtime SHALL resolve
+`${{…}}` references in the arguments as the first stage of its tool-call handling (`wrapToolCall`
+for the session's agent, the grader's own middleware for a grader). This happens before
+canonicalization, guard matching and every rule, so governance and the tool see the same resolved
+arguments. The value SHALL be substituted verbatim and matched as data, never as pattern syntax. An
+unresolvable reference SHALL refuse the call before any rule runs, with a correctable message
+naming the reference and the `$${{…}}` escape. Delegation tools (`archmax_workflow_<slug>`) SHALL
+be exempt, their parameters being resolved by the dispatcher.
+
+Script arguments passed through the sandbox bridge SHALL NOT be substituted. This holds for an
+agent script and a code state's script alike: a script passes computed values and reads the
+variables as `args.variables`, so `${{…}}` text in its arguments is data. A script's call SHALL
+nonetheless be guarded against the session's variables, so a `${{name}}` guard admits from a
+script exactly what it admits from the model:
+
+- an agent script's call against the variables in force at the turn's model call (the PTC gateway
+  is refreshed with them);
+- a code state's script call against the variables as that state sees them, its own accepted
+  writes included (see the `automated-states` capability).
+
+#### Scenario: Both sides resolve
+
+- **WHEN** a guard is `["${{from_email}}"]`, `from_email` holds `a@b.c`, and the model calls with `"${{from_email}}"`
+- **THEN** the call is permitted and the tool receives `a@b.c`
+
+#### Scenario: A script's call under a variable guard
+
+- **WHEN** a state allows `read_file` only with `file_path: ["${{report_path}}"]`, `report_path` is set, and code run via `archmax_eval` calls `tools.readFile` with that path
+- **THEN** the call is permitted, exactly as the model's own would be, and a different path from the script is blocked
+
+#### Scenario: A grader's arguments are substituted
+
+- **WHEN** a grader state allows `read_file` only with `file_path: ["${{report_path}}"]`,
+  `report_path` is set, and the grader calls `read_file` with `file_path: "${{report_path}}"`
+- **THEN** the call is permitted and the tool receives the resolved path
+
+### Requirement: Per-state tool disclosure
+
+On every model call the runtime SHALL hand the model only the active state's disclosed tools, and
+an automated state SHALL be offered exactly its own state's disclosed tools: a grader as its tool
+list, a code state's script as its `tools` (see the `automated-states` capability). A state's
+disclosed tools SHALL be every tool an effective entry names, plus the control tools of its type
+other than `archmax_advance`, plus `archmax_advance` except in a terminal state, minus the tools a
+`forbid_always` or `forbid` entry names by name. The control tools other than `archmax_advance` are,
+by type:
+
+- in an agent or human state, `archmax_reset`, `archmax_wait`, `archmax_raise`,
+  `archmax_get_variables` and `archmax_set_variables`;
+- in a code state, `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`;
+- in a grader state, those and `archmax_get_history`.
+
+`task` SHALL NOT be disclosed in any state of any assembly, though Deep Agents registers it in every
+assembly for its general-purpose subagent, and whatever a grant names. Deep Agents adds no prompt
+guidance for `task`, and the runtime SHALL hand the model the composed static prompt unchanged: no
+section of it is removed, and no `warning` is raised about one. Disclosure SHALL be by name only:
+an entry with argument constraints keeps its tool disclosed, and the binding constraints SHALL be
+listed in the volatile "Current state" block with `${{…}}` references rendered resolved (or named
+as unresolved), never in the cacheable prefix. Every call SHALL still be decided by the kernel
+whether or not the tool was disclosed.
+
+#### Scenario: Disclosure follows the state
+
+- **WHEN** state `start` allows `alpha` and state `done` allows `beta`
+- **THEN** the model call in `start` offers `alpha` and not `beta`, the call in `done` offers `beta`
+  and not `alpha`, and both offer `read_file`, `write_file`, `ls` and `archmax_set_variables`
+
+#### Scenario: Disclosure follows the type
+
+- **WHEN** a session passes through a non-terminal code state and a grader state, neither of which
+  declares a `tools` block
+- **THEN** the code state's script and the grader are both offered the file tools, `archmax_advance`,
+  `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, and neither is offered
+  `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`. Only the grader
+  is offered `archmax_get_history`, and no model call of the session's agent offers it
+
+#### Scenario: Advance hidden in a terminal state
+
+- **WHEN** the active agent state declares no `transitions`
+- **THEN** `archmax_advance` is not offered while `archmax_reset`, `archmax_wait` and `archmax_raise`
+  still are
+
+#### Scenario: A forbidden raise is not offered
+
+- **WHEN** `tools.forbid_always` lists `archmax_raise`
+- **THEN** no model call in any state offers `archmax_raise`, and no grader or code state's script
+  is offered it
+
+#### Scenario: task is never offered
+
+- **WHEN** any state of any assembly runs a model call, though Deep Agents registered `task` for
+  its general-purpose subagent
+- **THEN** no model call offers `task`, no grader or code state's script is offered it, and the
+  static prompt carries no task-tool guidance
+
+#### Scenario: Nothing is pruned and nothing warned about
+
+- **WHEN** a governed agent makes its first model call
+- **THEN** no `warning` event concerns the withheld `task` tool or its guidance, the `prompt-shaping`
+  event names `task` as withheld, and the static block is the composed prompt byte for byte
+
+#### Scenario: Undisclosed call still governed
+
+- **WHEN** the model calls a registered tool that was not disclosed and is not allowed in the state
+- **THEN** the kernel blocks it with the standard not-allowed message
+
+### Requirement: Enablement is the grant; a disabled skill is unreachable
+
+A skill enabled in the acting state SHALL be readable and its scripts runnable with no `tools.allow`
+path entry. A path inside a bundle the acting state does not enable SHALL be blocked by the safety rule
+`skill.not-allowed` for `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep` and `archmax_run`,
+naming the slug and the state, after canonicalization, and no `tools.allow`, `allow_always`, denial
+or consumer rule SHALL widen it. A state entry naming one of those tools SHALL still narrow within the
+enabled set (enabled AND allowed). Enablement SHALL grant no write.
+
+The runtime's own `file`-value read (origin `runtime`) SHALL be exempt from the enabled set, held
+only to the workflow's `skills.forbid_always` and the skill denials it inherits. `archmax_eval` and
+`archmax_run` code, a code state's script and a grader SHALL NOT be exempt: each is held to the
+enabled set of the state it acts in.
+
+#### Scenario: Disabled bundle blocked, enabled bundle served
+
+- **WHEN** state `start` enables `orders` only and the model reads `skills/orders/assets/orders.json` then `skills/policy/assets/rules.md`
+- **THEN** the first read is served and the second is blocked with a reason naming skill `policy` and state `start`
+
+#### Scenario: Wide grant cannot widen
+
+- **WHEN** a state enables only `order-data` and declares `{ tool: archmax_run, paths: ["skills/**"] }`
+- **THEN** running `skills/order-enrichment/scripts/enrich-orders.js` is blocked by the skill rule
+
+#### Scenario: A code state's script reads only the bundles its state enables
+
+- **WHEN** state `identify-case` declares `skills: { allow: [orders] }`, code state
+  `screen-request` enables no skill, and its script calls
+  `tools.readFile("skills/orders/assets/orders.json")`
+- **THEN** the call throws a `PtcGovernanceError` with `skill.not-allowed` naming `orders` and
+  `screen-request`
+
+#### Scenario: The runtime's read is held only to skill denials
+
+- **WHEN** no state enables the skill `billing` and a `file` value names
+  `skills/billing/assets/template.pdf`, and in another workflow whose root declares
+  `skills: { forbid_always: [billing] }` a `file` value names the same path
+- **THEN** the runtime's check admits the first and refuses the second with `skill.forbidden`
+
+### Requirement: A disabled skill is invisible to the model
+
+The runtime SHALL render a "Skills available in this state" section into the volatile prompt block,
+naming for each enabled skill its slug, description and `SKILL.md` path, and no section at all when the
+state enables nothing; a disabled skill SHALL appear in no prompt section. The results of `ls`, `glob`
+and `grep` SHALL be filtered, line by line, to drop every entry inside a bundle the acting state does
+not enable — on the model's own call, on a grader's call, and on a script's
+`tools.ls`/`tools.glob`/`tools.grep` alike, whether an agent script or a code state's script. No
+caller SHALL receive an unfiltered listing. `read_file` results SHALL NOT be filtered.
+
+#### Scenario: Prompt names only enabled skills
+
+- **WHEN** the model advances from a state enabling `orders` to one enabling nothing
+- **THEN** the first model call's prompt names `orders` and not the other skill's description, and the second names neither
+
+#### Scenario: Listing cannot reveal a disabled bundle
+
+- **WHEN** a state enables only `order-data` and the model lists `skills/` or globs `skills/**/SKILL.md`
+- **THEN** only `order-data` entries are returned, and the same listing through `archmax_eval` is filtered identically
+
+#### Scenario: A code state's listing is filtered to its state
+
+- **WHEN** a code state enabling only `order-data` runs a script that calls `tools.ls("skills/")`
+- **THEN** only the `order-data` entry is returned
+
+### Requirement: Validation decides through the same kernel
+
+`archmax validate` SHALL probe each state's `tools.allow` through `decide` with the same mount
+prefixes and skill registry the runtime uses. It SHALL report as errors:
+
+- a write entry into a runtime-owned area or a read-only mount;
+- an entry a `forbid_always` or `forbid` list denies;
+- an entry naming `task` (not grantable);
+- an `archmax_run` entry outside every skill bundle;
+- a path entry that can only match inside a bundle the state does not enable;
+- an entry whose `file_path` glob resolves under `workflows/`;
+- an entry in an automated state naming a tool no automated state offers (`write_todos`,
+  `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`);
+- a code state's `script` outside `scripts/` or missing from it;
+- a code-state script importing anything but `@archmax-ai/harness/*`.
+
+It SHALL warn on an `archmax_advance` target with no declared edge. A rule that validates as
+permitted SHALL NOT be blocked at runtime for the same inputs.
+
+#### Scenario: Policy contradiction
+
+- **WHEN** a state allows `write_file` on a path the workflow's `tools.forbid_always` denies
+- **THEN** `validate` reports the contradiction as an error
+
+#### Scenario: A task grant is an error
+
+- **WHEN** a state's `tools.allow` or the workflow's `tools.allow_always` names `task`
+- **THEN** `validate` reports an error, and the kernel blocks the call at runtime regardless
+
+#### Scenario: A former prefix is judged like any path
+
+- **WHEN** a state declares an allow entry whose `file_path` glob resolves under `subagents/`
+- **THEN** `validate` reports no authoring-plane error for it
+
+#### Scenario: A missing code-state script is an error
+
+- **WHEN** a code state declares `script: scripts/check-refund.js` and no such file exists under
+  the workflow's `scripts/`
+- **THEN** `validate` reports an error naming the state and the path
+
+### Requirement: A disclosed trigger signature names each variable's type and description
+
+Where the volatile "Current state" block discloses the session's own trigger signature (see
+*The graph is disclosed only from the active state*), each variable SHALL be disclosed with its declared type and
+description beside its name when its entry declares them, and by name alone when it does not.
+The disclosure SHALL keep its scope: the session's own trigger only, and never the trigger
+declaration's `description`, which describes the entry to a caller rather than to the agent
+serving it. The rendering SHALL be deterministic for one signature, so the block stays
+byte-identical across the model calls of a turn.
+
+#### Scenario: A typed return is disclosed with its type
+
+- **WHEN** a session started by `manual` declaring
+  `returns: [{ name: total, type: number, description: "Refunded amount in EUR." }, note]`
+  makes a model call
+- **THEN** the block names `total` as a `number` with its description and `note` by name alone
+
+#### Scenario: The entry's description is not disclosed
+
+- **WHEN** the `manual` declaration also carries `description: "Refund one order."`
+- **THEN** no model call of the session carries that sentence
+
+#### Scenario: An untyped signature renders as before
+
+- **WHEN** a trigger declares `requires: [order_id]` and `returns: [status]`
+- **THEN** the block names both by name alone
+
+### Requirement: Tools declare their path arguments
+
+The runtime SHALL keep one table naming, per tool, the arguments that name workspace paths and how a
+call uses each — `read`, `list`, `search`, `write`, `remove` or `execute`. The built-in entries SHALL
+be `read_file`, `write_file`, `edit_file` (`file_path`: read, write, write), `ls` (`path`: list),
+`glob`, `grep` (`path`: search), `archmax_run` (`file_path`: execute), `copy_file` (`source`: read,
+`destination`: write), `move_file` (`source`: remove, `destination`: write) and `remove_file`
+(`file_path`: remove). For the single-path built-ins the kernel SHALL read the declared argument and,
+when it is absent, the second spelling the tool itself accepts (`path` for `file_path` and the
+reverse), so a call cannot pass a path ungoverned by spelling it the other way.
+
+A host SHALL declare its own tools' path arguments through `createAgent`'s `toolPaths` or a
+`toolsFromMap` descriptor's `paths`, the option winning for a tool declared both ways. A declaration
+for a built-in tool, an unknown access, or an empty declaration SHALL fail assembly with
+`ToolPathsError`. A tool with no declaration SHALL be subject to no path rule. Every machine of an
+assembly, root and delegated, SHALL govern by the same table.
+
+A declared argument SHALL hold one path or a list of paths; each path of a list SHALL be governed
+with the argument's access, and an omitted argument or an empty list SHALL name no path. A declared
+argument holding anything else — a number, an object, a list containing a non-string — SHALL be
+refused before every other rule (`tool.path-argument`), so no path inside it passes ungoverned.
+
+Every path rule SHALL evaluate every declared path a call names, with its access: the read-only zone
+and the runtime-managed areas refuse `write` and `remove`; the runtime-internal areas, a skill bundle
+the state does not enable, and a governed mount the state was not given refuse every access; a mount
+narrowed to `access: read`, or a governed one no grant of the workflow asks to write, refuses `write`
+and `remove` (`mount.read-only`); an inherited mount or
+skill denial refuses every access; `script.skill-only` confines `execute`; and the authoring-plane
+rule reads them for `script`- and `runtime`-origin calls. A call SHALL be refused when any one of its
+paths is, and for a tool declaring several, the refusal SHALL name the argument
+(`'copy_file' on 'x' (destination)`). A `paths:` guard SHALL test every path of every declared
+argument, each element of a list on its own: a grant SHALL need every one to match, and an omitted
+argument or an empty list SHALL match no glob. A `paths:` guard in a forbid entry SHALL match a call
+when **any** declared path it names matches, so `{ tool: "*", paths: [secrets/**] }` refuses a copy
+out of `secrets/` and a copy into it. The kernel, `validate`'s probes and the sandbox's governed
+tool bridge SHALL read the same table, so a script's call is governed by its declared paths exactly
+as the model's is.
+
+#### Scenario: A host tool's read is refused a mount the state was not given
+
+- **WHEN** a workflow grants the governed mount `contracts` only in `intake`, and in `reply` the model
+  calls a host tool declaring `{ path: "read" }` with `path: "contracts/x"`
+- **THEN** the call is blocked with `mount.not-allowed` and the tool's handler never runs
+
+#### Scenario: A host tool's write is refused a read-only grant
+
+- **WHEN** a state narrows a writable mount `shared` to `access: read`, and a host tool declaring
+  `{ source: "remove", destination: "write" }` names `shared/a.md` as either argument
+- **THEN** the call is blocked with `mount.read-only`, while a `read` argument under `shared/` is allowed
+
+#### Scenario: A host tool's read is refused a disabled skill
+
+- **WHEN** a state does not enable the skill `billing` and a host tool declaring `{ path: "read" }`
+  names `skills/billing/SKILL.md`
+- **THEN** the call is blocked with `skill.not-allowed`
+
+#### Scenario: A path denial covers both sides of a copy
+
+- **WHEN** `tools.forbid_always` declares `{ tool: "*", paths: ["secrets/**"] }`
+- **THEN** `copy_file` from `secrets/key.pem` and `copy_file` to `secrets/key.pem` are both blocked with `tool.forbidden`
+
+#### Scenario: The alias spelling is governed
+
+- **WHEN** the model calls `read_file` with `path: "checkpoints/cp-1.json"` and no `file_path`
+- **THEN** the call is blocked with `zone.runtime-internal`
+
+#### Scenario: A built-in's paths cannot be redeclared
+
+- **WHEN** a host passes `toolPaths: { read_file: { file_path: "read" } }`
+- **THEN** assembly throws `ToolPathsError`
+
+#### Scenario: Each path of a list is governed
+
+- **WHEN** a host tool declares `{ files: "read" }` and, in a state not given the governed mount
+  `contracts`, the model calls it with `files: ["attachments/a.txt", "contracts/b.docx"]`
+- **THEN** the call is blocked with `mount.not-allowed`
+
+#### Scenario: A paths grant tests each element
+
+- **WHEN** a state grants `{ tool: attach, paths: ["attachments/**"] }` and the model calls `attach`
+  with `files: ["attachments/a.txt", "contracts/b.docx"]`
+- **THEN** the call is not granted, though the two joined into one string would match the glob
+
+#### Scenario: A path argument of another shape is refused
+
+- **WHEN** a tool declaring `{ files: "read" }` is called with `files: ["a.txt", 3]` or `files: { path: "b.txt" }`
+- **THEN** the call is blocked with `tool.path-argument`
+
+## REMOVED Requirements
+
+### Requirement: Governed mounts are enabled per state
+
+**Reason**: Its scenarios described hooks reading and writing mounts on runtime authority. Hooks are
+removed, and a grader's or a code state's calls are decided on their own state's mounts.
+
+**Migration**: See "A governed mount is reachable only where the acting state enables it" for the
+per-state mount rules, which are unchanged, and "The runtime's read meets mount grants on workflow
+scope" for the workflow-scope rules, which now apply only to the runtime's `file`-value read
+check. A hook that read a mount another state enables becomes a code state whose own
+`mounts.allow` enables it.
+
+### Requirement: Per-state graph disclosure
+
+**Reason**: The active state's hook markers (`before`/`after` by kind, a rubric as the bare word
+`rubric`) are removed along with hooks.
+
+**Migration**: See "The graph is disclosed only from the active state", which keeps every other
+disclosure rule. A state that was graded on exit now advances to a grader state, whose decision
+reaches the agent as a runtime note.
+
+### Requirement: Sandbox tool calls are governed on their origin
+
+**Reason**: The `lifecycle` origin is removed. No script runs on runtime authority, and a script's
+`tools` no longer resolve a tool outside its state's surface.
+
+**Migration**: See "A script's tool calls are governed against the state it runs for". A hook script
+becomes a code state's script and is governed by that code state's allow and forbid lists and its
+skill and mount grants. Grant there what the hook used.
+
+### Requirement: The authoring backend is never served to the model
+
+**Reason**: It named rubrics and hook scripts as authoring content and a hook as a
+`lifecycle`-origin caller, and it described what the model knows of a rubric.
+
+**Migration**: See "The authoring backend is never served inside a session": the authoring backend
+now holds code-state scripts, the governance-plane refusal binds `script`- and `runtime`-origin
+calls, and the agent knows of an automated state at most its slug.
+
+### Requirement: Two script homes with disjoint executors
+
+**Reason**: Hook scripts under `workflows/<slug>/hooks/` are removed.
+
+**Migration**: See "Skill-bundle scripts and code-state scripts have disjoint executors". Move each
+hook script to `workflows/<slug>/scripts/` and declare it as a code state's `script`.
+
+### Requirement: Hook outcomes reduce to verdicts in the kernel
+
+**Reason**: Hooks are removed. Grading and deterministic checks are now grader and code states on
+the graph (the `automated-states` capability). These states move with `archmax_advance` and fail
+with `archmax_raise`, so there is no hook outcome left for the kernel to reduce. The kernel takes
+no `HookFact`, has no `enter-state` action and no `hook.error` rule, and its transition action
+carries no `hookFacts`.
+
+**Migration**: The transition checks this requirement held (`transition.requires` before
+`transition.no-edge`) are kept in "The kernel decides a transition on its requirements and its
+edge". Rewrite each `before` check as a code state in front of the state, each `after` check as a
+code state behind it, and each rubric as a grader state. A send-back is now that state's
+`archmax_advance` back along a declared edge, and a hard rejection is its `archmax_raise`.

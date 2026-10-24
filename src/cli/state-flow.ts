@@ -10,10 +10,10 @@
  *
  * The trail uses two indentation tiers so a session reads as a hierarchy:
  * state changes (`state-enter`, `state-leave`) sit at the outer margin, and
- * what happened *inside* a state (hooks, tool calls, the agent's own text,
- * quoted) is indented beneath it. Lifecycle phases are colour-coded — `before`
- * in blue, `after` in magenta. Assembly-time and high-frequency telemetry
- * events are dropped to keep the trail readable.
+ * what happened *inside* a state (a code state's script and its output, a
+ * grader's run, tool calls, the agent's own text, quoted) is indented beneath
+ * it. Code states are colour-coded blue, graders magenta. Assembly-time and
+ * high-frequency telemetry events are dropped to keep the trail readable.
  */
 import { isChildSessionOf } from "../sessions/scope.js";
 import { originLabel, type WorkflowEventInput } from "../core/events.js";
@@ -30,7 +30,7 @@ export interface StateFlowRenderer {
   onEvent(event: WorkflowEventInput): void;
 }
 
-/** Indentation for per-state action lines (hooks, agent text). */
+/** Indentation for per-state action lines (an automated run, agent text). */
 const ACTION_INDENT = "    ";
 /** Deeper indentation for output nested under an action (e.g. script stdout). */
 const OUTPUT_INDENT = "      ";
@@ -42,7 +42,7 @@ const LIST_INDENT = "  ";
 /**
  * Build a renderer that writes an append-only, hierarchical state flow to
  * `stream`. Assembly-time events (`interpreter-enabled`,
- * `hooks-summary`, `graph-topology`, `workflow-reset`) are ignored — the CLI
+ * `graph-topology`, `workflow-reset`) are ignored — the CLI
  * prints its own session header. The `advance` event only renders the agent's
  * one-sentence `reason` (the target itself is shown by the following `state-leave`).
  */
@@ -51,7 +51,6 @@ export function createStateFlowRenderer(
   styleOverride?: Style,
 ): StateFlowRenderer {
   const s = styleOverride ?? createStyle();
-  const phaseColor = (phase: "before" | "after") => (phase === "before" ? s.blue : s.magenta);
   const write = (line: string) => stream.write(`${line}\n`);
   const writeAgentText = (text: string) => {
     for (const line of text.split("\n")) write(`${ACTION_INDENT}${s.gray(icons.quote)} ${line}`);
@@ -93,35 +92,22 @@ export function createStateFlowRenderer(
               s.dim(`(on_error: ${event.reason})`),
           );
           break;
-        case "hook-start":
-          write(
-            `${ACTION_INDENT}${phaseColor(event.phase)(`${icons.bullet} ${event.phase}`)} ${s.dim(event.label)}`,
-          );
+        case "code-start":
+          write(`${ACTION_INDENT}${s.blue(`${icons.bullet} code`)} ${s.dim(event.script)}`);
           break;
-        case "hook-output":
+        case "code-output":
           write(`${OUTPUT_INDENT}${s.dim(event.line)}`);
           break;
-        case "hook-passed":
-          write(`${ACTION_INDENT}${s.green(icons.check)} ${s.dim(`${event.phase} passed`)}`);
+        case "code-result":
+        case "grader-result":
+          // A run that settled says nothing more: its move or its raise is the
+          // next line. Only a failure needs saying here.
+          if (event.status === "error") {
+            write(`${ACTION_INDENT}${s.red(`${icons.cross} ${event.type === "code-result" ? "code" : "grader"} failed`)} ${s.dim(event.reason ?? "")}`);
+          }
           break;
-        case "hook-verdict": {
-          const missing = event.missing?.length ? ` (missing: ${event.missing.join(", ")})` : "";
-          const mark =
-            event.verdict === "ok"
-              ? s.green(icons.check)
-              : event.verdict === "veto"
-                ? s.red(icons.cross)
-                : s.yellow(icons.inProgress);
-          write(
-            `${ACTION_INDENT}${mark} ${phaseColor(event.phase)(event.phase)} ` +
-              `${s.dim(`${event.verdict} — ${event.reason}${missing}`)}`,
-          );
-          break;
-        }
-        case "hook-rejected":
-          write(
-            `${ACTION_INDENT}${s.red(icons.cross)} ${s.red(`${event.phase} rejected`)} ${s.dim(event.reason)}`,
-          );
+        case "grader-start":
+          write(`${ACTION_INDENT}${s.magenta(`${icons.bullet} grader`)} ${s.dim("grading")}`);
           break;
         case "tool-called":
           // The transition tool is reported by the state lines and the advance
@@ -210,12 +196,9 @@ export function createStateFlowRenderer(
           break;
         case "workflow-reset":
         case "interpreter-enabled":
-        case "hooks-summary":
         case "graph-topology":
         case "agent-text-delta":
         case "tool-result":
-        case "rubric-start":
-        case "rubric-result":
         case "model-usage":
         case "prompt-shaping":
           // Lifecycle summaries and high-frequency (GUI-oriented) telemetry.

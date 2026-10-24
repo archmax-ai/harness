@@ -18,7 +18,6 @@ import {
   type SubWorkflowRegistry,
   type SubWorkflowRuntime,
 } from "../workflow/sub-workflow.js";
-import { rubricsAsSubagents, rubricsFromSpec } from "../rubrics/rubrics.js";
 import { composeGoverned, inheritedDenials, renderSystemPrompt, type AssemblyContext } from "./compose.js";
 
 interface LoadedSubWorkflow {
@@ -59,9 +58,8 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
         : loaded.issues.map((i) => i.message).join("; ") || "no valid machine spec";
       throw new SubWorkflowError("unknown-workflow", target, `Cannot run sub-workflow '${target}': ${detail}.`);
     }
-    // Rubrics are deliberately *not* inherited: a child is graded by the
-    // standards its own spec declares, so its registry comes from `loaded.spec`
-    // when the child runtime is composed, never from the caller's.
+    // A child's grader states are its own: it is graded by the standards its
+    // own spec declares, never by the caller's.
     const machine = WorkflowMachine.fromSpec(loaded.spec, ctx.params.essentialTools, ctx.toolPaths);
     // A caller enters where a host would: the `manual` entry. A machine with
     // none cannot be started at all (fail-closed, as at the host ingress).
@@ -82,16 +80,7 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
     // A child does not name itself: its title would describe a session nothing
     // lists, and asking for one costs every dispatch a model call.
     const systemPrompt = await renderSystemPrompt(ctx, machine, body, { workflow: target, child: true });
-    // The child's graders are its own: a rubric declared in one `workflow.yaml`
-    // is not resolvable from another, so a sub-run is held to the standards its
-    // own machine declares — and its `task` tool is registered with those.
-    const rubrics = rubricsFromSpec(machine.spec);
-    const childCtx: AssemblyContext = {
-      ...ctx,
-      rubrics,
-      subagents: rubricsAsSubagents(rubrics, ctx.rubricModel),
-    };
-    const child = await composeGoverned(childCtx, {
+    const child = await composeGoverned(ctx, {
       machine,
       workflow: target,
       systemPrompt,

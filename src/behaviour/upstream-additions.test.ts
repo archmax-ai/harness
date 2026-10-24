@@ -16,7 +16,7 @@ import { cleanupWorkspaces, ScriptedModel, workspaceWith } from "./support.js";
 afterEach(cleanupWorkspaces);
 
 const SPEC = {
-  runtime: { engine: "archmax-harness", version: "2" },
+  runtime: { engine: "archmax-harness", version: "3" },
   states: { start: { triggers: { manual: null } } },
 };
 

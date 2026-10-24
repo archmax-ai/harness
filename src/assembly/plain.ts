@@ -10,7 +10,6 @@ import { withoutDeletion } from "../core/workspace-router.js";
 import {
   fileReadMiddleware,
   frameworkPassthrough,
-  rubricParams,
   todoMiddleware,
   type AssemblyContext,
 } from "./compose.js";
@@ -44,7 +43,6 @@ export function composePlain(
     // The file tools are Deep Agents' plus the runtime's file operations, as on
     // the governed path; no kernel runs here, so read-only mounts are what refuse.
     tools: [...createFileOperationTools(ctx), ...(ctx.params.tools ?? [])],
-    ...rubricParams(ctx),
     middleware,
     systemPrompt: { prefix: systemPrompt, base: null },
     checkpointer: ctx.checkpointer,

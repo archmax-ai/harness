@@ -2,9 +2,10 @@
 
 Guidance for coding agents working in this repository (Claude Code and others read this file).
 Vocabulary: one term per concept, as defined in `docs/src/content/docs/reference/glossary.md` —
-session (not run/thread), turn (not segment), state (not node), hook/verdict, case/grade,
-archmax harness/runtime/kernel/Deep Agents ("archmax harness", or "the harness" once named, is
-the SDK; never "framework" for it, and never "harness" for the runtime or kernel).
+session (not run/thread), turn (not segment), state (not node), automated state (a grader state
+or a code state; never "hook"), case/grade, archmax harness/runtime/kernel/Deep Agents ("archmax
+harness", or "the harness" once named, is the SDK; never "framework" for it, and never "harness"
+for the runtime or kernel).
 
 ## What this is
 
@@ -16,7 +17,7 @@ middleware and a pure decision kernel. It contains **no use-case logic** — eve
 lives as files in a workspace; `examples/customer-support/` is the reference workspace (not
 shipped in `dist/`).
 
-Everything the runtime reads — specs, prompts, subagents, hook scripts, skill bundles — comes
+Everything the runtime reads — specs, prompts, code-state scripts, skill bundles — comes
 through a backend, never direct `fs`. The documented exceptions are pre-assembly or
 consumer-chosen: `.env` loading (`src/env.ts`) and the filesystem session store's own storage.
 The default platform prompt is compiled in, not read (see the directory map).
@@ -67,36 +68,38 @@ default workflow or prompt; unknown flags exit 2. `NO_COLOR` / `ARCHMAX_CLI_NO_B
 Env-configured, any OpenAI-compatible endpoint (`ChatOpenAI` built in `src/env.ts`): `.env` from
 the workspace root, process env wins. Keys: `ARCHMAX_API_BASE_URL`, `ARCHMAX_API_KEY`,
 `ARCHMAX_MODEL`, `ARCHMAX_TEMPERATURE?`, `ARCHMAX_MAX_TOKENS?`, `ARCHMAX_STREAMING?`. A host may pass
-`model` or a per-role `modelFactory` to `createAgent` instead.
+`model` or a per-role `modelFactory` (roles `agent`, `judge`, `grader`) to `createAgent` instead.
 
 ## Architecture
 
 ### `workflow.yaml` is the single source of truth
 
 A workflow is `workflows/<slug>/workflow.yaml` plus an optional `WORKFLOW.md` (plain Markdown
-prose appended after the rendered graph section; frontmatter there is a `competing-machines`
-load error). The schema is **one strict zod schema**, `src/machine/spec-schema.ts`: every root
-and state key, enums, path grammars, and `refineSpec` for cross-references (targets exist, one
-`manual` start, trigger ownership, `${{…}}` guard references). Warnings live in
+prose appended after the rendered graph section; frontmatter there is a `competing-machines` load
+error). The schema is **one strict zod schema**, `src/machine/spec-schema.ts`: every root and
+state key, enums, path grammars, and `refineSpec` for cross-references (targets exist, one
+`manual` start, trigger ownership, `${{…}}` guard references, an undescribed edge routing on its
+target's instructions: refused on a human state and into a grader or code state). Warnings live in
 `src/machine/lint-spec.ts`; both the loader and `validate` run both. An unknown key is a load
-error naming the key. The one loose spot is `triggers.<id>` (host-extensible).
-`WorkflowMachine` (`src/machine/machine.ts`) is the compiled object the runtime consults.
-`src/validate/` adds what needs more than the document: hook scripts and imports, `SUBAGENT.md`,
-the skill registry, sibling workflows, case files, kernel probes.
+error naming the key. The one loose spot is `triggers.<id>` (host-extensible). `WorkflowMachine`
+(`src/machine/machine.ts`) is the compiled object the runtime consults. `src/validate/` adds what
+needs more than the document: code-state scripts and their imports, the skill registry, sibling
+workflows, case files, kernel probes.
 
 ### Execution: one Deep Agent graph per workflow
 
 `createAgent` (`src/assembly/index.ts`; composition in `compose.ts`, plain agent in `plain.ts`,
 lazy child compositions in `delegation-registry.ts`) returns a `ArchmaxAgent` (`src/agent.ts`)
 wrapping the one `createDeepAgent` graph. The graph's checkpointed state carries the machine's
-position, variables, trail and park records as extra channels (`src/workflow/state.ts`).
+position, variables, trail, visits and park records as extra channels (`src/workflow/state.ts`).
 Governance is middleware (`src/workflow/middleware.ts`): `beforeAgent` is the turn boundary
 (trigger → start state or retained position; `disabled`/`requires` refusals; locked seeds; spec
-snapshot), `wrapModelCall` applies the per-state tool surface and prompt and runs the `before`
-hook, `wrapToolCall` services the control tools and applies the kernel verdict to every call,
-`afterModel` does budgets, `on_error` and the terminal `after` hook. The agent moves only by
-`archmax_advance({ to, reason })`: edge validated, leaving state's `after` hook, target's
-`before` hook, then the target's tools unlock. **Parks are LangGraph interrupts**
+snapshot), `wrapModelCall` applies the per-state tool surface and prompt (or, in an automated
+state, runs the state in place of the model call), `wrapToolCall` services the control tools and
+applies the kernel verdict to every call, `afterModel` does budgets, `on_error` and the commit of
+an automated state's outcome. The agent moves only by `archmax_advance({ to, reason })`: edge
+and `requires` validated, then the target's tools unlock (an automated target runs before any
+further model call). **Parks are LangGraph interrupts**
 (`src/workflow/parks.ts`): a human state parks for a decision, `archmax_wait` for input. Every way
 back in is `agent.workflow.send(sessionId, input)` → one `Outcome` (`src/sessions/resume.ts`;
 `decide`/`reply`/`deliver` are conveniences). A park, a decision routed to another human
@@ -104,31 +107,55 @@ state, or a reply to a parked session spends one reply-only model call — the h
 Assembly **fails closed**: `WorkflowLoadError`, `SessionStoreRequiredError`,
 `AuthoringBackendExposedError`.
 
-### Hooks contract
+### Automated states
 
-A hook is `before:`/`after:` on a state: `{ script: hooks/<file>.js }` (confined to the
-workflow's `hooks/`), `{ subagent: <name> }`, or a custom kind registered via `hookExecutors`.
-A script's default export receives `{ state, phase, trigger, variables, messages, tools, from?,
-to?, reason? }` and returns `ok()`, `veto(reason)`, `correct(reason)`, `false` (veto) or
-nothing (ok); throwing vetoes, and so does returning any other object (a verdict got wrong
-fails closed with its keys named, never read as `ok`). A custom `hookExecutors` kind's value is
-reduced by the same rules — one verdict vocabulary, whoever implements the kind. `before` is ok/veto only; `max_corrections` bounds `correct` on
-`after`. Hooks run on runtime authority (the state's allow and forbid lists do not bind them;
-safety rules and the workflow-wide `forbid_always` do). `task()` is available to hooks only. Types: `@archmax-ai/harness/sandbox`. Runner:
-`src/lifecycle/`.
+A state of `type: code` or `type: grader` is an **automated state**: the runtime runs it on entry
+(an opening, an advance, a decision, an `on_error` route, a reset) with no call of the agent's
+model. `wrapModelCall` runs it in place of the model call and returns a marker `AIMessage`
+carrying its serializable outcome; `afterModel` strips the marker, commits the outcome and jumps
+back to the model, so each automated state is its own checkpointed step and a chain of code states
+makes no model call (a runaway cycle ends at the recursion limit). It is offered exactly its
+state's surface (`disclosedTools`, which for an automated state holds no `write_todos`,
+`archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, even when `allow_always`
+lists them), each tool wrapped by the
+PTC gateway so the kernel decides every call against that state. Its controls
+(`machine.controlTools`, bound to one step recorder per run) are `archmax_advance` (edge and
+`requires` checked at the call; absent when terminal), `archmax_raise`, `archmax_get_variables`,
+`archmax_set_variables`, plus `archmax_get_history` for a grader; never `archmax_wait` or
+`archmax_reset`, since an automated state cannot park. The first accepted advance or raise is the
+decision. A run settles as `advanced` (trail kind `grader`/`code`, a runtime note carrying the
+reason), `raised` (session `failed`), `completed` (a terminal state; `returns` checked) or
+`failed` (a throw, a timeout, a spent budget, a non-terminal state left undecided), which routes
+through `on_error`. A raise beats an error; an error discards a recorded advance; a session that
+completed in a terminal automated state opens its next turn at the trigger's entry; a control is
+never served from a case's mock. A **code state** runs `script: scripts/<file>.js` (confined to
+`workflows/<slug>/scripts/`) in a fresh `code` REPL; its default export receives
+`{ state, trigger?, variables, messages, trail, toolCalls(filter?), tools }` and its return value
+is not read. A **grader state** is an isolated langchain agent built per run: the compiled grader
+preamble plus the state's `instructions`, its transitions as the task, the `grader` model role, no
+checkpointer, tokens tagged `nostream`; it reads the session only through `archmax_get_history`
+(`{ messages, trail, toolCalls }`), and `budget.maxTurns`/`timeoutMs` bound its own calls. Both
+read the whole session, never a visit (`history.ts`, `tool-calls.ts`), and neither spends the
+turn's `budget.maxModelCalls`, which counts the agent's calls. Events `code-start/output/result`,
+`grader-start/result`. Types: `@archmax-ai/harness/sandbox` (`defineCodeState`, `CodeStateInput`).
+Runner: `src/workflow/automated.ts` (with `automated-controls.ts`, `code-state.ts`,
+`grader-state.ts`, `history.ts`).
 
 ### Sandbox
 
-`archmax_eval`, `archmax_run` (default tools: granted wherever the workflow-wide grant includes them;
-an allow entry may narrow which files `archmax_run` may execute) and hook scripts share one QuickJS sandbox (`@langchain/quickjs`),
-one REPL session per session scope (`src/sessions/scope.ts`). Scripts get `args` (flat
-`args.variables` for `archmax_run`) and `tools.*`, the governed privileged tool-call bridge.
-`src/sandbox/`: `prelude.ts` + `assets/parts/*.js`, `executor.ts` (reads sources through the
-authoring backend), `tools.ts`, `bridge.ts` (`task()` ↔ subagents), `ptc-gateway.ts`. Cases do
-not run in the sandbox. `runtime.ts` holds each REPL as a lease: an eval takes the turn's abort
-signal (a cancelled turn's eval settles at once and its `tools.*` calls are refused), and `dispose`
-frees a REPL only once every host call made from it has settled. `@langchain/quickjs` cannot
-survive a call settling into a freed context.
+`archmax_eval`, `archmax_run` (default tools: granted wherever the workflow-wide grant includes
+them, never in an automated state; an allow entry may narrow which files `archmax_run` may
+execute) and code-state scripts share one QuickJS sandbox (`@langchain/quickjs`): the agent's code
+gets one REPL session per session scope (`src/sessions/scope.ts`), a code state a fresh REPL per
+run. Scripts get `args` (flat `args.variables` for `archmax_run`; a code state's input) and
+`tools.*`, the governed tool-call bridge: exactly the active state's surface, anything else
+`undefined` (an agent's script never reaches a control tool). Contexts `ptc` and `code`.
+`src/sandbox/`: `prelude.ts` + `assets/parts/code-state.js`, `executor.ts` (reads sources through
+the authoring backend), `tools.ts`, `ptc-gateway.ts`. Cases do not run in the sandbox.
+`runtime.ts` holds each REPL as a lease: an eval takes the turn's abort signal (a cancelled turn's
+eval settles at once and its `tools.*` calls are refused), and `dispose` frees a REPL only once
+every host call made from it has settled. `@langchain/quickjs` cannot survive a call settling into
+a freed context.
 
 ### Sessions and the workspace
 
@@ -175,11 +202,12 @@ Agents' base prompt is dropped.
 
 - `src/assembly/` createAgent · `src/agent.ts` ArchmaxAgent · `src/machine/` schema, lint,
   machine, triggers, variables, tool names, slugs · `src/validate/` · `src/workflow/` middleware,
-  parks, control tools, state channels, checkpointer, session view/artifacts, snapshot, prompt
-  rendering and caching, sub-workflows · `src/kernel/` pure verdict function · `src/sandbox/` ·
-  `src/lifecycle/` hooks · `src/subagents/` · `src/sessions/` resume, resolve, operations,
-  summary, scope · `src/testing/` cases · `src/cli/` command, bootstrap, turn, state flow, banner,
-  style · `src/core/` workspace, mounts, zones, session store/zone, events, messages, prompt,
+  parks, control tools, automated states (orchestration, controls, code and grader runs,
+  history), state channels, checkpointer, session view/artifacts, snapshot, prompt rendering and
+  caching, sub-workflows · `src/kernel/` pure verdict function · `src/sandbox/` ·
+  `src/sessions/` resume, resolve, operations, summary, scope · `src/testing/` cases ·
+  `src/cli/` command, bootstrap, turn, state flow, banner, style · `src/core/` workspace,
+  mounts, zones, session store/zone, events, messages, prompt,
   usage, match; `deepagents.ts` is the one framework seam · `src/public/` subpath barrels
   (`sandbox`, `testing`, `cli`) · `src/runtime/` contract versioning · `src/behaviour/`
   behaviour suite · `src/env.ts` · `src/index.ts` public barrel (tested against
@@ -188,8 +216,8 @@ Agents' base prompt is dropped.
   (or `npm run generate:prompt`) generates `platform-prompt.generated.ts` from it, so it ships
   in the code; a test fails while the two differ. A workspace may override it by serving
   `.platform/system/GRAPH_STATE.md`.
-- `examples/customer-support/` — reference workspace: `AGENTS.md`, `workflows/order-lookup/`,
-  `subagents/`, skill bundles under `skills/`.
+- `examples/customer-support/` — reference workspace: `AGENTS.md`, `workflows/order-lookup/`
+  (code-state scripts under its `scripts/`), skill bundles under `skills/`.
 - `skills/archmax-harness/` — the authoring skill (`SKILL.md` plus `references/*.md`) that teaches
   a coding agent to author a workspace, shipped as `dist/authoring-skill/archmax-harness`
   (`BUNDLED_AUTHORING_SKILL_DIR` resolves to the `dist/authoring-skill` parent).
@@ -199,8 +227,9 @@ Agents' base prompt is dropped.
 ## Conventions
 
 - ESM only, Node ≥ 22. `tsconfig.json` typechecks incl. tests; `tsconfig.build.json` emits.
-  `build` copies the sandbox prelude parts and `skills/archmax-harness` into `dist/` — never
-  name a `src/` directory after a dist-root asset (`skills`, `examples`).
+  `build` copies the sandbox prelude parts (`src/sandbox/assets/parts/`, now `code-state.js`)
+  and `skills/archmax-harness` into `dist/` — never name a `src/` directory after a dist-root
+  asset (`skills`, `examples`).
 - **Slugs** are kebab-case (`^[a-z0-9]+(-[a-z0-9]+)*$`) at both levels: the workflow directory
   and each state key. A slug is the only routing token (`to`, `on_error`, trigger entries,
   events, `reachedState`, `archmax_advance`); `title` is a label. Records and events carry
@@ -211,5 +240,6 @@ Agents' base prompt is dropped.
 - A custom `backend` needs an explicit `sessionStore`; storage is never inferred.
 - No behaviour change ships without its docs: `docs/`, `README.md` and `skills/archmax-harness/`
   update in the same change. Any change to the authoring surface — the `workflow.yaml` schema,
-  the hook contract, governance, human states, cases, the CLI, the wiring API — updates the
-  skill. OpenSpec specs under `openspec/specs/` describe present behaviour.
+  grader and code states and the code-state script contract, governance, human states, cases,
+  the CLI, the wiring API — updates the skill. OpenSpec specs under `openspec/specs/` describe
+  present behaviour.

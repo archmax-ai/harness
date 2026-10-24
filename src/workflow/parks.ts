@@ -5,8 +5,8 @@
  * dies between two of them sees a parked session rather than a lost one:
  *
  *  1. **Commit.** The record is written — by the tool seam (`archmax_advance`
- *     into a human state, `archmax_wait`, a delegated child's suspension) or by a
- *     hook — with `parkPhase: "closing"`.
+ *     into a human state, `archmax_wait`, a delegated child's suspension) or by
+ *     an automated state's move into a human state — with `parkPhase: "closing"`.
  *  2. **Close.** The run owes the person one message and may take no action:
  *     `servePark` sets `replyOnly` and moves the phase to `suspend`; the model
  *     speaks (any tool call it makes is refused); the hook after it marks the
@@ -30,6 +30,7 @@ import {
   isRuntimeNote,
   lastMessageIsHuman,
   runtimeNote,
+  runtimeNoteKind,
 } from "../core/messages.js";
 import { isMessageResume, type DecisionResolution, type TriggerDelivery } from "../sessions/resume.js";
 import type { WorkflowMachine } from "../machine/machine.js";
@@ -133,8 +134,9 @@ function isPersonsMessage(message: unknown): boolean {
 
 /**
  * What a reply-only turn is told. Four shapes of park reach this — handing the
- * run to a person, being routed to one by a decision, waiting for something
- * from outside, and answering someone while a person decides — each with its
+ * run to a person, being routed to one (by a decision or an automated state),
+ * waiting for something from outside, and answering someone while a person
+ * decides — each with its
  * own first sentence. The last paragraph is the same in all: it is what stands
  * between a parked run and a model that would rather keep working.
  */
@@ -156,8 +158,11 @@ export function replyOnlyDirective(machine: WorkflowMachine, state: unknown): st
       `something arrives from outside (${fields.pendingInput.reason}). Tell whoever you are ` +
       `talking to what you have done and what you are waiting for.`;
   } else if (isRuntimeNote(last)) {
+    // A person's decision, or one of the workflow's own automated states, moved the run here.
+    const kind = runtimeNoteKind(last);
+    const mover = kind === "grader" || kind === "code" ? "The workflow's own check" : "A decision";
     opening =
-      `A decision has routed this run to ${stateLabel(machine, position)}, which is now ` +
+      `${mover} has routed this run to ${stateLabel(machine, position)}, which is now ` +
       `waiting for a person's decision. Tell whoever you are talking to where the run stands ` +
       `and that it is with a reviewer — do not promise what they will decide.`;
   } else {
@@ -196,8 +201,12 @@ function lastReplyCallsTools(messages: unknown[]): boolean {
   return last !== undefined && isAiMessage(last) && Array.isArray(last.tool_calls) && last.tool_calls.length > 0;
 }
 
-/** The update that starts a closing turn: one reply-only model call, after which the next hook site suspends. */
-function closingTurn(): WorkflowUpdate {
+/**
+ * The update that starts a closing turn: one reply-only model call, after which
+ * the next hook site suspends. Applied directly where the park opens on a jump
+ * to the model, which skips the `beforeModel` site that would otherwise start it.
+ */
+export function closingTurn(): WorkflowUpdate {
   return { parkPhase: "suspend", replyOnly: true };
 }
 

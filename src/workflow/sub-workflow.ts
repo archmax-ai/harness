@@ -76,7 +76,7 @@ export type SubWorkflowFailureKind =
   | "disabled"
   | "parked"
   | "rejected"
-  /** The child's agent ended it with `archmax_raise`; the error carries its code and reason. */
+  /** The child was ended with `archmax_raise` (by its agent, a grader or a code state); the error carries its code and reason. */
   | "raised"
   | "budget"
   | "error";
@@ -203,7 +203,7 @@ export interface DispatchSubWorkflowInput {
    * The dispatch's number in the calling session, when the caller took it: a
    * model's delegation call is numbered in tool-call order from the step's
    * checkpointed count, so a node replayed from its checkpoint numbers it the
-   * same. Absent (a script's or a hook's call), the dispatcher takes the next
+   * same. Absent (a script's call), the dispatcher takes the next
    * number free in the session.
    */
   number?: number;
@@ -324,7 +324,7 @@ export interface SubWorkflowDispatcher {
    * Take every dispatch number up to `upTo` in `sessionId` as used: the count
    * the session's checkpointed state holds, plus the delegation calls of the
    * tool batch in progress, which are numbered in tool-call order. A dispatch
-   * made without a number (a script's, a hook's) takes the next one above.
+   * made without a number (a script's) takes the next one above.
    */
   reserve(sessionId: string, upTo: number): void;
   /** The highest dispatch number taken or reserved in `sessionId`; `0` when none. */

@@ -320,7 +320,7 @@ describe("a case's clock", () => {
     const root = makeWorkspace({
       "AGENTS.md": AGENTS_MD,
       "workflows/w/workflow.yaml": {
-        runtime: { engine: "archmax-harness", version: "2" },
+        runtime: { engine: "archmax-harness", version: "3" },
         tests: { maxConcurrency: 1 },
         states: {
           work: { triggers: { manual: null }, transitions: [{ to: "review", description: "Hand it over." }] },

@@ -1,34 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { readPrelude } from "./prelude.js";
 
+/** The verdict vocabulary the retired `lifecycle-hook` context carried. */
+const RETIRED_GLOBALS = ["ok", "veto", "correct", "defineHook", "__hookVerdict", "t"];
+
 describe("readPrelude", () => {
   it("gives the PTC context the contract marker and the scoped tools view, nothing else", () => {
-    const prelude = readPrelude("ptc", 2);
-    expect(prelude).toContain('globalThis.__SANDBOX_VERSION = 2;');
+    const prelude = readPrelude("ptc", 3);
+    expect(prelude).toContain("globalThis.__SANDBOX_VERSION = 3;");
     expect(prelude).toContain('context: "ptc"');
     expect(prelude).toContain('Object.defineProperty(globalThis, "__archmaxScope"');
-    expect(prelude).not.toMatch(/\bveto\b|\bdefineHook\b|globalThis\.t\b/);
+    expect(prelude).not.toMatch(/\bdefineCodeState\b|__stateDef|\bveto\b|\bdefineHook\b|globalThis\.t\b/);
   });
 
-  it("keeps the hook context's tools unscoped", () => {
-    expect(readPrelude("lifecycle-hook", 2)).not.toContain("__archmaxScope");
+  it("gives the code context its own marker, defineCodeState and the same scoped tools view", () => {
+    const prelude = readPrelude("code", 3);
+    expect(prelude).toContain("globalThis.__SANDBOX_VERSION = 3;");
+    expect(prelude).toContain('context: "code"');
+    expect(prelude).not.toContain('context: "ptc"');
+    expect(prelude).toContain("globalThis.defineCodeState = ");
+    expect(prelude).toContain('Object.defineProperty(globalThis, "__archmaxScope"');
   });
 
-  it("gives the hook context the verdict helpers, defineHook and the reducer", () => {
-    const prelude = readPrelude("lifecycle-hook", 2);
-    expect(prelude).toContain('context: "lifecycle-hook"');
-    for (const name of ["ok", "veto", "correct", "defineHook", "__hookVerdict"]) {
-      expect(prelude).toContain(`globalThis.${name} = `);
+  it("gives the code context no verdict vocabulary: nothing a script returns is read", () => {
+    const prelude = readPrelude("code", 3);
+    for (const name of RETIRED_GLOBALS) {
+      expect(prelude, name).not.toContain(`globalThis.${name} = `);
     }
-    // The retired `t` vocabulary has no prelude at all.
-    expect(prelude).not.toContain("globalThis.t = ");
   });
 
   it("installs no compatibility prelude for a superseded vocabulary", () => {
-    // Two contexts, two preludes: a hook source using a retired vocabulary gets
-    // no shim, so there is nothing for a deprecation to warn about.
-    const hook = readPrelude("lifecycle-hook", 2);
-    expect(hook).not.toContain("__legacyFailures");
-    expect(hook).toContain("globalThis.veto");
+    // Two contexts, two preludes: a source using a retired vocabulary gets no
+    // shim, so it throws in the sandbox and fails closed.
+    for (const context of ["ptc", "code"] as const) {
+      const prelude = readPrelude(context, 3);
+      expect(prelude, context).not.toContain("__legacyFailures");
+      expect(prelude, context).not.toContain("lifecycle-hook");
+    }
+  });
+
+  it("defaults to the PTC context at the current sandbox contract", () => {
+    expect(readPrelude()).toBe(readPrelude("ptc", 3));
   });
 });

@@ -18,7 +18,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /** One start state on `manual` with the given declaration, finishing in `done`. */
 const fileSpec = (manual: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({

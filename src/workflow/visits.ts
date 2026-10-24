@@ -1,7 +1,7 @@
 /**
  * Visits: the span of a session from its entry into a state until it next
- * enters one. What a hook sees of the conversation is the current visit, and
- * every tool call is attributed to the visit of the message that made it.
+ * enters one. Every tool call is attributed to the visit of the message that
+ * made it, which is how a code state's `toolCalls` narrows by `visit`.
  */
 import { anchorIndex, turnAnchorOf } from "../core/messages.js";
 import { readWorkflowState, type VisitStart } from "./state.js";
@@ -35,12 +35,6 @@ export function visitAt(spans: readonly VisitSpan[], index: number): VisitSpan {
     found = span;
   }
   return found;
-}
-
-/** The messages of the visit the session is in. */
-export function currentVisitMessages(messages: readonly unknown[], state: unknown): unknown[] {
-  const spans = visitSpans(messages, state);
-  return messages.slice(spans[spans.length - 1]!.start);
 }
 
 /** The log entry for entering `target` with the transcript standing at `messages`. */

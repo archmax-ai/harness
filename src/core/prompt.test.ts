@@ -328,7 +328,7 @@ describe("resolveSystemPrompt", () => {
   describe("movement has one author", () => {
     // The rendered graph section restates none of this (see
     // `workflow/render-prompt.test.ts`), so the platform prompt alone must say
-    // what `to` takes, what a terminal state is, and which hooks gate a move.
+    // what `to` takes, what a terminal state is, and what gates a move.
     const shippedPlatformPrompt = async () =>
       resolveSystemPrompt(fakeWorkspace({}), { ...governedOpts(), workflowPrompt: null });
 
@@ -355,9 +355,21 @@ describe("resolveSystemPrompt", () => {
       expect(prompt).toContain("Do not guess at slugs");
     });
 
-    it("names both hooks that gate an advance", async () => {
+    it("names what the runtime checks before an advance unlocks the next state", async () => {
       const prompt = await shippedPlatformPrompt();
-      expect(prompt).toMatch(/`after` hook and then the\s+target's `before` hook/);
+      expect(flat(prompt)).toContain(
+        "The runtime validates the edge, and the state's required variables, before the next state's tools unlock.",
+      );
+      expect(prompt).not.toMatch(/`(before|after)` hook/);
+    });
+
+    // A grader or code state's send-back reaches the agent as a note; the agent
+    // has to know that it is not a person and what to do with it.
+    it("says grader and code states run without the agent and may send the work back", async () => {
+      const prompt = await shippedPlatformPrompt();
+      expect(prompt).toContain("**Grader and code states** run on their own, without you");
+      expect(flat(prompt)).toContain("send it back to you with a note saying what has to change");
+      expect(flat(prompt)).toContain("fix the work rather than arguing with it, and advance again");
     });
 
     it("points at the per-state skills section, not a fixed path", async () => {

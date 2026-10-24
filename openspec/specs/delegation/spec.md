@@ -112,7 +112,8 @@ its signature is read from its spec at assembly for every allow-listed target.
 #### Scenario: Standalone parity
 
 - **WHEN** the same workflow is run directly with `--variables` supplying its `requires`
-- **THEN** its guards, hooks and `${{trigger}}` observe the same values as when a caller dispatched it
+- **THEN** its guards, its code states' scripts, its graders and `${{trigger}}` observe the same
+  values as when a caller dispatched it
 
 #### Scenario: Scalar inputs open the child's transcript
 
@@ -170,16 +171,35 @@ refused target's load SHALL NOT be memoized as refused.
 ### Requirement: One call, one child; fan-out is many calls
 
 One call SHALL start exactly one child. A caller that wants several SHALL make several calls —
-a model by emitting parallel tool calls, a script through the PTC bridge with `Promise.all` —
-and the runtime SHALL run them concurrently within the bound. A delegation tool is the one
-runtime tool a script may call through the bridge, governed by the kernel like any other call;
-a script's call SHALL fail closed with kind `parked` if its child parks, since a sandbox frame
-cannot resume.
+a model (the session's agent or a grader) by emitting parallel tool calls, a script (an agent's
+sandbox script or a code state's script) through the PTC bridge with `Promise.all` — and the
+runtime SHALL run them concurrently within the bound. A delegation tool is the one runtime tool
+an agent's script may call through the bridge, governed by the kernel like any other call. A code
+state's script and a grader SHALL reach a delegation tool only when their own state grants it, as
+any other tool of that state's surface (see `automated-states`), and the kernel SHALL decide each
+call against that state. A call whose caller cannot be suspended SHALL fail closed with kind
+`parked` if its child parks: an agent's script's call, since a sandbox frame cannot resume, and
+every call a code state's script or a grader makes, since an automated state never parks. A
+dispatch a code state or a grader makes SHALL be recorded as a `sub-workflow` trail step, as a
+script's dispatch is.
 
 #### Scenario: Script delegates and uses the result
 
 - **WHEN** a script in a state allowing the tool calls `tools.archmaxWorkflowEnrichOrder({ order_id })`
 - **THEN** the child runs and the script receives its returns and message as the call's value
+
+#### Scenario: A code state delegates
+
+- **WHEN** a code state granting `archmax_workflow_enrich-order` runs a script that calls
+  `tools.archmaxWorkflowEnrichOrder({ order_id })` and then advances
+- **THEN** the child runs, the script receives its returns and message as the call's value, and
+  the trail carries a `sub-workflow` step for `enrich-order` beside the `code` step of the advance
+
+#### Scenario: A child that parks under a code state fails the call
+
+- **WHEN** a code state's script calls a delegation tool and the child reaches a human state
+- **THEN** the call fails with kind `parked`, the script receives the error, and the parent
+  session does not park
 
 ### Requirement: Every failure fails closed
 
@@ -203,14 +223,18 @@ the model finishes SHALL be routed through the calling state's `on_error`, or en
 without one, and the route SHALL name every outstanding failure with the arguments of its call. A
 success of another workflow, a sibling call in the same tool batch, and a rejection with another
 cause SHALL NOT recover any failure; whatever clears a committed rejection — a successful
-transition, a park, a reset, a raise, a new turn — SHALL clear outstanding failures too. A script's
-call answers its script and records no failure on the state. The delegation tool's description
-SHALL say that a failed call fails the calling state when the agent finishes, unless a later call of
-the same workflow from the same state succeeds, and that each success recovers one failed call.
+transition, a park, a reset, a raise, a new turn — SHALL clear outstanding failures too. A call made
+by a script — an agent's sandbox script or a code state's script — or by a grader answers its caller
+and records no failure on the state: the script or the grader handles the error, and an automated
+state that cannot go on raises or fails as its own run settles (see `automated-states`). The
+delegation tool's description SHALL say that a failed call fails the calling state when the agent
+finishes, unless a later call of the same workflow from the same state succeeds, and that each
+success recovers one failed call.
 
 #### Scenario: Rejected child answers its own call
 
-- **WHEN** two children run concurrently and one is vetoed by its hook
+- **WHEN** two children run concurrently and one ends rejected, because its code state's script
+  throws in a state that declares no `on_error`
 - **THEN** that call receives the tool error and the other call's result is unaffected
 
 #### Scenario: A child that raises fails the call with its code
@@ -220,6 +244,13 @@ the same workflow from the same state succeeds, and that each success recovers o
 - **THEN** the caller's tool call is answered with a tool error of kind `raised` naming the child
   workflow, the state, `customer-unknown` and the reason; no returns are reported; and the
   caller's `sub-workflow-result` event and `sub-workflow` trail step settle `error`
+
+#### Scenario: A code state's failed call answers its script
+
+- **WHEN** a code state's script calls `enrich`, the child raises, and the script catches the
+  error and advances along a declared edge
+- **THEN** the session moves along that edge, and no outstanding failure is recorded for the call
+  or routed through `on_error`
 
 #### Scenario: A retry that succeeds recovers the failure
 
@@ -265,12 +296,20 @@ A child's kernel SHALL be compiled from its own denials plus those compiled from
 root's and each intermediate caller's, accumulated down the chain — evaluated ahead of the child's own
 rules, so a child may be more permitted but never re-grant what any ancestor denied. Allow lists are
 the child's own and are not inherited, and neither is any ancestor's per-state `forbid`: a state's
-denial governs that state's turns, not a child session.
+denial governs that state's turns, not a child session. The inherited denials SHALL bind every call
+made in the child, whoever makes it: the child's agent, its agent's scripts, its code states'
+scripts, its graders, and the runtime's own `file`-value reads (origin `runtime`).
 
 #### Scenario: Root denial holds in the child
 
 - **WHEN** the root workflow denies `send_email` with `tools.forbid_always` and a child state allows it
 - **THEN** the child's call is blocked, and the reason names the root workflow
+
+#### Scenario: Root denial holds in a child's automated states
+
+- **WHEN** the root workflow denies `send_email` with `tools.forbid_always`, and a child's code
+  state and a child's grader state each allow it and call it
+- **THEN** each call is blocked, and its reason names the root workflow
 
 #### Scenario: A caller's per-state denial does not reach the child
 
@@ -293,17 +332,19 @@ denial governs that state's turns, not a child session.
 
 ### Requirement: A child that parks suspends its caller
 
-A child reaching a human state or calling `archmax_wait` SHALL park the parent session with it.
-The runtime SHALL record one pending delegation (calling state, tool call, workflow, dispatch)
-in checkpointed state, answer the model with a tool result saying the child parked and why,
-let sibling calls in the same batch land their results, and park the parent at the next hook
-site. The decision presented SHALL be the child's — its state, instructions, evidence and
-transitions. `decide`/`deliver` on the parent SHALL resume only the parked child from its own
-session; its result SHALL be appended to the parent transcript as a `sub-workflow` runtime note
-and the parent SHALL continue in the calling state without replaying the turn or re-dispatching
-finished siblings. Several parked children SHALL be presented one at a time, the parent parking
-again until all are decided. A message sent to the parked parent SHALL be answered on a
-reply-only turn, never handed to the child as a decision. The trail SHALL carry a
+A child reaching a human state or calling `archmax_wait` SHALL park the parent session with it
+when the session's agent made the call. A call made by a script, a code state's script or a grader
+SHALL NOT park the parent: it fails closed with kind `parked` (see "One call, one child; fan-out is
+many calls"). The runtime SHALL record one pending delegation (calling state, tool call, workflow,
+dispatch) in checkpointed state, answer the model with a tool result saying the child parked and
+why, let sibling calls in the same batch land their results, and park the parent at the next
+`beforeModel` or `afterModel` site. The decision presented SHALL be the child's — its state,
+instructions, evidence and transitions. `decide`/`deliver` on the parent SHALL resume only the
+parked child from its own session; its result SHALL be appended to the parent transcript as a
+`sub-workflow` runtime note and the parent SHALL continue in the calling state without replaying
+the turn or re-dispatching finished siblings. Several parked children SHALL be presented one at a
+time, the parent parking again until all are decided. A message sent to the parked parent SHALL be
+answered on a reply-only turn, never handed to the child as a decision. The trail SHALL carry a
 `sub-workflow` step with the workflow and its status, and the child's events SHALL be
 attributed to the dispatch.
 
@@ -322,6 +363,12 @@ attributed to the dispatch.
 
 - **WHEN** a person replies to the parked parent
 - **THEN** the reply is answered on a tool-less turn and the child's pending decision is unchanged
+
+#### Scenario: A grader's child does not park the parent
+
+- **WHEN** a grader calls a delegation tool its state grants and the child calls `archmax_wait`
+- **THEN** no pending delegation is recorded, the parent session is not parked, and the grader's
+  call is answered with a tool error of kind `parked`
 
 ### Requirement: Static validation of delegation
 
@@ -563,12 +610,13 @@ return that can't be copied SHALL fail the call `invalid-return`.
 
 #### Scenario: A child cannot return a file its ancestors denied
 
-- **WHEN** the root workflow declares `skills: { forbid_always: [billing] }` and its child's agent
-  sets its `file` return to `skills/billing/assets/salaries.md`
+- **WHEN** the root workflow declares `skills: { forbid_always: [billing] }` and its child sets its
+  `file` return to `skills/billing/assets/salaries.md` with `archmax_set_variables` — from its
+  agent, a grader or a code state's script
 - **THEN** the child's write is refused as naming a path the session may not read, the call
   answers with a `note` naming the unset return, and nothing is copied into the caller; a value
-  written by a script or hook instead is rejected by the child's completion check, and the call
-  fails with kind `invalid-return`
+  that reached the child's store without that check is rejected by the child's completion check
+  instead, and the call fails with kind `invalid-return`
 
 #### Scenario: A child may return an authored file
 
@@ -667,9 +715,12 @@ resume SHALL read the recorded identity as it is, never re-deriving it.
 
 The model's delegation calls in one tool batch SHALL be numbered in tool-call order from the count
 the step read, so a node replayed from its checkpoint gives each call the same number, and so the
-same child. A call refused before its child runs SHALL keep the number it took. A script's or a
-hook's dispatch SHALL take the next number above the step's count and the batch's calls, and the
-count it leaves SHALL be committed with the tool call or model step that made it.
+same child. A call refused before its child runs SHALL keep the number it took. A script's dispatch
+SHALL take the next number above the step's count and the batch's calls, and the count it leaves
+SHALL be committed with the tool call that made it. A code state's or a grader's dispatch SHALL take
+the next number above the count its automated state's step read, in the order its calls are made,
+and the count it leaves SHALL be committed with that automated state's step, so the session's next
+dispatch numbers above it whichever state makes it.
 
 #### Scenario: A batch is numbered in tool-call order
 
@@ -682,6 +733,13 @@ count it leaves SHALL be committed with the tool call or model step that made it
 - **WHEN** one batch holds a script that dispatches and a model's delegation call
 - **THEN** the model's call gets `1`, the script's dispatch `2`, and the next turn's first dispatch
   `3`
+
+#### Scenario: A code state numbers above the session's count
+
+- **WHEN** a session has made one dispatch and then enters a code state whose script dispatches
+  twice, and the agent state it advances to dispatches once
+- **THEN** the script's children are `<session>~2` and `<session>~3`, and the agent's is
+  `<session>~4`
 
 ### Requirement: A dispatch is named by its path below the root
 

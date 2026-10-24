@@ -25,53 +25,53 @@ export function workflowPaths(workflow: string) {
     /** Optional prose addendum, appended after the spec-rendered prompt section. Never a machine source. */
     workflow: `${base}/WORKFLOW.md`,
     testsDir: `${base}/tests`,
-    /** Lifecycle hook scripts: the runtime's code, which the agent can neither read nor execute. */
-    hooksDir: `${base}/hooks`,
+    /** Code-state scripts: the workflow's own code, which the agent can neither read nor execute. */
+    scriptsDir: `${base}/scripts`,
   };
 }
 
-/** Where a hook script must live, relative to its workflow directory. */
-export const HOOKS_DIR = "hooks";
+/** Where a code state's script must live, relative to its workflow directory. */
+export const SCRIPTS_DIR = "scripts";
 
 /**
- * Resolve a hook's declared `script:` to an authoring-backend path. A hook path
- * is workflow-relative and confined to the workflow's own `hooks/`; anything
- * leaving it is refused with a reason. This keeps the two script classes
- * disjoint: a hook can never be an `archmax_run` target.
+ * Resolve a code state's declared `script:` to an authoring-backend path. The
+ * path is workflow-relative and confined to the workflow's own `scripts/`;
+ * anything leaving it is refused with a reason. This keeps the two script
+ * classes disjoint: a code state's script can never be an `archmax_run` target.
  */
-export function resolveHookScript(
+export function resolveCodeScript(
   workflow: string,
   declared: string,
 ): { ok: true; path: string } | { ok: false; reason: string } {
   const raw = declared.trim();
-  if (raw === "") return { ok: false, reason: "hook script path is empty" };
+  if (raw === "") return { ok: false, reason: "the code state's script path is empty" };
   if (raw.startsWith("/")) {
     return {
       ok: false,
       reason:
-        `hook script '${declared}' is an absolute path; a hook script path is relative to its ` +
-        `workflow directory (e.g. '${HOOKS_DIR}/check.js')`,
+        `script '${declared}' is an absolute path; a code state's script path is relative to its ` +
+        `workflow directory (e.g. '${SCRIPTS_DIR}/check.js')`,
     };
   }
   const segments: string[] = [];
   for (const segment of raw.split("/")) {
     if (segment === "" || segment === ".") continue;
-    // A `..` climb that leaves `hooks/` is caught by the prefix check below.
+    // A `..` climb that leaves `scripts/` is caught by the prefix check below.
     if (segment === "..") segments.pop();
     else segments.push(segment);
   }
   const rel = segments.join("/");
-  if (rel !== HOOKS_DIR && !rel.startsWith(`${HOOKS_DIR}/`)) {
+  if (rel !== SCRIPTS_DIR && !rel.startsWith(`${SCRIPTS_DIR}/`)) {
     return {
       ok: false,
       reason:
-        `hook script '${declared}' resolves outside '${HOOKS_DIR}/'; hook scripts live in ` +
-        `'workflows/${workflow}/${HOOKS_DIR}/' and are wired workflow-relative ` +
-        `(e.g. '${HOOKS_DIR}/check.js').`,
+        `script '${declared}' resolves outside '${SCRIPTS_DIR}/'; a code state's script lives in ` +
+        `'workflows/${workflow}/${SCRIPTS_DIR}/' and is named workflow-relative ` +
+        `(e.g. '${SCRIPTS_DIR}/check.js').`,
     };
   }
-  if (rel === HOOKS_DIR) {
-    return { ok: false, reason: `hook script '${declared}' names the '${HOOKS_DIR}/' directory, not a file` };
+  if (rel === SCRIPTS_DIR) {
+    return { ok: false, reason: `script '${declared}' names the '${SCRIPTS_DIR}/' directory, not a file` };
   }
   return { ok: true, path: `workflows/${workflow}/${rel}` };
 }

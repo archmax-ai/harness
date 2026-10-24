@@ -21,7 +21,7 @@ afterEach(cleanupWorkspaces);
 
 /** start → middle → done, with `middle` also able to loop back to `start`. */
 const CHAIN = {
-  runtime: { engine: "archmax-harness", version: "2" },
+  runtime: { engine: "archmax-harness", version: "3" },
   states: {
     start: { triggers: { manual: null }, transitions: [{ to: "middle", description: "Test edge to middle." }] },
     middle: { transitions: [{ to: "done", description: "Test edge to done." }, { to: "start", description: "Test edge to start." }] },
@@ -115,7 +115,7 @@ describe("an undescribed edge", () => {
   // `start` leaves its one edge undescribed: the agent routes on `lookup`'s own
   // instructions, disclosed in the edge's place.
   const spec = {
-    runtime: { engine: "archmax-harness", version: "2" },
+    runtime: { engine: "archmax-harness", version: "3" },
     states: {
       start: { triggers: { manual: null }, instructions: "Route the request.", transitions: [{ to: "lookup" }] },
       lookup: { title: "Order lookup", instructions: "Look the order up by its id.\n\nSummarise its status." },
@@ -291,7 +291,7 @@ describe("archmax_reset", () => {
 describe("where a turn begins", () => {
   it("enters the start state the invocation's trigger declares", async () => {
     const spec = {
-      runtime: { engine: "archmax-harness", version: "2" },
+      runtime: { engine: "archmax-harness", version: "3" },
       states: {
         start: { triggers: { manual: null }, transitions: [{ to: "done", description: "Test edge to done." }] },
         handle: { triggers: { email_received: null }, transitions: [{ to: "done", description: "Test edge to done." }] },

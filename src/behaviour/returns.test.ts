@@ -33,15 +33,15 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 const CHILD_TOOL = workflowToolName("enrich");
 const AUDIT_TOOL = workflowToolName("audit");
 
-/** The text of every `[after]` runtime note in a transcript. */
-function afterNotes(messages: unknown[]): string[] {
+/** Every runtime note in a transcript, as `kind: text`. */
+function notes(messages: unknown[]): string[] {
   return messages
-    .filter((m) => isRuntimeNote(m) && runtimeNoteKind(m) === "after" && messageType(m) === "tool")
-    .map((m) => String((m as { content: unknown }).content));
+    .filter((m) => isRuntimeNote(m) && messageType(m) === "tool")
+    .map((m) => `${runtimeNoteKind(m)}: ${String((m as { content: unknown }).content)}`);
 }
 
 const setReturn: ScriptedTurn = {
@@ -67,7 +67,7 @@ describe("a top-level session that finishes short of its returns", () => {
     const outcome = await agent.workflow.send("s1", { message: "go" });
 
     expect(outcome).toMatchObject({ kind: "rejected", state: "work", rejected: UNSET_REJECTION });
-    expect(afterNotes(outcome.messages)).toEqual([]);
+    expect(notes(outcome.messages)).toEqual([]);
     expect(model.calls).toHaveLength(1);
   });
 
@@ -99,44 +99,82 @@ describe("a host's seed of a return", () => {
   });
 });
 
-describe("returns beside a terminal after hook", () => {
-  /** Passes only once the last reply says "revised" — so the first finish is vetoed. */
-  const revisionHook = [
-    "/** Requires the last reply to be a revision. */",
-    "export default ({ messages }) => {",
-    "  const replies = messages.filter((m) => m.role === 'assistant' && m.text);",
-    "  const last = replies.length ? replies[replies.length - 1].text : '';",
-    "  return last.indexOf('revised') >= 0 ? ok() : veto('reply revised');",
-    "};",
+describe("returns beside a code state that gates the finish", () => {
+  /** Sends the work back until the agent's advance says "revised", then finishes. */
+  const checkScript = [
+    "/** Requires the answer to be a revision. */",
+    "export default async function ({ trail, tools }) {",
+    "  const reason = trail[trail.length - 1].reason || '';",
+    "  if (reason.indexOf('revised') >= 0) await tools.archmax_advance({ to: 'done', reason: 'the answer is revised' });",
+    "  else await tools.archmax_advance({ to: 'work', reason: 'reply revised' });",
+    "}",
   ].join("\n");
   const root = () =>
     workspaceWith(
       {
         runtime: RUNTIME,
         states: {
-          work: { triggers: { manual: { returns: ["enrichment_file"] } }, after: { script: "hooks/complete.js" } },
+          work: {
+            triggers: { manual: { returns: ["enrichment_file"] } },
+            transitions: [{ to: "check", description: "The answer is written." }],
+          },
+          check: {
+            type: "code",
+            script: "scripts/check.js",
+            transitions: [
+              { to: "done", description: "The answer is a revision." },
+              { to: "work", description: "The answer has to be revised." },
+            ],
+          },
+          done: { type: "code", script: "scripts/done.js" },
         },
       },
-      { "workflows/w/hooks/complete.js": revisionHook },
+      {
+        "workflows/w/scripts/check.js": checkScript,
+        "workflows/w/scripts/done.js": "/** Finishes the session. */\nexport default async function () {}\n",
+      },
     );
 
-  it("runs the hook first, then decides the returns once, handing nothing back", async () => {
-    const { agent, events } = await assemble(root(), {
-      turns: [{ reply: "first answer" }, { reply: "revised answer" }, { reply: "never asked for" }],
+  it("runs the check first, then decides the returns once at the finish, handing nothing back", async () => {
+    const { agent, model, events } = await assemble(root(), {
+      turns: [
+        { tool: "archmax_advance", args: { to: "check", reason: "first answer" } },
+        { tool: "archmax_advance", args: { to: "check", reason: "revised answer" } },
+        { reply: "never asked for" },
+      ],
     });
     const outcome = await agent.workflow.send(freshSessionId(), { message: "go" });
 
-    expect(outcome).toMatchObject({ kind: "rejected", rejected: UNSET_REJECTION });
-    expect(eventsOf(events, "hook-verdict").map((e) => e.verdict)).toEqual(["veto", "ok"]);
-    expect(afterNotes(outcome.messages)).toEqual([expect.stringContaining("reply revised")]);
+    expect(outcome).toMatchObject({
+      kind: "rejected",
+      state: "done",
+      rejected:
+        "Completed in state 'done' without setting 'enrichment_file', which trigger 'manual' declares in its " +
+        "'returns'. Set it with 'archmax_set_variables' before finishing.",
+    });
+    // The send-back left `work` without its returns: they are owed only at the finish.
+    expect(eventsOf(events, "code-result").map((e) => `${e.state}:${e.status}`)).toEqual([
+      "check:ok",
+      "check:ok",
+      "done:ok",
+    ]);
+    expect(notes(outcome.messages)).toEqual([
+      "code: [code] 'check' moved the run to 'work': reply revised. You are now in 'work'.",
+      "code: [code] 'check' moved the run to 'done': the answer is revised. You are now in 'done'.",
+    ]);
+    expect(model.calls).toHaveLength(2);
   });
 
-  it("completes once the hook passes and the returns are set", async () => {
+  it("completes once the check passes and the returns are set", async () => {
     const { agent } = await assemble(root(), {
-      turns: [{ reply: "first answer" }, setReturn, { reply: "revised, with the file" }],
+      turns: [
+        { tool: "archmax_advance", args: { to: "check", reason: "first answer" } },
+        setReturn,
+        { tool: "archmax_advance", args: { to: "check", reason: "revised, with the file" } },
+      ],
     });
     const outcome = await agent.workflow.send(freshSessionId(), { message: "go" });
-    expect(outcome.kind).toBe("completed");
+    expect(outcome).toMatchObject({ kind: "completed", state: "done" });
   });
 });
 

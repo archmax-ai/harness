@@ -4,7 +4,7 @@
  * Single-document rules are the schema's (`machine/spec-schema.ts`) and the
  * linter's (`machine/lint-spec.ts`), surfaced through the runtime's loader. This
  * module owns what needs more than one document: the workflow slug, runtime
- * contract, hook files, the skill registry, delegation siblings,
+ * contract, code-state scripts, the skill registry, delegation siblings,
  * offline test cases, and kernel probes that ask the real governance pipeline
  * whether a granted entry would be blocked at run time.
  */
@@ -17,8 +17,6 @@ import {
   normalizeMountGrants,
   type NormalizedMountGrant,
 } from "../machine/mount-grants.js";
-import { hookKind, normalizeHooks } from "../lifecycle/hook-shape.js";
-import { BUILTIN_HOOK_KINDS } from "../lifecycle/runner.js";
 import { authoringPlanePrefix, describeAuthoringPrefix } from "../core/mounts.js";
 import { ADVANCE_TOOL, RUN_TOOL, UNGRANTABLE_TOOLS, workflowToolName } from "../machine/tool-names.js";
 import { MANUAL_TRIGGER, triggerBindings } from "../machine/triggers.js";
@@ -27,7 +25,6 @@ import { loadMachineSpec } from "../machine/load-spec.js";
 import { findForeignImports } from "../sandbox/imports.js";
 import {
   specDisabled,
-  type Hook,
   type MachineSpec,
   type MachineState,
   type MountGrantEntry,
@@ -42,7 +39,7 @@ import {
   skillOfPattern,
   skillPrefixes,
 } from "../core/skills.js";
-import { DEFAULT_WORKFLOW, resolveHookScript, workflowPaths } from "../workflow/paths.js";
+import { DEFAULT_WORKFLOW, resolveCodeScript, workflowPaths } from "../workflow/paths.js";
 import { DEFAULT_SUB_WORKFLOW_DEPTH } from "../workflow/sub-workflow.js";
 import {
   resolveRuntimeContract,
@@ -113,7 +110,7 @@ function finalize(
 
 /**
  * Statically validate a workflow scaffold (`workflow.yaml` plus referenced
- * skills, lifecycle scripts, sibling workflows and test cases) by
+ * skills, code-state scripts, sibling workflows and test cases) by
  * reading it through the same backends the runtime uses. Performs only file
  * reads and parsing — "valid" means the runtime can load the scaffold, not that
  * a run will succeed.
@@ -124,8 +121,8 @@ export async function validateWorkflow(
   const workflowName = options.workflow ?? DEFAULT_WORKFLOW;
   const paths = workflowPaths(workflowName);
   // Two planes, checked from the right side of each: authoring-plane content
-  // (this workflow's spec — its grading rubrics included — its siblings', its
-  // hooks and its cases) is read through the authoring workspace, agent-visible
+  // (this workflow's spec, its siblings', its code-state scripts and its cases)
+  // is read through the authoring workspace, agent-visible
   // content (`skills/`, `AGENTS.md`) through the agent workspace.
   const { rootDir, workspace, authoring, mountPrefixes } = createWorkspaceContext({
     rootDir: options.rootDir,
@@ -191,11 +188,6 @@ export async function validateWorkflow(
   // same kernel the runtime uses (validator/runtime parity).
   const machine = WorkflowMachine.fromSpec(spec);
 
-  // Custom hook kinds the workspace declares it will register executors for;
-  // the validator accepts these offline (built-in kinds are always accepted).
-  const expectedHookKinds = new Set(spec.extensions?.hooks ?? []);
-
-
   const skillRegistry = await validateSkills(
     workspace,
     machine,
@@ -213,17 +205,8 @@ export async function validateWorkflow(
     const state = (declared ?? {}) as MachineState;
     const field = `states.${slug}`;
     validateStateSlug(slug, specFile, add);
-    for (const phase of ["before", "after"] as const) {
-      await validateHookField(
-        authoring,
-        workflowName,
-        state[phase],
-        slug,
-        phase,
-        field,
-        add,
-        expectedHookKinds,
-      );
+    if (state.type === "code" && typeof state.script === "string") {
+      await validateCodeScript(authoring, workflowName, state.script, slug, field, add);
     }
     validateStateGovernance(machine, states, slug, state, field, add, mountPrefixes, skillRegistry);
   }
@@ -446,84 +429,55 @@ async function validateSubWorkflows(
 }
 
 /**
- * The one wording for a grant of a tool no state may be given. `task` is the
- * framework's dispatch for grading rubrics, which the runtime uses on its own
- * authority: the entry reads as a grant but confers nothing, because disclosure
+ * The one wording for a grant of a tool no state may be given. `task` is Deep
+ * Agents' subagent dispatch, which the framework registers whatever the assembly
+ * passes: the entry reads as a grant but confers nothing, because disclosure
  * withholds the tool and the kernel refuses the call.
  */
 function ungrantableReason(where: string, tool: string): string {
   return (
-    `${where} allows '${tool}', which is not grantable. It is the runtime's own dispatch for ` +
-    `grading rubrics — a rubric grades the agent rather than serving it — so the tool is ` +
-    `disclosed in no state and the kernel refuses the call. Remove the entry; to delegate work ` +
-    `to another process, allow that workflow's 'archmax_workflow_<slug>' tool instead.`
+    `${where} allows '${tool}', which is not grantable. It is Deep Agents' subagent dispatch, ` +
+    `which no state is given: the tool is disclosed in no state and the kernel refuses the call. ` +
+    `Remove the entry; to delegate work to another process, allow that workflow's ` +
+    `'archmax_workflow_<slug>' tool instead, and to grade work, declare a grader state.`
   );
 }
 
 /**
- * Check what a hook *refers to*: a `script` file that exists in the workflow's
- * `hooks/` directory and imports only from `@archmax-ai/harness/*`, or a custom kind
- * declared under `extensions.hooks`. The hook's own shape is the schema's.
- *
- * A `{ rubric: … }` hook needs no check here: a rubric is declared in the same
- * document, so the reference is resolved by the schema's own document-level
- * refinement — one implementation for the loader and the validator, with no file
- * read and no "exists but is unloadable" middle state to report.
+ * Check what a code state's `script` refers to: a file that exists in the
+ * workflow's `scripts/` directory and imports only from `@archmax-ai/harness/*`.
+ * The path's own grammar is the schema's; resolved here with the same helper the
+ * runtime uses, so a misplaced script is an offline diagnostic instead of a
+ * failed state mid-run.
  */
-async function validateHookField(
+async function validateCodeScript(
   authoring: Workspace,
   workflow: string,
-  declared: MachineState["before"],
+  script: string,
   slug: string,
-  phase: "before" | "after",
   field: string,
   add: Add,
-  expectedHookKinds: Set<string>,
 ): Promise<void> {
-  for (const hook of normalizeHooks(declared)) {
-    const kind = hookKind(hook as Hook);
-    // A malformed hook was reported by the schema; there is nothing to look up.
-    if (!kind) continue;
-    if (kind === "script") {
-      const script = String((hook as { script: unknown }).script);
-      // Resolved with the same helper the runtime uses, so a misplaced hook is an
-      // offline diagnostic instead of a fail-closed veto mid-run.
-      const resolved = resolveHookScript(workflow, script);
-      if (!resolved.ok) {
-        add("error", `State '${slug}' '${phase}' ${resolved.reason}`, {
-          file: script,
-          field: `${field}.${phase}`,
-        });
-        continue;
-      }
-      const source = await authoring.readText(resolved.path);
-      if (source == null) {
-        add("error", `State '${slug}' '${phase}' hook script not found: ${resolved.path}`, {
-          file: resolved.path,
-          field: `${field}.${phase}`,
-        });
-      } else {
-        for (const specifier of findForeignImports(source)) {
-          add(
-            "error",
-            `Hook script '${resolved.path}' imports from '${specifier}'; sandbox scripts may ` +
-              `import only from '@archmax-ai/harness/*' type-carrier entry points`,
-            { file: resolved.path, field: `${field}.${phase}` },
-          );
-        }
-      }
-    } else if (!BUILTIN_HOOK_KINDS.includes(kind as (typeof BUILTIN_HOOK_KINDS)[number]) && !expectedHookKinds.has(kind)) {
-      // A custom kind is acceptable offline only when declared under
-      // `extensions.hooks`: the executor is registered at assembly, which the
-      // validator cannot see.
-      add(
-        "error",
-        `State '${slug}' '${phase}' hook uses unknown kind '${kind}'; built-in kinds are ` +
-          `${BUILTIN_HOOK_KINDS.join(" and ")}. ` +
-          `Declare custom kinds under 'extensions.hooks' if an executor is registered at runtime.`,
-        { field: `${field}.${phase}` },
-      );
-    }
+  const resolved = resolveCodeScript(workflow, script);
+  if (!resolved.ok) {
+    add("error", `Code state '${slug}': ${resolved.reason}`, { file: script, field: `${field}.script` });
+    return;
+  }
+  const source = await authoring.readText(resolved.path);
+  if (source == null) {
+    add("error", `Code state '${slug}' script not found: ${resolved.path}`, {
+      file: resolved.path,
+      field: `${field}.script`,
+    });
+    return;
+  }
+  for (const specifier of findForeignImports(source)) {
+    add(
+      "error",
+      `Code state script '${resolved.path}' imports from '${specifier}'; sandbox scripts may ` +
+        `import only from '@archmax-ai/harness/*' type-carrier entry points`,
+      { file: resolved.path, field: `${field}.script` },
+    );
   }
 }
 
@@ -783,7 +737,7 @@ function validateStateGovernance(
       }
       // An allowed advance target with no declared edge passes tool governance
       // but the kernel blocks the transition.
-      const edge = decide(machine, { kind: "transition", from: slug, to: target, hookFacts: [] });
+      const edge = decide(machine, { kind: "transition", from: slug, to: target });
       if (edge.decision === "block") {
         add(
           "warning",
@@ -813,8 +767,8 @@ function validateStateGovernance(
       `State '${slug}' allows '${RUN_TOOL}' on ${inert.map((p) => `'${p}'`).join(", ")}, which is ` +
         `outside every skill bundle. '${RUN_TOOL}' may only execute scripts in a skill bundle ` +
         `(rule 'script.skill-only'), so this entry grants nothing — scope it to a capability's ` +
-        `scripts (e.g. 'skills/<name>/scripts/**'). Lifecycle hook scripts are not run this way: ` +
-        `they live in 'workflows/<slug>/hooks/' and are executed by the harness.`,
+        `scripts (e.g. 'skills/<name>/scripts/**'). A code state's script is not run this way: ` +
+        `it lives in 'workflows/<slug>/scripts/' and is run by the runtime.`,
       { field: `${field}.tools.allow` },
     );
   }

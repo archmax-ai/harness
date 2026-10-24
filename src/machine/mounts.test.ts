@@ -370,9 +370,8 @@ states:
 });
 
 /**
- * Runtime authority — a hook script, the runtime's own `file` value check —
- * runs outside every state's surface but never outside its own workflow's
- * grants: one table serves a caller and every child, so a mount only another
+ * Runtime authority — the runtime's own `file` value check — runs outside
+ * every state's surface but never outside its own workflow's grants: one table serves a caller and every child, so a mount only another
  * workflow grants must stay out of reach.
  */
 describe("mount reach on runtime authority", () => {

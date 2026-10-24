@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { foldVisits } from "./state.js";
-import { currentVisitMessages, visitAt, visitSpans, visitStart } from "./visits.js";
+import { visitAt, visitSpans, visitStart } from "./visits.js";
 
 const msg = (id: string) => ({ id, type: "human", content: id });
 
@@ -12,7 +12,6 @@ describe("visitSpans", () => {
       { number: 1, state: "one", start: 0 },
       { number: 2, state: "two", start: 2 },
     ]);
-    expect(currentVisitMessages(messages, state)).toEqual([msg("c"), msg("d")]);
   });
 
   it("falls back to the count when the anchored message is gone", () => {
@@ -26,7 +25,6 @@ describe("visitSpans", () => {
     expect(visitSpans(messages, { entryState: "start", workflowState: "later" })).toEqual([
       { number: 1, state: "start", start: 0 },
     ]);
-    expect(currentVisitMessages(messages, {})).toEqual(messages);
   });
 
   it("numbers what precedes the first logged visit as visit 1", () => {

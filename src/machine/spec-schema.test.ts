@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMachineSpec } from "./spec-schema.js";
+import { machineStateSchema, parseMachineSpec } from "./spec-schema.js";
 
 /**
  * Strict keys are the capability this schema adds. `workflow.yaml` previously had
@@ -182,7 +182,7 @@ describe("strict keys", () => {
  * authoring UI's canvas state — and, on a state, a node's own position, which
  * shares the node's identity instead of sitting in a slug-keyed side table. The
  * tests below pin both halves of the contract: the block is accepted at each of
- * its three positions and preserved, and nothing else about the root loosened to
+ * its two positions and preserved, and nothing else about the root loosened to
  * make room for it.
  */
 describe("host metadata", () => {
@@ -202,22 +202,6 @@ describe("host metadata", () => {
     if (result.ok) expect(result.spec.states.start?.metadata).toEqual({ x: 120, y: 340 });
   });
 
-  it("accepts a metadata block on an inline rubric and preserves it", () => {
-    const result = parseMachineSpec({
-      states: {
-        start: {
-          triggers: { manual: null },
-          after: { rubric: { instructions: "judge the tone", metadata: { label: "Tone check" } } },
-        },
-      },
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const hook = result.spec.states.start?.after as { rubric: { metadata?: unknown } };
-      expect(hook.rubric.metadata).toEqual({ label: "Tone check" });
-    }
-  });
-
   // Loose, not unchecked: the contents are the host's business, but the slot is
   // still a mapping, so a scalar there is an authoring mistake worth naming.
   it("rejects a metadata block that is not a mapping", () => {
@@ -228,7 +212,6 @@ describe("host metadata", () => {
   // The slot is one named key at each position, not an opening.
   it.each([
     ["another root key", { ...MINIMAL, layout: {} }, "", "layout"],
-    ["a nested extensions key", { ...MINIMAL, extensions: { metadata: {} } }, "extensions", "metadata"],
     [
       "another state key",
       { states: { start: { triggers: { manual: null }, position: {} } } },
@@ -277,61 +260,161 @@ describe("allow-entry source", () => {
 });
 
 /**
- * Hook provenance is a property of the *shape*: a script path is confined to the
- * workflow's own `hooks/` directory, so no caller can skip the check.
+ * Every step of a workflow is a state, so the `before`/`after` hook slots and the
+ * root `extensions` block that registered custom hook kinds are gone. The schema
+ * keeps no memory of them: a leftover reads as the unrecognized key it now is,
+ * naming the path — the same error any typo gets, not a special-cased message.
  */
-describe("hook provenance", () => {
-  it("accepts a script inside hooks/", () => {
-    expect(
-      parseMachineSpec({
-        states: { start: { triggers: { manual: null }, before: { script: "hooks/check.js" } } },
-      }).ok,
-    ).toBe(true);
+describe("retired hook slots", () => {
+  it.each([
+    ["before", { script: "hooks/check.js" }],
+    ["after", { rubric: { instructions: "judge the tone" } }],
+    ["after", { webhook: "https://example.test/h" }],
+  ])("rejects a leftover '%s:' on a state, naming the state", (key, hook) => {
+    const issues = issuesFor({
+      states: {
+        start: { triggers: { manual: null }, [key]: hook, transitions: [{ to: "done", description: "Test edge to done." }] },
+        done: null,
+      },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("states.start");
+    expect(issues[0]?.message).toContain(`Unrecognized key: "${key}"`);
+  });
+
+  it("rejects a leftover hook slot on a human state too", () => {
+    const issues = issuesFor({
+      states: {
+        start: { triggers: { manual: null }, transitions: [{ to: "review", description: "Hand off." }] },
+        review: {
+          type: "human",
+          instructions: "Approve it.",
+          after: { rubric: { instructions: "review it" } },
+          transitions: [{ to: "done", description: "Approve." }],
+        },
+        done: null,
+      },
+    });
+    expect(issues[0]?.path).toBe("states.review");
+    expect(issues[0]?.message).toContain(`Unrecognized key: "after"`);
+  });
+
+  it("rejects the root extensions block", () => {
+    const issues = issuesFor({ ...MINIMAL, extensions: { hooks: ["webhook"] } });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("");
+    expect(issues[0]?.message).toContain(`Unrecognized key: "extensions"`);
+  });
+
+  it("rejects a root rubrics block: grading is a grader state", () => {
+    const issues = issuesFor({ ...MINIMAL, rubrics: { tone: { instructions: "tone" } } });
+    expect(issues[0]?.path).toBe("");
+    expect(issues[0]?.message).toContain(`Unrecognized key: "rubrics"`);
+  });
+});
+
+/** The four state types, and nothing else under `type`. */
+describe("state types", () => {
+  it.each(["agent", "human", "grader", "code"])("accepts type '%s'", (type) => {
+    const result = machineStateSchema.safeParse({
+      type,
+      ...(type === "code" ? { script: "scripts/check.js" } : {}),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an unknown type, naming the four it accepts", () => {
+    const issues = issuesFor({
+      states: { start: { triggers: { manual: null }, type: "judge" } },
+    });
+    expect(issues[0]?.path).toBe("states.start.type");
+    expect(issues[0]?.message).toBe(
+      "unknown state type 'judge' (expected 'agent', 'human', 'grader' or 'code')",
+    );
+  });
+});
+
+/**
+ * A code state *is* its script, so where the script lives is a property of the
+ * *shape*: confined to the workflow's own `scripts/` directory, segment by
+ * segment, so no caller can skip the check. Which state may carry the key is a
+ * document-level rule, because it depends on the state's `type`.
+ */
+describe("code-state scripts", () => {
+  const codeState = (script: unknown) => ({
+    states: {
+      start: {
+        triggers: { manual: null },
+        type: "code",
+        script,
+        transitions: [{ to: "done", description: "The request is in order." }],
+      },
+      done: null,
+    },
+  });
+
+  it.each(["scripts/a.js", "scripts/x/b.mjs"])("accepts %s", (path) => {
+    const result = parseMachineSpec(codeState(path));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.spec.states.start?.script).toBe(path);
   });
 
   it.each([
-    ["skills/order-data/scripts/run.js", "a skill bundle"],
-    ["scripts/check.js", "the old location"],
-    ["/abs/hooks/check.js", "an absolute path"],
-    ["hooks/../escape.js", "a climb out of hooks/"],
-  ])("refuses %s (%s)", (path) => {
-    const issues = issuesFor({
-      states: { start: { triggers: { manual: null }, before: { script: path } } },
-    });
-    expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0]?.path).toBe("states.start.before");
+    ["hooks/a.js", "the retired hooks directory"],
+    ["scripts/../a.js", "a climb out of scripts/"],
+    ["scripts/x/../../a.js", "a deeper climb out of scripts/"],
+    ["/scripts/a.js", "an absolute path"],
+    ["scripts/a.ts", "a TypeScript source"],
+    ["skills/order-data/scripts/run.js", "a skill bundle's script"],
+  ])("refuses %s (%s), at the key", (path) => {
+    const issues = issuesFor(codeState(path));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("states.start.script");
+    expect(issues[0]?.message).toContain("inside 'scripts/' ending in .js or .mjs");
+    expect(issues[0]?.message).toContain("no '..'");
   });
 
-  // The custom-kind escape hatch must not swallow a malformed built-in: without
-  // the fence, `{ script: <bad path> }` would fail the strict branch and then
-  // match as an unknown kind called "script", making the rule unenforceable.
-  it("does not let the custom-kind branch rescue a bad script path", () => {
-    const issues = issuesFor({
-      states: { start: { triggers: { manual: null }, after: { script: "anywhere.js" } } },
-    });
-    expect(issues.length).toBeGreaterThan(0);
+  it("refuses a script that is not a string", () => {
+    const issues = issuesFor(codeState({ file: "scripts/a.js" }));
+    expect(issues[0]?.path).toBe("states.start.script");
+    expect(issues[0]?.message).toContain("must be a workflow-relative path string");
   });
 
-  // A hook's kind is its single key other than the reserved sidecars, so an
-  // object carrying none names no kind at all. Caught at load rather than left to
-  // the runner's fail-closed veto: the author learns when they wrote it, not on
-  // the transition it silently blocks.
+  it("requires a script on a code state", () => {
+    const issues = issuesFor({
+      states: {
+        start: { triggers: { manual: null }, type: "code", transitions: [{ to: "done", description: "Done." }] },
+        done: null,
+      },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("states.start.script");
+    expect(issues[0]?.message).toContain("Code state 'start' declares no 'script'");
+    expect(issues[0]?.message).toContain("scripts/start.js");
+  });
+
   it.each([
-    ["an empty object", {}],
-    ["sidecars only", { max_corrections: 2 }],
-    ["a non-string target", { webhook: 42 }],
-  ])("refuses a hook that names no usable kind: %s", (_label, after) => {
-    const issues = issuesFor({ states: { start: { triggers: { manual: null }, after } } });
-    expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0]?.path).toBe("states.start.after");
-  });
-
-  it("still accepts a custom hook kind for an executor registered at assembly", () => {
-    expect(
-      parseMachineSpec({
-        states: { start: { triggers: { manual: null }, after: { webhook: "https://example.test/h" } } },
-      }).ok,
-    ).toBe(true);
+    ["an untyped (agent)", undefined, "agent"],
+    ["an agent", "agent", "agent"],
+    ["a human", "human", "human"],
+    ["a grader", "grader", "grader"],
+  ])("refuses a script on %s state, naming its type", (_label, type, named) => {
+    const issues = issuesFor({
+      states: {
+        start: {
+          triggers: { manual: null },
+          ...(type ? { type } : {}),
+          instructions: "Decide.",
+          script: "scripts/check.js",
+          transitions: [{ to: "done", description: "Done." }],
+        },
+        done: null,
+      },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("states.start.script");
+    expect(issues[0]?.message).toContain("only a code state runs");
+    expect(issues[0]?.message).toContain(`type '${named}'`);
   });
 });
 
@@ -339,6 +422,46 @@ describe("hook provenance", () => {
  * A `skills.allow` entry is a slug or the spec does not load: one mis-authored
  * line used to be dropped silently, which switched a grant off without a word.
  */
+/**
+ * An undescribed edge routes on its target's instructions, which the agent is
+ * then shown. A grader's instructions are its criteria and a code state has
+ * none, so an edge into either must say when to take it; a code state's own
+ * edges are routed by its script and need no description.
+ */
+describe("undescribed edges and automated states", () => {
+  const withEdge = (target: Record<string, unknown>, source: Record<string, unknown> = {}) => ({
+    states: {
+      start: { triggers: { manual: null }, instructions: "Draft the reply.", transitions: [{ to: "next" }], ...source },
+      next: { transitions: [{ to: "done", description: "Done." }], ...target },
+      done: { instructions: "Say goodbye." },
+    },
+  });
+
+  it("refuses an undescribed edge into a grader, whose criteria the agent is never shown", () => {
+    const issues = issuesFor(withEdge({ type: "grader", instructions: "Judge the tone." }));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("states.start.transitions.0.description");
+    expect(issues[0]?.message).toContain("'next' is a grader, whose instructions are its criteria");
+  });
+
+  it("refuses an undescribed edge into a code state, which has no instructions", () => {
+    const issues = issuesFor(withEdge({ type: "code", script: "scripts/next.js" }));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.path).toBe("states.start.transitions.0.description");
+    expect(issues[0]?.message).toContain("'next' is a code state, which has none");
+  });
+
+  it("lets a code state's own edges go undescribed: its script routes", () => {
+    const spec = {
+      states: {
+        start: { triggers: { manual: null }, type: "code", script: "scripts/start.js", transitions: [{ to: "done" }] },
+        done: null,
+      },
+    };
+    expect(issuesFor(spec)).toEqual([]);
+  });
+});
+
 describe("skill slugs", () => {
   it("rejects a non-slug skills entry, naming its index", () => {
     const issues = issuesFor({
@@ -475,81 +598,6 @@ describe("document-level rules", () => {
     const two = issuesFor({ states: { a: { triggers: { manual: null } }, b: { triggers: { manual: null } } } });
     expect(two[0]?.path).toBe("states");
     expect(two[0]?.message).toContain("Multiple states declare trigger 'manual' (a, b)");
-  });
-
-  it("refuses an iteration budget sidecar on a before hook, where nothing retries", () => {
-    const issues = issuesFor({
-      states: { start: { triggers: { manual: null }, before: { script: "hooks/x.js", max_iterations: 2 } } },
-    });
-    expect(issues[0]?.path).toBe("states.start.before");
-    expect(issues[0]?.message).toContain("before hooks are ok/veto only");
-  });
-
-  it("accepts an inline rubric on a hook, and a list of several", () => {
-    const single = parseMachineSpec({
-      states: { start: { triggers: { manual: null }, after: { rubric: { instructions: "tone" } } } },
-    });
-    expect(single.ok).toBe(true);
-
-    const list = parseMachineSpec({
-      states: {
-        start: {
-          triggers: { manual: null },
-          after: [
-            { rubric: { instructions: "tone", max_iterations: 2 } },
-            { rubric: { instructions: "completeness" } },
-            { script: "hooks/check.js", max_iterations: 1 },
-          ],
-        },
-      },
-    });
-    expect(list.ok).toBe(true);
-  });
-
-  it("rejects a rubric named rather than declared, and a sidecar beside one", () => {
-    // There is no rubric to point at: the declaration is the hook's value, so a
-    // bare string is not a rubric and the budget lives inside the declaration.
-    for (const after of [{ rubric: "tone" }, { rubric: { instructions: "tone" }, max_iterations: 2 }]) {
-      const issues = issuesFor({ states: { start: { triggers: { manual: null }, after } } });
-      expect(issues[0]?.path).toBe("states.start.after");
-    }
-  });
-
-  it("requires instructions on an inline rubric", () => {
-    const issues = issuesFor({
-      states: { start: { triggers: { manual: null }, after: { rubric: { max_iterations: 2 } } } },
-    });
-    expect(issues[0]?.path).toBe("states.start.after");
-  });
-
-  it("rejects the retired sidecar as an ordinary schema error", () => {
-    // No mapping to a replacement: the schema carries no memory of a spelling it
-    // used to accept, so `max_corrections` reads as the malformed hook it makes.
-    const issues = issuesFor({
-      states: { start: { triggers: { manual: null }, before: { script: "hooks/x.js", max_corrections: 2 } } },
-    });
-    expect(issues[0]?.path).toBe("states.start.before");
-    // Named as the unrecognized key it is, like any other; never mapped to the
-    // sidecar that replaced it.
-    expect(issues[0]?.message).toContain(`Unrecognized key: "max_corrections"`);
-    expect(issues[0]?.message).not.toContain("max_iterations");
-  });
-
-  it("rejects a root rubrics block, now that a rubric is not a first-order item", () => {
-    const issues = issuesFor({ ...MINIMAL, rubrics: { tone: { instructions: "tone" } } });
-    expect(issues[0]?.path).toBe("");
-    expect(issues[0]?.message).toContain(`Unrecognized key: "rubrics"`);
-  });
-
-  it("reads the retired hook kind as an unregistered custom kind", () => {
-    // `{ subagent: … }` is not special-cased: it is shaped like any custom kind,
-    // so the schema accepts it and the kind is refused where a kind is resolved —
-    // `validate` offline (no `extensions.hooks` entry) and the runtime at
-    // dispatch (no executor), which vetoes naming the kind.
-    const result = parseMachineSpec({
-      states: { start: { triggers: { manual: null }, before: { subagent: "judge" } } },
-    });
-    expect(result.ok).toBe(true);
   });
 
   it("accepts a model id at the root and on a state", () => {

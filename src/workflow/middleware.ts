@@ -10,15 +10,16 @@ import { RemoveMessage } from "@langchain/core/messages";
 import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
 import { createMiddleware } from "langchain";
 import type { AgentMiddleware } from "langchain";
-import type { ScriptExecutor } from "../sandbox/executor.js";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { CODE_SESSION, type ScriptExecutor } from "../sandbox/executor.js";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
-import { LifecycleRunner, type HookExecutor, type HookScriptResolver } from "../lifecycle/runner.js";
 import type { WorkflowMachine } from "../machine/machine.js";
-import type { Rubric } from "../rubrics/rubrics.js";
 import type { Workspace } from "../core/workspace.js";
 import { createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
-import { createControlTools } from "./control-tools.js";
+import { createControlTools, transitionUpdate } from "./control-tools.js";
 import type { VariableStore } from "../machine/variables.js";
+import { automatedNoteText, automatedOutcomeOf, type AutomatedOutcome } from "./automated.js";
+import type { CodeScriptResolver } from "./code-state.js";
 import { checkReturns } from "./returns-check.js";
 import { fileGovernance, fileValueCheck, type FileGovernance } from "./file-values.js";
 import { returnsFileIssues } from "./signature-checks.js";
@@ -26,6 +27,8 @@ import { skillPrefixes } from "../core/skills.js";
 import {
   currentWorkflowState,
   isReplyOnly,
+  mergeVariables,
+  NO_PENDING_FAILURE,
   pendingFailure,
   pendingParkOf,
   readRunUsage,
@@ -46,17 +49,16 @@ import type { SkillRegistry } from "../core/skills.js";
 import type { FrameworkRuntime, WorkflowRequestState } from "../core/deepagents.js";
 import { addSummaries, extractUsage, summarizeUsage, type PricingTable } from "../core/usage.js";
 import { routeFailure } from "./on-error.js";
-import { servePark, suspendIfParked, type ParkContext } from "./parks.js";
+import { closingTurn, servePark, suspendIfParked, type ParkContext } from "./parks.js";
 import { openTurn } from "./turn-boundary.js";
 import {
-  beforeVetoReason,
   budgetExhaustedReason,
   buildRunnableConfig,
   createGovernance,
   type PromptShaping,
   type StateModels,
 } from "./governance.js";
-import { visitStart } from "./visits.js";
+import { messagesIn, visitStart } from "./visits.js";
 
 export type { PromptShaping, StateModels } from "./governance.js";
 export { resolveToolName } from "./governance.js";
@@ -74,31 +76,25 @@ export interface WorkflowInstrumentation {
   /** The governance middleware proper; assembled after {@link parkMiddleware}. */
   middleware: AgentMiddleware;
   tools: StructuredTool[];
-  lifecycle: LifecycleRunner;
   /** Release every per-session resource (idempotent; safe for sessions that never ran). */
   dispose(sessionId: string): void;
 }
 
 export interface WorkflowMiddlewareOptions {
   machine: WorkflowMachine;
-  /** Serves the agent's own `archmax_eval`/`archmax_run` over the agent workspace. */
-  executor: ScriptExecutor;
-  /** The workflow's grading rubrics, dispatched by a `{ rubric: … }` hook. */
-  rubrics?: Map<string, Rubric>;
-  ptcNames: string[];
+  /** Runs a code state's script, reading it from the authoring backend. */
+  codeExecutor: ScriptExecutor;
+  /** Resolves a code state's declared `script:` to its authoring-backend path. */
+  resolveCodeScript: CodeScriptResolver;
+  /** The model a grader state runs on, and its id when the instance exposes one. */
+  graderModel(state: string): { model: BaseChatModel; id?: string };
   /** Consumer rules, evaluated after the safety and `policy` rules, before per-state defaults. */
   policyRules?: GovernanceRule[];
   /** The workspace's resolved mount keys, so the kernel's read-only rule can classify authored paths. */
   mountPrefixes?: MountPrefixes;
   /** The workspace's skills: one table for what the kernel refuses, the prompt names, a listing returns. */
   skills?: SkillRegistry;
-  /** Custom hook-kind executors registered alongside the built-in `script`/`rubric`. */
-  hookExecutors?: Record<string, HookExecutor>;
-  /** Script executor for lifecycle hooks, reading from the authoring backend. Defaults to {@link executor}. */
-  hookExecutor?: ScriptExecutor;
-  /** Resolves a hook's declared `script:` to its authoring-backend path. */
-  resolveHookScript?: HookScriptResolver;
-  /** Governs the `tools.*` calls hook scripts make and carries the live per-session context. */
+  /** Governs every call made outside the tool node — scripts', automated states' — and carries the live per-session context. */
   ptcGateway?: PtcToolGateway;
   /** Runs delegated machines. Omitted, a delegation call falls through to the tool's own body. */
   subWorkflows?: SubWorkflowDispatcher;
@@ -155,32 +151,13 @@ const asHookResult = (update: WorkflowUpdate | undefined) => update as never;
 
 /**
  * In-graph governance for the Deep Agent: the turn boundary, per-state tool
- * disclosure and the kernel's verdict on every call, lifecycle hooks, the
+ * disclosure and the kernel's verdict on every call, the automated states, the
  * control tools, budgets, `on_error` routing, and every park's commit, closing
  * turn and suspension.
  */
 export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): WorkflowInstrumentation {
-  const { machine, executor, rubrics = new Map(), ptcNames, ptcGateway, subWorkflows, onEvent, pricing, stateModels } = opts;
+  const { machine, ptcGateway, subWorkflows, onEvent, pricing, stateModels } = opts;
   const emit = createWorkflowEventEmitter(onEvent);
-  const lifecycleHooks = machine.lifecycleHooks();
-  const lifecycle = new LifecycleRunner(
-    machine,
-    opts.hookExecutor ?? executor,
-    rubrics,
-    ptcNames,
-    opts.hookExecutors,
-    onEvent,
-    ...(opts.resolveHookScript ? [{ resolveScript: opts.resolveHookScript }] : []),
-  );
-
-  if (Object.keys(lifecycleHooks).length > 0) {
-    emit({
-      type: "hooks-summary",
-      summary: Object.entries(lifecycleHooks)
-        .map(([s, l]) => `${s}(${[l.before && "before", l.after && "after"].filter(Boolean).join("+")})`)
-        .join(", "),
-    });
-  }
 
   const sessionIdOf = (runtime: unknown): string =>
     sessionScopeFrom(runtime as { configurable?: Record<string, unknown> } | undefined).sessionId;
@@ -205,7 +182,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
   const governance = createGovernance({
     machine,
     emit,
-    lifecycle,
     policyRules: opts.policyRules ?? [],
     mountPrefixes: opts.mountPrefixes ?? NO_MOUNTS,
     skills: opts.skills ?? new Map(),
@@ -215,6 +191,12 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     ...(subWorkflows ? { subWorkflows } : {}),
     child: opts.child === true,
     ...(files ? { files } : {}),
+    automated: {
+      codeExecutor: opts.codeExecutor,
+      resolveScript: opts.resolveCodeScript,
+      graderModel: opts.graderModel,
+      ...(pricing ? { pricing } : {}),
+    },
     sessionIdOf,
   });
   const parkCtx: ParkContext = {
@@ -283,9 +265,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         const fields = readWorkflowState(state);
         const workflowState = currentWorkflowState(state, machine.entry);
 
-        // The agent raised in the step just serviced: the session is over. Ended
-        // here, before any model call, so nothing after the model runs either —
-        // no `on_error` route, no terminal `after` hook, no `returns` check.
+        // The session raised in the step just serviced: it is over. Ended here,
+        // before any model call, so nothing after the model runs either — no
+        // `on_error` route, no `returns` check.
         if (fields.status === WORKFLOW_STATUSES.failed && readRaised(state)) {
           return asHookResult({ jumpTo: "end" });
         }
@@ -300,6 +282,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           return asHookResult(lastMessageIsHuman(state.messages ?? []) ? undefined : { jumpTo: "end" });
         }
 
+        // An automated state makes no call of the agent's model, so no agent turn
+        // budget applies there; a grader's own calls are bounded inside its run.
+        if (machine.isAutomatedState(workflowState)) return asHookResult(undefined);
         // The workflow's turn budget: model calls this invocation, across every state.
         // Routed once; the error handler it routes to is then bounded by its own budget
         // and the step limit. An invocation the runner did not stamp is not counted.
@@ -350,13 +335,10 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         const messages: unknown[] = state.messages ?? [];
         const last = messages[messages.length - 1] as Record<string, unknown> | undefined;
         const update: WorkflowUpdate = {};
-        // A hook dispatches outside the tool node, so what it took is committed here:
-        // a `before` hook's during the model call, a terminal `after` hook's below.
-        const commitDispatches = () => {
-          const taken = governance.dispatchCount(sessionIdOf(runtime), state);
-          if (taken > (fields.dispatchCount ?? 0)) update.dispatchCount = taken;
-        };
-        commitDispatches();
+        // An automated state's calls dispatch outside the tool node, during the
+        // serviced model call, so what they took is committed here.
+        const taken = governance.dispatchCount(sessionIdOf(runtime), state);
+        if (taken > (fields.dispatchCount ?? 0)) update.dispatchCount = taken;
 
         // 1. Report the message the model just produced and what it cost. Usage is
         //    committed as the new total: the channel is last-value and this hook is its one writer.
@@ -397,16 +379,29 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           });
         }
 
-        // 3. A `before` hook refused this state: the model never ran, so nothing
-        //    below applies. Routed like any terminal rejection — the refusal text
-        //    stays in the transcript as the reply the person is owed, unlike the
-        //    budget marker above, which stood in for an answer that never came.
-        const refusedEntry = beforeVetoReason(last);
-        if (refusedEntry !== undefined) {
-          return asHookResult({
-            ...update,
-            ...routeFailure(failureCtx, state, runtime, workflowState, refusedEntry, "after-model"),
-          });
+        // 3. An automated state ran in place of the model call: the marker leaves
+        //    the transcript and its outcome is committed. A move jumps back to the
+        //    model, where the next state runs; a raise ends the session; a failure
+        //    routes; a terminal state's completion falls through to the checks
+        //    every completing session gets.
+        const step = automatedOutcomeOf(last);
+        let completedVariables: VariableStore | undefined;
+        if (step && typeof last?.id === "string") {
+          const committed = commitAutomated(step, last.id, state, runtime);
+          if (step.result.kind === "failed") {
+            const routed = routeFailure(failureCtx, state, runtime, workflowState, step.result.reason, "after-model");
+            return asHookResult({
+              ...update,
+              ...committed,
+              ...routed,
+              // The marker is removed, so the handler's visit starts after the message before it.
+              ...(routed.visits ? { visits: visitStart(routed.visits[0]!.state, messages.slice(0, -1)) } : {}),
+              messages: [...(committed.messages ?? []), ...(routed.messages ?? [])],
+            });
+          }
+          if (step.result.kind !== "completed") return asHookResult({ ...update, ...committed });
+          Object.assign(update, committed);
+          completedVariables = committed.variables;
         }
 
         // 4. A park's closing or answering turn was just spent.
@@ -426,45 +421,20 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         // routes once the model has finished in the failing state.
         const failure = pendingFailure(state);
         if (failure) {
+          const routed = routeFailure(failureCtx, state, runtime, workflowState, failure, "after-model");
           return asHookResult({
             ...update,
-            ...routeFailure(failureCtx, state, runtime, workflowState, failure, "after-model"),
+            ...routed,
+            // A completed automated step's marker still leaves the transcript.
+            messages: [...(update.messages ?? []), ...(routed.messages ?? [])],
           });
-        }
-
-        // A terminal state has no `archmax_advance` out of it, so its `after` hook
-        // runs at completion: `correct` hands the state back with a note, a
-        // terminal failure routes through `on_error`.
-        if (machine.isTerminal(workflowState) && lifecycleHooks[workflowState]?.after?.length) {
-          const ctx = governance.lifecycleCtx(sessionIdOf(runtime), state, runtime.signal);
-          const reject = await lifecycle.runPhase(workflowState, "after", ctx, undefined, true);
-          commitDispatches();
-          if (reject) {
-            if (reject.terminal) {
-              return asHookResult({
-                ...update,
-                iterations: ctx.iterations,
-                ...routeFailure(failureCtx, state, runtime, workflowState, reject.reason, "after-model"),
-              });
-            }
-            return asHookResult({
-              ...update,
-              messages: runtimeNote(
-                "after",
-                `[after] The '${workflowState}' completion check did not pass: ${reject.reason}. ` +
-                  `Revise your work and produce a corrected final response.`,
-              ),
-              iterations: ctx.iterations,
-              jumpTo: "model",
-            });
-          }
-          update.iterations = ctx.iterations;
         }
 
         // The exit half of the trigger's signature, checked where a run completes —
         // never at a park, and never handed back: a child settles on what it set
         // (its caller gets a note naming the rest); anything else short of it is rejected.
-        const store = readVariables(state);
+        // A terminal automated state's writes count: they land with this update.
+        const store = completedVariables ? mergeVariables(readVariables(state), completedVariables) : readVariables(state);
         const returns = checkReturns(machine, {
           trigger: fields.trigger?.id,
           state: workflowState,
@@ -483,24 +453,104 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
       },
     },
 
-    // Flush this turn's staged `beforeDone` entries as one state update.
-    afterAgent: (state, runtime) => {
-      const staged = governance.endTurn(sessionIdOf(runtime));
-      if (!staged) return undefined;
-      return { beforeDone: { ...(readWorkflowState(state).beforeDone ?? {}), ...staged } };
+    // The turn is over: drop the session's per-turn context.
+    afterAgent: (_state, runtime) => {
+      governance.endTurn(sessionIdOf(runtime));
+      return undefined;
     },
   });
+
+  /**
+   * The update an automated step's outcome commits, beside the marker's removal:
+   * its variable writes, its sub-run trail steps, its usage, and — for a move or
+   * a raise — the move itself or the failure record, with the runtime note the
+   * next state reads. A move jumps back to the model, which skips the
+   * `beforeModel` site, so what that site would do for the next call is done
+   * here: into a human state the park opens straight in its closing turn, and
+   * into an agent state the call is counted against the turn's budget — routed
+   * through the target's `on_error` once that budget is spent, as `beforeModel`
+   * routes it.
+   */
+  function commitAutomated(
+    step: AutomatedOutcome,
+    markerId: string,
+    state: WorkflowRequestState,
+    runtime: FrameworkRuntime,
+  ): WorkflowUpdate {
+    const note = automatedNoteText(step);
+    const notes = note ? runtimeNote(step.type, note) : [];
+    const committed: WorkflowUpdate = {
+      messages: [new RemoveMessage({ id: markerId }), ...notes],
+      ...(step.variables ? { variables: step.variables } : {}),
+      ...(step.usage ? { usage: addSummaries(readRunUsage(state), step.usage) } : {}),
+      ...(step.trail?.length ? { auditTrail: step.trail } : {}),
+    };
+    const { result } = step;
+    if (result.kind === "raised") {
+      return {
+        ...committed,
+        raised: { code: result.code, reason: result.reason, state: step.state },
+        status: WORKFLOW_STATUSES.failed,
+        ...NO_PENDING_FAILURE,
+      };
+    }
+    if (result.kind !== "advanced") return committed;
+    // The marker is removed, so the target's visit starts after the message before it.
+    const anchor = messagesIn(state).slice(0, -1);
+    const { update: moved, park } = transitionUpdate(machine, state, {
+      to: result.to,
+      kind: step.type,
+      reason: result.reason,
+      anchor,
+      ...(result.evidence ? { evidence: result.evidence } : {}),
+    });
+    const landed: WorkflowUpdate = {
+      ...committed,
+      ...moved,
+      auditTrail: [...(committed.auditTrail ?? []), ...(moved.auditTrail ?? [])],
+    };
+    if (park) return { ...landed, ...closingTurn(), jumpTo: "model" };
+    if (machine.isAutomatedState(result.to)) return { ...landed, jumpTo: "model" };
+
+    // The agent's call about to be made is its state's first, and one more of the turn's.
+    const invocation = invocationOf(runtime as RunnableConfig);
+    const calls = invocation === undefined ? undefined : turnCallsOf(readWorkflowState(state), invocation);
+    if (calls && !calls.exhausted && calls.count + 1 > machine.maxModelCalls) {
+      const routed = routeFailure(
+        failureCtx,
+        state,
+        runtime,
+        result.to,
+        `the turn exhausted its budget (maxModelCalls: ${machine.maxModelCalls})`,
+        "after-model",
+      );
+      return {
+        ...landed,
+        ...routed,
+        auditTrail: [...(landed.auditTrail ?? []), ...(routed.auditTrail ?? [])],
+        ...(routed.visits ? { visits: [...(landed.visits ?? []), ...visitStart(routed.visits[0]!.state, anchor)] } : {}),
+        messages: [...(landed.messages ?? []), ...(routed.messages ?? [])],
+        turnCalls: { ...calls, count: calls.count + 1, exhausted: true },
+        ...(routed.workflowState ? { stateTurns: { state: routed.workflowState, count: 1 } } : {}),
+      };
+    }
+    return {
+      ...landed,
+      stateTurns: { state: result.to, count: 1 },
+      ...(calls ? { turnCalls: { ...calls, count: calls.count + 1 } } : {}),
+      jumpTo: "model",
+    };
+  }
 
   return {
     parkMiddleware,
     middleware,
     tools: createControlTools({ child: opts.child === true }),
-    lifecycle,
     dispose: (sessionId) => {
       // Requested per session, so it sweeps the session and every sub-run session nested beneath it.
       for (const scope of new Set([...governance.release(sessionId), sessionId])) {
         ptcGateway?.release(scope);
-        lifecycle.dispose(scope);
+        opts.codeExecutor.dispose(scope, CODE_SESSION);
       }
     },
   };

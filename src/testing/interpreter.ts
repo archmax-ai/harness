@@ -3,8 +3,8 @@
  * session with its start conditions, then walk the flat step list — actions
  * (`send`, `decide`, `deliver`) drive the agent through `workflow.send`, and each
  * assertion evaluates against the view of the nearest action above it. No sandbox is involved —
- * the QuickJS sandbox serves only lifecycle hooks and the agent's own sandbox
- * tools inside the driven agent.
+ * the QuickJS sandbox serves only code states and the agent's own sandbox tools
+ * inside the driven agent.
  *
  * A case that dies partway is still reported: termination is returned as an
  * `error` on the outcome, next to the records the case had already produced,

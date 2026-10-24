@@ -1,0 +1,287 @@
+## MODIFIED Requirements
+
+### Requirement: Documentation information architecture
+
+The Starlight configuration (`docs/astro.config.mjs`) SHALL define a sidebar with Getting
+Started, Guides, Reference, and Contributing sections, and SHALL set the site title, description,
+a GitHub social link, and an edit link pointing at the `docs/` source on the default branch. The
+Reference section SHALL carry the configuration, CLI, machine-spec, glossary, public-API and
+changelog pages; the Guides section SHALL cover the workflow machine, the authoring plane,
+triggers, skills, grader and code states (`guides/automated-states.md`), sub-workflows, sessions,
+the code interpreter, the CLI, testing, and token efficiency.
+
+No page SHALL present a removed concept as current behaviour: a `subagents/` directory, a
+`SUBAGENT.md` file, a `before` or `after` hook of any kind (`script`, `rubric`, `subagent` or a
+custom kind), a hook verdict (`ok`, `correct`, `veto`), an agent-callable `task` tool, a
+`max_iterations` or `max_corrections` key, an `extensions` block, the `hookExecutors` option, the
+`rubric` model role, a runtime contract `1` or `2`, or an `editor:` spec block.
+
+#### Scenario: Sidebar exposes the core sections
+
+- **WHEN** a reader opens the site
+- **THEN** the sidebar presents Getting Started, Guides, Reference, and Contributing
+- **AND** every entry resolves to an existing content page
+
+#### Scenario: The grading guide replaces the subagent guide
+
+- **WHEN** a reader looks for how a session's work is graded or checked before the session moves on
+- **THEN** the Guides section offers the grader and code states page (`guides/automated-states.md`),
+  and no page documents grading rubrics, hooks or subagents
+
+### Requirement: The glossary is the vocabulary law
+
+The site SHALL carry a glossary (`reference/glossary.md`) naming one term per concept — session,
+turn, state, human state, **automated state**, **grader state**, **code state**, case, grade,
+mount, zone, authoring backend, park, decide/reply/deliver, runtime note, trail, **history**, state
+flow, archmax harness/runtime/kernel/Deep Agents — and every page, README section, skill file, CLI
+message and identifier SHALL use those terms. A page that uses a different word for one of those
+concepts is a defect. "Subagent" SHALL NOT be one of the terms: what grades a session's work is a
+grader state, and what runs a delegated process is a sub-workflow. The glossary SHALL carry no
+entry for hook, verdict, grading rubric or iteration budget. It SHALL keep **trail** (the
+checkpointed audit trail) distinct from **history** (the full transcript and trail that
+`archmax_get_history` returns to a grader and a code state's script receives).
+
+#### Scenario: A page uses the glossary term
+
+- **WHEN** a page refers to the durable conversation a workflow runs in
+- **THEN** it says "session", not "run" or "thread"
+
+#### Scenario: The grader is named consistently
+
+- **WHEN** a page refers to the state that grades a session's work before the session moves on
+- **THEN** it says "grader state" (and "grader" for what that state runs), never "grading rubric",
+  "hook" or "judge"
+
+#### Scenario: Automated states are named consistently
+
+- **WHEN** a page refers to grader and code states together, or to a deterministic check a
+  workflow runs between two states
+- **THEN** it says "automated state" for the pair and "code state" for the check, never "hook",
+  "gate" or "guard"
+
+#### Scenario: History and trail stay distinct
+
+- **WHEN** a page refers to what `archmax_get_history` returns
+- **THEN** it says "history", and it uses "trail" only for the checkpointed audit trail the
+  history contains
+
+#### Scenario: The software is named consistently
+
+- **WHEN** a page refers to the package as a whole
+- **THEN** it says "archmax harness" (or "the harness" once the full name is established), never
+  "the framework" or "the platform"
+
+#### Scenario: The parts of the software are named consistently
+
+- **WHEN** a page refers to what executes a session or decides whether a tool call or a
+  transition is allowed
+- **THEN** it says "the runtime" or "the kernel", not "the harness"
+
+### Requirement: Documentation ships with the behaviour it describes
+
+The project SHALL maintain the convention, stated in `openspec/config.yaml`, that a change to
+user-facing behaviour — the CLI, configuration, the authoring surface (`workflow.yaml` schema,
+grader and code states, the code-state script contract, governance, human states, cases, sandbox
+contracts), or the public API — updates the relevant `docs/` pages, `README.md` and
+`skills/archmax-harness/` in the same change. Proposals SHALL name the affected pages in their
+Impact section and task lists SHALL carry an explicit task for each.
+
+#### Scenario: A user-facing change includes documentation tasks
+
+- **WHEN** a change modifies user-facing behaviour
+- **THEN** its `tasks.md` includes tasks for the corresponding `docs/` pages, for `README.md`
+  when the change matters to SDK users, and for `skills/archmax-harness/` when the authoring surface moved
+
+### Requirement: Distributable authoring skill
+
+The project SHALL provide one Agent Skill under `skills/archmax-harness/` — a `SKILL.md` with frontmatter
+(`name`, `description`) and a concise playbook body, plus `references/workflow-schema.md`, a
+script reference covering code-state scripts and cases, `references/backend-integration.md` and a
+`README.md` with the `npx skills add` command, license and safety notes. The build SHALL copy it to
+`dist/authoring-skill/archmax-harness/` and the package SHALL export `BUNDLED_AUTHORING_SKILL_DIR`, the
+`dist/authoring-skill` directory holding `archmax-harness/`. The published package SHALL also ship the
+source directory as `skills/archmax-harness/`, where the skills CLI discovers it in an installed package.
+It SHALL be the repository's only skill the skills CLI lists: contributor skills under `.claude/skills/`
+SHALL carry `metadata.internal: true`. The install documentation (README, installation page, the
+skill's `README.md`) SHALL present `npx skills add archmax-ai/harness` as the primary path for external
+users, the packaged copy as the version-matched path, and a checkout as the development path.
+
+#### Scenario: Skill ships in the published package
+
+- **WHEN** the package is installed from a registry or tarball
+- **THEN** `<BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md` and
+  `skills/archmax-harness/SKILL.md` exist in the package and match the repository state it was built from
+
+#### Scenario: Skill is installable from GitHub
+
+- **WHEN** a developer runs `npx skills add archmax-ai/harness`
+- **THEN** the skills CLI finds exactly one skill, `archmax-harness`, and installs it into the coding
+  agent's skill directory
+
+#### Scenario: Skill is installable from the installed package
+
+- **WHEN** a developer runs `npx skills add ./node_modules/@archmax-ai/harness` or
+  `npx skills experimental_sync` in a project that depends on the package
+  (or `npx skills add ./skills/archmax-harness` in a checkout)
+- **THEN** the skill installs into the coding agent's skill directory at the installed SDK version
+
+### Requirement: The skill covers the whole authoring surface
+
+The skill SHALL teach, from the current code: the two-file workflow (`workflow.yaml` as the strict,
+authoritative machine; `WORKFLOW.md` as prose with no frontmatter) and the spec-rendered graph
+section; every root and state key of the schema, slugs versus titles, `disabled`, budgets,
+`on_error`, transitions and their types, the four state types (`agent`, `human`, `grader`,
+`code`) and the keys each reads, human states, terminal states; the `metadata` slot at the
+root and on a state (free-form host data the runtime never reads); triggers (`manual`, several
+per state, the state's `triggers` mapping keyed by trigger id with `session`, `message`,
+`connection`, `requires`, `returns`, and that a trigger is declared nowhere else); variables (`${{…}}`
+guards, agent-side interpolation with the `$${{…}}` escape, `requires`, the reserved `trigger`
+and `title`); **tool and skill governance as one symmetric model** — `allow_always` and
+`forbid_always` at the root, `allow` and `forbid` on a state, for `tools` and `skills` alike; that a
+grant composes additively while a denial beats every grant and no narrower level widens one; that a
+forbid entry may name the tool `*`; that a state's `forbid` is how a state opts out of a
+workflow-wide grant, an empty `allow` being no denial at all; always-on tools, the tools no
+automated state is offered (`write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`,
+`archmax_reset`), and that `task` is grantable by nothing; the authoring backend split (the agent
+cannot read `workflows/**`; code-state scripts in `workflows/<slug>/scripts/`, runtime scripts and
+data in skill bundles; `scratchpad/` as the one working area); **code states** (`type: code` with
+`script: scripts/<file>.js`, and the code-state script contract: a default-export function
+receiving `{ state, trigger, variables, messages, trail, tools }`, moving the session with
+`tools.archmax_advance({ to, reason })` or ending it with `tools.archmax_raise`, its return value
+not read, typed imports from `@archmax-ai/harness/sandbox` such as `defineCodeState` and
+`CodeStateInput`; that its `tools.*` reach exactly its own state's tool surface, held to that
+state's allow and forbid lists as an `archmax_run` script is, and to every workflow-wide denial;
+that a terminal code state completes the session when its script returns, while a non-terminal one
+that neither advances nor raises fails through `on_error`); **grader states** (`type: grader` with
+`instructions`, an optional `model` and at least one transition; that a grader reads the session
+only through `archmax_get_history`, decides with `archmax_advance`, whose reason is what the next
+state reads, or ends the session with `archmax_raise`; that it has no iteration budget, so
+instructions that bound send-backs count them from the history's trail; that approving into a
+terminal code state ends the session with no further model call; and that no sandbox context has
+`task()`); that a chain of code states makes no model call, and that a runaway cycle of automated
+states stops at the session's recursion limit; sub-workflows, including that a child inherits every ancestor's workflow-wide denials and no per-state list; cases (the strict YAML grammar, `title`/`description`,
+`trigger`/`variables`/`workspace` with `from:` fixtures, `mocks`, the flat `steps` list, `grade`,
+the `tests:` block); and the verify loop `archmax validate` → fix → `archmax test`. It SHALL teach
+sequential execution only (no `parallel`/`join`) and SHALL declare the runtime contract it targets
+(`engine: archmax-harness`, `version: "3"`).
+
+It SHALL teach one form per concept and no superseded one: no `subagents/` directory or
+`SUBAGENT.md`, no `before`/`after` hook of any kind (`script`, `rubric`, `subagent` or a custom
+kind), no `max_iterations` or `max_corrections`, no `extensions` block, no `hookExecutors` option,
+no `editor:` block, no root `triggers:` block or singular state `trigger:`, no root `skills.allow`
+ceiling model and no `policy:` block. The state keys `before` and `after`, the `extensions` block,
+a `runtime.version` of `1` or `2`, the root `skills.allow` ceiling and the `policy:` block are load
+errors, and the skill SHALL say so where an author might reach for them. For `before`/`after` it
+SHALL give the rewrite: a `before` check becomes a code state in front of the state, an `after`
+check a code state behind it, and a rubric a grader state. It SHALL carry no migration recipe for
+legacy JS cases, and no hook verdict vocabulary (`ok()`, `veto()`, `correct()`, `t.check` and its
+kin) or verdict return shape (a bare `false`, `{ ok: false }`).
+
+#### Scenario: Skill produces a schema-valid scaffold
+
+- **WHEN** an agent follows the skill to scaffold a workflow
+- **THEN** the produced `workflow.yaml` loads under the strict schema and `archmax validate`
+  reports no error, and any produced cases parse under the case schema
+
+#### Scenario: Skill teaches the additive skills grant
+
+- **WHEN** an agent follows the skill to give a workflow a capability every state needs
+- **THEN** it declares `skills: { allow_always: [<slug>] }` at the root and names the slug on no
+  state, and it reaches for a state's `skills.allow` only for a state-specific capability
+
+#### Scenario: Skill teaches denial in the same two positions
+
+- **WHEN** an agent follows the skill to keep one state away from a capability the workflow grants
+  everywhere, or to deny a tool workflow-wide
+- **THEN** it writes `skills: { forbid: [<slug>] }` on that state, respectively
+  `tools: { forbid_always: [...] }` at the root — and never a `policy:` block (a load error), nor an
+  empty `allow` list as a way to deny
+
+#### Scenario: Hook example follows the contract
+
+- **WHEN** an agent following the skill meets a `before` or `after` hook, in a workflow
+  `archmax validate` rejects for the unrecognized key or in its own plan
+- **THEN** the skill offers no hook example and has it rewrite a `before` check as a code state in
+  front of the state, an `after` check as a code state behind it, and a rubric as a grader state,
+  with `runtime.version` set to `"3"` or omitted
+
+#### Scenario: Code-state example follows the contract
+
+- **WHEN** an agent follows the skill to add a deterministic check to a workflow
+- **THEN** it declares a `type: code` state with `script: scripts/<file>.js`, places the file under
+  `workflows/<slug>/scripts/`, and the file's default export moves the session with
+  `tools.archmax_advance` or ends it with `tools.archmax_raise`, returning no verdict
+
+#### Scenario: Grading example follows the current model
+
+- **WHEN** an agent follows the skill to have a state's reply graded
+- **THEN** it declares a `type: grader` state with `instructions`, routes the graded state's
+  transition into it, gives it transitions back to the graded state and onward, and declares no
+  rubric, no `before`/`after` slot and no grader file, directory or root block
+
+#### Scenario: Trigger example follows the current model
+
+- **WHEN** an agent follows the skill to wire a trigger with a session path and a signature
+- **THEN** it declares them under the entering state's `triggers:` mapping, and the skill
+  documents no root block and no `entry:` key
+
+#### Scenario: No superseded form is taught
+
+- **WHEN** the skill is searched for a superseded authoring form
+- **THEN** it teaches none of them as current, and points at the changelog for what changed
+
+### Requirement: The skill teaches the wiring API as it is
+
+`references/backend-integration.md` SHALL teach `createAgent` with Deep Agents' own option names
+plus `workflow`, `workspace` (`rootDir`, `mounts`, `sessionStore`) and
+`authoring` (the backend serving `workflows/**`, that is specs, `WORKFLOW.md`, code-state scripts
+and cases, to the runtime only); `modelFactory` and its roles (`agent`, `judge`, `grader`), a
+grader state's model being resolved under `grader`; that omitting `workflow` yields a plain Deep
+Agent; the `agent.workflow.*` surface
+(`send`, `decide`, `respond`, `deliver`, `resolveSession`, `resolveTrigger`) and the session-level
+members on the agent (`sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `dispose`); the
+`onEvent` stream, including the `code-*` and `grader-*` events that bracket an automated state's
+run; the session artifacts (`graph.json`, `trail.json`, `variables.json`,
+`metadata.json`); and token accounting via `model-usage` events (a grader's calls included),
+`createUsageTracker` and the `pricing` option. Every code path or export it names SHALL exist in
+the current source, so it names no `hookExecutors` option and no `rubric` model role.
+
+#### Scenario: Wiring example is Deep Agents-shaped
+
+- **WHEN** an agent reads the assembly example
+- **THEN** it calls `createAgent({ workflow, workspace, onEvent, … })` and reaches session
+  handles at `agent.sessions`
+
+#### Scenario: Human-in-the-loop resumption
+
+- **WHEN** a session parks at a human state
+- **THEN** the reference shows reading the pending decision from the `Outcome`, listing its
+  transitions, and resuming with `agent.workflow.decide(sessionId, { target, comment })`
+
+#### Scenario: Graders on their own model
+
+- **WHEN** an agent reads how to run grader states on a different model from the session's agent
+- **THEN** the reference shows a `modelFactory` that answers the `grader` role, and names no
+  `rubric` role and no `hookExecutors` option
+
+### Requirement: Mandatory JSDoc header on authored code files
+
+The skill SHALL instruct that every JavaScript file authored in a workspace — code-state scripts
+and `archmax_run` sources — opens with a JSDoc block: a one-line title, a blank line, and a prose
+description of what the code reads, the sequence it performs, and each outcome (for a code state,
+the condition for each transition it advances to and for each raise). Cases, being YAML, SHALL
+carry the same depth in their mandatory `description`. The skill SHALL state accurately that
+`archmax validate` enforces the case `description` while the JSDoc header is an authoring
+standard, and every complete file example the skill ships SHALL model it.
+
+#### Scenario: Agent authors a hook script that satisfies the rule
+
+- **WHEN** an agent asks the skill how to head a hook script
+- **THEN** the skill teaches no hook script, and its JSDoc rule names the two kinds of JavaScript a
+  workspace holds: code-state scripts and `archmax_run` sources
+
+#### Scenario: Agent authors a code-state script that satisfies the rule
+
+- **WHEN** an agent follows the skill to write a code state's script
+- **THEN** the file opens with a title-plus-description JSDoc block naming the inputs read and
+  the condition for each transition it advances to and each raise

@@ -3,10 +3,10 @@ import { ToolMessage } from "@langchain/core/messages";
 import { Command } from "@langchain/langgraph";
 import type { MountPrefixes } from "../core/zones.js";
 import { decide } from "../kernel/kernel.js";
-import type { LifecycleContext, LifecycleRunner } from "../lifecycle/runner.js";
 import { WorkflowMachine } from "../machine/machine.js";
 import type { MachineSpec } from "../machine/types.js";
 import {
+  advanceEvidence,
   createControlTools,
   entryStateOf,
   handleAdvance,
@@ -19,6 +19,8 @@ import {
   RAISE_TOOL,
   RESET_TOOL,
   resolveWaitUntil,
+  transitionRefusal,
+  transitionUpdate,
   validateAdvanceEvidence,
   WAIT_TOOL,
 } from "./control-tools.js";
@@ -100,36 +102,14 @@ const REVIEW: MachineSpec = {
 };
 const machine = WorkflowMachine.fromSpec(REVIEW);
 
-function ctx(iterations: Record<string, number> = {}): LifecycleContext {
-  return { sessionId: "t", tools: [], messages: [], config: {}, iterations };
+function advance(args: Record<string, unknown>, state: Record<string, unknown> = { workflowState: "a" }) {
+  return handleAdvance({ machine }, { toolCallId: "call-1", args, state });
 }
-
-function withRunner(attempt: LifecycleRunner["attemptTransition"]) {
-  return { machine, lifecycle: { attemptTransition: attempt } as unknown as LifecycleRunner };
-}
-
-const passing: LifecycleRunner["attemptTransition"] = async (from, to) => ({
-  ok: true,
-  from,
-  to,
-  corrections: {},
-});
 
 describe("handleAdvance", () => {
-  it("advances with a reason, forwards it to the runner, and commits the move", async () => {
-    let received: { from?: string; reason?: string } = {};
-    const opts = withRunner(async (from, to, _ctx, reason) => {
-      received = { from, reason };
-      return { ok: true, from, to, corrections: {} };
-    });
-    const outcome = await handleAdvance(opts, {
-      toolCallId: "call-1",
-      args: { to: "b", reason: "answer is complete" },
-      state: { workflowState: "a" },
-      ctx: ctx(),
-    });
-    expect(received).toEqual({ from: "a", reason: "answer is complete" });
-    expect(outcome.moved).toEqual({ from: "a", to: "b" });
+  it("advances with a reason and commits the move", () => {
+    const outcome = advance({ to: "b", reason: "answer is complete" });
+    expect(outcome.moved).toEqual({ from: "a", to: "b", reason: "answer is complete" });
     const update = commandUpdate(outcome.message);
     expect(update.workflowState).toBe("b");
     expect(update.stateTurns).toBeNull();
@@ -139,17 +119,16 @@ describe("handleAdvance", () => {
     expect(message!.tool_call_id).toBe("call-1");
   });
 
-  it("opens a park in its closing phase when the target is a human state", async () => {
-    const outcome = await handleAdvance(withRunner(passing), {
-      toolCallId: "call-1",
-      args: { to: "review", reason: "ready", evidence: ["scratchpad/notes.md"] },
-      state: { workflowState: "a", decisionCount: 1 },
-      ctx: ctx(),
-    });
+  it("opens a park in its closing phase when the target is a human state", () => {
+    const outcome = advance(
+      { to: "review", reason: "ready", evidence: ["scratchpad/notes.md"] },
+      { workflowState: "a", decisionCount: 1 },
+    );
     const update = commandUpdate(outcome.message);
     expect(update.status).toBe("awaiting_decision");
     expect(update.parkPhase).toBe("closing");
     expect(update.decisionCount).toBe(2);
+    expect(update.pendingDecision).toBe(outcome.moved?.park);
     expect(outcome.moved?.park).toMatchObject({
       state: "review",
       title: "Review",
@@ -160,95 +139,136 @@ describe("handleAdvance", () => {
     });
   });
 
-  it("refuses evidence attached to an agent target, without attempting the transition", async () => {
-    let attempted = false;
-    const opts = withRunner(async (from, to) => {
-      attempted = true;
-      return { ok: true, from, to, corrections: {} };
-    });
-    const outcome = await handleAdvance(opts, {
-      toolCallId: "call-1",
-      args: { to: "b", reason: "go", evidence: ["scratchpad/x.md"] },
-      state: { workflowState: "a" },
-      ctx: ctx(),
-    });
-    expect(attempted).toBe(false);
+  it("refuses evidence attached to an agent target, without moving", () => {
+    const outcome = advance({ to: "b", reason: "go", evidence: ["scratchpad/x.md"] });
     expect(outcome.moved).toBeUndefined();
     expect((outcome.message as ToolMessage).status).toBe("error");
     expect(String((outcome.message as ToolMessage).content)).toMatch(/not one/);
   });
 
-  it("commits a terminal rejection as `rejected` so on_error routing fires", async () => {
-    const opts = withRunner(async () => ({
-      ok: false,
-      reason: "judge veto: still incomplete after 2 correction attempt(s)",
-      terminal: true,
-      corrections: { a: 3 },
-    }));
-    const outcome = await handleAdvance(opts, {
-      toolCallId: "call-1",
-      args: { to: "b", reason: "try again" },
-      state: { workflowState: "a" },
-      ctx: ctx(),
-    });
-    const update = commandUpdate(outcome.message);
-    expect(update.rejected).toContain("still incomplete after 2");
-    expect(update.workflowState).toBeUndefined();
-    expect(update.iterations).toEqual({ a: 3 });
+  // A refused transition is the agent's to correct: it replies without erroring
+  // the message and commits nothing — no position, no trail step, no rejection.
+  it("refuses an edge the state does not declare, naming the valid targets", () => {
+    const outcome = advance({ to: "nowhere", reason: "guessing" });
     expect(outcome.moved).toBeUndefined();
+    expect(outcome.message).toBeInstanceOf(ToolMessage);
+    const message = outcome.message as ToolMessage;
+    expect(message.status).toBeUndefined();
+    expect(String(message.content)).toBe(
+      "archmax_advance rejected: cannot advance from 'a' to 'nowhere'. Valid target slugs: b, review.",
+    );
   });
 
-  it("does not set `rejected` for a recoverable rejection, and clears it on success", async () => {
-    const recoverable = withRunner(async () => ({
-      ok: false,
-      reason: "judge: add totals",
-      terminal: false,
-      corrections: { a: 1 },
-    }));
-    const rejected = commandUpdate(
-      (
-        await handleAdvance(recoverable, {
-          toolCallId: "call-1",
-          args: { to: "b", reason: "advance" },
-          state: { workflowState: "a" },
-          ctx: ctx(),
-        })
-      ).message,
-    );
-    expect(rejected.rejected).toBeUndefined();
-    const [message] = rejected.messages as ToolMessage[];
-    expect(String(message!.content)).toContain("archmax_advance rejected: judge: add totals");
-    expect(message!.status).toBeUndefined();
-
-    const success = commandUpdate(
-      (
-        await handleAdvance(withRunner(passing), {
-          toolCallId: "call-2",
-          args: { to: "b", reason: "advance" },
-          state: { workflowState: "a", rejected: "earlier" },
-          ctx: ctx(),
-        })
-      ).message,
-    );
-    expect(success.rejected).toBeNull();
-  });
-
-  it("rejects a call with an empty or missing reason without attempting the transition", async () => {
-    let attempted = false;
-    const opts = withRunner(async (from, to) => {
-      attempted = true;
-      return { ok: true, from, to, corrections: {} };
+  it("refuses to leave a state that still owes a required variable, then moves once it is set", () => {
+    const owing = WorkflowMachine.fromSpec({
+      states: {
+        a: { triggers: { manual: null }, requires: ["verdict"], transitions: [{ to: "b", description: "Test edge to b." }] },
+        b: {},
+      },
     });
+    const refused = handleAdvance(
+      { machine: owing },
+      { toolCallId: "call-1", args: { to: "b", reason: "done" }, state: { workflowState: "a", variables: {} } },
+    );
+    expect(refused.moved).toBeUndefined();
+    expect((refused.message as ToolMessage).status).toBeUndefined();
+    expect(String((refused.message as ToolMessage).content)).toBe(
+      "archmax_advance rejected: cannot leave 'a' yet: 'verdict' is not set. Record it with " +
+        "archmax_set_variables, then advance.",
+    );
+
+    const moved = handleAdvance(
+      { machine: owing },
+      {
+        toolCallId: "call-2",
+        args: { to: "b", reason: "done" },
+        state: { workflowState: "a", variables: { verdict: { value: "ok", locked: false } } },
+      },
+    );
+    expect(moved.moved).toMatchObject({ from: "a", to: "b" });
+  });
+
+  it("clears an earlier rejection marker on success", () => {
+    const update = commandUpdate(advance({ to: "b", reason: "advance" }, { workflowState: "a", rejected: "earlier" }).message);
+    expect(update.rejected).toBeNull();
+    expect(update.failedDelegations).toBeNull();
+  });
+
+  it("rejects a call with an empty or missing reason without moving", () => {
     for (const args of [{ to: "b", reason: "" }, { to: "b" }]) {
-      const outcome = await handleAdvance(opts, {
-        toolCallId: "call-1",
-        args,
-        state: { workflowState: "a" },
-        ctx: ctx(),
-      });
+      const outcome = advance(args);
+      expect(outcome.moved).toBeUndefined();
       expect((outcome.message as ToolMessage).status).toBe("error");
     }
-    expect(attempted).toBe(false);
+  });
+});
+
+/**
+ * The update every mover commits: the session's agent through `handleAdvance`,
+ * and a grader or code state's run when it settles.
+ */
+describe("transitionUpdate", () => {
+  it("records the mover as the trail step's kind", () => {
+    for (const kind of ["agent", "grader", "code"] as const) {
+      const { update, park } = transitionUpdate(machine, { workflowState: "a" }, { to: "b", kind, reason: "checked" });
+      expect(update).toMatchObject({ workflowState: "b", stateTurns: null, rejected: null });
+      expect(update.auditTrail).toMatchObject([{ to: "b", kind, reason: "checked" }]);
+      expect(park).toBeUndefined();
+      // Messages are the caller's: a tool reply, or a runtime note.
+      expect(update.messages).toBeUndefined();
+    }
+  });
+
+  it("commits the park record with a move into a human state", () => {
+    const { update, park } = transitionUpdate(
+      machine,
+      { workflowState: "a" },
+      { to: "review", kind: "code", reason: "ready", evidence: ["scratchpad/notes.md"] },
+    );
+    expect(park).toMatchObject({ state: "review", seq: 1, evidence: ["scratchpad/draft.md", "scratchpad/notes.md"] });
+    expect(update).toMatchObject({
+      pendingDecision: park,
+      decisionCount: 1,
+      status: "awaiting_decision",
+      parkPhase: "closing",
+    });
+  });
+});
+
+describe("transitionRefusal", () => {
+  const owing = WorkflowMachine.fromSpec({
+    states: {
+      a: { triggers: { manual: null }, requires: ["verdict"], transitions: [{ to: "b", description: "Test edge to b." }] },
+      b: {},
+    },
+  });
+
+  it("checks the state's requires before the edge, against the variables it is given", () => {
+    expect(transitionRefusal(owing, "a", "nowhere", {})).toMatch(/cannot leave 'a' yet: 'verdict' is not set/);
+    const set = { verdict: { value: "ok", locked: false } };
+    expect(transitionRefusal(owing, "a", "nowhere", set)).toMatch(/cannot advance from 'a' to 'nowhere'/);
+    expect(transitionRefusal(owing, "a", "b", set)).toBeUndefined();
+  });
+
+  it("says a terminal state has nowhere to go", () => {
+    expect(transitionRefusal(owing, "b", "a", {})).toMatch(/No transitions from this state/);
+  });
+});
+
+describe("advanceEvidence", () => {
+  it("accepts no attachment for any target", () => {
+    expect(advanceEvidence(machine, "b", [])).toEqual({ ok: true, paths: [] });
+  });
+
+  it("accepts an attachment only into a human state, validated as the agent's own reads", () => {
+    expect(advanceEvidence(machine, "review", ["./scratchpad/a.md"], mounts)).toEqual({
+      ok: true,
+      paths: ["scratchpad/a.md"],
+    });
+    const refused = advanceEvidence(machine, "b", ["scratchpad/a.md"]);
+    expect(refused.ok).toBe(false);
+    expect(refused.ok ? "" : refused.reason).toMatch(/'b' is not one/);
+    expect(advanceEvidence(machine, "review", ["checkpoints/cp-1.json"]).ok).toBe(false);
   });
 });
 
@@ -410,6 +430,22 @@ describe("wait tool governance", () => {
       expect(m.disclosedTools(state).has(WAIT_TOOL)).toBe(true);
     }
     expect(m.disclosedTools("done").has("archmax_advance")).toBe(false);
+  });
+
+  // A script frame is not durable and a grader judges rather than waits: nothing
+  // an automated state runs can park.
+  it("is neither offered nor permitted in an automated state", () => {
+    const m = WorkflowMachine.fromSpec({
+      states: {
+        ...spec.states,
+        check: { type: "code", script: "scripts/check.js", transitions: [{ to: "done", description: "Checked." }] },
+        grade: { type: "grader", instructions: "Grade it.", transitions: [{ to: "done", description: "Good." }] },
+      },
+    } as never);
+    for (const state of ["check", "grade"]) {
+      expect(m.checkAllowed(state, WAIT_TOOL, {})).toBe(false);
+      expect(m.disclosedTools(state).has(WAIT_TOOL)).toBe(false);
+    }
   });
 
   it("is removable workflow-wide by a denial", () => {
@@ -596,9 +632,7 @@ describe("handleReset", () => {
     workflowState: "orders-question",
     entryState: "identify-case",
     trigger: { id: "manual" },
-    iterations: { "orders-question": 2 },
-    beforeDone: { "orders-question": true },
-    rejected: "an earlier veto",
+    rejected: "an earlier refusal",
     stateTurns: { state: "orders-question", count: 3 },
     auditTrail: [
       { to: "identify-case", kind: "trigger", reason: "manual", ts: 1 },
@@ -615,10 +649,15 @@ describe("handleReset", () => {
 
   it("clears the bookkeeping that gates progress", () => {
     const u = commandUpdate(reset(parked).message);
-    expect(u.iterations).toEqual({});
-    expect(u.beforeDone).toEqual({});
     expect(u.rejected).toBeNull();
     expect(u.stateTurns).toBeNull();
+  });
+
+  it("tells the agent what was kept", () => {
+    const [message] = commandUpdate(reset(parked).message).messages as ToolMessage[];
+    expect(String(message!.content)).toBe(
+      "Reset to state 'identify-case'. Earlier work in the conversation and in scratchpad/ is untouched.",
+    );
   });
 
   it("records only the reset step, leaving the history to the channel", () => {

@@ -21,7 +21,7 @@ import {
 
 afterEach(cleanupWorkspaces);
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /**
  * One scripted model per id the spec declares, built on demand. `""` is the

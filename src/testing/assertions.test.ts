@@ -302,8 +302,8 @@ describe("evaluateExpectations trail assertions", () => {
   });
 
   it("noTraversal passes only when the trail holds trigger arrivals at most", async () => {
-    const vetoed = view({ auditTrail: [trailStep("identify-case", "trigger", "manual")] });
-    expect((await evaluate("  - noTraversal: true", vetoed))[0]?.status).toBe("passed");
+    const stayed = view({ auditTrail: [trailStep("identify-case", "trigger", "manual")] });
+    expect((await evaluate("  - noTraversal: true", stayed))[0]?.status).toBe("passed");
     expect((await evaluate("  - noTraversal: true", trailView))[0]?.status).toBe("failed");
     expect((await evaluate("  - noTraversal: true", view()))[0]?.status).toBe("passed");
   });

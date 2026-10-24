@@ -24,7 +24,7 @@ instructions: |-
 
 runtime:
   engine: archmax-harness
-  version: "2"
+  version: "3"
 
 settings:
   timeoutMs: 15000

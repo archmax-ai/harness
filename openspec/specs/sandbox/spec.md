@@ -4,7 +4,8 @@
 
 Define the one QuickJS sandbox the archmax harness runs authored JavaScript in: the two sandbox tools the
 agent calls (`archmax_eval` for inline code, `archmax_run` for a script file from a skill bundle)
-and the lifecycle hook scripts the runtime runs on its own authority. It fixes the two execution
+and the code-state scripts the runtime runs when a session enters a code state, each governed
+against the state it runs for. It fixes the two execution
 contexts and what each exposes, how script sources are read and prepared, how programmatic tool
 calls (PTC) are governed, the quotas that bound a session, and the pluggable runtime interface
 the bundled QuickJS engine implements. Cases never run in the sandbox.
@@ -40,219 +41,107 @@ every child scope beneath it.
 
 ### Requirement: Two execution contexts with distinct globals
 
-The runtime SHALL define exactly two sandbox contexts, `lifecycle-hook` and `ptc`, each with its
-own prelude assembled from versioned parts and selected by the executor from how the script is
-run. The `ptc` prelude (for `archmax_eval` and `archmax_run`) SHALL install the
-`SANDBOX_CONTRACT` marker and the state-scoped view of `tools` (see "Programmatic tool calls are
-governed per call"), and nothing else; `tools` and `args` are injected by the executor. The
-`lifecycle-hook` prelude SHALL install the verdict helpers `ok`, `veto`, `correct`, the
-`defineHook` identity wrapper, the verdict reducer and the `SANDBOX_CONTRACT` marker. Neither
-context SHALL carry driver or grader members, and there SHALL be no context for cases.
+The runtime SHALL define exactly two sandbox contexts, `ptc` and `code`, each with its own prelude
+assembled from versioned parts and selected by the executor from how the script is run. The `ptc`
+prelude (for `archmax_eval` and `archmax_run`) SHALL install the `SANDBOX_CONTRACT` marker and the
+state-scoped view of `tools` (see "An agent script's tools are the active state's surface"), and
+nothing else; `tools` and `args` are injected by the executor. The `code` prelude (for a code
+state's script) SHALL install the `SANDBOX_CONTRACT` marker, the `defineCodeState` identity alias
+that registers the default export, and the same state-scoped view of `tools`, scoped to the code
+state. `SANDBOX_CONTRACT` SHALL be `{ context, version }`, with `context` one of `ptc` and `code`
+and `version` the sandbox contract version, `3`, which is the only one. Neither context SHALL carry
+a verdict helper (`ok`, `veto`, `correct`), `defineHook`, a verdict reducer or driver members, and
+there SHALL be no context for cases or for grader states, which the runtime runs outside the
+sandbox.
 
-There SHALL be no third prelude. A compatibility prelude for a superseded hook vocabulary is not
-one of the contexts, so no source selects one and no assembly installs one.
+There SHALL be no third prelude. The removed `lifecycle-hook` context is not one of the contexts,
+and no compatibility prelude for the removed hook vocabulary exists, so no source selects one and
+no assembly installs one.
 
 #### Scenario: Prelude selected by context
 
-- **WHEN** the executor runs a script as a lifecycle hook
-- **THEN** the `lifecycle-hook` prelude is installed, and running source via `archmax_run` or
+- **WHEN** the executor runs a code state's script
+- **THEN** the `code` prelude is installed, and running source via `archmax_run` or
   `archmax_eval` installs the `ptc` prelude instead
 
 #### Scenario: Contract marker is introspectable
 
 - **WHEN** a script reads `SANDBOX_CONTRACT`
-- **THEN** it sees `{ context, version }` naming its context and the sandbox contract version
+- **THEN** it sees `{ context: "ptc", version: 3 }` in `archmax_eval` and `archmax_run`, and
+  `{ context: "code", version: 3 }` in a code state's script
 
 #### Scenario: Only two preludes exist
 
 - **WHEN** the assembled preludes are enumerated
-- **THEN** there are exactly two, and neither is a compatibility shim for a superseded vocabulary
+- **THEN** there are exactly two, `ptc` and `code`, and neither is a compatibility shim for a
+  removed vocabulary
 
-### Requirement: Hook scripts default-export a function returning a verdict
+#### Scenario: The removed hook vocabulary is not provided
 
-A hook script SHALL default-export a function (optionally wrapped in `defineHook`) that receives
-one input object — `{ state, phase, trigger, variables, messages, toolCalls, tools }` plus `from`,
-`to` and `reason` on an `after` hook run for an `archmax_advance` — and returns `ok()`,
-`veto(reason)`, `correct(reason)` or nothing (an `ok`). `toolCalls` SHALL be an async function
-whose filtering runs outside the sandbox: a call copies into the sandbox only the records it
-returns, and the hook input itself carries no tool results. The executor SHALL rewrite
-`export default` so the function survives evaluation, call it with the hook input and reduce its
-return to a verdict; a script that throws SHALL yield a veto.
-
-A return value outside that vocabulary SHALL reduce to no verdict, which the runtime treats as a
-fail-closed veto. A bare `false`, an `{ ok: false }` object, and the superseded
-`t.check`/`t.require`/`t.log` assertion vocabulary SHALL have no meaning in the sandbox: no
-compatibility prelude SHALL be installed for them and no deprecation SHALL be reported, because
-there is nothing left to deprecate.
-
-#### Scenario: Hook returns a verdict
-
-- **WHEN** an `after` hook's function returns `veto("no orders")`
-- **THEN** the lifecycle runner receives a `veto` verdict with that reason
-
-#### Scenario: Throwing is a veto
-
-- **WHEN** a hook function throws
-- **THEN** the hook outcome is a veto carrying the error, never an `ok`
-
-#### Scenario: A superseded return shape is not a verdict
-
-- **WHEN** a hook returns `false` or `{ ok: false, reason }`
-- **THEN** the reduction yields no verdict and the phase vetoes fail-closed, rather than reading the
-  value as a veto
-
-#### Scenario: The superseded assertion vocabulary is an ordinary error
-
-- **WHEN** a hook source calls `t.check(value, matcher)`
-- **THEN** `t` is undefined, the script throws, the phase vetoes with that error, and no
-  compatibility prelude or deprecation warning is involved
-
-#### Scenario: Only the queried tool results enter the sandbox
-
-- **WHEN** a session has made a hundred `search` calls and one `lookup` call, and a hook calls
-  `await toolCalls({ name: "lookup" })`
-- **THEN** the hook receives the one `lookup` record, and no `search` result is part of the hook's
-  input or of what the call returned
-
-#### Scenario: The query is not a tool
-
-- **WHEN** a hook lists `Object.keys(tools)`, or the agent's `archmax_eval` script reads `toolCalls`
-- **THEN** the listing does not include the query, and the agent's script finds no `toolCalls`
+- **WHEN** a code state's script calls `veto("no orders")`, or references `ok`, `correct` or
+  `defineHook`
+- **THEN** each is undefined, the reference throws, and the state's execution fails like any script
+  error
 
 ### Requirement: Typed imports are stripped, foreign imports are errors
 
-The executor SHALL accept hook sources that begin with static imports from `@archmax-ai/harness/*`
-specifiers (type carriers such as `import { ok, veto } from "@archmax-ai/harness/sandbox"`), SHALL strip
-them before evaluation while preserving line count, and SHALL reject any other import specifier
-with `ForbiddenSandboxImportError` naming the specifier — at execution and in `archmax validate`.
-The package SHALL ship `@archmax-ai/harness/sandbox` as an entry point whose runtime members are the
-verdict helpers and `defineHook` and whose types describe the hook input and verdict.
+The executor SHALL accept code-state scripts that begin with static imports from
+`@archmax-ai/harness/*` specifiers (type carriers such as
+`import { defineCodeState } from "@archmax-ai/harness/sandbox"`), SHALL strip them before
+evaluation while preserving line count, and SHALL reject any other import specifier with
+`ForbiddenSandboxImportError` naming the specifier — at execution and in `archmax validate`. The
+package SHALL ship `@archmax-ai/harness/sandbox` as an entry point whose one runtime member is
+`defineCodeState` and whose types describe a code state's input (`CodeStateInput`,
+`CodeStateArgs`, `CodeStateFn`, `HistoryMessage`, `TrailStep`, `ToolCallRecord`,
+`ToolCallFilter`, `SandboxTools`). It SHALL export none of the removed hook vocabulary (`ok`,
+`veto`, `correct`, `defineHook`, `HookArgs`, `HookResult`).
 
 #### Scenario: @archmax-ai/harness import stripped
 
-- **WHEN** a hook begins with `import { veto } from "@archmax-ai/harness/sandbox";`
-- **THEN** it executes as if the line were absent, with `veto` provided by the prelude, and stack
-  traces still point at the right source lines
+- **WHEN** a code state's script begins with
+  `import { defineCodeState } from "@archmax-ai/harness/sandbox";`
+- **THEN** it executes as if the line were absent, with `defineCodeState` provided by the `code`
+  prelude, and stack traces still point at the right source lines
 
 #### Scenario: Foreign import rejected
 
-- **WHEN** a hook imports `node:fs`
-- **THEN** the script is rejected with an error naming `node:fs`, and validation reports the same
+- **WHEN** a code state's script imports `node:fs`
+- **THEN** the script is rejected with an error naming `node:fs`, the state's execution fails, and
+  validation reports the same
+
+#### Scenario: The entry point carries no hook vocabulary
+
+- **WHEN** the runtime members of `@archmax-ai/harness/sandbox` are enumerated
+- **THEN** `defineCodeState` is the only one, and none of `ok`, `veto`, `correct` or `defineHook`
+  is exported
 
 ### Requirement: Script arguments, variables and return value
 
 `archmax_run` SHALL pass the call's arguments to the script as the global `args`, with the
 session's variables as the flat read-only map `args.variables` (`name → value`, including the
-built-in `trigger`, structured values whole). Hooks SHALL receive the same map as
-`input.variables`. Mutating the map SHALL not affect the checkpointed variables. Both sandbox
-tools SHALL return the last expression value, formatted, to the model, with errors reported as a
-tool error message rather than thrown out of the graph.
+built-in `trigger`, structured values whole). A code state's script SHALL receive the same map as
+`input.variables` and `args.variables`. Mutating the map SHALL not affect the checkpointed
+variables; a code state's script writes variables only through `tools.archmax_set_variables`.
+Both sandbox tools SHALL return the last expression value, formatted, to the model, with errors
+reported as a tool error message rather than thrown out of the graph. A code state's script's
+return value SHALL NOT be read.
 
 #### Scenario: Script reads a variable
 
 - **WHEN** an upstream state set `case_id` and an `archmax_run` script reads `args.variables.case_id`
-- **THEN** it is that value directly
+- **THEN** it is that value directly, as `input.variables.case_id` is in a code state's script
 
 #### Scenario: Snapshot mutation is inert
 
 - **WHEN** a script assigns to `args.variables.case_id`
 - **THEN** the session's checkpointed variables are unchanged after the script returns
 
-### Requirement: Programmatic tool calls are governed per call
+#### Scenario: A code state's script writes through the variable tool
 
-Scripts SHALL reach the agent's tools through the `tools.*` bridge, keyed by camelCase name
-(`tools.readFile`, `tools.archmaxWorkflowEnrichOrder`), with every result marshalled to text.
-The control tools and both sandbox tools (`archmax_advance`, `archmax_reset`, `archmax_wait`,
-`archmax_raise`, `archmax_eval`, `archmax_run`, `archmax_get_variables`, `archmax_set_variables`)
-and bare `eval` SHALL be absent from the bridge. Every PTC call SHALL pass through the kernel at
-call time against the workflow state active at that moment — an `archmax_run` or `archmax_eval`
-script on the model's authority (the state's `tools.allow` and `tools.forbid` bind it), a hook on
-runtime authority (the state's own governance does not bind it in either direction; the safety
-rules, the workflow's `tools.forbid_always`, `skills.forbid_always` and `mounts.forbid_always`, the
-workflow's mount grants on workflow scope, consumer rules and the reply-only rule do) — and SHALL emit the same tool events as an agent-initiated call. A script
-call's `${{name}}` guards SHALL resolve against the run's variables; no `${{…}}` substitution is
-applied to a script's arguments, which reach the kernel and the tool verbatim. A blocked call SHALL not execute the
-tool and SHALL reject inside the script with the rule id and reason. The bridge SHALL forward
-the turn's `RunnableConfig` (session id, abort signal, tool mocks) to the underlying tool, and a
-delegation tool called from a script SHALL fail closed with kind `parked` if the child parks.
-
-For an `archmax_eval` or `archmax_run` script, `tools` SHALL enumerate only the active state's
-surface: the tools the model's own tool list carries in the state the script's calls are
-governed against, minus the names absent from the bridge. `Object.keys`, `in` and `for…in`
-SHALL see only those names. The view SHALL be re-scoped at the start of every evaluation, so the
-first evaluation after a transition sees the new state's tools. `tools` SHALL be one object for
-the life of the REPL session: a reference an earlier evaluation kept SHALL read the current
-surface, and a script that overwrites `tools` SHALL get the view back at its next evaluation. A
-name outside the view that names a tool on the bridge SHALL still resolve, so calling it reaches
-the kernel, which refuses it with its rule and reason and emits `tool-blocked`. In such a script
-a tool's own name (`tools.read_file`, `tools["archmax_workflow_enrich-order"]`) SHALL resolve to
-the same function as its camelCase key, for a lookup, a call and `in` alike, under the same
-governance; the listing SHALL name the camelCase keys only. A lifecycle hook's `tools` SHALL keep
-every tool on the bridge.
-
-#### Scenario: A script calls a tool by its own name
-
-- **WHEN** an `archmax_eval` in a state that allows `read_file` calls
-  `await tools.read_file({ file_path: "notes.md" })`
-- **THEN** the call reaches `read_file` exactly as `tools.readFile` would, governed and evented
-  the same way, and `Object.keys(tools)` still lists `readFile`
-
-#### Scenario: Script call governed by the active state
-
-- **WHEN** code run via `archmax_eval` calls `tools.writeFile` on a path the state does not allow
-- **THEN** the kernel blocks it before the tool runs, exactly as it would block the agent's own
-  `write_file` call in that state, and the script can catch the rejection
-
-#### Scenario: Hook reads on runtime authority
-
-- **WHEN** a `before` hook in a state that enables no skill calls `tools.readFile` on a skill asset
-- **THEN** the read is permitted, while a write into the read-only authored zone is still refused
-
-#### Scenario: Hook reads a mount only its workflow grants
-
-- **WHEN** a `before` hook in a state that enables no mount calls `tools.readFile` on a governed
-  mount that another state of the same workflow enables, and then on a governed mount no grant of
-  the workflow names
-- **THEN** the first read is permitted and the second is refused with `mount.not-allowed`
-
-#### Scenario: Governance tracks the active state
-
-- **WHEN** a REPL session persists across calls made from different workflow states
-- **THEN** each PTC call is checked against the state active when it is made
-
-#### Scenario: Reply-only turn refuses every tool
-
-- **WHEN** a script issues a PTC call during a reply-only turn
-- **THEN** the kernel blocks it with rule `tool.reply-only`
-
-#### Scenario: A script cannot end the session
-
-- **WHEN** code run via `archmax_eval` or a hook script looks up `tools.archmaxRaise`
-- **THEN** no such function exists on the bridge, and the session's status is unchanged
-
-#### Scenario: A script lists the state's tools
-
-- **WHEN** state `work` allows `alpha`, state `done` allows `beta`, and both tools are registered
-- **THEN** `Object.keys(tools)` in an `archmax_eval` made in `work` includes `alpha` and not
-  `beta`, and the first evaluation after the session advances to `done` includes `beta` and not
-  `alpha`
-
-#### Scenario: A kept reference follows the state
-
-- **WHEN** an evaluation in `work` stores `const t = tools`, and an evaluation in `done` reads
-  `Object.keys(t)`
-- **THEN** it sees `done`'s tools, and `t === tools` holds
-
-#### Scenario: A hidden tool is refused with its reason
-
-- **WHEN** an `archmax_eval` in `work` calls `tools.beta({})`, which `work` does not offer
-- **THEN** the call reaches the kernel, which refuses it with its not-allowed reason, emits
-  `tool-blocked`, and lets the script catch the rejection
-
-#### Scenario: A hook keeps every tool
-
-- **WHEN** a `before` hook of `work` lists `Object.keys(tools)`
-- **THEN** it sees both `alpha` and `beta`
+- **WHEN** a code state's script assigns `input.variables.case_id = "x"` and then calls
+  `tools.archmax_set_variables({ variables: { case_id: "y" } })`
+- **THEN** only the tool call writes a variable, and the rules that write follows are the
+  `automated-states` capability's
 
 ### Requirement: `archmax_run` executes skill-bundle sources only
 
@@ -261,10 +150,12 @@ skill registry, read through the backend; any other path SHALL be blocked by the
 `script.skill-only` rule ahead of the declared denials, consumer and per-state rules, and a script in a skill
 the state does not enable SHALL be refused by `skill.not-allowed`. Both sandbox tools are
 default tools: granted in every state of a workflow that does not declare `tools.allow_always`,
-and otherwise only where `tools.allow_always` or a state's `tools.allow` names them. A state's own
-`tools.allow` entry on `archmax_run` SHALL narrow which files it may execute there (or grant it
-there, when the workflow-wide grant omits it), and an entry naming paths outside `skills/` SHALL be inert and reported by
-validation.
+and otherwise only where `tools.allow_always` or a state's `tools.allow` names them, and never in
+an automated state. A state's own `tools.allow` entry on `archmax_run` SHALL narrow which files it
+may execute there (or grant it there, when the workflow-wide grant omits it), and an entry naming
+paths outside `skills/` SHALL be inert and reported by validation. A code state's script under
+`workflows/<slug>/scripts/` SHALL run only when the session enters its code state, never through
+`archmax_run`.
 
 #### Scenario: Non-skill source blocked
 
@@ -279,53 +170,35 @@ validation.
 #### Scenario: A workflow that omits the sandbox tools
 
 - **WHEN** a workflow declares `tools.allow_always: [read_file, ls]` and the model calls `archmax_eval` in a state that does not name it
-- **THEN** `archmax_eval` is not disclosed and the call is blocked with `tool.not-allowed`, while the state's `before` and `after` script hooks still run in the sandbox
+- **THEN** `archmax_eval` is not disclosed and the call is blocked with `tool.not-allowed`, while the workflow's code states still run their scripts in the sandbox
 
-### Requirement: No sandbox context has `task()`
+#### Scenario: A code state's script is not the agent's to run
 
-The `task()` global SHALL NOT be provided in any sandbox context — not to `archmax_eval`, not to
-`archmax_run`, and not to a lifecycle hook script. A grading rubric is declared inline on the hook
-that applies it and therefore has no name a script could pass, and no author-facing name SHALL be
-invented to keep the global alive. `ScriptRunParams` SHALL carry no dispatch option.
-
-A hook script needing a model verdict SHALL get a `rubric` hook declared beside it in the same
-phase's list, which keeps every model dispatch visible in the spec.
-
-The runtime's own dispatch is unaffected and does not pass through the sandbox: a `{ rubric: … }`
-hook is dispatched through the framework `task` tool, bracketed with `rubric-start`/`rubric-result`
-events, and run on the model the declaration's `model` selects, else the assembly's `rubric`-role
-model.
-
-#### Scenario: No script has task
-
-- **WHEN** a lifecycle hook script, an `archmax_eval` snippet, or an `archmax_run` script references
-  `task`
-- **THEN** it is undefined in every case
-
-#### Scenario: A hook script that reaches for it fails closed
-
-- **WHEN** a lifecycle hook script calls `task(...)`
-- **THEN** it throws, and the phase vetoes fail-closed with that error
+- **WHEN** the agent calls `archmax_run` on `workflows/order-lookup/scripts/check-refund.js`, the
+  script of a code state
+- **THEN** the call is blocked with rule `script.skill-only`, and the script runs only when the
+  session enters `check-refund`
 
 ### Requirement: Quotas and settings
 
 Every sandbox session SHALL run under the workflow's `settings`: `timeoutMs` (per evaluation,
 default 5,000 ms), `memoryLimitBytes`, `maxPtcCalls` (null for unbounded) and `maxResultChars`,
 expressed against the runtime interface so any implementation receives them. Exceeding a quota
-SHALL surface as a script error, and in a hook a script error is a veto.
+SHALL surface as a script error: a sandbox tool reports it to the model as a tool error, and in a
+code state it fails the state's execution, which the `automated-states` capability routes.
 
 #### Scenario: Evaluation times out
 
 - **WHEN** a script runs longer than `settings.timeoutMs`
-- **THEN** the evaluation fails with a timeout error the caller reports as a tool error (or a
-  veto, for a hook)
+- **THEN** the evaluation fails with a timeout error the caller reports as a tool error (or, for a
+  code state's script, as the failure of the state's execution)
 
 ### Requirement: A cancelled turn stops its scripts
 
 The turn's abort signal SHALL reach every sandbox evaluation of the turn: `archmax_eval`,
-`archmax_run` and lifecycle hook scripts, in the session and in every child session it dispatched.
-A hook's evaluation SHALL take the signal of the turn it runs in, read where the hook runs. Once the
-signal aborts:
+`archmax_run` and a code state's script, in the session and in every child session it dispatched.
+A code state's script SHALL take the signal of the turn in which the session enters its code state.
+Once the signal aborts:
 
 - the evaluation SHALL settle with an error at once, not at `timeoutMs`;
 - a host call the script has pending SHALL be abandoned: it rejects inside the script with
@@ -345,6 +218,18 @@ An evaluation started under a signal that has already aborted SHALL not run.
 
 - **WHEN** a script catches the failed call and calls a tool again
 - **THEN** that call rejects with `the turn was aborted` and the tool never runs
+
+#### Scenario: A code state's script is cancelled
+
+- **WHEN** a code state's script awaits `tools.lookupOrder` and the host aborts the turn's signal
+- **THEN** the evaluation ends with an error before its timeout, the pending call rejects inside the
+  script with `the turn was aborted`, and no `script`-origin `tool-called` event is emitted after
+  the abort
+
+#### Scenario: A chained code state does not start after the abort
+
+- **WHEN** the turn's signal has aborted before the script of the next code state in a chain starts
+- **THEN** that script does not run
 
 ### Requirement: Disposal is safe while a host call is pending
 
@@ -376,8 +261,8 @@ Script execution SHALL target the `SandboxRuntime` interface — namespaced sess
 `eval(code, timeoutMs, signal)` operation, per-session options (tools, quotas, console capture,
 session id) and disposal — with the bundled QuickJS implementation as the default and
 a consumer-supplied `sandboxRuntime` accepted by `createAgent`. A custom runtime SHALL serve the
-sandbox tools and lifecycle hooks alike; cases are interpreted host-side and never reach it. The
-interface's contract SHALL include the turn's signal and disposal under a pending call, as the
+sandbox tools and code states' scripts alike; cases are interpreted host-side and never reach it.
+The interface's contract SHALL include the turn's signal and disposal under a pending call, as the
 requirements "A cancelled turn stops its scripts" and "Disposal is safe while a host call is
 pending" state them.
 
@@ -389,5 +274,308 @@ pending" state them.
 #### Scenario: Custom runtime serves every script context
 
 - **WHEN** a caller supplies a custom `sandboxRuntime`
-- **THEN** `archmax_eval`, `archmax_run` and hook scripts all execute through it, with per-scope
-  namespacing preserved
+- **THEN** `archmax_eval`, `archmax_run` and code states' scripts all execute through it, with
+  per-scope namespacing preserved, the `code` namespace included
+
+### Requirement: Code-state scripts default-export a function called with the state's input
+
+When a session enters a code state, the runtime SHALL read the state's `script`
+(`workflows/<slug>/scripts/<file>.js` or `.mjs`) through the authoring backend and evaluate it in
+the `code` context. Its default export, optionally wrapped in `defineCodeState`, SHALL be called
+with `{ state, trigger, variables, messages, trail, toolCalls, tools }`; a bare-body script SHALL
+simply run, reading the same input, without `tools`, from the global `args`. The return value SHALL
+NOT be read, and console lines SHALL become `code-output` events.
+
+`toolCalls(filter?)` SHALL be an async function whose filtering runs outside the sandbox, over the
+session's tool-call records as the `automated-states` capability defines them: a call copies into
+the sandbox only the records it returns, and the input itself carries no tool results. The filter
+keys SHALL be `name`, `state`, `visit` (a visit's number), `status` and `last`; a call with any
+other key, or with a `visit` that is not a positive whole number, SHALL reject in the script rather
+than match everything. The query SHALL be no tool: it is not in the script's `tools`, governance
+never decides it, and an `archmax_eval` or `archmax_run` script has no `toolCalls`.
+
+#### Scenario: The default export receives the state's input
+
+- **WHEN** code state `check-refund` runs a script whose
+  `export default async function ({ state, trigger, variables, messages, trail, toolCalls, tools })`
+  reads its input
+- **THEN** `state` is `check-refund`, `trigger` is the id of the trigger the turn carries,
+  `variables` is the session's flat variable map, `messages` is the session's full transcript in
+  the history message shape, `trail` is the session's full trail, `toolCalls` is the query over the
+  session's tool calls, and `tools` is the code state's scoped view
+
+#### Scenario: Only the queried tool results enter the sandbox
+
+- **WHEN** a session has made a hundred `search` calls and one `lookup` call, and a code state's
+  script calls `await toolCalls({ name: "lookup" })`
+- **THEN** the script receives the one `lookup` record, and no `search` result is part of the
+  state's input or of what the call returned
+
+#### Scenario: An unknown filter key is refused
+
+- **WHEN** a code state's script calls `await toolCalls({ visit: "current" })` or
+  `await toolCalls({ tool: "lookup" })`
+- **THEN** each call rejects, and the script can catch the rejection
+
+#### Scenario: The query is not a tool
+
+- **WHEN** a code state's script lists `Object.keys(tools)`, or the agent's `archmax_eval` script
+  reads `toolCalls`
+- **THEN** the listing does not include the query, and the agent's script finds no `toolCalls`
+
+#### Scenario: The export default rewrite keeps the function
+
+- **WHEN** a code state's script declares `export default defineCodeState(async (input) => { … })`
+- **THEN** the executor rewrites `export default` so the function survives evaluation, and calls it
+  once with the state's input after the script body has run
+
+#### Scenario: A bare-body script reads the global args
+
+- **WHEN** a code state's script has no default export and reads `args.variables.case_id` and
+  `args.trail`
+- **THEN** `args` carries the same input the default export would receive, without `tools`, and
+  the script runs to its end with no function to call
+
+#### Scenario: The return value is not read
+
+- **WHEN** a code state's default export returns `false`, `{ verdict: "veto" }` or any other value
+- **THEN** nothing reads it: the session moves only through the script's `tools.archmax_advance`
+  or `tools.archmax_raise` call, and what follows a script that settles without either call is the
+  `automated-states` capability's
+
+#### Scenario: Console output becomes events
+
+- **WHEN** the script of code state `check-refund` calls `console.log("3 orders checked")`
+- **THEN** a `code-output` event `{ state: "check-refund", line: "3 orders checked" }` is emitted,
+  between the `code-start` and `code-result` events that bracket the execution
+
+#### Scenario: The source comes from the authoring backend
+
+- **WHEN** a code state declares `script: scripts/check-refund.js`
+- **THEN** the executor reads `workflows/<slug>/scripts/check-refund.js` through the authoring
+  backend, never the local filesystem, and a source it cannot read fails the state's execution
+  with an error naming the path
+
+### Requirement: A code state's script runs in a fresh REPL for each entry
+
+Each time a session enters a code state, its script SHALL evaluate in a fresh REPL of the
+namespace `code` in the session's scope, shared with neither the agent's `archmax_eval` and
+`archmax_run` REPL nor another code state's. The REPL SHALL be released when the execution
+settles, under the rules of "Disposal is safe while a host call is pending". The script is one
+evaluation, so each quota in `settings` bounds it whole.
+
+#### Scenario: Nothing leaks between code states
+
+- **WHEN** the script of code state `first` sets `globalThis.seen = true` and advances to code state
+  `second`, whose script reads `globalThis.seen`
+- **THEN** it is `undefined`, and it is `undefined` again when the session later re-enters `first`
+
+#### Scenario: The agent's REPL is not shared
+
+- **WHEN** an `archmax_eval` defines a helper and the session then advances into a code state whose
+  script references it
+- **THEN** the helper is undefined in the code state's script, and still defined at the agent's next
+  `archmax_eval` in the session
+
+#### Scenario: The REPL is released when the execution settles
+
+- **WHEN** a code state's script returns while a `tools.*` call it started without awaiting is still
+  pending
+- **THEN** the REPL is released at once, the pending call is abandoned, and the REPL is freed only
+  once that call has settled
+
+### Requirement: A code state's script sees only its state's tools
+
+A code state's script SHALL see under `tools` exactly its state's surface: its own grants, the file
+tools, `archmax_advance` (outside a terminal state), `archmax_raise`, `archmax_get_variables` and
+`archmax_set_variables`. Each call SHALL be governed with origin `script` against that code state,
+under either spelling (`tools.read_file`, `tools.readFile`); a name outside the surface SHALL be
+`undefined`. What the control tools do is the `automated-states` capability's.
+
+#### Scenario: The listing names the surface only
+
+- **WHEN** code state `check-refund` allows `lookup_order`, state `refund-request` allows
+  `issue_refund`, and the script of `check-refund` lists `Object.keys(tools)`
+- **THEN** it sees `lookupOrder`, the file tools, `archmaxAdvance`, `archmaxRaise`,
+  `archmaxGetVariables` and `archmaxSetVariables`, and none of `issueRefund`, `writeTodos`,
+  `archmaxEval`, `archmaxRun`, `archmaxWait`, `archmaxReset` or `archmaxGetHistory`
+
+#### Scenario: A tool outside the surface is undefined
+
+- **WHEN** that script reads `tools.issueRefund` or `tools.issue_refund`
+- **THEN** both are `undefined`, `"issueRefund" in tools` is false, and nothing reaches the gateway
+
+#### Scenario: Both spellings resolve
+
+- **WHEN** the script calls `tools.archmax_set_variables({ variables: { case_id: "c-1" } })`, and
+  later the same through `tools.archmaxSetVariables`
+- **THEN** both reach the same tool under the same governance, and the listing names only the
+  camelCase key
+
+#### Scenario: Calls are governed against the code state
+
+- **WHEN** the script calls `tools.writeFile` on a path the code state does not grant
+- **THEN** the kernel refuses it with origin `script` before the tool runs, `tool-blocked` is
+  emitted as for any programmatic call, and the call's promise rejects with the rule id and reason,
+  which the script can catch before it carries on
+
+#### Scenario: No runtime authority
+
+- **WHEN** a code state that enables no skill calls `tools.readFile` on a skill asset, and separately
+  on a governed mount that only another state of its workflow enables
+- **THEN** the first read is refused with `skill.not-allowed` and the second with
+  `mount.not-allowed`, because the code state's own grants bind its script
+
+#### Scenario: A terminal code state is offered no advance
+
+- **WHEN** the script of a terminal code state reads `tools.archmax_advance`
+- **THEN** it is `undefined`, while `tools.archmax_raise` is a function
+
+#### Scenario: A refused control call can be caught
+
+- **WHEN** the script calls `tools.archmax_advance({ to, reason })` and the call is refused
+- **THEN** the promise rejects with the refusal's reason, and the script can catch it and decide
+  otherwise; how an accepted call is recorded and applied is the `automated-states` capability's
+
+#### Scenario: Mocks answer a code state's calls
+
+- **WHEN** a case mocks `lookup_order` and a code state's script calls `tools.lookupOrder`
+- **THEN** governance decides the call first, the mock answers once it is permitted, and the paired
+  tool events carry `origin: "script"`
+
+### Requirement: Programmatic tool calls are governed against the script's state
+
+Scripts SHALL reach tools through the `tools.*` bridge, every result marshalled to text. Every call
+SHALL pass the kernel at call time with origin `script`, against the active state for an
+`archmax_eval` or `archmax_run` script and the code state for a code state's script; no call runs
+on runtime authority. It SHALL emit the same tool events as the agent's own, with
+`origin: "script"`; a blocked call SHALL not run the tool and SHALL reject in the script with the
+rule id and reason.
+
+#### Scenario: Script call governed by the active state
+
+- **WHEN** code run via `archmax_eval` calls `tools.writeFile` on a path the state does not allow
+- **THEN** the kernel blocks it before the tool runs, exactly as it would block the agent's own
+  `write_file` call in that state, and the script can catch the rejection
+
+#### Scenario: A script is held to its state's grants
+
+- **WHEN** an `archmax_eval` in a state that enables no skill calls `tools.readFile` on a skill
+  asset, and separately on a governed mount that only another state of the same workflow enables
+- **THEN** the first read is refused with `skill.not-allowed` and the second with
+  `mount.not-allowed`, as the agent's own `read_file` would be, because the state's `tools.allow`
+  and `tools.forbid`, its skill and mount grants, the safety rules, the workflow-wide denials,
+  consumer rules and the reply-only rule bind every script call
+
+#### Scenario: Governance tracks the active state
+
+- **WHEN** a REPL session persists across calls made from different workflow states
+- **THEN** each PTC call is checked against the state active when it is made
+
+#### Scenario: Reply-only turn refuses every tool
+
+- **WHEN** a script issues a PTC call during a reply-only turn
+- **THEN** the kernel blocks it with rule `tool.reply-only`
+
+#### Scenario: Script arguments reach the kernel verbatim
+
+- **WHEN** a script passes the string `"${{case_id}}"` as a tool argument, and the call's grant
+  carries a `${{case_id}}` guard
+- **THEN** no `${{…}}` substitution is applied to the argument, which reaches the kernel and the
+  tool verbatim, while the guard resolves against the session's variables
+
+#### Scenario: The turn's config reaches the tool
+
+- **WHEN** a script calls a tool through `tools.*`
+- **THEN** the bridge forwards the turn's `RunnableConfig` (session id, abort signal, tool mocks) to
+  the underlying tool
+
+#### Scenario: A delegation call whose child parks fails closed
+
+- **WHEN** a script calls `archmax_workflow_<slug>` through `tools.*` and the child session parks
+- **THEN** the call fails closed with kind `parked`
+
+### Requirement: An agent script's tools are the active state's surface
+
+For an `archmax_eval` or `archmax_run` script, `tools` SHALL hold the active state's surface minus
+the control tools, both sandbox tools and bare `eval`, re-scoped at the start of every evaluation.
+A lookup, `in`, `Object.keys` and `for…in` SHALL see only those names; any other name SHALL be
+`undefined`. A tool's own name SHALL resolve as its camelCase key, the listing naming camelCase
+keys only. The kernel SHALL still decide every call made through the view.
+
+#### Scenario: A script calls a tool by its own name
+
+- **WHEN** an `archmax_eval` in a state that allows `read_file` calls
+  `await tools.read_file({ file_path: "notes.md" })`
+- **THEN** the call reaches `read_file` exactly as `tools.readFile` would, governed and evented
+  the same way, and `Object.keys(tools)` still lists `readFile`
+
+#### Scenario: A delegation tool keeps its own name too
+
+- **WHEN** a state grants `archmax_workflow_enrich-order` and a script looks up
+  `tools["archmax_workflow_enrich-order"]` and `tools.archmaxWorkflowEnrichOrder`
+- **THEN** both are the same function, and `in` answers the same for either spelling
+
+#### Scenario: A script lists the state's tools
+
+- **WHEN** state `work` allows `alpha`, state `done` allows `beta`, and both tools are registered
+- **THEN** `Object.keys(tools)` in an `archmax_eval` made in `work` includes `alpha` and not
+  `beta`, and the first evaluation after the session advances to `done` includes `beta` and not
+  `alpha`
+
+#### Scenario: A kept reference follows the state
+
+- **WHEN** an evaluation in `work` stores `const t = tools`, and an evaluation in `done` reads
+  `Object.keys(t)`
+- **THEN** it sees `done`'s tools, and `t === tools` holds, because `tools` is one object for the
+  life of the REPL session
+
+#### Scenario: An overwritten view comes back
+
+- **WHEN** an evaluation assigns `tools = {}`
+- **THEN** the next evaluation in the REPL session sees the state's view under `tools` again
+
+#### Scenario: A tool outside the surface is undefined
+
+- **WHEN** an `archmax_eval` in `work` reads `tools.beta`, which `work` does not offer, and then
+  calls `tools.beta({})`
+- **THEN** the lookup is `undefined`, as `Object.keys` and `in` say, the call throws a `TypeError`
+  the script can catch, no tool event is emitted and `beta` never runs
+
+#### Scenario: A script cannot end the session
+
+- **WHEN** code run via `archmax_eval` or `archmax_run` looks up `tools.archmaxRaise`,
+  `tools.archmax_advance`, `tools.archmaxSetVariables`, `tools.archmaxGetHistory`,
+  `tools.archmaxEval` or `tools.eval`
+- **THEN** each is `undefined`, and the session's status and position are unchanged
+
+#### Scenario: The kernel still decides a call in the view
+
+- **WHEN** an `archmax_eval` in `work` calls `tools.alpha` with arguments a consumer rule blocks
+- **THEN** the call reaches the kernel, which refuses it with the rule's reason and emits
+  `tool-blocked`, and the script can catch the rejection
+
+### Requirement: No sandbox context provides `task()`
+
+The `task()` global SHALL NOT be provided in any sandbox context — `archmax_eval`, `archmax_run`
+or a code state's script — and the Deep Agents `task` tool SHALL be on no state's surface, so
+`tools.task` is undefined too. No author-facing name SHALL keep the global alive, and
+`ScriptRunParams` SHALL carry no dispatch option. A step that needs a model's judgement SHALL be a
+grader state, which the runtime runs outside the sandbox.
+
+#### Scenario: No script has task
+
+- **WHEN** a code state's script, an `archmax_eval` snippet, or an `archmax_run` script references
+  `task` or `tools.task`
+- **THEN** it is undefined in every case
+
+#### Scenario: A code state's script that reaches for it fails closed
+
+- **WHEN** a code state's script calls `task(...)`
+- **THEN** it throws, and the state's execution fails like any script error
+
+#### Scenario: A model's judgement is a grader state
+
+- **WHEN** a workflow needs a model to judge the agent's work before the session moves on
+- **THEN** it declares a grader state on the graph, which the `automated-states` capability runs,
+  and the runtime dispatches no subagent through the `task` tool for a state

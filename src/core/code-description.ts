@@ -1,9 +1,9 @@
 /**
  * `archmax_run` scripts carry their human-facing contract as a leading JSDoc
  * block comment — the code-file analogue of a case file's `description`. Admin
- * UIs display only that description. Lifecycle hook scripts are NOT covered by this convention:
- * they are hand-authored files whose only validation is that the referenced
- * file exists. This module is the canonical extractor so consumers never
+ * UIs display only that description. A code state's script is NOT covered by this convention:
+ * it is a hand-authored file whose only validation is that the referenced file
+ * exists and imports nothing foreign. This module is the canonical extractor so consumers never
  * scrape comments themselves. It operates on source strings only (callers read
  * the file through their configured backend) and never touches the filesystem.
  */

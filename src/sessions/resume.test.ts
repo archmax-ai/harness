@@ -256,7 +256,7 @@ describe("how a settled session ended", () => {
 
   it("gives a rejected or parked session no exit", () => {
     const rejected = outcomeOf(
-      settle({ status: WORKFLOW_STATUSES.rejected, rejected: "a hook failed", workflowState: "lookup", raised }, { count: 0 }),
+      settle({ status: WORKFLOW_STATUSES.rejected, rejected: "a code state failed", workflowState: "lookup", raised }, { count: 0 }),
       "turn",
     );
     expect(rejected.kind).toBe("rejected");

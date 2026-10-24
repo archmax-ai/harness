@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { NOTE_TOOL } from "../machine/tool-names.js";
-import { contentToString, messageTypeOf, NOTE_KEY, ROLE_BY_TYPE, type RuntimeNoteKind } from "./message-readers.js";
+import { NOTE_KEY, type RuntimeNoteKind } from "./message-readers.js";
 
 // The readers are pure and live in `message-readers.ts` (the `@archmax-ai/harness/messages`
 // subpath); re-exported so every runtime importer keeps one module for both halves.
@@ -71,48 +71,4 @@ export function runtimeNote(kind: RuntimeNoteKind, text: string): BaseMessage[] 
  */
 export function humanNote(kind: RuntimeNoteKind, text: string): HumanMessage {
   return new HumanMessage({ content: text, additional_kwargs: marker(kind) });
-}
-
-export interface HistoryEntry {
-  role: string;
-  content: string;
-  toolCalls?: { name: string; args: unknown }[];
-}
-
-export interface RunContext {
-  history: HistoryEntry[];
-  userRequest: string;
-}
-
-/** One message as a hook reads it: its role, its text, and any tool calls it made. */
-function historyEntry(m: unknown): HistoryEntry {
-  const msg = m as Record<string, unknown>;
-  const type = messageTypeOf(m) || "?";
-  const role = ROLE_BY_TYPE[type] ?? type;
-  const entry: HistoryEntry = { role, content: contentToString(msg.content) };
-  const toolCalls = msg.tool_calls;
-  if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-    entry.toolCalls = toolCalls.map((c) => {
-      const call = c as Record<string, unknown>;
-      return { name: String(call.name ?? ""), args: call.args ?? {} };
-    });
-  }
-  return entry;
-}
-
-/**
- * Build the view a rubric grader reads: the messages from `visitStart` on (the
- * visit its hook sees) plus the person's latest message.
- *
- * `userRequest` is read from the **whole** list, not the visit: a grader asked
- * whether the reply satisfies the request must see the request, which an
- * earlier state usually received (issue #61). It is the latest user message,
- * not the first: a later turn is answering the question asked in that turn.
- */
-export function runContextFromMessages(messages: unknown[], visitStart = 0): RunContext {
-  const all = Array.isArray(messages) ? messages : [];
-  const history = all.slice(visitStart).map(historyEntry);
-  const latest = [...all].reverse().find((m) => (ROLE_BY_TYPE[messageTypeOf(m) || "?"] ?? "") === "user");
-  const userRequest = latest !== undefined ? contentToString((latest as Record<string, unknown>).content) : "";
-  return { history, userRequest };
 }

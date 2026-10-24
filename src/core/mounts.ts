@@ -189,9 +189,9 @@ export function resolveMounts(table: Record<string, MountSpec> = {}): {
  * Deliberately short, and deliberately missing every {@link AUTHORING_PREFIXES}
  * prefix. That plane is not workspace furniture the agent browses: it is what the
  * runtime enforces the run *with*, served by the authoring backend and reachable by
- * no tool call. `workflows/` holds the spec — its grading rubrics included, so a run
- * cannot read the criteria it is judged against — plus the prose addendum, the hook
- * scripts, and the cases grading the run.
+ * no tool call. `workflows/` holds the spec — its grader states' criteria
+ * included, so a session cannot read the criteria it is judged against — plus
+ * the prose addendum, the code-state scripts, and the cases testing the run.
  *
  * What ships in a skill bundle is the other kind of script — the ones the *agent*
  * runs with `archmax_run` — together with the data a state reads

@@ -49,7 +49,7 @@ describe("lastTurn", () => {
 
 describe("lastAgentText", () => {
   it("skips a runtime note even when it carries assistant-role text", () => {
-    const [call] = runtimeNote("after", "[after] revise");
+    const [call] = runtimeNote("grader", "[grader] The 'review' grader moved the run to 'answer': revise.");
     const marked = { ...(call as object), content: "narration" };
     expect(lastAgentText([human("a"), ai("real"), marked])).toBe("real");
     expect(lastAgentText([human("a"), marked])).toBe("");

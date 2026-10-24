@@ -104,7 +104,7 @@ export type AnyModelCallHandler = (
   request: AnyModelCallRequest,
 ) => ModelCallResult | Promise<ModelCallResult>;
 
-/** The framework runtime handed to lifecycle hooks (context, configurable, signal, store). */
+/** The framework runtime handed to middleware hooks (context, configurable, signal, store). */
 export type FrameworkRuntime = Runtime;
 
 export type { ToolMessage };

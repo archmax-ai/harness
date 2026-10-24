@@ -14,12 +14,12 @@ import {
   workspaceWith,
 } from "./support.js";
 
-const RUNTIME = { engine: "archmax-harness", version: "2" };
+const RUNTIME = { engine: "archmax-harness", version: "3" };
 
 /**
  * An `archmax_run` script reads the session's variables as `args.variables`
- * (flat name → value), beside whatever the model passed — the same view a hook
- * gets — so an authored fan-out script can work from host-seeded input without
+ * (flat name → value), beside whatever the model passed — the same view a code
+ * state's script reads as `variables` — so an authored fan-out script can work from host-seeded input without
  * the model retyping it.
  */
 describe("archmax_run arguments", () => {
@@ -152,7 +152,8 @@ describe("a script's tool call under a variable guard", () => {
 /**
  * A script's `tools` lists the tools its state offers, as the model's own tool
  * list does, re-scoped at every evaluation — so a run that moves sees the next
- * state's tools in the same REPL. A hook runs on runtime authority and keeps them all.
+ * state's tools in the same REPL. A code state's script lists its own state's
+ * tools, and no tool another state grants.
  */
 describe("the tools a script lists", () => {
   const hostTools = (): StructuredTool[] =>
@@ -170,7 +171,12 @@ describe("the tools a script lists", () => {
       start: {
         triggers: { manual: null },
         tools: { allow: ["alpha"] },
-        before: { script: "hooks/list.js" },
+        transitions: [{ to: "probe", description: "Listed." }],
+      },
+      probe: {
+        type: "code",
+        script: "scripts/list.js",
+        tools: { allow: ["beta"] },
         transitions: [{ to: "done", description: "Finish." }],
       },
       done: { tools: { allow: ["beta"] } },
@@ -178,15 +184,15 @@ describe("the tools a script lists", () => {
   };
   const LIST = "JSON.stringify(Object.keys(tools).filter((name) => name === 'alpha' || name === 'beta'))";
 
-  it("follows the state from one evaluation to the next, while a hook sees every tool", async () => {
+  it("follows the state from one evaluation to the next, and a code state lists only its own", async () => {
     const root = workspaceWith(spec, {
-      "workflows/w/hooks/list.js":
-        "/** Reports the tools a hook sees. */\nexport default ({ tools }) => { console.log('hook:' + Object.keys(tools).filter((n) => n === 'alpha' || n === 'beta').join(',')); return ok(); };\n",
+      "workflows/w/scripts/list.js":
+        "/** Reports the tools a code state sees. */\nexport default async function ({ tools }) {\n  console.log('code:' + Object.keys(tools).filter((n) => n === 'alpha' || n === 'beta').join(','));\n  await tools.archmax_advance({ to: 'done', reason: 'listed' });\n}\n",
     });
     const { agent, events } = await assemble(root, {
       turns: [
         { tool: "archmax_eval", args: { code: LIST } },
-        { tool: "archmax_advance", args: { to: "done", reason: "listed" } },
+        { tool: "archmax_advance", args: { to: "probe", reason: "listed" } },
         { tool: "archmax_eval", args: { code: LIST } },
         { reply: "done" },
       ],
@@ -198,6 +204,6 @@ describe("the tools a script lists", () => {
     expect(evals).toHaveLength(2);
     expect(evals[0]).toContain('["alpha"]');
     expect(evals[1]).toContain('["beta"]');
-    expect(eventsOf(events, "hook-output").map((e) => e.line)).toContain("hook:alpha,beta");
+    expect(eventsOf(events, "code-output").map((e) => e.line)).toEqual(["code:beta"]);
   });
 });

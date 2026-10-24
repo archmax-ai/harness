@@ -13,7 +13,7 @@
  * is here because a real consumer needs it, not because a module happened to
  * expose it. Adjacent surfaces live on their own subpaths — `@archmax-ai/harness/testing`
  * (the case engine), `@archmax-ai/harness/cli` (the state-flow renderer), and
- * `@archmax-ai/harness/sandbox` (hook and script authoring) — so a production import never
+ * `@archmax-ai/harness/sandbox` (code-state script authoring) — so a production import never
  * pulls in test machinery.
  *
  * Two **light** subpaths mirror part of this surface without the runtime behind
@@ -233,7 +233,7 @@ export { isAiMessage } from "./core/messages.js";
 export { lastAgentText } from "./core/messages.js";
 /**
  * Whether the runtime wrote a transcript message rather than a person — a
- * decision, an arrival, an error route, a completion check, a child's result.
+ * decision, an arrival, an error route, an automated state's move, a child's result.
  * A host slicing a turn out of a session's messages, or rendering a transcript,
  * asks this instead of inferring authorship from role.
  */
@@ -241,9 +241,7 @@ export { isRuntimeNote } from "./core/messages.js";
 /** Which kind of runtime note a message is, or `null` if a person wrote it. */
 export { runtimeNoteKind } from "./core/messages.js";
 export type { RuntimeNoteKind } from "./core/messages.js";
-/** One grading rubric, as declared inline on the hook that applies it. */
-export type { RubricDeclaration } from "./machine/types.js";
-/** Host data the runtime never reads, at the spec root, on a state, or on a rubric. */
+/** Host data the runtime never reads, at the spec root or on a state. */
 export type { SpecMetadata } from "./machine/types.js";
 /** Parse a sandbox script's leading description block. */
 export { parseCodeDescription } from "./core/code-description.js";
@@ -252,8 +250,6 @@ export { parseCodeDescription } from "./core/code-description.js";
 
 /** Load and shape-check a `workflow.yaml` without assembling an agent. */
 export { loadMachineSpec } from "./machine/load-spec.js";
-/** A `before:`/`after:` declaration as a flat list of hooks. */
-export { normalizeHooks } from "./lifecycle/hook-shape.js";
 export type { MachineSpec, MachineState } from "./machine/types.js";
 /** The compiled machine, as `agent.workflow.machine` exposes it. */
 export { WorkflowMachine } from "./machine/machine.js";

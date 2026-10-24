@@ -184,7 +184,24 @@ export type VisitStart = z.infer<typeof visitStartSchema>;
 
 // --- Trail --------------------------------------------------------------------
 
-export const TRAIL_STEP_KINDS = ["trigger", "agent", "human", "sub-workflow", "reset", "on_error"] as const;
+/**
+ * How a step was committed: a turn's arrival (`trigger`), a move by the session's
+ * agent, a person, a grader state or a code state, a sub-run, a reset, or an
+ * `on_error` route.
+ */
+export const TRAIL_STEP_KINDS = [
+  "trigger",
+  "agent",
+  "human",
+  "grader",
+  "code",
+  "sub-workflow",
+  "reset",
+  "on_error",
+] as const;
+
+/** The trail step kinds that record an `archmax_advance` — whoever made it. */
+export type MoveKind = Extract<(typeof TRAIL_STEP_KINDS)[number], "agent" | "grader" | "code">;
 
 /** One committed traversal step: the state entered, the kind of edge, and the rationale when given. */
 export const trailStepSchema = z.object({
@@ -230,8 +247,9 @@ const _usageParity: _UsageParity = true;
 void _usageParity;
 
 /**
- * What `archmax_raise` committed: the agent's own code and reason for ending the
- * session as a failure, and the state it raised in. Cleared at the next turn.
+ * What `archmax_raise` committed: the code and reason the session's agent, a
+ * grader or a code state gave for ending the session as a failure, and the state
+ * it raised in. Cleared at the next turn.
  */
 export const raiseRecordSchema = z.object({
   code: z.string(),
@@ -255,10 +273,8 @@ const workflowStateFields = {
    * model finishes, and cleared everywhere `rejected` is.
    */
   failedDelegations: z.array(delegationFailureSchema).nullable().optional(),
-  /** The failure the agent raised this turn (`status: failed`); cleared on every turn. */
+  /** The failure raised this turn (`status: failed`) — by the agent, a grader or a code state; cleared on every turn. */
   raised: raiseRecordSchema.nullable().optional(),
-  iterations: z.record(z.string(), z.number()).optional(),
-  beforeDone: z.record(z.string(), z.boolean()).optional(),
   /** The trigger that started (or last resumed) this run. Its input lives in `variables`. */
   trigger: z.object({ id: z.string() }).nullable().optional(),
   /** The state this run began in. Written once, so the reset tool has a fixed target. */

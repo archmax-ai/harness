@@ -48,7 +48,6 @@ import type { PricingTable, UsageTracker } from "../core/usage.js";
 import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
 import { loadPromptCacheEnv } from "../env.js";
-import { BUILTIN_HOOK_KINDS } from "../lifecycle/runner.js";
 import { workflowDenials, type GovernanceRule } from "../kernel/kernel.js";
 import { UNGRANTABLE_TOOLS, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
@@ -61,9 +60,8 @@ import { createScriptExecutor } from "../sandbox/executor.js";
 import { createPtcToolGateway } from "../sandbox/ptc-gateway.js";
 import { createQuickJsSandboxRuntime } from "../sandbox/runtime.js";
 import { createInterpreter } from "../sandbox/tools.js";
-import type { LoadedRubric, Rubric } from "../rubrics/rubrics.js";
 import { createWorkflowInstrumentation, type StateModels } from "../workflow/middleware.js";
-import { resolveHookScript, workflowPaths } from "../workflow/paths.js";
+import { resolveCodeScript, workflowPaths } from "../workflow/paths.js";
 import {
   createProviderCacheMiddleware,
   modelIdOf,
@@ -118,16 +116,13 @@ export interface AssemblyContext {
    * each composition then reports its own inert ids once.
    */
   honoursDeclaredModels: boolean;
-  rubrics: Map<string, Rubric>;
   /**
-   * The model a rubric grades on: its declared `model` resolved through the
-   * assembly's factory seam, else the `rubric`-role model. Held on the context so
-   * a delegated child — which builds its own registry from its own spec — resolves
-   * graders the same way the root does.
+   * The model a **grader state** runs on: the id it declares (or its workflow's
+   * `settings.model`) resolved through the assembly's factory seam under the
+   * `grader` role and memoized per distinct id. Held on the context so a
+   * delegated child's graders resolve exactly as the root's do.
    */
-  rubricModel: (rubric: Rubric) => BaseChatModel | undefined;
-  /** Every subagent the assembly dispatches to, file-loaded and inline, in the Deep Agents shape. */
-  subagents: LoadedRubric[];
+  graderModel: (id?: string) => BaseChatModel;
   skillSources: string[];
   skillRegistry: SkillRegistry;
   skillTable: SkillPrefixes;
@@ -276,22 +271,6 @@ export function fileReadMiddleware(ctx: AssemblyContext): AgentMiddleware[] {
 }
 
 /**
- * The subagent parameters both compositions hand the framework: the workflow's
- * grading rubrics, registered so the framework provides the `task` tool the
- * runtime dispatches them through.
- *
- * Under a workflow they are never *disclosed* — `task` is withheld in every state
- * and grantable by nothing — so registering a grader gives the graded agent no
- * reach; it only gives the runtime a runnable. Deep Agents also builds its
- * general-purpose subagent beside them, and `createDeepAgent` takes no parameter
- * that turns it off (only a harness profile does): a governed agent cannot reach
- * it, and a plain agent is offered `task` with it, as a plain Deep Agent is.
- */
-export function rubricParams(ctx: AssemblyContext): { subagents: LoadedRubric[] } {
-  return { subagents: ctx.subagents };
-}
-
-/**
  * Bind `fn` to a session: the session zone's view (agent-visible paths resolve
  * against that session without its id embedded), the event envelope's session
  * context, and the tool context host tools are handed. The single ingress where a session id becomes a store
@@ -358,7 +337,12 @@ function resolveStateModels(
   machine: WorkflowMachine,
   workflow: string,
   cacheEnabled: boolean,
-): { workflowModel: BaseChatModel; workflowCacheStrategy: PromptCacheStrategy; stateModels: StateModels } {
+): {
+  workflowModel: BaseChatModel;
+  workflowCacheStrategy: PromptCacheStrategy;
+  stateModels: StateModels;
+  graderModels: (state: string) => { model: BaseChatModel; id?: string };
+} {
   const { emit } = ctx;
   const declared = machine.declaredModels();
   const warn = (message: string) => emit({ type: "warning", scope: "workflow", message });
@@ -404,9 +388,16 @@ function resolveStateModels(
 
   // Built here, not per call: one model per distinct id, and an id the endpoint
   // cannot serve fails while assembling rather than in the middle of a session.
+  // A grader state's model is its grader's — the `grader` role — and never the
+  // graph's: no call of the session's agent is made in a grader state.
   const byState = new Map<string, BaseChatModel>();
+  const graders = new Map<string, BaseChatModel>();
   for (const state of Object.keys(machine.spec.states)) {
     const id = machine.modelFor(state);
+    if (machine.isGraderState(state)) {
+      graders.set(state, ctx.graderModel(id));
+      continue;
+    }
     if (id === undefined || id === machine.spec.settings?.model) continue;
     byState.set(state, ctx.agentModel(id));
   }
@@ -439,6 +430,11 @@ function resolveStateModels(
       },
       idFor: (state) => idOf(byState.get(state) ?? workflowModel),
     },
+    graderModels: (state) => {
+      const model = graders.get(state) ?? ctx.graderModel(machine.modelFor(state));
+      const id = idOf(model);
+      return { model, ...(id ? { id } : {}) };
+    },
   };
 }
 
@@ -464,8 +460,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   const settings = target.harnessSettings;
 
   // Two executors, one sandbox runtime: agent scripts read sources from the
-  // agent workspace, hook scripts from the authoring plane the agent cannot
-  // address. Sharing the runtime keeps a session's REPL a single session.
+  // agent workspace, code-state scripts from the authoring backend the agent
+  // cannot address.
   const sandboxRuntime = params.sandboxRuntime ?? createQuickJsSandboxRuntime();
   const sandboxLimits = {
     timeoutMs: settings.timeoutMs,
@@ -476,10 +472,10 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   };
   const sandboxVersion = ctx.runtimeContract.sandbox;
   const executor = createScriptExecutor({ workspace, sandboxVersion, ...sandboxLimits });
-  const hookExecutor = createScriptExecutor({ workspace: authoring, sandboxVersion, ...sandboxLimits });
-  // One gateway for both programmatic-tool-call consumers — the model's own
-  // sandbox code and lifecycle hook scripts — so a script's `tools.*` call is
-  // governed and instrumented by the same kernel and event stream.
+  const codeExecutor = createScriptExecutor({ workspace: authoring, sandboxVersion, ...sandboxLimits });
+  // One gateway for every call made outside the tool node — the model's own
+  // sandbox code, a code state's script, a grader — so each is governed and
+  // instrumented by the same kernel and event stream.
   const ptcGateway = createPtcToolGateway({
     machine: target,
     policyRules: governanceRules,
@@ -489,17 +485,6 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   });
   const interpreter = createInterpreter({ executor, ptcNames: [], ptcGateway });
   emit({ type: "interpreter-enabled" });
-
-  // Consumer hook executors may not shadow the built-in kinds.
-  const shadowed = Object.keys(params.hookExecutors ?? {}).filter((kind) =>
-    (BUILTIN_HOOK_KINDS as readonly string[]).includes(kind),
-  );
-  if (shadowed.length > 0) {
-    throw new Error(
-      `hookExecutors may not override built-in hook kind(s): ${shadowed.join(", ")}. ` +
-        `Register a custom kind under a different name.`,
-    );
-  }
 
   // Prompt caching: resolved from the models once, here, so an unsupported model
   // is reported at assembly rather than discovered per call.
@@ -512,7 +497,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   // calls use. `workflowModel` is this machine's own — `settings.model` when it
   // declares one — so the graph default and the native caching middleware follow
   // the workflow rather than the process environment.
-  const { workflowModel, workflowCacheStrategy: cacheStrategy, stateModels } = resolveStateModels(
+  const { workflowModel, workflowCacheStrategy: cacheStrategy, stateModels, graderModels } = resolveStateModels(
     ctx,
     target,
     input.workflow,
@@ -571,18 +556,15 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
 
   const instrumentation = createWorkflowInstrumentation({
     machine: target,
-    executor,
-    hookExecutor,
-    // Hook paths are workflow-relative and confined to this workflow's `hooks/`.
-    resolveHookScript: (declared) => resolveHookScript(input.workflow, declared),
-    rubrics: ctx.rubrics,
-    ptcNames: [],
+    codeExecutor,
+    // Script paths are workflow-relative and confined to this workflow's `scripts/`.
+    resolveCodeScript: (declared) => resolveCodeScript(input.workflow, declared),
+    graderModel: graderModels,
     policyRules: governanceRules,
     mountPrefixes: ctx.mountPrefixes,
     skills: ctx.skillRegistry,
     ptcGateway,
     subWorkflows: dispatcher,
-    ...(params.hookExecutors ? { hookExecutors: params.hookExecutors } : {}),
     onEvent: emit,
     // Validated by `createAgent`; a pin reaches every child composed from the same params.
     promptShaping: { cacheStrategy, cacheTtl: cacheConfig.ttl, clock: parseClock(params.clock ?? "") },
@@ -642,7 +624,6 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
       ...delegationTools,
       ...(params.tools ?? []),
     ],
-    ...rubricParams(ctx),
     middleware: agentMiddleware,
     // the harness's prompt is the whole prefix; the upstream base prompt contradicts
     // the platform prompt and is dropped (layer order in `core/prompt.ts`).
@@ -660,8 +641,8 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   return {
     graph,
     driver,
-    // Single disposal path for every per-session resource: hook and agent REPL
-    // sessions, PTC contexts and tool cache, and the dispatch ledger.
+    // Single disposal path for every per-session resource: code-state and agent
+    // REPL sessions, PTC contexts and tool cache, and the dispatch ledger.
     dispose: (sessionId: string) => {
       instrumentation.dispose(sessionId);
       interpreter.dispose(sessionId);

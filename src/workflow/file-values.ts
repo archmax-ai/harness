@@ -1,10 +1,10 @@
 /**
  * The governance half of the `file` signature type: whether a session may read
  * the file a `file` value names. Decided by the kernel as a `read_file` of the
- * path on **runtime authority** (`origin: "lifecycle"`) — the authority a hook
- * runs on: the state's surface (its allow list, its skill and mount grants) does
- * not bind it, but the zone rules, the workflow's own mount grants (in any state)
- * and every workflow-wide denial do, a child's inherited ones included. So a host
+ * path on **runtime authority** (`origin: "runtime"`): the state's surface (its
+ * allow list, its skill and mount grants) does not bind it, but the zone rules,
+ * the workflow's own mount grants (in any state) and every workflow-wide denial
+ * do, a child's inherited ones included. So a host
  * cannot hand a session a path the session could never read, and a child cannot
  * return a file one of its ancestors denied: the runtime copies nothing a
  * caller's own denials put out of reach.
@@ -56,7 +56,7 @@ export function runtimeReadDenial(
 ): string | undefined {
   const verdict = decide(
     gov.machine,
-    { kind: "tool-call", state, tool: "read_file", args: { file_path: path }, origin: "lifecycle" },
+    { kind: "tool-call", state, tool: "read_file", args: { file_path: path }, origin: "runtime" },
     gov.policyRules,
     gov.mountPrefixes,
     variables,

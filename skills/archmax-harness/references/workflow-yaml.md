@@ -14,7 +14,7 @@ instructions: |-                 # standing direction for the whole run (warning
   Records live in skills/order-data/assets/orders.json; write artifacts under scratchpad/.
 
   Answer only from records you have read; never fabricate.
-runtime: { engine: archmax-harness, version: "2" }
+runtime: { engine: archmax-harness, version: "3" }   # 3 is the only contract; omitted = 3
 disabled: false                  # true = out of service: no new turns; parked runs still drain
 settings:                        # sandbox limits: timeoutMs, memoryLimitBytes, maxPtcCalls,
   timeoutMs: 15000               #   maxResultChars, prompt_cache: { enabled, ttl }
@@ -23,9 +23,9 @@ tests:                           # case suite config (no tests.config.js exists)
   maxConcurrency: 1              # only 1 accepted
   caseTimeoutMs: 120000          # per-case wall clock, distinct from settings.timeoutMs
   judge: {}                      # required for grade:; {} = env default model, or { model, modelOptions }
-budget: { maxModelCalls: 50 }    # model calls one turn may make across ALL states (default 50); raise for long turns
-metadata: { canvas: {} }         # host data, never read; accepted at root, state, rubric — leave as found
-extensions: { hooks: [] }        # host-registered hook kinds; rarely authored
+budget: { maxModelCalls: 50 }    # the AGENT's model calls one turn may make across ALL states
+                                 #   (default 50; an automated state's run is none). Raise for long turns
+metadata: { canvas: {} }         # host data, never read; accepted at root and on a state — leave as found
 
 tools:                           # tool governance, workflow level
   allow_always:                  #   granted in EVERY state; a state's allow adds to or narrows it.
@@ -48,7 +48,7 @@ skills:                          # skill governance, workflow level — SLUGS, n
 
 states:
   triage:                        # key = slug = identity (^[a-z0-9]+(-[a-z0-9]+)*$)
-    type: agent                  # agent (default) | human
+    type: agent                  # agent (default) | human | grader | code (grader/code = automated)
     title: Triage request        # label for people/hosts; reaches no model call
     summary: Record the refund decision for review.   # ditto: an authoring/host label, NOT in the prompt
     triggers:                    # a trigger is declared on the state it ENTERS; key = id
@@ -66,17 +66,8 @@ states:
                                  #   entry types: string integer number boolean date date-time object array file
     instructions: >-
       Record the decision in scratchpad/refund.json, then archmax_advance to
-      review; never close the case yourself.
-    before:                      # gates entry: ok/veto only; a veto here rejects the run
-      - script: hooks/check-requester.js
-    after:                       # gates the archmax_advance out (or completion, when terminal)
-      - script: hooks/check-policy.js
-        max_iterations: 2        #   how many `correct`s before a hard veto (per hook; default 0)
-      - rubric:                  #   LLM grader, inline; the agent never sees it
-          instructions: |-       #   the only required key: criteria + verdict (ok/correct/veto + reason)
-            Judge the tone of the last assistant message …
-          max_iterations: 1
-          model: gpt-4.1-mini    #   optional override
+      check-policy; never close the case yourself. If a note sends the case
+      back, fix what it names and advance again.
     tools:
       allow:                     # adds to allow_always; entry = name | { tool, args: {<arg>: [globs]} } | { tool, paths }
         - lookup_customer
@@ -94,12 +85,26 @@ states:
     on_error: closed             # where a terminal failure of this segment routes
     metadata: { x: 40, y: 180 }
     transitions:                 # none => terminal state
-      - to: review               # slug; must exist
-        description: The decision is recorded and needs a person's approval.   # what the agent routes
+      - to: check-policy         # slug; must exist
+        description: The decision is recorded in scratchpad/refund.json.   # what the agent routes
                                  #   on. Say WHEN, never where. Omit it to route on the target's
                                  #   instructions instead (target must have some); REQUIRED on a
-                                 #   human state's transitions, where it is the button label.
+                                 #   human state's transitions (the button label) and on every edge
+                                 #   INTO a grader or code state, like this one.
         type: none               # approve | reject | refine | none — semantic on human states
+
+  check-policy:                  # CODE state: the runtime runs its script on entry, NO model call
+    type: code
+    script: scripts/check-policy.js   # REQUIRED on a code state, refused on any other type; resolves
+                                 #   to workflows/<slug>/scripts/check-policy.js (.js|.mjs, no `..`)
+    summary: Re-derive the decision from the refund policy.   # instructions/model/budget/evidence/
+                                 #   approvers here are validate ERRORS: nothing reads them
+    skills: { allow: [order-data] }   # the script's tools are THIS state's surface: grant here
+                                 #   what it reads or calls (another state's grant never reaches it)
+    on_error: closed             # a throw, a timeout, or finishing undecided routes here
+    transitions:                 # the script takes one: tools.archmax_advance({ to, reason })
+      - { to: review, description: The recorded decision matches the policy. }
+      - { to: triage, description: The decision contradicts the policy; send it back with the fix. }
 
   review:                        # human state: parks with a decision record; a PERSON picks the edge
     type: human
@@ -110,27 +115,55 @@ states:
     approvers: [finance@acme.com]
     evidence: [scratchpad/refund.json]   # plus whatever archmax_advance attached via `evidence:`
     transitions:                 # required; no self-edge; one target per labeled type
-      - { to: closed, type: approve, description: Approve and close. }
+      - { to: reply, type: approve, description: Approve; tell the customer. }
       - { to: triage, type: refine, description: Send back with a comment. }
 
-  closed:                        # bare key = terminal state with no declarations
+  reply:                         # agent state (type omitted)
+    instructions: >-
+      Tell the customer the decision in a message that also calls archmax_advance
+      to grade-reply; if a note sends it back, rewrite the reply as it says.
+    transitions:
+      - { to: grade-reply, description: The reply has been sent to the customer. }
+
+  grade-reply:                   # GRADER state: an isolated grader judges and decides the edge
+    type: grader
+    instructions: |-             # REQUIRED: its criteria, appended to a compiled-in grader preamble
+      Judge only the tone of the last assistant message with text.
+      - Friendly and professional: advance to `answered`.
+      - Curt or cold: advance back to `reply`, saying exactly what to change.
+      - If the trail already holds two steps with kind "grader" and to "reply",
+        raise `reply-tone` instead of sending it back again.
+    model: gpt-4.1-mini          # optional; resolved under the `grader` model role
+    budget: { maxTurns: 4, timeoutMs: 60000 }   # ITS OWN model calls / run time; no maxParks
+    on_error: closed             # fails closed: an undecided grader routes here
+    transitions:                 # REQUIRED, at least one; no evidence/approvers on a grader
+      - { to: answered, description: The reply is friendly and professional. }
+      - { to: reply, description: The tone is off; send it back naming what to change. }
+
+  answered:                      # TERMINAL code state: the session completes when the script
+    type: code                   #   returns — "approve, then end" with no further model call
+    script: scripts/record-reply.js
+
+  closed:                        # bare key = terminal (agent) state with no declarations
 ```
 
 ## Machine rules
 
 - **Movement.** The agent moves only by `archmax_advance({ to, reason, evidence? })`
-  — one per message, edge validated, then the leaving state's `after` hooks,
-  the target's `before` hooks, then the target's tools unlock. A state with no
-  transitions is terminal; the run ends when the agent finishes there. Human
-  decisions and `on_error` are the other two movers. `archmax_reset({ reason })`
+  — one per message, edge and `requires` validated, then the target's tools
+  unlock (or, for a grader or code target, the target runs at once). A state
+  with no transitions is terminal; the run ends when the agent finishes there.
+  Human decisions, `on_error`, and grader and code states' own `archmax_advance`
+  are the other movers. `archmax_reset({ reason })`
   returns to the entry state (forbid it via `forbid_always` when a run must
   never restart). No fan-out: sequence states; concurrency lives in
   sub-workflow calls.
 - **Entry.** At least one state declares `triggers`; one state per trigger id;
   `manual` is the entry the CLI, a host firing and a caller all use. A
   re-invoked finished session is a **new turn in the state it ended in**, not
-  at the entry — give a state re-entry transitions if a conversation must move
-  on, or park instead of finishing.
+  at the entry (one that completed in a terminal code state opens at its
+  trigger's entry) — give a state re-entry transitions if a conversation must
+  move on, or park instead of finishing.
 - **Variables.** One flat checkpointed `name → value` store, never declared.
   Host seeds (`--variables`, `createAgent({ variables })`, a delivery) are
   **locked**; the agent uses `archmax_get_variables`/`archmax_set_variables`
@@ -156,7 +189,8 @@ states:
   judgement and any state with a big tool surface or several transitions on
   the default, since a small model that routes badly costs more in retries
   than it saves. Repeating the workflow's id on a state is a validate warning.
-  A rubric keeps its own `model`, a sub-workflow uses its own spec's, and a
+  A grader state's `model` is resolved under the `grader` model role
+  (`modelFactory("grader", env, id)`), a sub-workflow uses its own spec's, and a
   host that passes an explicit `model` instance to `createAgent` outranks
   every declared id (it must pass `modelFactory` to honour them).
 - **Parking.** A state that needs an event or a time calls
@@ -170,9 +204,9 @@ states:
 - **Failing.** When the work cannot be completed, the agent calls
   `archmax_raise({ code, reason })` (alone in its message; any state): the
   session ends at once `failed`, with the agent's free-form `code` and
-  `reason` as the outcome's `exit` — no `on_error` route, no hook, no
-  `returns` check. A session that never raises is a success, so it is for
-  failure only. Forbid it (`forbid_always`, or a state's `forbid`) where the
+  `reason` as the outcome's `exit` — no `on_error` route, no `returns`
+  check. A session that never raises is a success, so it is for failure
+  only. Forbid it (`forbid_always`, or a state's `forbid`) where the
   agent must not end the run itself; a child that raises fails its caller's
   call with kind `raised`.
 - **Human states** park with a record built from `instructions`, `evidence`
@@ -182,23 +216,50 @@ states:
   reply-only turn (every tool call refused) and re-parks unchanged; only
   `decide` moves the run. A
   `refine` edge delivers the reviewer's comment as correction.
-- **Hooks.** `before`: ok/veto (veto rejects entry; on a start state, the
-  run; routed through `on_error` if declared). `after`: ok/correct/veto on
-  the outgoing advance or on completion of a terminal state; `correct` sends
-  the agent back with the reason, bounded per hook by `max_iterations`
-  (default 0 → a correct is a hard veto). A list runs in order and stops at
-  the first non-ok. Errors and missing files veto (fail-closed). Hooks run
-  on runtime authority: the state's `allow`/`forbid`/`skills`/`mounts` do not
-  bind them; `forbid_always`, safety rules and the workflow's mount grants
-  (any state's) do. Human states may not declare hooks.
+- **Grader and code states** (automated states). A **code** state runs
+  `script: scripts/<x>.js` in the sandbox; a **grader** state runs an isolated
+  grader whose criteria are the state's `instructions` and which reads the
+  session with `archmax_get_history` (`{ messages, trail, toolCalls }`: the
+  whole transcript, trail and tool calls with their results). Both run on
+  entry — however the session got there — with **no call of the agent's model**
+  (a chain of code states makes none at all), and leave like every state:
+  `archmax_advance` along one of their transitions, whose `reason` reaches the
+  next state as a `[code]`/`[grader]` runtime note and a `kind: code|grader`
+  trail step, or `archmax_raise`. A **terminal** code state completes the
+  session when its script returns. Throwing, timing out, a spent grader budget,
+  or a non-terminal state that finishes without either call **fails closed** →
+  `on_error`. Each is offered exactly its own state's surface (its grants,
+  `archmax_advance`, `archmax_raise`, the variable tools; a grader also
+  `archmax_get_history`), governed like the agent's calls — never
+  `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`,
+  `archmax_reset`, even when `allow_always` lists one (a state's own
+  `tools.allow` naming one is an error): an automated state cannot park.
+  There is no iteration budget: a state that gives up after N rounds counts
+  them in the trail. Per type, `validate` errors on: a code state's
+  `instructions`/`model`/`budget`/`evidence`/`approvers`; a grader without
+  `instructions` or without a transition, or with `evidence`/`approvers`/
+  `budget.maxParks`. There are **no `before:`/`after:` hooks and no root
+  `extensions:`** — a leftover key is a load error naming it. Script contract:
+  [`code-states-and-scripts.md`](code-states-and-scripts.md).
+- **Automated-state patterns.** A deterministic check **in front of** a state:
+  make the trigger's entry (or the edge's target) a code state that advances
+  to the work or to a state that declines it. A check **behind** a state: point
+  the state's transition at a code state that advances onward, or back with
+  the fix as its `reason` — the agent reads it and advances again. **Approve,
+  then end**: approve into a terminal code state, which costs no model call.
+  Judgment (tone, completeness): a grader behind the graded state with an edge
+  back; its `instructions` say when to raise ("after two send-backs" = two
+  trail steps `{ kind: grader, to: <graded state> }`).
 - **Budgets and `on_error`.** `budget.maxTurns`/`timeoutMs`/`maxParks` bound
-  a state's segment; the root `budget.maxModelCalls` (default 50) bounds a whole
-  turn across states, so a cycle between states ends there. A terminal failure (hook execution error, exhausted
-  corrections, exhausted budget, exhausted parks) routes to `on_error`
-  instead of failing the run; recoverable rejections (invalid edge, veto,
-  in-budget correct) keep the agent in place. Declare `on_error` on states
-  with strict `after` hooks or bounded loops. A **tool that throws** is
-  neither: the call is answered with an error-status tool message carrying
+  a state's segment (on a grader: its own model calls and run time; a code
+  state takes no `budget`, `settings.timeoutMs` bounds its script); the root
+  `budget.maxModelCalls` (default 50) bounds the agent's model calls across a
+  whole turn, so a cycle between states ends there (an automated state's run
+  spends none of it). A terminal failure (exhausted budget, exhausted parks, a
+  grader or code state that fails) routes to `on_error` instead of failing the
+  run; recoverable rejections (invalid edge, unmet `requires`) keep the agent
+  in place. Declare `on_error` on every automated state and on bounded loops.
+  A **tool that throws** is neither: the call is answered with an error-status tool message carrying
   the error, the agent stays in the state and can retry or switch tools, and
   `on_error` never sees it (a park or a cancelled run still propagates).
 - **Sub-workflows are tools.** Allow `archmax_workflow_<slug>` (slug verbatim)
@@ -226,10 +287,12 @@ states:
   sub-run; fan out with parallel tool calls or `Promise.all` in a script
   (bounds: depth 3, 4 concurrent). A child's human state parks the child;
   a script's delegation cannot park and fails closed.
-- **Choosing a mechanism.** Deterministic work with no model → an `archmax_run`
-  script. Delegated work that is itself a process or reused across workflows
-  → a sub-workflow. Judging work already done → a rubric hook (never
-  callable by the agent; `task` is disclosed nowhere and not grantable).
+- **Choosing a mechanism.** Deterministic work the agent triggers → an
+  `archmax_run` script. Deterministic work the graph runs at a fixed point (a
+  screen, a policy check, a record) → a code state. Delegated work that is itself
+  a process or reused across workflows → a sub-workflow. Judging work already
+  done → a grader state. Neither automated kind is callable by the agent (`task`
+  is disclosed nowhere and not grantable).
 - **Prompt economy.** The static prompt + tool schemas are re-sent every
   model call. The static part carries the workflow's `title` + `instructions`
   and **no state of the graph**; a state's `instructions` and its **own**
@@ -245,13 +308,18 @@ states:
 
 Only the state it is in. Every model call is handed that state's outgoing edges
 and nothing else of the machine — no other state's slug, `title`, `summary`,
-hooks or transitions, and no count of the states:
+script, criteria or transitions, and no count of the states:
 
 ```
 Transitions — choose one with `archmax_advance` when this state's work is done:
+- to `check-policy` (code) — The decision is recorded in scratchpad/refund.json.
 - to `review` (human decision node) — The decision is recorded and needs a person's approval.
+- to `grade-reply` (grader) — The reply has been sent to the customer.
 - to `closed` (terminal) — Nothing to refund; the case is answered.
 ```
+
+A `(grader)` or `(code)` target runs on its own and may send the run straight
+back with a note saying what to change.
 
 Two rules follow, and they are the ones authors get wrong:
 
@@ -260,12 +328,19 @@ Two rules follow, and they are the ones authors get wrong:
    `The refund is over $50, or the customer has asked twice.` Not `Go to
    refund-review.` — that tells a reader who already knows the graph something
    they cannot use, and tells this reader nothing.
-2. **Routing conditions cannot live downstream.** A target's `summary` or
-   `instructions` is never disclosed to the state routing into it. If the
-   condition is "when the order is over 30 days old", it belongs on the edge.
+2. **Routing conditions cannot live downstream.** A target's `summary` is never
+   disclosed to the state routing into it, nor its `instructions` across a
+   described edge. If the condition is "when the order is over 30 days old", it
+   belongs on the edge.
 
-A missing or blank `description` is a **load error**. There is no fallback, and
-no way to see more of the graph.
+An **undescribed** edge (no `description`, or a blank one) routes on its target's
+`instructions` instead, quoted under the edge's line as what the agent will do
+once there: leave one undescribed only when those instructions already say when
+it applies. It is a **load error** where the target has no instructions, on a
+human state's transitions (the description is the button label), and into a
+grader or code state (a grader's instructions are criteria the work is never
+shown; a code state has none). A code state's own edges may go undescribed: its
+script routes. There is no other way to see more of the graph.
 
 ## Governance
 
@@ -282,6 +357,13 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   `essentialTools`. Any other tool needs an `allow`/`allow_always` entry. A
   state entry naming a granted tool **narrows** it there, and one naming a
   default tool the list omits grants it there. `task` is ungrantable (error).
+- **In a grader or code state** the surface is what the state is granted (the
+  workflow-wide grant included), minus `write_todos`, `archmax_eval`,
+  `archmax_run`, `archmax_wait` and `archmax_reset` even when `allow_always` lists
+  them (naming one in the state's
+  own `tools.allow` is an error), plus `archmax_advance`, `archmax_raise`,
+  `archmax_get_variables`, `archmax_set_variables`, and `archmax_get_history`
+  for a grader — never `archmax_wait` or `archmax_reset`.
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches
   if any glob matches; `${{var}}` allowed). An argument the tool declares as a
   path (else `file_path`) is canonicalized first; any other argument (a URL, an
@@ -303,8 +385,10 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   in the prompt). `allow` adds, `forbid` subtracts, `allow: []` denies
   nothing. A `tools.allow` entry may still narrow *within* an enabled bundle.
   A state enabling no skill can run no script at all.
-- **Scripts' `tools.*` calls** are governed per call: an `archmax_run` script
-  is bound like the model (grant every tool it calls); a hook is exempt from
-  the state's lists but held to its workflow's mount grants. Neither may read
-  `workflows/**` or write a read-only mount. A refused call throws inside the
-  script.
+- **Scripts' `tools.*` calls** are governed per call against the state they
+  run in: an `archmax_run` script is bound like the model (grant every tool it
+  calls in the agent's state); a code state's script is bound by **its own**
+  state's grants (`tools`, `skills`, `mounts`) — there is no runtime authority.
+  `tools` holds exactly that state's surface: anything else is `undefined`.
+  Neither may read `workflows/**` or write a read-only mount. A refused call
+  rejects inside the script.

@@ -725,7 +725,7 @@ describe("the target's declared signature", () => {
   it("keeps any other rejection a rejection", async () => {
     const registry = signedRegistry(
       { returns: [{ name: "delayed", type: "boolean" }] },
-      { ...settledWith({ delayed: "no" }), status: WORKFLOW_STATUSES.rejected, rejected: "a hook vetoed" },
+      { ...settledWith({ delayed: "no" }), status: WORKFLOW_STATUSES.rejected, rejected: "a code state failed" },
     );
     await expect(dispatch(dispatcherFor(registry))).rejects.toMatchObject({ kind: "rejected" });
   });

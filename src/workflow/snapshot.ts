@@ -27,46 +27,18 @@ function withoutMetadata<T extends { metadata?: unknown }>(value: T): T {
 }
 
 /**
- * Strip `metadata` from every inline rubric in one `before`/`after` field,
- * preserving the field's own shape (a single hook stays a single hook).
- */
-function hooksWithoutMetadata(field: unknown): unknown {
-  const strip = (hook: unknown): unknown => {
-    const declaration = (hook as { rubric?: { metadata?: unknown } } | null)?.rubric;
-    if (!declaration || typeof declaration !== "object" || declaration.metadata === undefined) {
-      return hook;
-    }
-    return { ...(hook as object), rubric: withoutMetadata(declaration) };
-  };
-  return Array.isArray(field) ? field.map(strip) : strip(field);
-}
-
-/**
  * The spec as a machine: every runtime-inert `metadata` block removed — at the
- * root, on each state, and on each rubric inlined in a state's hooks — so a
- * canvas edit does not mint a new spec version. Returns the spec itself when
- * there is nothing to drop, so specs without the block hash unchanged.
+ * root and on each state — so a canvas edit does not mint a new spec version.
+ * Returns the spec itself when there is nothing to drop, so specs without the
+ * block hash unchanged.
  */
 function governingSpec(spec: MachineSpec): MachineSpec {
-  const stateHasMetadata = ([, state]: [string, MachineSpec["states"][string]]) =>
-    state?.metadata !== undefined ||
-    (["before", "after"] as const).some(
-      (phase) => hooksWithoutMetadata(state?.[phase]) !== state?.[phase],
-    );
   const states = Object.entries(spec.states ?? {});
-  if (spec.metadata === undefined && !states.some(stateHasMetadata)) return spec;
-
+  if (spec.metadata === undefined && !states.some(([, state]) => state?.metadata !== undefined)) return spec;
   return {
     ...withoutMetadata(spec),
     states: Object.fromEntries(
-      states.map(([slug, state]) => {
-        const governed = withoutMetadata(state ?? {}) as Record<string, unknown>;
-        for (const phase of ["before", "after"] as const) {
-          if (governed[phase] === undefined) continue;
-          governed[phase] = hooksWithoutMetadata(governed[phase]);
-        }
-        return [slug, governed];
-      }),
+      states.map(([slug, state]) => [slug, withoutMetadata(state ?? {})]),
     ) as MachineSpec["states"],
   };
 }

@@ -64,8 +64,14 @@ them. The prompt is the rest of the line, so quoting is the shell's business.
 
 The session header and a live, colorized **state flow** go to `stderr`. State
 changes sit at the outer margin. What happened inside each state is indented
-beneath it: hook verdicts, tool calls, and the model's own text quoted with
-`│`. `--verbose` adds one raw line per lifecycle event.
+beneath it: grader and code runs, tool calls, and the model's own text quoted
+with `│`. `--verbose` adds one raw line per event.
+
+A code state's run reads `› code scripts/check-refund.js`, with its console lines
+beneath it and its tool calls marked `via script`. A grader's reads
+`› grader grading`. The move either one makes is the `→ <reason>` line after it,
+and a failed run adds `✖ code failed <reason>` (or `✖ grader failed`) before its
+`on_error` route.
 
 ### Triggers and variables
 

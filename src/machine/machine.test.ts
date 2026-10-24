@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { BackendProtocolV2 } from "deepagents";
 import { Workspace } from "../core/workspace.js";
-import { afterHookLabel } from "../lifecycle/hook-shape.js";
-import { DEFAULT_TOOLS, WorkflowMachine } from "./machine.js";
+import { ALWAYS_ALLOWED_TOOLS, DEFAULT_TOOLS, WorkflowMachine } from "./machine.js";
+import {
+  ADVANCE_TOOL,
+  CODE_STATE_CONTROL_TOOLS,
+  GET_HISTORY_TOOL,
+  GET_VARIABLES_TOOL,
+  GRADER_STATE_CONTROL_TOOLS,
+  RAISE_TOOL,
+  SET_VARIABLES_TOOL,
+} from "./tool-names.js";
 import { MANUAL_TRIGGER, stateTriggerIds } from "./triggers.js";
 import type { MachineSpec } from "./types.js";
 
@@ -17,7 +25,6 @@ const MACHINE_YAML = `
 states:
   identify_case:
     triggers: { manual: }
-    before: { script: hooks/check.js }
     tools:
       allow:
         - { tool: archmax_advance, args: { to: ["orders_question"] } }
@@ -25,7 +32,6 @@ states:
       - to: orders_question
         description: User is asking about orders or shipping.
   orders_question:
-    after: { subagent: judge }
     transitions:
       - to: done
         description: User has been answered.
@@ -75,28 +81,30 @@ describe("WorkflowMachine.load", () => {
     const yaml = `
 runtime:
   engine: archmax-harness
-  version: "1"
+  version: "3"
 states:
   s:
     triggers: { manual: }
 `;
     const ws = workspaceWith({ "/workflow.yaml": fm(yaml) });
     const m = (await WorkflowMachine.load(ws, SPEC_PATHS))!;
-    expect(m.spec.runtime).toEqual({ engine: "archmax-harness", version: "1" });
+    expect(m.spec.runtime).toEqual({ engine: "archmax-harness", version: "3" });
   });
 
-  it("preserves the legacy engine id verbatim for resolution to normalize", async () => {
+  // The machine is a view over the document: whether a declared contract is
+  // supported is the contract module's question, asked by assembly and validate.
+  it("preserves an unsupported contract verbatim for the support check to refuse", async () => {
     const yaml = `
 runtime:
-  engine: deep-agent-harness
-  version: "1"
+  engine: archmax-harness
+  version: "2"
 states:
   s:
     triggers: { manual: }
 `;
     const ws = workspaceWith({ "/workflow.yaml": fm(yaml) });
     const m = (await WorkflowMachine.load(ws, SPEC_PATHS))!;
-    expect(m.spec.runtime).toEqual({ engine: "deep-agent-harness", version: "1" });
+    expect(m.spec.runtime).toEqual({ engine: "archmax-harness", version: "2" });
   });
 
   it("loads successfully when runtime metadata is absent", async () => {
@@ -106,12 +114,10 @@ states:
 });
 
 describe("WorkflowMachine graph queries", () => {
-  it("derives settings, hooks, and states", async () => {
+  it("derives settings and states", async () => {
     const m = await loadMachine();
     expect(m.entry).toBe("identify_case");
     expect(m.harnessSettings.timeoutMs).toBe(15_000);
-    expect(m.lifecycleHooks().identify_case.before).toEqual([{ script: "hooks/check.js" }]);
-    expect(m.lifecycleHooks().orders_question.after).toEqual([{ subagent: "judge" }]);
     expect(Object.keys(m.spec.states)).toEqual([
       "identify_case",
       "orders_question",
@@ -124,9 +130,9 @@ describe("WorkflowMachine graph queries", () => {
     expect(m.isTerminal("orders_question")).toBe(false);
   });
 
-  it("derives start states from triggers, with legacy entry as manual", async () => {
-    // The MACHINE_YAML fixture uses `entry: identify_case` and no triggers, so
-    // the entry state is treated as the `manual` start state (back-compat).
+  it("derives start states from triggers", async () => {
+    // The MACHINE_YAML fixture declares `manual` on `identify_case` and no other
+    // trigger, so that state is the one start state.
     const m = await loadMachine();
     expect(m.startStateForTrigger(MANUAL_TRIGGER)).toBe("identify_case");
     expect(m.startStateForTrigger("manual")).toBe("identify_case");
@@ -313,14 +319,21 @@ describe("WorkflowMachine graph queries", () => {
   });
 
   it("never treats task as a default tool, whatever the workflow declares", () => {
-    // `task` is the runtime's own dispatch for grading rubrics. Registered
-    // rubrics make the tool exist in the assembled list, but nothing puts it in
-    // front of the model: disclosure withholds it and the kernel refuses it.
+    // `task` is Deep Agents' subagent dispatch, which exists in the assembled
+    // list whatever the workflow declares. Grading is a grader state, so nothing
+    // puts the tool in front of a model: not the agent, not a grader.
     const machine = WorkflowMachine.fromSpec({
-      rubrics: { tone: { instructions: "judge the tone" } },
-      states: { start: { triggers: { manual: null }, after: { rubric: "tone" } } },
-    } as never);
+      states: {
+        start: { triggers: { manual: null }, transitions: [{ to: "review", description: "Drafted." }] },
+        review: {
+          type: "grader",
+          instructions: "Judge the tone.",
+          transitions: [{ to: "start", description: "Send it back." }],
+        },
+      },
+    });
     expect(machine.disclosedTools("start").has("task")).toBe(false);
+    expect(machine.disclosedTools("review").has("task")).toBe(false);
   });
 
   it("discloses a conditional built-in in exactly the state that grants it", () => {
@@ -440,49 +453,6 @@ states:
     expect(m.spec.states.done?.title).toBeUndefined();
     expect(m.spec.states["Do the thing"]).toBeUndefined();
     expect(Object.keys(m.spec.states)).toEqual(["a", "done"]);
-  });
-});
-
-describe("WorkflowMachine lifecycle hook normalization", () => {
-  const YAML = `
-states:
-  a:
-    triggers: { manual: }
-    before:
-      - { script: hooks/check.js }
-      - { subagent: precheck }
-    after: { script: hooks/after.js }
-    transitions:
-      - to: b
-        description: go
-  b:
-    transitions: []
-  done:
-`;
-
-  async function load() {
-    const ws = workspaceWith({ "/workflow.yaml": fm(YAML) });
-    const m = await WorkflowMachine.load(ws, SPEC_PATHS);
-    if (!m) throw new Error("machine failed to load");
-    return m;
-  }
-
-  it("preserves an ordered list of before hooks", async () => {
-    const m = await load();
-    expect(m.lifecycleHooks().a.before).toEqual([
-      { script: "hooks/check.js" },
-      { subagent: "precheck" },
-    ]);
-  });
-
-  it("wraps a single after hook in a one-element list", async () => {
-    const m = await load();
-    expect(m.lifecycleHooks().a.after).toEqual([{ script: "hooks/after.js" }]);
-  });
-
-  it("labels tagged script and subagent hooks", () => {
-    expect(afterHookLabel({ script: "hooks/x.js" })).toBe("hooks/x.js");
-    expect(afterHookLabel({ subagent: "judge" })).toBe("subagent:judge");
   });
 });
 
@@ -788,6 +758,180 @@ states:
     expect(m.forbiddenSkills("route")).toEqual(["secrets", "orders"]);
   });
 
+});
+
+/**
+ * One place decides what a state may use, for every state type: the kernel's
+ * grant, prompt disclosure and an automated state's own tool list all read
+ * `controlTools`, `checkAllowed` and `disclosedTools`. An automated state (a
+ * grader or a code state) cannot park or reset, is never offered the planning
+ * list or the sandbox entry points, and only a grader reads the history; agent
+ * and human states keep the surface they always had.
+ */
+describe("tool surfaces by state type", () => {
+  const AGENT_ONLY = ["write_todos", "archmax_eval", "archmax_run"];
+  const PARK_AND_RESET = ["archmax_wait", "archmax_reset"];
+
+  const spec: MachineSpec = {
+    // A declared `allow_always` replaces the default tools, so it keeps them and adds one.
+    tools: {
+      allow_always: [
+        ...[...DEFAULT_TOOLS].filter((tool) => tool !== "archmax_run"),
+        "web_fetch",
+        { tool: "archmax_run", paths: ["skills/**"] },
+      ],
+    },
+    states: {
+      draft: { triggers: { manual: null }, transitions: [{ to: "screen", description: "Drafted." }] },
+      screen: {
+        type: "code",
+        script: "scripts/screen.js",
+        // Agent-only entries an automated state is never offered (a lint error);
+        // `search` is an ordinary grant and stands.
+        tools: { allow: ["archmax_run", { tool: "archmax_eval" }, "write_todos", "search"] },
+        transitions: [{ to: "review", description: "Screened." }],
+      },
+      review: {
+        type: "grader",
+        instructions: "Judge the tone.",
+        transitions: [
+          { to: "approve", description: "The tone is right." },
+          { to: "draft", description: "Send it back with the correction." },
+        ],
+      },
+      approve: {
+        type: "human",
+        instructions: "Approve the reply.",
+        transitions: [{ to: "record", description: "Approve." }],
+      },
+      record: { type: "code", script: "scripts/record.js" },
+    },
+  };
+  const machine = WorkflowMachine.fromSpec(spec);
+
+  it("reads each state's type, agent by default", () => {
+    expect(machine.stateType("draft")).toBe("agent");
+    expect(machine.stateType("screen")).toBe("code");
+    expect(machine.stateType("review")).toBe("grader");
+    expect(machine.stateType("approve")).toBe("human");
+    expect(machine.stateType("missing")).toBe("agent");
+
+    expect(machine.isCodeState("screen")).toBe(true);
+    expect(machine.isGraderState("review")).toBe(true);
+    expect(machine.isHumanState("approve")).toBe(true);
+    expect(["draft", "screen", "review", "approve", "record"].filter((s) => machine.isAutomatedState(s))).toEqual(
+      ["screen", "review", "record"],
+    );
+  });
+
+  it("gives each type its control set", () => {
+    expect(machine.controlTools("draft")).toBe(ALWAYS_ALLOWED_TOOLS);
+    expect(machine.controlTools("approve")).toBe(ALWAYS_ALLOWED_TOOLS);
+    expect(machine.controlTools("screen")).toBe(CODE_STATE_CONTROL_TOOLS);
+    expect(machine.controlTools("review")).toBe(GRADER_STATE_CONTROL_TOOLS);
+    expect([...CODE_STATE_CONTROL_TOOLS].sort()).toEqual([
+      ADVANCE_TOOL,
+      GET_VARIABLES_TOOL,
+      RAISE_TOOL,
+      SET_VARIABLES_TOOL,
+    ]);
+    expect([...GRADER_STATE_CONTROL_TOOLS].sort()).toEqual(
+      [...CODE_STATE_CONTROL_TOOLS, GET_HISTORY_TOOL].sort(),
+    );
+  });
+
+  it("offers a code state its controls and file tools, and nothing an agent's loop uses", () => {
+    const disclosed = machine.disclosedTools("screen");
+    for (const tool of [ADVANCE_TOOL, RAISE_TOOL, GET_VARIABLES_TOOL, SET_VARIABLES_TOOL]) {
+      expect(disclosed.has(tool)).toBe(true);
+      expect(machine.checkAllowed("screen", tool, {})).toBe(true);
+    }
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET, GET_HISTORY_TOOL]) {
+      expect(disclosed.has(tool)).toBe(false);
+      // Not even through the state's own entries naming them.
+      expect(machine.checkAllowed("screen", tool, { file_path: "skills/x/scripts/a.js" })).toBe(false);
+    }
+    // The file tools, an ordinary own grant and an ordinary always-on grant stay.
+    for (const tool of ["read_file", "write_file", "ls", "search", "web_fetch"]) {
+      expect(disclosed.has(tool)).toBe(true);
+    }
+  });
+
+  it("withholds archmax_advance in a terminal code state, keeping the other controls", () => {
+    const disclosed = machine.disclosedTools("record");
+    expect(disclosed.has(ADVANCE_TOOL)).toBe(false);
+    expect(disclosed.has(RAISE_TOOL)).toBe(true);
+    expect(disclosed.has(GET_VARIABLES_TOOL)).toBe(true);
+    expect(disclosed.has(SET_VARIABLES_TOOL)).toBe(true);
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) expect(disclosed.has(tool)).toBe(false);
+  });
+
+  it("offers a grader the code set plus the history it judges", () => {
+    const disclosed = machine.disclosedTools("review");
+    expect(disclosed.has(GET_HISTORY_TOOL)).toBe(true);
+    expect(machine.checkAllowed("review", GET_HISTORY_TOOL, {})).toBe(true);
+    for (const tool of CODE_STATE_CONTROL_TOOLS) expect(disclosed.has(tool)).toBe(true);
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) {
+      expect(disclosed.has(tool)).toBe(false);
+      expect(machine.checkAllowed("review", tool, {})).toBe(false);
+    }
+  });
+
+  it("leaves agent and human states unchanged, with no history tool", () => {
+    for (const state of ["draft", "approve"]) {
+      const disclosed = machine.disclosedTools(state);
+      for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET, ADVANCE_TOOL, RAISE_TOOL]) {
+        expect(disclosed.has(tool)).toBe(true);
+        // `archmax_run` is narrowed workflow-wide to `skills/**`.
+        const args = tool === "archmax_run" ? { file_path: "skills/x.js" } : {};
+        expect(machine.checkAllowed(state, tool, args)).toBe(true);
+      }
+      expect(disclosed.has(GET_HISTORY_TOOL)).toBe(false);
+      expect(machine.checkAllowed(state, GET_HISTORY_TOOL, {})).toBe(false);
+    }
+  });
+
+  it("describes an automated state from the same surface it enforces", () => {
+    const code = machine.describeAllowed("screen");
+    expect(code).toContain(ADVANCE_TOOL);
+    expect(code).toContain(RAISE_TOOL);
+    expect(code).toContain("search");
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET, GET_HISTORY_TOOL]) {
+      expect(code).not.toContain(tool);
+    }
+    const grader = machine.describeAllowed("review");
+    expect(grader).toContain(GET_HISTORY_TOOL);
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) expect(grader).not.toContain(tool);
+  });
+
+  it("keeps the host's essential tools in an automated state", () => {
+    const withHost = WorkflowMachine.fromSpec(spec, ["get_markdown"]);
+    expect(withHost.disclosedTools("screen").has("get_markdown")).toBe(true);
+    expect(withHost.checkAllowed("review", "get_markdown", {})).toBe(true);
+  });
+
+  it("never offers an automated state parking or resetting, whatever the workflow-wide grant names", () => {
+    const granting = WorkflowMachine.fromSpec({
+      ...spec,
+      tools: { allow_always: [...(spec.tools?.allow_always ?? []), ...PARK_AND_RESET] },
+    });
+    for (const state of ["screen", "review"]) {
+      for (const tool of PARK_AND_RESET) {
+        expect(granting.disclosedTools(state).has(tool)).toBe(false);
+        expect(granting.checkAllowed(state, tool, {})).toBe(false);
+      }
+    }
+    for (const tool of PARK_AND_RESET) expect(granting.checkAllowed("draft", tool, {})).toBe(true);
+  });
+
+  it("lets a denial withhold a control in an automated state", () => {
+    const denied = WorkflowMachine.fromSpec({
+      ...spec,
+      tools: { forbid_always: [SET_VARIABLES_TOOL] },
+    });
+    expect(denied.disclosedTools("screen").has(SET_VARIABLES_TOOL)).toBe(false);
+    expect(denied.disclosedTools("review").has(SET_VARIABLES_TOOL)).toBe(false);
+  });
 });
 
 

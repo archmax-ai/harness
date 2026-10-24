@@ -152,7 +152,7 @@ describe("requires gate", () => {
     },
   });
   const transition = (variables: VariableStore) =>
-    decide(machine, { kind: "transition", from: "work", to: "done", hookFacts: [] }, [], undefined, variables);
+    decide(machine, { kind: "transition", from: "work", to: "done" }, [], undefined, variables);
 
   it("blocks the exit while a required variable is unset", () => {
     const verdict = transition({});
@@ -173,23 +173,18 @@ describe("requires gate", () => {
     expect(transition({ case_id: entry("K-9", true) }).decision).toBe("allow");
   });
 
-  it("does not consult after hooks while the gate blocks", () => {
-    // A veto fact would block on its own; the gate must win first, so the
-    // reason names the variable rather than the hook.
+  it("runs before the edge check", () => {
+    // An undeclared target would block on its own; the gate must win first, so
+    // the reason names the variable the state still owes rather than the edge.
     const verdict = decide(
       machine,
-      {
-        kind: "transition",
-        from: "work",
-        to: "done",
-        hookFacts: [{ verdict: "veto", reason: "judge said no" }],
-      },
+      { kind: "transition", from: "work", to: "nowhere" },
       [],
       undefined,
       {},
     );
     expect(verdict.ruleId).toBe("transition.requires");
-    expect(verdict.reason).not.toContain("judge said no");
+    expect(verdict.reason).not.toContain("Valid target slugs");
   });
 });
 

@@ -62,9 +62,9 @@ npx skills add archmax-ai/harness
 my-workspace/
 ├── AGENTS.md                      # persona
 ├── workflows/order-lookup/
-│   ├── workflow.yaml              # the enforced state machine, and its grading rubrics
+│   ├── workflow.yaml              # the enforced state machine
 │   ├── WORKFLOW.md                # optional prose addendum
-│   ├── hooks/check-requester.js   # lifecycle hook scripts
+│   ├── scripts/screen-request.js  # code-state scripts, run by the runtime
 │   └── tests/*.test.yaml          # cases for `archmax test`
 ├── skills/<slug>/                 # skill bundles: SKILL.md, assets/, scripts/
 └── sessions/                      # default session store (gitignored)
@@ -74,6 +74,7 @@ my-workspace/
 # workflows/order-lookup/workflow.yaml (excerpt)
 title: Order lookup
 instructions: Only ever disclose the requester's own company's orders.
+runtime: { engine: archmax-harness, version: "3" }
 tools:
   allow_always: [ls, read_file, write_file, edit_file, glob, grep, copy_file,
                  move_file, remove_file, write_todos, archmax_eval, archmax_run]
@@ -88,29 +89,62 @@ mounts: { allow_always: [reference] }     # which STATES reach a host-governed m
                                           # and only `read_write` lets this workflow write it
 
 states:
-  identify-case:
+  screen-request:                   # a code state: the runtime runs its script on
+    type: code                      # entry, with no model call, and the script moves
+    script: scripts/screen-request.js   # the session with tools.archmax_advance
     triggers:
       manual:
+    transitions:                    # its script routes, so a code state's own edges
+                                    # may go undescribed
+      - to: identify-case
+        description: The requester is known and asks about their own company's orders.
+      - to: decline
+        description: The request names no known requester.
+  identify-case:
     instructions: Classify the request and archmax_advance to the matching path.
-    before: { script: hooks/check-requester.js }
     transitions:                    # the agent is shown this state's edges and nothing
                                     # else of the graph: it routes on each description,
                                     # or, where an edge has none, on the target's
                                     # instructions
       - to: orders-question
         description: The user is asking about orders, status, shipping, or tracking.
-  orders-question:                  # no transitions: terminal
-    instructions: Answer from skills/order-data/assets/orders.json.
+  orders-question:
+    instructions: >-
+      Answer from skills/order-data/assets/orders.json, and send the reply in a
+      message that also advances to review-reply.
                                     # no skills block: the workflow's grant reaches
                                     # here, and enabling a bundle is the whole grant
-    # The standard this state's exit is graded against, declared where it applies.
-    # On the authoring plane, so the agent being graded can neither read it nor
-    # call it.
-    after:
-      - rubric:
-          max_iterations: 2         # how many times a `correct` may send the agent back
-          instructions: Judge the tone of the reply. Return ok, correct or veto with a reason.
+    transitions:
+      - to: review-reply
+        description: The reply has been sent to the customer.
+  review-reply:                     # a grader state: an isolated grader judges the work
+    type: grader                    # against these criteria and decides the edge
+    instructions: >-
+      Judge the tone of the last reply. Friendly: advance to answered. Curt: send it
+      back saying what to change. After two send-backs, raise reply-tone.
+    transitions:
+      - to: answered
+        description: The reply is friendly and professional.
+      - to: orders-question
+        description: The tone is off; send it back naming what to change.
+  answered:                         # a terminal code state: approving ends the
+    type: code                      # session with no further model call
+    script: scripts/answered.js
+  # decline: a terminal state that tells the person why
 ```
+
+Grader and code states are **automated states**: the runtime runs them on entry, with no model
+call of the session's agent, so a chain of code states costs nothing. A code state's script
+(`workflows/<slug>/scripts/`) runs in the sandbox; a grader is an isolated subagent whose system
+prompt is the state's `instructions` and which reads the session's history with
+`archmax_get_history`. Both read the whole session: its transcript, its trail, and every tool call
+with its result. Each is offered exactly its own state's tools, and each leaves the way every
+state does: `archmax_advance` along one of its transitions, whose reason reaches the next state as a
+note (a send-back is the correction the agent reads), or `archmax_raise` to end the session as
+failed. A check is a state on the graph, in front of the work or behind it, and an edge into one
+always carries a description: a grader's instructions are its criteria, and a code state has none.
+Both live on the authoring plane, so the agent they check can neither read nor call them. See
+[grader and code states](https://harness.archmax.ai/guides/automated-states/).
 
 A trigger may also declare the contract a caller relies on: what a firing must supply and what the
 session guarantees when it completes. A delegating workflow, a host's MCP tool and a start form all
@@ -203,7 +237,7 @@ that must refuse them.
 
 Five subpaths keep production imports small:
 
-- `@archmax-ai/harness/sandbox`: hook authoring types
+- `@archmax-ai/harness/sandbox`: code-state script types (`defineCodeState`, `CodeStateInput`)
 - `@archmax-ai/harness/testing`: the case engine
 - `@archmax-ai/harness/cli`: the state-flow renderer
 - `@archmax-ai/harness/spec`: the `workflow.yaml` schema, the pure validator and the grammars
@@ -214,7 +248,7 @@ The last two are browser-safe, with no runtime behind them. See the
 
 ### Authoring with a coding agent
 
-The authoring skill teaches a coding agent the schema, the hook contract, governance, human
+The authoring skill teaches a coding agent the schema, grader and code states, governance, human
 states, cases and the CLI. Install it with the [skills CLI](https://skills.sh):
 
 ```bash
@@ -236,6 +270,7 @@ the packaged copy. The source is `skills/archmax-harness/`.
 - [Quickstart](https://harness.archmax.ai/getting-started/quickstart/) and
   [installation](https://harness.archmax.ai/getting-started/installation/)
 - Guides: [the workflow machine](https://harness.archmax.ai/guides/workflow-machine/),
+  [grader and code states](https://harness.archmax.ai/guides/automated-states/),
   [sessions](https://harness.archmax.ai/guides/sessions/),
   [triggers](https://harness.archmax.ai/guides/triggers/),
   [skills](https://harness.archmax.ai/guides/skills/),

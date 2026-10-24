@@ -40,8 +40,8 @@ sandbox the same rules govern.
 
 ## The agent sees one state at a time
 
-The archmax harness renders the state in force: its tool surface, its outgoing edges, its
-hooks. The runtime reads the rest from the spec file.
+The archmax harness renders the state in force: its tool surface and its outgoing
+edges. The runtime reads the rest from the spec file.
 
 Two things follow. An injected instruction has one state and its edges to work
 with, because that is all the prompt holds. And the cached prompt stays the same
@@ -51,8 +51,10 @@ size whether the workflow has six states or sixty.
 	<Card title="A pure kernel decides every call" icon="approve-check">
 		One synchronous decision function governs tools, skill bundles and
 		filesystem mounts alike. Deny beats allow. It applies to the calls a
-		sandboxed script makes, as well as the model's own. Hooks return `ok`,
-		`correct` or `veto`. A hook that throws counts as a veto.
+		sandboxed script makes, as well as the model's own. A deterministic check is
+		a code state on the graph and a model's judgement is a grader state, each
+		held to its own state's tools. One that throws, or finishes without
+		deciding, fails closed.
 	</Card>
 	<Card title="Prove the policy before you spend a token" icon="document">
 		`archmax validate` runs that same kernel against your spec offline. A state
@@ -81,8 +83,8 @@ The archmax harness is a runtime library for Node and TypeScript (ESM). It is a 
 It wires up a model, serves the agent's workspace through a Deep Agents backend,
 loads skills, and enforces `workflow.yaml`.
 
-Everything specific to your agent lives in the workspace as files: the spec, skill
-bundles, hook scripts, and data. The runtime stays generic, so the same library can
+Everything specific to your agent lives in the workspace as files: the spec,
+code-state scripts, skill bundles, and data. The runtime stays generic, so the same library can
 run a support triage agent and a nightly reporting job. The workspace can live on
 any Deep Agents backend: a local directory, an object store, a remote service.
 
@@ -92,7 +94,7 @@ any Deep Agents backend: a local directory, an object store, a remote service.
 	<li>
 		<a href="/guides/workflow-machine/">
 			<strong>Author</strong>
-			<span>Describe states, tool surfaces, transitions and hooks in one workflow.yaml file.</span>
+			<span>Describe states, tool surfaces, transitions and checks in one workflow.yaml file.</span>
 		</a>
 	</li>
 	<li>
