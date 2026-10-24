@@ -67,7 +67,7 @@ concepts is a defect. "Subagent" SHALL NOT be one of the terms: what grades a se
 grader state, and what runs a delegated process is a sub-workflow. The glossary SHALL carry no
 entry for hook, verdict, grading rubric or iteration budget. It SHALL keep **trail** (the
 checkpointed audit trail) distinct from **history** (the full transcript and trail that
-`archmax_get_history` returns to a grader and a code state's script receives).
+`archmax_get_history` returns to a grader and to a code state's script alike).
 
 #### Scenario: A page uses the glossary term
 
@@ -221,7 +221,7 @@ users, the packaged copy as the version-matched path, and a checkout as the deve
 
 The skill SHALL teach, from the current code: the two-file workflow (`workflow.yaml` as the strict,
 authoritative machine; `WORKFLOW.md` as prose with no frontmatter) and the spec-rendered graph
-section; every root and state key of the schema, slugs versus titles, `disabled`, budgets,
+section; every root and state key of the schema, slugs versus titles, `disabled`, state budgets,
 `on_error`, transitions and their types, the four state types (`agent`, `human`, `grader`,
 `code`) and the keys each reads, human states, terminal states; the `metadata` slot at the
 root and on a state (free-form host data the runtime never reads); triggers (`manual`, several
@@ -241,26 +241,29 @@ default tool under `tools.allow_always`, removing only those the workflow must n
 authoring backend split (the agent cannot read `workflows/**`; code-state scripts in
 `workflows/<slug>/scripts/`, runtime scripts and data in skill bundles; `scratchpad/` as the one
 working area); **code states** (`type: code` with `script: scripts/<file>.js`, and the code-state
-script contract: a default-export function receiving
-`{ state, trigger, variables, messages, trail, toolCalls, tools }`, moving the session with
-`tools.archmax_advance({ to, reason })` or ending it with `tools.archmax_raise`, its return value
-not read, typed imports from `@archmax-ai/harness/sandbox` such as `defineCodeState` and
-`CodeStateInput`; that `messages` and `trail` are the session's whole transcript and trail, a tool
-entry carrying its tool and call `id` with an empty `text`, and that `toolCalls(filter?)` resolves
-to the session's tool calls with their results, narrowed by `name`, `state`, `visit` (a visit's
-number), `status` and `last`; that its `tools.*` reach exactly its own state's tool surface, held
+script contract: a default-export function receiving `{ state, trigger, variables, tools }`,
+moving the session with `tools.archmax_advance({ to, reason })` or ending it with
+`tools.archmax_raise`, its return value not read, typed imports from `@archmax-ai/harness/sandbox`
+such as `defineCodeState` and `CodeStateInput`; that it reads the session with
+`JSON.parse(await tools.archmax_get_history())`, the history a grader reads: `{ messages, trail }`,
+the session's whole transcript and trail, a tool entry carrying its tool, its call `id` and its
+result as `text`; that its `tools.*` reach exactly its own state's tool surface, held
 to that state's allow and forbid lists as an `archmax_run` script is, and to every workflow-wide
 denial; that a terminal code state completes the session when its script returns, while a
 non-terminal one that neither advances nor raises fails through `on_error`); **grader states**
 (`type: grader` with `instructions`, an optional `model` and at least one transition; that a
-grader reads the session only through `archmax_get_history`, which returns the whole transcript,
-the trail and every tool call with its result, decides with `archmax_advance`, whose reason is
-what the next state reads, or ends the session with `archmax_raise`; that it has no iteration
-budget, so instructions that bound send-backs count them from the history's trail; that approving
-into a terminal code state ends the session with no further model call; and that no sandbox
-context has `task()`); that an edge into a grader or code state needs a `description`, while a
-code state's own edges may go undescribed; that a chain of code states makes no model call, and
-that a runaway cycle of automated states stops at the session's recursion limit; sub-workflows, including that a child inherits every ancestor's workflow-wide denials and no per-state list; cases (the strict YAML grammar, `title`/`description`,
+grader reads the session only through `archmax_get_history`, which returns the whole transcript
+and the trail, decides with `archmax_advance`, whose reason is what the next state reads, or ends
+the session with `archmax_raise`; that it has no iteration budget, so instructions that bound
+send-backs count them from the history's trail; that a grader belongs on work the agent hands on
+(a report, a recorded decision), not on a live answer, since everything the agent says in a turn
+is that turn's reply, a draft sent back included; that approving into a terminal code state ends
+the session with no further model call; and that no sandbox context has `task()`); that an edge
+into a grader or code state needs a `description`, while a code state's own edges may go
+undescribed; that a chain of code states makes no model call, and
+that a turn, a runaway cycle of automated states included, is bounded by LangGraph's recursion
+limit (`DEFAULT_RECURSION_LIMIT`, 400, unless the caller sets one) and the workflow declares no
+root `budget`; sub-workflows, including that a child inherits every ancestor's workflow-wide denials and no per-state list; cases (the strict YAML grammar, `title`/`description`,
 `trigger`/`variables`/`workspace` with `from:` fixtures, `mocks`, the flat `steps` list, `grade`,
 the `tests:` block); and the verify loop `archmax validate` → fix → `archmax test`. It SHALL teach
 sequential execution only (no `parallel`/`join`) and SHALL declare the runtime contract it targets
@@ -270,9 +273,10 @@ It SHALL teach one form per concept and no superseded one: no `subagents/` direc
 `SUBAGENT.md`, no `before`/`after` hook of any kind (`script`, `rubric`, `subagent` or a custom
 kind), no `max_iterations` or `max_corrections`, no `extensions` block, no `hookExecutors` option,
 no `editor:` block, no root `triggers:` block or singular state `trigger:`, no root `skills.allow`
-ceiling model and no `policy:` block. The state keys `before` and `after`, the `extensions` block,
-a `runtime.version` of `1` or `2`, the root `skills.allow` ceiling and the `policy:` block are load
-errors, and the skill SHALL say so where an author might reach for them. For `before`/`after` it
+ceiling model, no `policy:` block, no root `budget` and no `toolCalls` query in a code state's
+input. The state keys `before` and `after`, the `extensions` block, a `runtime.version` of `1` or
+`2`, the root `skills.allow` ceiling, the `policy:` block and the root `budget` are load errors,
+and the skill SHALL say so where an author might reach for them. For `before`/`after` it
 SHALL give the rewrite: a `before` check becomes a code state in front of the state, an `after`
 check a code state behind it, and a rubric a grader state. It SHALL carry no migration recipe for
 legacy JS cases, and no hook verdict vocabulary (`ok()`, `veto()`, `correct()`, `t.check` and its
@@ -315,7 +319,7 @@ kin) or verdict return shape (a bare `false`, `{ ok: false }`).
 
 #### Scenario: Grading example follows the current model
 
-- **WHEN** an agent follows the skill to have a state's reply graded
+- **WHEN** an agent follows the skill to have the work a state hands on graded
 - **THEN** it declares a `type: grader` state with `instructions`, routes the graded state's
   transition into it, gives it transitions back to the graded state and onward, and declares no
   rubric, no `before`/`after` slot and no grader file, directory or root block

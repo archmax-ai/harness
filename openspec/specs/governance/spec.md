@@ -197,13 +197,13 @@ The control tools SHALL be, by type:
 | State type    | Control tools                                                                                              |
 | ------------- | ---------------------------------------------------------------------------------------------------------- |
 | agent, human  | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` |
-| code          | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`                       |
-| grader        | the code set and `archmax_get_history`                                                                     |
+| code, grader  | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` |
 
 `archmax_get_history` SHALL be a control tool like the others: one of the reserved control tools
-(`HARNESS_CONTROL_TOOLS`), never part of an agent script's surface, and permitted only in a grader
-state. No state of an automated type SHALL permit a tool no automated state offers: `write_todos`,
-`archmax_eval`, `archmax_run`, `archmax_wait` and `archmax_reset`.
+(`HARNESS_CONTROL_TOOLS`), never part of an agent script's surface, and permitted only in an
+automated state, a grader or a code state alike. No state of an automated type SHALL permit a tool
+no automated state offers: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` and
+`archmax_reset`.
 
 Every other call SHALL be blocked with a reason naming the tool, the state and what the state
 permits. A state with no `tools` block and one with an empty `allow` list SHALL behave identically,
@@ -247,7 +247,7 @@ or the workflow declares, with a refusal that points at grader states and the wo
   `archmax_wait`, `archmax_reset` and `archmax_eval` in a code state and in a grader state, none of
   which a `tools` block names
 - **THEN** each is blocked with `tool.not-allowed`, while `archmax_raise` is permitted in all three
-  states and `archmax_get_history` in the grader state
+  states and `archmax_get_history` in the code state and in the grader state
 
 #### Scenario: task is blocked in every state
 
@@ -569,8 +569,8 @@ by type:
 
 - in an agent or human state, `archmax_reset`, `archmax_wait`, `archmax_raise`,
   `archmax_get_variables` and `archmax_set_variables`;
-- in a code state, `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`;
-- in a grader state, those and `archmax_get_history`.
+- in a code state and in a grader state alike, `archmax_raise`, `archmax_get_variables`,
+  `archmax_set_variables` and `archmax_get_history`.
 
 `task` SHALL NOT be disclosed in any state of any assembly, though Deep Agents registers it in every
 assembly for its general-purpose subagent, and whatever a grant names. Deep Agents adds no prompt
@@ -592,9 +592,9 @@ whether or not the tool was disclosed.
 - **WHEN** a session passes through a non-terminal code state and a grader state, neither of which
   declares a `tools` block
 - **THEN** the code state's script and the grader are both offered the file tools, `archmax_advance`,
-  `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, and neither is offered
-  `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`. Only the grader
-  is offered `archmax_get_history`, and no model call of the session's agent offers it
+  `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`, and
+  neither is offered `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or
+  `archmax_reset`. No model call of the session's agent offers `archmax_get_history`
 
 #### Scenario: Advance hidden in a terminal state
 
@@ -995,9 +995,9 @@ error tool result, and the tool SHALL NOT run.
 
 #### Scenario: A grader is held to its own state's grants
 
-- **WHEN** agent state `orders-question` grants `lookup_orders`, advances to grader state
-  `review-reply`, which grants no host tool, and the grader calls `lookup_orders`
-- **THEN** the call is blocked with `tool.not-allowed` naming `review-reply`, the grader receives
+- **WHEN** agent state `report-requested` grants `lookup_orders`, advances to grader state
+  `review-report`, which grants no host tool, and the grader calls `lookup_orders`
+- **THEN** the call is blocked with `tool.not-allowed` naming `review-report`, the grader receives
   an error tool result, and `lookup_orders` does not run
 
 #### Scenario: The previous state's grant does not follow into a code state
@@ -1138,7 +1138,7 @@ read. Every call SHALL still be decided by the kernel whether or not the mount w
 #### Scenario: An automated state is held to its own state's mounts
 
 - **WHEN** the table governs `catalogs/eu`, only state `triage` enables it, and the script of code
-  state `screen-request` and the grader of grader state `review-reply` each read
+  state `screen-request` and the grader of grader state `review-report` each read
   `catalogs/eu/skus.csv` and list `/`
 - **THEN** both reads are blocked with `mount.not-allowed`, and neither listing shows a
   `catalogs/eu` entry

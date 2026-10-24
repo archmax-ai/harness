@@ -16,14 +16,14 @@ prompt and its caching, and the typed event stream. Grader and code states are s
 A workflow SHALL execute as exactly one `createDeepAgent` graph whose checkpointed state carries the
 machine's channels beside `messages`: `workflowState`, `entryState`, `trigger`, `status`,
 `specHash`, `variables`, `auditTrail`, `usage`, the per-state counters `stateTurns` and
-`parkCounts`, the turn's model-call count `turnCalls`, the visit log `visits`, the outstanding
-delegation failures `failedDelegations`, and the park records
+`parkCounts`, the outstanding delegation failures `failedDelegations`, and the park records
 `pendingDecision`, `pendingInput`, `pendingDelegations`, `parkPhase` and `replyOnly`, declared once
-in `src/workflow/state.ts`. There SHALL be no `iterations` and no `beforeDone` channel. Governance
-middleware SHALL be the only writer; a control tool commits its change through a `Command` when it
-succeeds, and an automated state's outcome is committed by `afterModel` (see "Governance middleware
-sites"), so the checkpoint is the single source of truth with no in-memory mirror. The accumulating
-channels (`auditTrail`, `variables`, `visits`, `pendingDelegations`, `failedDelegations`) SHALL have reducers
+in `src/workflow/state.ts`. There SHALL be no `iterations`, `beforeDone`, `turnCalls` or `visits`
+channel. Governance middleware SHALL be the only writer; a control tool commits its change through a
+`Command` when it succeeds, and an automated state's outcome is committed by `afterModel` (see
+"Governance middleware sites"), so the checkpoint is the single source of truth with no in-memory
+mirror. The accumulating
+channels (`auditTrail`, `variables`, `pendingDelegations`, `failedDelegations`) SHALL have reducers
 idempotent on an echo: a middleware callback returning the whole state it read changes nothing.
 Calls settling in the same step SHALL each land their update on an accumulating channel.
 
@@ -280,26 +280,14 @@ substitutes a budget-exhausted result, removes it from the transcript and routes
 per state within a turn, checked before the park is committed; an exceeded bound refuses the wait
 and commits `rejected` naming the state and the bound. A delegated child's park SHALL NOT count.
 
-The workflow's `budget.maxModelCalls` SHALL be an exact count of the session agent's model calls one
-turn makes across every state, where a turn is one invocation (a message, a decision, a reply or a
-delivery); a park's single reply-only call is not counted, and an invocation the runtime's turn
-runner did not drive (a host invoking the graph directly) is not bounded by it: the call that would
-exceed it is not made and the exhaustion is routed as a failure of the current state, naming the
-bound. A turn SHALL route a turn-budget exhaustion at most once; after it, the error handler's calls
-are bounded by its own `maxTurns` and the turn's step limit, not by the turn budget again. While a
-fifth of the turn budget or less remains, every model call's "Current state" block SHALL state how
-many calls the turn has left and tell the agent to finish its work and answer the person. A
-delegated child's turn SHALL count against its own workflow's budget, never its caller's.
+An automated state makes no model call of the session's agent and SHALL NOT spend a state's
+`maxTurns`; a grader state's `maxTurns` and `timeoutMs` bound its grader's run instead (see the
+`automated-states` capability). The agent's call after an automated move into an agent state SHALL
+count as that state's first. Every exhaustion SHALL route through `on_error` when declared, else
+end the turn rejected. There SHALL be no workflow-wide budget on a turn's model calls: a turn is
+bounded by its recursion limit (see "A turn runs under LangGraph's recursion limit").
 
-An automated state makes no model call of the session's agent and SHALL spend neither a state's
-`maxTurns` nor the turn budget, so a chain of automated states spends nothing of
-`budget.maxModelCalls`; a grader state's `maxTurns` and `timeoutMs` bound its grader's run instead
-(see the `automated-states` capability). The agent's calls after an automated move SHALL count as
-any other: when the call an automated move into an agent state leads to would exceed the turn
-budget, it is not made and the exhaustion is routed as a failure of the state the move entered.
-Every exhaustion SHALL route through `on_error` when declared, else end the turn rejected.
-
-#### Scenario: Turn budget is exact
+#### Scenario: A state's `maxTurns` is exact
 
 - **WHEN** a state declares `maxTurns: 8` and the agent advances on its fifth model call
 - **THEN** the state completes normally
@@ -309,72 +297,60 @@ Every exhaustion SHALL route through `on_error` when declared, else end the turn
 - **WHEN** a model call in a state with `timeoutMs: 1000` has not returned after one second
 - **THEN** the failure is routed through `on_error` and the request itself is not aborted
 
-#### Scenario: A cycle between states exhausts the turn budget
-
-- **WHEN** a workflow declares `budget: { maxModelCalls: 10 }` and the agent advances back and forth between two states on every call
-- **THEN** the eleventh call is not made, the failure routes through the current state's `on_error` when declared, else the turn ends rejected naming `maxModelCalls: 10`, and no `GraphRecursionError` is thrown
-
-#### Scenario: The budget is counted per invocation
-
-- **WHEN** a turn makes 30 calls and parks with `archmax_wait`, and a delivery resumes it under `maxModelCalls: 50`
-- **THEN** the delivery may make 50 calls of its own
-
-#### Scenario: The agent is warned before the budget runs out
-
-- **WHEN** a turn under `maxModelCalls: 50` is about to make its forty-first call
-- **THEN** that call's "Current state" block says the turn has ten model calls left and to finish and answer the person, and its fortieth call carried no such line
-
-#### Scenario: The error handler is not starved by the budget it was routed for
-
-- **WHEN** the turn budget is exhausted in `a`, whose `on_error` is `handle`
-- **THEN** `handle` makes its model calls and the turn ends there, and the turn budget does not route a second time
-
 #### Scenario: A grader's budget counts only its grader's calls
 
 - **WHEN** a grader state declares `budget: { maxTurns: 1 }` and its grader decides on its first
   model call
-- **THEN** the grader's decision commits, and no turn-budget exhaustion is routed for the state
+- **THEN** the grader's decision commits, and no exhaustion is routed for the state
 
-#### Scenario: Automated states spend none of the turn budget
+#### Scenario: Automated states spend no state's turns
 
-- **WHEN** a workflow declares `budget: { maxModelCalls: 3 }`, and in one turn the agent advances on
-  its second model call into a code state, which advances into a second code state, which advances
-  into an agent state
-- **THEN** both scripts run, the agent's first call in the agent state is the turn's third, and no
-  exhaustion is routed
+- **WHEN** in one turn the agent advances into a code state, which advances into a second code
+  state, which advances into agent state `answer` declaring `budget: { maxTurns: 1 }`
+- **THEN** both scripts run, the agent's first call in `answer` is made as that state's first, and
+  no exhaustion is routed
 
-#### Scenario: The budget runs out at an automated move
+### Requirement: A turn runs under LangGraph's recursion limit
 
-- **WHEN** a turn has made every model call `budget.maxModelCalls` allows, the last advancing into a
-  code state, and the code state advances into agent state `answer`, whose `on_error` is `escalate`
-- **THEN** no model call is made in `answer`, and the failure routes to `escalate` naming the bound
+Every invocation of a governed session (a turn, a decision, a reply or a delivery) SHALL run under
+LangGraph's `recursionLimit`: the one the caller's invoke config sets, else
+`DEFAULT_RECURSION_LIMIT` (400). Every model call, tool batch and automated state of the
+invocation, across every state, is a step against it. A delegated child's run SHALL run under
+`DEFAULT_RECURSION_LIMIT` as well, unless the config its caller's tool call carries already sets a
+limit, which it keeps. An invocation that reaches its limit SHALL end the session `failed` with
+exit code `recursion-limit` (see "A turn that throws ends the session failed"). The runtime SHALL
+keep no count of a turn's model calls, and the prompt SHALL state no number of calls a turn has
+left.
 
-### Requirement: A turn's step limit follows its budget
+#### Scenario: A turn runs under 400 steps by default
 
-When the caller supplies no `recursionLimit`, every invocation of a governed session (a turn, a decision, a reply, a delivery, and a delegated child's run) SHALL run under a step limit derived from its workflow's `budget.maxModelCalls`, large enough that the turn budget and the error handler it routes to are exhausted before the step limit is reached, and never below the 400 steps a turn runs under today. A `recursionLimit` the caller supplies in the invoke config SHALL take precedence.
-
-#### Scenario: A raised budget raises the step limit
-
-- **WHEN** a workflow declares `budget: { maxModelCalls: 200 }` and a turn makes 150 model calls while moving forward through its states
-- **THEN** the turn completes without a `GraphRecursionError`
+- **WHEN** a host calls `send(id, input)` with no `recursionLimit`
+- **THEN** the turn runs under a recursion limit of 400
 
 #### Scenario: The caller's limit wins
 
 - **WHEN** a host calls `send(id, input, { recursionLimit: 30 })`
-- **THEN** the turn runs under a step limit of 30
+- **THEN** the turn runs under a recursion limit of 30
+
+#### Scenario: A cycle between states ends at the limit
+
+- **WHEN** the agent advances back and forth between two states on every call and no state's
+  `maxTurns` stops it
+- **THEN** the turn stops at its recursion limit, `send` rejects with the `GraphRecursionError`,
+  and the session is `failed` with `exit.code: "recursion-limit"`
 
 ### Requirement: A turn that throws ends the session failed
 
-When an invocation of a governed session throws (the step limit, a model failure, a cancellation, any other error) and the session's checkpointed status is still `running`, the runtime SHALL commit `status: failed` with an exit record before the error leaves `send`, `decide`, `reply` or `deliver`: code `recursion-limit` for a `GraphRecursionError`, `turn-cancelled` for an aborted invocation, and `turn-error` otherwise, with the error's message as the reason. It SHALL then rethrow the original error. A session whose status is not `running` (parked, or never checkpointed) SHALL be left as it is. The next message to a session failed this way SHALL resolve as a fresh turn from its retained position, as for any finished session, and its summary SHALL report the exit.
+When an invocation of a governed session throws (the recursion limit, a model failure, a cancellation, any other error) and the session's checkpointed status is still `running`, the runtime SHALL commit `status: failed` with an exit record before the error leaves `send`, `decide`, `reply` or `deliver`: code `recursion-limit` for a `GraphRecursionError`, `turn-cancelled` for an aborted invocation, and `turn-error` otherwise, with the error's message as the reason. It SHALL then rethrow the original error. A session whose status is not `running` (parked, or never checkpointed) SHALL be left as it is. The next message to a session failed this way SHALL resolve as a fresh turn from its retained position, as for any finished session, and its summary SHALL report the exit.
 
 #### Scenario: A model failure does not strand the session
 
 - **WHEN** the model endpoint fails mid-stream during a turn on session `s1`
 - **THEN** `send` rejects with the endpoint's error, `sessions.get("s1")` reports `status: failed` with `exit.code: "turn-error"`, and the next `send("s1", …)` runs a fresh turn instead of throwing `SessionNotResumableError`
 
-#### Scenario: The step limit ends the session failed
+#### Scenario: The recursion limit ends the session failed
 
-- **WHEN** a turn reaches its step limit
+- **WHEN** a turn reaches its recursion limit
 - **THEN** `send` rejects with the `GraphRecursionError`, and the session is `failed` with `exit.code: "recursion-limit"`
 
 #### Scenario: A cancelled turn ends the session failed
@@ -674,11 +650,11 @@ prompt section SHALL render any `metadata` block, at the root or on a state.
 
 #### Scenario: A graded state says only that it is graded
 
-- **WHEN** the agent state `orders-question` has a transition to the grader state `review-reply`,
-  whose `instructions` hold the tone criteria
-- **THEN** the prompt rendered in `orders-question` discloses the grading only as that transition
-  line, `review-reply` by slug with the transition's `description`, and contains no part of
-  `review-reply`'s `instructions`, `model` or `budget`
+- **WHEN** the agent state `report-requested` has a transition to the grader state
+  `review-report`, whose `instructions` hold the report's criteria
+- **THEN** the prompt rendered in `report-requested` discloses the grading only as that transition
+  line, `review-report` by slug with the transition's `description`, and contains no part of
+  `review-report`'s `instructions`, `model` or `budget`
 
 #### Scenario: Metadata is never rendered
 
@@ -1096,10 +1072,10 @@ revision.
 
 #### Scenario: A terminal code state completes without a model call
 
-- **WHEN** an agent state advances into the terminal code state `answered`, whose script writes
-  `scratchpad/answer.json` and returns
+- **WHEN** an agent state advances into the terminal code state `archive-case`, whose script
+  writes `scratchpad/case.json` and returns
 - **THEN** the session completes with `status: completed`, and the session's agent makes no model
-  call in `answered`
+  call in `archive-case`
 
 ### Requirement: `archmax_raise` ends the session failed from any state
 

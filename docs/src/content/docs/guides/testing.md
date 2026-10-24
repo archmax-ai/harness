@@ -235,7 +235,7 @@ carries. A failure in one of them [halts the case](#which-assertions-halt-a-case
 
 | Assertion | Meaning |
 | --- | --- |
-| `succeeded: true` | **Structural.** The turn completed, without failing or parking. A turn that ended with `archmax_raise` is a failure, so it fails here, naming the code it raised. |
+| `succeeded: true` | **Structural.** The action's outcome is `completed`: the turn did not park, raise, fail or end rejected. A failed tool call the agent recovered from does not fail it. A failure says why: the session is parked, the turn did not complete, or the code and reason it raised with `archmax_raise`. |
 | `parked: true` | **Structural.** The turn parked, in either channel. `parked: decision` / `parked: input` pins the channel; `parked: { channel?, state? }` also pins the state it parked in. |
 | `raised: true` | **Structural.** The turn ended with `archmax_raise`: the agent's, a grader's or a code state's. `raised: <code>` pins the code exactly. `raised: { code?, reason? }` pins the code and matches the reason: exactly, or as a regex when written `/pattern/flags`. A miss names the code that was raised, or says the session did not raise. |
 | `reachedState: <state>` | **Structural.** A **committed** (non-trigger) audit-trail step entered the state, whoever made the move: the agent, a person, a grader or a code state. The trigger-arrival step does not count, so a session reaches its start state only by moving into it. |
@@ -310,9 +310,8 @@ after the turn, and decides nothing in the session. It scores the turn's
    [mock](#mocking-tool-results) appears like any other, carrying the mocked
    value, so the judge scores the turn the agent actually experienced.
 2. **The final reply to the user**: the action's turn `reply`, every text the
-   agent said during it in order. Once a grader or code state has moved the
-   session, what the agent says next replaces what it said before. A turn that
-   said nothing has an empty reply, never an earlier turn's.
+   agent said during it in order. A turn that said nothing has an empty reply,
+   never an earlier turn's.
 
 The two are weighed differently, and the prompt says so. A criterion about what
 the user was *told* is met only by the final reply, while a criterion about what

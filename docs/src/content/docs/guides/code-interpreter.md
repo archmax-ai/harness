@@ -39,7 +39,8 @@ is therefore in scope for a later `archmax_eval` call. Both get:
   state does not offer is **`undefined`** under either spelling, and
   `"name" in tools` is false: calling it throws a `TypeError` the script can
   catch, no tool event is emitted, and the tool never runs. Test for a tool with
-  `typeof tools.lookupOrder === "function"` before relying on it. A tool's result
+  `typeof tools.lookupOrder === "function"` before relying on it. A call with no
+  argument is made with `{}`, so `tools.ls()` needs none. A tool's result
   arrives as text:
   `tools.readFile` resolves to the file's content, or, for a binary file, to the
   notice `Error: '<path>' is a binary file (…) and was not read; …` (an image
@@ -215,13 +216,15 @@ itself:
 /**
  * Request screen.
  *
- * Finds the requester's email in the first user message and looks it up in
- * skills/order-data/assets/orders.json. Advances to identify-case for a known
- * requester, and to decline, with the reason, otherwise.
+ * Finds the requester's email in the first user message of the session's
+ * history and looks it up in skills/order-data/assets/orders.json. Advances to
+ * identify-case for a known requester, and to decline, with the reason,
+ * otherwise.
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ messages, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
   const orders = JSON.parse(await tools.read_file({ file_path: "skills/order-data/assets/orders.json" }));
   const request = messages.find((m) => m.role === "user")?.text ?? "";
   const email = request.match(/[\w.+-]+@[\w.-]+/)?.[0];
@@ -241,14 +244,14 @@ with these differences:
   settles.
 - **Its own state's tools.** `tools` is the code state's surface: its own and the
   workflow-wide grants, and `archmax_advance`, `archmax_raise`,
-  `archmax_get_variables` and `archmax_set_variables`. Each call is governed
-  against the code state with `origin: "script"`, so the state has to enable
-  whatever bundle or mount the script reads. A tool outside the surface is
-  `undefined`.
-- **Its input.** `{ state, trigger, variables, messages, trail, toolCalls, tools }`:
-  the session's whole transcript and trail, and `toolCalls(filter?)`, which
-  resolves to the session's tool calls with their results, as the tools returned
-  them. A file with no default export reads the same input from the global `args`.
+  `archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`.
+  Each call is governed against the code state with `origin: "script"`, so the
+  state has to enable whatever bundle or mount the script reads. A tool outside
+  the surface is `undefined`.
+- **Its input.** `{ state, trigger, variables, tools }`. The session itself is read
+  with `tools.archmax_get_history()`: its whole transcript and trail, as JSON,
+  each tool message carrying its call's result as the tool returned it. A file
+  with no default export reads the same input from the global `args`.
 - **No return value.** The session moves only through `tools.archmax_advance` or
   `tools.archmax_raise`. A refused call rejects and can be caught. A script that
   throws, or a non-terminal one that finishes without deciding, fails the state.

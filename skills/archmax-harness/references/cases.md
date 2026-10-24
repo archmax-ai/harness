@@ -27,7 +27,7 @@ message that leaves it parked), `decide: { to, comment? }`,
 `deliver: { trigger, variables? }`.
 
 Assertions (**structural** ones halt the case when they miss; later steps are
-reported `not-executed`): `succeeded: true`ˢ (fails on a raise too) · `parked: true | decision | input | { channel?, state? }`ˢ ·
+reported `not-executed`): `succeeded: true`ˢ (the action's outcome is `completed` — not parked, raised, failed or rejected; a failed or blocked tool call the turn recovered from does not fail it, and a miss says why) · `parked: true | decision | input | { channel?, state? }`ˢ ·
 `raised: true | <code> | { code?, reason? }`ˢ (the agent ended the turn with `archmax_raise`; code exact, reason exact or `"/regex/flags"`) ·
 `reachedState: <slug>`ˢ (a committed non-trigger trail step, an automated state's move included) ·
 `trail: { to?, kind?, reason?, count }`ˢ (`kind`: trigger/agent/human/grader/code/sub-workflow/reset/on_error; `count: 0` = never entered) ·
@@ -60,8 +60,15 @@ a raise with `raised`, a write with `variables`:
 steps:
   - send: "Hi, I'm support@acmecorp.com. Which orders are delayed?"
   - trail: { kind: code, to: identify-case, count: 1 }        # the entry screen passed it
-  - trail: { kind: grader, to: orders-question, count: 0 }    # no send-back
-  - trail: { kind: grader, to: answered, count: 1 }           # the grader approved
+```
+
+```yaml
+trigger: { id: report_requested }                             # the report path
+variables: { company: "Acme Corp" }
+steps:
+  - send: "A delayed-orders report was requested."
+  - trail: { kind: grader, to: report-requested, count: 0 }   # no send-back
+  - trail: { kind: grader, to: report-delivered, count: 1 }   # the grader approved
 ```
 
 A case that declines at entry asserts `reachedState: <declining state>` plus

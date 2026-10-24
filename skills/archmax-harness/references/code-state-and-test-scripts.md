@@ -80,15 +80,15 @@ evaluation** (the runtime implementation is an identity):
 /** … */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ state, variables, messages, trail, toolCalls, tools }) => {
+export default defineCodeState(async ({ state, trigger, variables, tools }) => {
   /* ... */
 });
 ```
 
-The same subpath types the input (`CodeStateInput`, `CodeStateFn`,
-`HistoryMessage`, `TrailStep`, `ToolCallRecord`, `ToolCallFilter`,
-`SandboxTools`). Importing from any **non-`@archmax-ai/harness/*`** specifier is
-an **error** — sandbox scripts are
+The same subpath types the input and the history (`CodeStateInput`,
+`CodeStateArgs`, `CodeStateFn`, `SandboxTools`, `SessionHistory`,
+`HistoryMessage`, `TrailStep`). Importing from any
+**non-`@archmax-ai/harness/*`** specifier is an **error** — sandbox scripts are
 self-contained. **Bare-globals authoring** (no import) is equally valid:
 `defineCodeState` is a prelude global, and a plain
 `export default async function ({ tools }) { … }` registers the same way.
@@ -157,9 +157,9 @@ and the script **moves the session itself**:
 /**
  * Requester screen — reject a request whose requester is not a known customer.
  *
- * Reads the first user message from `messages`, extracts the first email
- * address in it, loads skills/order-data/assets/orders.json (this state enables
- * `order-data`), and looks the address up against every order's `email`.
+ * Reads the first user message from the session's history, extracts the first
+ * email address in it, loads skills/order-data/assets/orders.json (this state
+ * enables `order-data`), and looks the address up against every order's `email`.
  *
  * Advances to decline when the request carries no email address, and when the
  * address matches no order — each with a reason naming what was missing — and
@@ -167,7 +167,8 @@ and the script **moves the session itself**:
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ messages, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
   const orders = JSON.parse(await tools.read_file({ file_path: "skills/order-data/assets/orders.json" }));
   const request = messages.find((m) => m.role === "user")?.text ?? "";
   const email = request.match(/[\w.+-]+@[\w.-]+/)?.[0];
@@ -186,50 +187,74 @@ minus `tools` are also the global `args`):
 | Field | Meaning |
 | --- | --- |
 | `state` | The code state's own slug. |
-| `trigger` | The id **string** of the trigger the turn carries. It carries no payload — the session's input is in `variables`. |
+| `trigger?` | The id **string** of the trigger the turn carries. It carries no payload — the session's input is in `variables`. |
 | `variables` | The session's variables as a plain `name → value` map, including the built-in `trigger`. Structured values are present whole (`variables.order.items[0].sku`). **Read-only**: assigning changes nothing. Write with `tools.archmax_set_variables`, which holds locks, `title` and typed returns exactly as the agent's call does. |
-| `messages` | The session's **whole** transcript, oldest first, as `{ role, text, toolCalls?, tool?, id?, note? }` — every visit and every turn, not only the visit that led here. `role` is `user`, `assistant`, `tool`, `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, an automated state's move; `note` names the kind). A `tool` entry carries `tool` and the call's `id` with an empty `text`: its result comes from `toolCalls`. A script that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. Not windowed: the sandbox's `maxResultChars` and `memoryLimitBytes` bound it. |
-| `trail` | The session's **whole** trail, oldest first, as `{ to, kind, reason?, workflow?, status?, ts }`. `kind` is `trigger`, `agent`, `human`, `grader`, `code`, `sub-workflow`, `reset` or `on_error`. Count earlier rounds here: `trail.filter((s) => s.kind === "code" && s.to === "refund-request").length`. |
-| `toolCalls(filter?)` | **Async.** The session's domain tool calls with their results, across every visit, oldest first, as `{ id?, name, args, result?, status, state, visit }`: `result` parsed when it is JSON and absent while `pending`; `status` `completed`, `failed`, `rejected` (by governance) or `pending`; `state` and `visit` (numbered from 1) those of the message that made the call. `filter` narrows by `name`, `state`, `visit` (a visit's **number**), `status` and `last` (only the last N matches); every key given must match, and an unknown key is refused. The control tools are not in it, nor are calls a script made through `tools.*` (the agent's or a code state's): only calls the transcript holds. Only the records it returns are copied into the sandbox. |
-| `tools` | **Exactly this state's tool surface** (async): its grants (the workflow-wide grant included), the host's essential tools, and its controls. A tool answers to its own name (`tools.read_file`, `tools["archmax_workflow_enrich-order"]`) and to its camelCased key (`tools.readFile`); `Object.keys(tools)` lists the camelCased keys. **A name outside the surface is `undefined`.** See [Governance](#governance-of-tools-calls). |
+| `tools` | **Exactly this state's tool surface** (async): its grants (the workflow-wide grant included), the host's essential tools, and its controls. A tool answers to its own name (`tools.read_file`, `tools["archmax_workflow_enrich-order"]`) and to its camelCased key (`tools.readFile`); `Object.keys(tools)` lists the camelCased keys. A call with no argument passes `{}` (`tools.archmax_get_history()`, `tools.ls()`). **A name outside the surface is `undefined`.** See [Governance](#governance-of-tools-calls). |
+
+**The session's history** is not part of the input: the script reads it the way
+a grader does, with `archmax_get_history` (`SessionHistory`):
+
+```js
+const { messages, trail } = JSON.parse(await tools.archmax_get_history());
+```
+
+It is the session as it stood when the state was entered, built from the
+checkpointed session (never a summarized request), whole and oldest first,
+across every turn:
+
+| Field | Meaning |
+| --- | --- |
+| `messages` | The transcript as `{ role, text, toolCalls?, tool?, id?, note? }`. `role` is `user`, `assistant`, `tool`, `system`, or **`runtime`** — a note the runtime wrote (an arrival, a decision, an error route, an automated state's move; `note` names the kind). An `assistant` entry lists the calls it made in `toolCalls`, as `{ id?, name, args }`; the `tool` entry answering one carries the tool's name in `tool`, the call's `id`, and the **result in `text`**, as the tool returned it (`JSON.parse` it when the tool returns JSON; a failed or refused call's `text` is the error). A script that reacts to narration matches `role === "runtime"`, never a `[bracket]` prefix in a user message. Not windowed: the sandbox's `maxResultChars` and `memoryLimitBytes` bound it. |
+| `trail` | The trail as `{ to, kind, reason?, workflow?, status?, ts }`. `kind` is `trigger`, `agent`, `human`, `grader`, `code`, `sub-workflow`, `reset` or `on_error`. Count earlier rounds here: `trail.filter((s) => s.kind === "code" && s.to === "refund-request").length`. |
+
+Only what the transcript holds is there: a call a script made through `tools.*`
+(an agent's `archmax_run`, or a code state's own) is not, and neither is a
+grader's.
 
 **What a code state checks.** The conversation is the model's memory, not
 evidence: a code state checks the session's records — `variables`, files, and
-the tool results `toolCalls` keeps as the tools returned them. Check a result
-itself, never a copy the model wrote into a variable or its reply, and never call
-a tool again just to see its result (for a host whose tools reach an external
-system, that is a second action):
+the tool results the history carries as the tools returned them. Check a result
+itself, never a copy the model wrote into a variable, a file or its reply, and
+never call a tool again just to see its result (for a host whose tools reach an
+external system, that is a second action). To read a result, find the call in an
+`assistant` entry's `toolCalls`, then the `tool` entry with the same `id`:
 
 ```js
 /**
- * Status check — the reply must give the order's status as get_order returned it.
+ * Status check — the recorded status must be the one get_order returned.
  *
- * Reads the last completed get_order call from toolCalls and the agent's last
- * message with text. Advances to answered when the reply names that status;
- * otherwise back to answer-order, with the status to give, or with a request to
- * look the order up when no get_order call completed.
+ * Finds the last get_order call in the session's history and the tool message
+ * answering it, and reads scratchpad/status.json ({ status }), which the agent
+ * wrote. Advances to notify-customer when the recorded status is the returned
+ * one; otherwise back to look-up-order, with the status to record, or with a
+ * request to look the order up when no get_order call has a readable result.
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ messages, toolCalls, tools }) => {
-  const [lookup] = await toolCalls({ name: "get_order", status: "completed", last: 1 });
-  if (!lookup) {
-    return tools.archmax_advance({ to: "answer-order", reason: "Look the order up with get_order before answering." });
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
+  const call = messages.flatMap((m) => m.toolCalls ?? []).findLast((c) => c.name === "get_order");
+  const answer = call && messages.find((m) => m.role === "tool" && m.id === call.id);
+  let order;
+  try {
+    order = JSON.parse(answer.text);
+  } catch {
+    return tools.archmax_advance({ to: "look-up-order", reason: "Look the order up with get_order first." });
   }
-  const reply = messages.findLast((m) => m.role === "assistant" && m.text)?.text ?? "";
-  const status = lookup.result.status;
-  if (!reply.includes(status)) {
-    return tools.archmax_advance({ to: "answer-order", reason: `Order ${lookup.args.id} is ${status}: say so exactly.` });
+  const recorded = JSON.parse(await tools.read_file({ file_path: "scratchpad/status.json" }));
+  if (recorded.status !== order.status) {
+    return tools.archmax_advance({
+      to: "look-up-order",
+      reason: `Order ${call.args.id} is ${order.status}: record that status exactly.`,
+    });
   }
-  await tools.archmax_advance({ to: "answered", reason: `The reply gives the status ${status}.` });
+  await tools.archmax_advance({ to: "notify-customer", reason: `The recorded status ${order.status} is get_order's.` });
 });
 ```
 
-A code state sees the whole session, so where only the graded state's latest
-visit counts, narrow by that visit's number, read from a record:
-`const [last] = await toolCalls({ state: "answer-order", last: 1 })`, then
-`toolCalls({ state: "answer-order", visit: last.visit })`. What a later state or
-turn needs from the conversation (the person's words, a decision) is still best
+The history spans every turn and every entry into a state, so where only the
+latest round counts, take the last match, as above. What a later state or turn
+needs from the conversation (the person's words, a decision) is still best
 stored in a variable or a file by the state that has it, so no check has to
 search the transcript for it.
 
@@ -240,8 +265,10 @@ search the transcript for it.
 | `archmax_advance({ to, reason, evidence? })` | Records the move along one of the state's transitions. Checked **at the call**: an undeclared `to` or an unmet `requires` rejects naming the valid targets or the missing variable, and the script may catch it and decide otherwise. `evidence` is accepted only into a human state. The `reason` is what the next state reads. Absent in a terminal state. |
 | `archmax_raise({ code, reason })` | Records the end of the session as **failed**, with the code and reason as its outcome's `exit`. |
 | `archmax_get_variables({ name?, path? })` / `archmax_set_variables({ variables, lock? })` | Read and write the session's variables, as the agent's calls do. A write is visible to the script's later calls, so a script can set what `requires` asks for and then advance. |
+| `archmax_get_history()` | Resolves to the session's history as JSON text, `{ messages, trail }` (above). |
 
-There is no `archmax_wait` and no `archmax_reset`: a code state cannot park, since a
+These are a grader's controls too: both automated types get the same set. There
+is no `archmax_wait` and no `archmax_reset`: a code state cannot park, since a
 script frame is not durable. To hand work to a person, advance into a human state.
 
 **How the run settles** — exactly one outcome:
@@ -460,7 +487,8 @@ state that tells the person why:
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ messages, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
   const orders = JSON.parse(await tools.read_file({ file_path: "skills/order-data/assets/orders.json" }));
   if (!Array.isArray(orders)) throw new Error("skills/order-data/assets/orders.json is not a list of orders");
 
@@ -564,7 +592,8 @@ import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
 const MAX_SEND_BACKS = 2;
 
-export default defineCodeState(async ({ trail, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { trail } = JSON.parse(await tools.archmax_get_history());
   const sentBack = trail.filter((s) => s.kind === "code" && s.to === "refund-request").length;
   const sendBack = (reason) =>
     sentBack >= MAX_SEND_BACKS
@@ -600,40 +629,34 @@ export default defineCodeState(async ({ trail, tools }) => {
 
 Note how the send-back reasons carry the _fix_: the agent reads the reason as a
 `[code]` note, rewrites `scratchpad/refund.json`, and advances again. There is no
-retry budget to declare: the script counts the rounds itself, from `trail`, and
-decides when to give up.
+retry budget to declare: the script counts the rounds itself, from the history's
+`trail`, and decides when to give up.
 
 ### Worked example: approve, then end
 
 A check that approves into a terminal **agent** state costs one more model call:
 that state's agent has to finish the turn. Approve into a **terminal code state**
 instead. Its script runs and the session completes, with no further model call.
-The bundled example's grader approves the order answer into `answered`:
+Say a report path's grader approves into `report-approved`, and the trigger
+declares `returns: [delayed_order_ids]`:
 
 ```yaml
-  answered:
+  report-approved:
     type: code
-    script: scripts/answered.js     # no transitions: terminal
+    script: scripts/report-approved.js     # no transitions: terminal
 ```
 
 ```js
 /**
- * Approved-reply record — the end of the order-question path.
+ * Approved-report record — the end of the report path.
  *
- * Writes the last assistant message with text — the reply review-reply
- * approved — to scratchpad/answered.json as { "reply": "<text>" }, so a host has
- * the approved wording without reading the transcript, then returns: the
- * session completes.
+ * Reads the report the grader approved from scratchpad/report.json and sets the
+ * trigger's declared return `delayed_order_ids` from it, so a caller has the
+ * result without reading the file, then returns: the session completes.
  */
-export default async function ({ messages, tools }) {
-  const reply = messages.filter((m) => m.role === "assistant" && m.text.trim()).at(-1)?.text ?? "";
-  // A follow-up in the same session reaches this state again: replace the old record.
-  try {
-    await tools.remove_file({ file_path: "scratchpad/answered.json" });
-  } catch {
-    // Nothing recorded yet.
-  }
-  await tools.write_file({ file_path: "scratchpad/answered.json", content: JSON.stringify({ reply }, null, 2) });
+export default async function ({ tools }) {
+  const report = JSON.parse(await tools.read_file({ file_path: "scratchpad/report.json" }));
+  await tools.archmax_set_variables({ variables: { delayed_order_ids: report.delayedOrderIds } });
 }
 ```
 
@@ -646,41 +669,49 @@ script returns.
 Use a **code state** when the check is **deterministic** — derivable from
 workspace data with plain code (policy tables, schema checks, cross-file
 consistency). Use a **grader state** when the check requires **judgment** (is the
-reply complete? is the tone right?). A grader is an isolated subagent the runtime
-runs on entry: its system prompt is a compiled-in preamble followed by the state's
-`instructions` (its criteria), it reads the session with `archmax_get_history`
-(the whole transcript, the trail and every tool call with its result), and it
-decides with `archmax_advance` along one of its transitions, or ends the session
-with `archmax_raise`:
+report complete? is the summary faithful?). A grader is an isolated subagent the
+runtime runs on entry: its system prompt is a compiled-in preamble followed by the
+state's `instructions` (its criteria), it reads the session with
+`archmax_get_history` (the whole transcript, tool results included, and the
+trail) and the work with its own state's tools, and it decides with
+`archmax_advance` along one of its transitions, or ends the session with
+`archmax_raise`. The bundled example's report path:
 
 ```yaml
 states:
-  orders-question:
+  report-requested:
     instructions: >-
-      … Send the reply in a message that also calls archmax_advance to
-      review-reply. If the review sends it back, its note names what to change:
-      write a corrected reply and advance again.
+      … Write the report to scratchpad/report.json; if review-report sent it
+      back, fix what the note names. Once the report is written, call
+      archmax_advance to review-report: that call hands the report in.
     transitions:
-      - to: review-reply
-        description: The reply answering the question has been sent to the customer.
-  review-reply:
+      - to: review-report
+        description: scratchpad/report.json is written for the requested company.
+  review-report:
     type: grader
-    budget: { maxTurns: 4 }          # the grader's own model calls
+    budget: { maxTurns: 6 }          # the grader's own model calls
     on_error: escalation             # a grader that fails or finishes undecided routes here
+    skills:
+      allow: [order-data]            # it reads the order records with its own state's tools
     instructions: |-
-      Judge only the tone of the reply: the last assistant message with text in
-      the history's messages.
+      You check a delayed-orders report before it is delivered.
 
-      - Friendly and professional: advance to `answered`.
-      - Curt, cold or blunt: advance back to `orders-question`, saying exactly
-        what to change.
-      - Count the trail's steps with kind "grader" and to "orders-question". If
-        there are already two, raise `reply-tone` instead of sending it back.
+      1. Read the requested `company` with `archmax_get_variables`.
+      2. Read `scratchpad/report.json` and `skills/order-data/assets/orders.json`.
+      3. The report is correct when its `company` is the requested company and
+         its `delayedOrderIds` are exactly that company's `delayed` orders.
+
+      - Correct: advance to `report-delivered`.
+      - Wrong or unreadable: advance back to `report-requested`, naming exactly
+        what to fix.
+      - Before sending it back, call `archmax_get_history` and count the steps
+        in `trail` with `kind: "grader"` and `to: "report-requested"`: if there
+        are already two, raise `report-incorrect` instead.
     transitions:
-      - to: answered                 # a terminal code state: approve, then end
-        description: The reply is friendly and professional.
-      - to: orders-question
-        description: The reply's tone is off; send it back naming what to change.
+      - to: report-delivered         # a terminal agent state that summarizes the report
+        description: The report lists exactly the company's delayed orders.
+      - to: report-requested
+        description: The report is wrong; send it back, naming exactly what to fix.
 ```
 
 What to know:
@@ -691,36 +722,36 @@ What to know:
   and `budget.maxParks` are errors on it. Every edge **into** a grader carries a
   `description`: its instructions are criteria the work it judges is never shown,
   so an undescribed edge into one is a load error.
-- `archmax_get_history` returns `{ messages, trail, toolCalls }`: the whole
-  transcript (a `tool` entry carries `tool` and the call's `id` with an empty
-  `text`), every trail step, and every domain tool call with its `args`,
-  `result`, `status` (`completed`/`pending`/`failed`/`rejected`), `state` and
-  `visit` — the same records a code state's `toolCalls()` returns, unfiltered. Not
-  windowed: a grader judges the whole session, so its criteria say which part
-  counts ("the last assistant message with text"). Check a claim against the tool
-  result in `toolCalls`, never against the agent's retelling of it.
-- There is **no visit threshold and no iteration budget**. A grader that should give
-  up after N rounds says so in its `instructions` and counts the rounds from the
-  history's trail (each earlier send-back is `{ kind: "grader", to: "<graded state>" }`),
-  as above. The session's recursion limit is the only backstop.
+- `archmax_get_history` returns `{ messages, trail }` — the same history a code
+  state reads: the whole transcript, a `tool` entry carrying its result in `text`,
+  and every trail step. Not windowed: a grader judges the whole session, so its
+  criteria say which part counts ("the report in scratchpad/report.json", "the
+  last assistant message with text"). Check a claim against the tool result or
+  the file itself, never against the agent's retelling of it.
+- There is **no iteration budget**. A grader that should give up after N rounds
+  says so in its `instructions` and counts the rounds from the history's trail
+  (each earlier send-back is `{ kind: "grader", to: "<graded state>" }`), as
+  above. The turn's recursion limit is the only backstop.
 - The grader is offered exactly its state's surface — its grants (never
   `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`,
-  even when `allow_always` lists them), `archmax_advance`, `archmax_raise`, the variable tools and
-  `archmax_get_history` — governed against the grader state. Its messages never
-  enter the session's transcript and its tokens never stream; the session reads
-  its decision as a `[grader]` note and a `kind: grader` trail step.
+  even when `allow_always` lists them) and the controls a code state gets:
+  `archmax_advance`, `archmax_raise`, the variable tools and `archmax_get_history`
+  — governed against the grader state. Its messages never enter the session's
+  transcript and its tokens never stream; the session reads its decision as a
+  `[grader]` note and a `kind: grader` trail step.
 - A grader that answers in text without deciding **fails closed** (`grader state
   '<slug>' finished without calling archmax_advance or archmax_raise`), routed
-  through `on_error`. `budget.maxTurns` / `timeoutMs` bound its own model calls,
-  which spend nothing of the turn's `budget.maxModelCalls`.
+  through `on_error`. `budget.maxTurns` / `timeoutMs` bound its own model calls.
 - `model` on a grader state names the id it runs on, resolved through the
   assembly's `modelFactory` under the **`grader`** role.
-- The graded state's `instructions` tell the agent to send its reply in the same
-  message that advances to the grader, and to fix the work when a note sends it
-  back — never to argue with the note. Once the grader has moved the session, the
-  next thing the agent says replaces what it said before as the turn's `reply`: a
-  draft sent back never reaches the person, and a draft the grader passed, with
-  nothing said after it, is the reply.
+- The checked state's `instructions` tell the agent that advancing into the
+  grader is what hands the work in, and to fix the work when a note sends it back
+  — never to argue with the note.
+- **Put a grader where the agent hands work on, not on a live answer.** A turn's
+  `reply` is every assistant text of the turn, in order, so a draft the grader
+  sends back has still reached the person. Check work that waits for nobody — a
+  report, a record, a decision a person reviews next — and let a live answer end
+  where it is given.
 
 ---
 
@@ -881,7 +912,7 @@ failure in one of them **halts the case** — see
 
 | Assertion                                | Meaning                                                                                                                                                                                                                                                                                                                      |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `succeeded: true`                        | **Structural.** The run finished: not failed **and not parked**, and the agent did not end it with `archmax_raise` (a raise fails here, naming its code).                                                                                                                                                                                     |
+| `succeeded: true`                        | **Structural.** Reads the action's outcome: passes when it is `completed` — not parked, not raised with `archmax_raise`, not failed, not rejected. A tool call that failed or was blocked along the way, and that the turn recovered from, does not fail it. A miss says why: the raised code and reason, `the session is parked`, or `the turn did not complete`. |
 | `parked: true`                           | **Structural.** The run is parked at a human state awaiting a decision.                                                                                                                                                                                                                                                                        |
 | `raised: true` / `raised: <code>` / `raised: { code?, reason? }` | **Structural.** The agent ended the turn with `archmax_raise({ code, reason })`. A string pins the code exactly; the mapping pins the code and matches the reason — exactly, or as a regex when written `"/pattern/flags"`. A miss names the code that was raised, or says the run did not raise.                                  |
 | `variables: { expect, path?, locked? }`  | Every named variable is set to the expected value — deep equality, so a structured expectation compares by value. `path` addresses into a value per name (`items.-1.sku` is the last element); `locked` asserts the lock state. |
@@ -918,7 +949,15 @@ with `raised`, what it set with `variables`, and its dispatches with
 steps:
   - send: "Hi, I'm support@acmecorp.com. Which orders are delayed?"
   - trail: { kind: code, to: identify-case, count: 1 }   # the entry screen passed it
-  - trail: { kind: grader, to: answered, count: 1 }      # the grader approved the reply
+```
+
+```yaml
+trigger: { id: report_requested }                        # the report path
+variables: { company: "Acme Corp" }
+steps:
+  - send: "A delayed-orders report was requested."
+  - trail: { kind: grader, to: report-delivered, count: 1 }   # the grader approved the report
+  - trail: { kind: grader, to: report-requested, count: 0 }   # without a send-back
 ```
 
 ### Structural assertions halt the case
@@ -1133,19 +1172,16 @@ workflow-governed target. See
 
 ```yaml
 # `reachedState` is what pins the routing: without it the case would still
-# pass if the agent answered straight from the start state. The `trail` step
-# pins that the review-reply grader approved the answer. The judge
+# pass if the agent answered straight from the start state. The judge
 # (threshold 0.7) checks the order is attributed to the requester's company.
 title: Delayed orders answered for a known requester
 description: >-
-  One turn from support@acmecorp.com (present in skills/order-data/assets/orders.json): the run
-  routes into orders-question, the grader approves the answer, and the reply
-  names the one delayed order, ORD-1003.
+  A known requester's question routes into orders-question, and the reply names
+  the one delayed order, ORD-1003.
 steps:
   - send: "Hi, I'm support@acmecorp.com. Which orders are delayed for Acme?"
   - succeeded: true
   - reachedState: orders-question
-  - trail: { kind: grader, to: answered, count: 1 }
   - reply:
       includes: ["ORD-1003", "/delayed/i"]
   - grade:
@@ -1305,8 +1341,8 @@ seeded byte-for-byte before any step:
 title: Delayed-orders report compiled from a trigger
 description: >-
   The report_requested trigger starts the run: the agent reads the seeded
-  trigger.json payload, writes scratchpad/report.json, and the reply names Acme's
-  one delayed order, ORD-1003.
+  trigger.json, writes scratchpad/report.json, the grader approves it, and the
+  reply names Acme's one delayed order, ORD-1003.
 trigger:
   id: report_requested
 variables:
@@ -1326,7 +1362,9 @@ steps:
   - calledTool:
       name: write_file
       input:
-        file_path: "/output\\/report\\.json/"
+        file_path: "/scratchpad\\/report\\.json/"
+  # The review-report grader approved the report into report-delivered.
+  - trail: { to: report-delivered, kind: grader, count: 1 }
   - reply:
       includes: ["ORD-1003", "Acme"]
 ```
@@ -1363,8 +1401,8 @@ cases themselves: `parseCaseDocument`, `CaseSchemaError`, the case types
 versioning surface (`DEFAULT_TEST_SPEC_VERSION`, `SUPPORTED_TEST_SPEC_VERSIONS`,
 `resolveTestSpecVersion`, `isTestSpecVersionSupported`,
 `UnsupportedTestSpecVersionError`). `@archmax-ai/harness/sandbox` carries the
-code-state contract (`defineCodeState`, `CodeStateInput`, `HistoryMessage`,
-`TrailStep`, `ToolCallRecord`, `ToolCallFilter`).
+code-state contract (`defineCodeState`, `CodeStateInput`, `CodeStateArgs`,
+`CodeStateFn`, `SandboxTools`, `SessionHistory`, `HistoryMessage`, `TrailStep`).
 
 ---
 
@@ -1375,8 +1413,8 @@ code-state contract (`defineCodeState`, `CodeStateInput`, `HistoryMessage`,
 | Sandbox prelude (the `code` context, `defineCodeState`, the scoped `tools` view)        | `src/sandbox/assets/parts/code-state.js`; `src/sandbox/prelude.ts`                       |
 | Script source preparation (`@archmax-ai/harness/*` import stripping, `export default`, foreign-import errors) | `src/sandbox/imports.ts`                                                      |
 | Executor, sandbox tools, PTC gateway                                                  | `src/sandbox/executor.ts`, `tools.ts`, `ptc-gateway.ts`                                  |
-| Typed entry point (`defineCodeState`, `CodeStateInput`, `HistoryMessage`, `TrailStep`) | `src/public/sandbox.ts`                                                                  |
+| Typed entry point (`defineCodeState`, `CodeStateInput`, `SessionHistory`, `HistoryMessage`, `TrailStep`) | `src/public/sandbox.ts`                                                |
 | Running an automated state, its outcomes and controls                                 | `src/workflow/automated.ts`, `automated-controls.ts`                                     |
-| Code-state and grader runs; the history (`messages`, `trail`, `toolCalls`) and visits | `src/workflow/code-state.ts`, `grader-state.ts`, `history.ts`, `tool-calls.ts`, `visits.ts` |
+| Code-state and grader runs; the history (`messages`, `trail`)                         | `src/workflow/code-state.ts`, `grader-state.ts`, `history.ts`                            |
 | Case engine (host-side)                                                               | `src/testing/` — case schema `case-schema.ts`, discovery `discovery.ts`, assertion evaluation `assertions.ts`, grader `grade.ts`, runner `runner.ts` |
 | Validation diagnostics (missing code-state script, foreign import, YAML case checks)  | `src/validate/validate.ts`                                                               |

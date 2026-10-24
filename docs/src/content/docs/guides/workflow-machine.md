@@ -61,8 +61,8 @@ START → identify-case ⇄ orders-question | refund-request | general-question 
 Sometimes a session takes a wrong branch and no transition from where it stands
 can put it right. The agent then calls **`archmax_reset({ reason })`**. The
 session returns to the state it began in (the start state its trigger selected),
-with its turn budget cleared. When that state is a code state, its script runs
-again before the agent's next model call.
+and that state's `maxTurns` count starts over. When that state is a code state,
+its script runs again before the agent's next model call.
 
 The conversation, the files written so far, and the session's variables carry
 over. What the agent locked is unlocked, values kept, so the restarted run can
@@ -93,18 +93,15 @@ A state that polls can bound its own loop with `budget.maxParks`. Exhausting tha
 budget is a budget failure, routed by `on_error`. See [sessions and parked
 sessions](/guides/sessions/#waiting-for-a-time-not-a-reply).
 
-One turn is bounded as a whole. The workflow's
-[`budget.maxModelCalls`](/reference/machine-spec/#budget-the-turn-budget)
-(default 50) counts the agent's model calls of a turn across every state, so an
-agent that moves back and forth between two states without answering is stopped,
-which a state's own `maxTurns` cannot do, since it starts over on every entry. A
-grader or code state's run is no model call of the agent's and spends none of it;
-the agent's calls after an automated state's move count as any other. The
-exhaustion routes through `on_error` like any budget failure, and near the end the
-agent is told how many calls it has left. A turn that throws instead (a model
-provider failing, the step limit, a cancelled turn) ends the session `failed`
-with an exit code, so the next message starts a fresh turn rather than finding
-the session stuck.
+One turn is bounded as a whole by LangGraph's `recursionLimit`: 400 graph steps
+unless the caller's invoke config sets its own. Every model call, tool batch and
+automated state's run is a step, so an agent that moves back and forth between
+two states without answering is stopped there, which a state's own `maxTurns`
+cannot do, since it starts over on every entry. A turn that hits the limit, like
+any turn that throws (a model provider failing, a cancelled turn), ends the
+session `failed` with an exit code (`recursion-limit` here), so the next message
+starts a fresh turn rather than finding the session stuck. See
+[a turn that throws](/reference/public-api/#a-turn-that-throws).
 
 `archmax_wait` is available in every agent and human state, terminal ones
 included; an automated state cannot park. A session that has answered and now
@@ -150,7 +147,7 @@ prompt, and so does the count of states:
 ```
 Transitions — choose one with `archmax_advance` when this state's work is done:
 - to `refund-review` (human decision node) — The refund is over $50, or the customer has asked twice.
-- to `review-reply` (grader) — The reply answering the question has been sent to the customer.
+- to `review-report` (grader) — scratchpad/report.json is written for the requested company.
 - to `orders-question` — The customer is asking about order status, shipping or tracking.
 ```
 
@@ -205,7 +202,6 @@ Workflow state is checkpointed per session (the LangGraph `thread_id`):
 | `messages` | Conversation history |
 | `workflowState` | Current YAML state |
 | `stateTurns` | Model calls made in the current state, against `budget.maxTurns` |
-| `turnCalls` | Model calls made in the current invocation across every state, against the workflow's `budget.maxModelCalls` |
 | `pendingDecision` / `pendingInput` | The park record a suspended session presents |
 | `auditTrail` | The trail: every move, decision, reset and delegation |
 | `variables` | The session's variables |
@@ -223,14 +219,15 @@ beats every grant. Three things are present in every state:
   adding to them, so it names each one the workflow wants. A new workflow lists
   all twelve and removes only what it must not have.
 - **The runtime's own `archmax_*` controls**: `archmax_advance` in non-terminal
-  states, `archmax_raise` and the variable tools everywhere, and `archmax_reset`
-  and `archmax_wait` in agent and human states.
+  states, `archmax_raise` and the variable tools everywhere, `archmax_reset`
+  and `archmax_wait` in agent and human states, and `archmax_get_history` in
+  grader and code states.
 - **Any tool the host passes as `essentialTools`**, whatever the workflow
   declares.
 
 A grader or a code state gets the same surface minus `write_todos`,
-`archmax_eval`, `archmax_run`, `archmax_wait` and `archmax_reset`, and a grader
-adds `archmax_get_history`. See
+`archmax_eval`, `archmax_run`, `archmax_wait` and `archmax_reset`, plus
+`archmax_get_history`. See
 [what each state is offered](/guides/automated-states/#what-each-state-is-offered).
 
 Every other tool has to be declared. A state with no `tools` block gets exactly
@@ -742,21 +739,24 @@ states:
     transitions:
       - { to: orders-question, description: The requester is known. }
       - { to: decline, description: The request names no known requester. }
-  orders-question:
+  orders-question:                                    # terminal: a live answer ends where it is given
+    instructions: Answer the order question from the order records.
+  report-requested:                                   # no person waits on this path
+    triggers:
+      report_requested:
     transitions:
-      - { to: review-reply, description: The reply has been sent to the customer. }
-  review-reply:                                       # grades the reply, approves or sends it back
+      - { to: review-report, description: scratchpad/report.json is written. }
+  review-report:                                      # grades the report, approves or sends it back
     type: grader
     instructions: |-
-      Judge the tone of the last reply. Friendly: advance to answered. Curt:
-      advance back to orders-question saying what to change. Already sent back
-      twice (count the trail): raise reply-tone.
+      Check scratchpad/report.json against the order records. Correct: advance
+      to report-delivered. Wrong: advance back to report-requested saying what
+      to fix. Already sent back twice (count the trail): raise report-incorrect.
     transitions:
-      - { to: answered, description: The reply is friendly and professional. }
-      - { to: orders-question, description: The tone is off; send it back. }
-  answered:                                           # terminal: completes with no model call
-    type: code
-    script: scripts/answered.js
+      - { to: report-delivered, description: The report is correct. }
+      - { to: report-requested, description: The report is wrong; send it back. }
+  report-delivered:
+    instructions: Summarize the approved report.
   decline:
     instructions: Tell the person why the request was declined; the note above says why.
 ```
@@ -780,55 +780,19 @@ nothing.
 There is no retry budget. A grader that gives up after N send-backs says so in
 its `instructions` and counts the rounds from the history's trail.
 
+Both automated types read the **whole session** with `archmax_get_history`, a
+control only they are offered: `{ messages, trail }`, every message of the
+transcript and every step of the trail, earlier turns included, taken from the
+checkpointed session rather than from the request a summary shortened for the
+model. A tool message carries its call's result inline, as the tool returned it.
+So a check compares against the result itself, or against a variable or a file,
+never against what an earlier state said about it.
+
 Argument-shape restrictions belong in `tools.allow`, or in a `forbid` entry's own
 guards. *Semantic* validation of what a state produced belongs in a code state
 behind it, which reads what was actually written and advances onward or back.
-The script input, the grader's prompt and model, the events and the patterns are
-in [grader and code states](/guides/automated-states/).
-
-### What an automated state reads: the session and its records
-
-An automated state reads the **whole session**: every message of the transcript
-and every step of the trail, earlier turns included, taken from the checkpointed
-session rather than from the request a summary shortened for the model. A code
-state receives them as `messages` and `trail`, and a grader reads them with
-`archmax_get_history`.
-
-Beside the transcript, it reads the session's **records**: `variables`, the files,
-and the session's tool calls with their results, which a code state queries with
-`toolCalls(filter?)` and a grader finds in its history. The runtime keeps those
-results as the tools returned them, each marked with the state and the **visit**
-that made the call.
-
-A visit is the span of a session from its entry into a state until it next enters
-one. An advance (an automated state's included), a person's decision, an
-`on_error` route and `archmax_reset` each start one, and so does a turn that opens
-a state (the session's first turn). A turn that continues in the state the
-session is in continues its visit, and so do a delivery after `archmax_wait` and a
-sub-workflow's return. So a visit can span turns, and a state entered again starts
-a new one. Visits are numbered from 1 across the session.
-
-```text
- … | entered S (visit 3) ───────────────────────── advance → check (visit 4)
-     │ user "cancel 42"                             │ check's script reads
-     │ get_order(42) → pending                      │ toolCalls({ state: "S" })
-     │ (the turn ends; the person answers)          │ and finds both calls,
-     │ user "yes, do it"                            │ each with visit: 3
-     │ cancel_order(42) → ok                        │
-     └──────────────────────────────────────────────┘
-```
-
-So the rule for authoring is:
-
-- **The conversation is the model's memory, not evidence.** A check reads the
-  records, never what an earlier state said about them.
-- **What a later state or turn depends on is stored**: in a variable, in a file,
-  or in a tool result the runtime already keeps. A check compares against the
-  result itself, not a copy the model made.
-
-The fields are listed under
-[the script contract](/guides/automated-states/#the-script-contract) and
-[the history](/guides/automated-states/#the-history).
+The script input, the history, the grader's prompt and model, the events and the
+patterns are in [grader and code states](/guides/automated-states/).
 
 ## Human-in-the-loop states
 

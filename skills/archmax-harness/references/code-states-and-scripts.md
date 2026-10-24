@@ -16,9 +16,10 @@ JSDoc; no other import is allowed).
 /**
  * Request screen — the request must name a requester the order records know.
  *
- * Reads the first user message, extracts the first email address, reads
- * skills/order-data/assets/orders.json (this state enables `order-data`) and
- * matches the address against every record's `email`, case-insensitively.
+ * Reads the first user message from the session's history, extracts the first
+ * email address, reads skills/order-data/assets/orders.json (this state enables
+ * `order-data`) and matches the address against every record's `email`,
+ * case-insensitively.
  *
  * Advances to identify-case when it matches; otherwise to decline, with a reason
  * naming what was missing. An unreadable order database throws, so the state
@@ -26,7 +27,8 @@ JSDoc; no other import is allowed).
  */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-export default defineCodeState(async ({ messages, tools }) => {
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
   const orders = JSON.parse(await tools.read_file({ file_path: "skills/order-data/assets/orders.json" }));
   const text = messages.find((m) => m.role === "user")?.text ?? "";
   const email = text.match(/[\w.+-]+@[\w.-]+\.\w{2,}/)?.[0];
@@ -41,12 +43,19 @@ export default defineCodeState(async ({ messages, tools }) => {
 | Input | Meaning |
 | --- | --- |
 | `state` | the code state's own slug |
-| `trigger` | the turn's trigger id string (its payload is in `variables`) |
+| `trigger?` | the turn's trigger id string (its payload is in `variables`) |
 | `variables` | read-only `name → value` map incl. `trigger`; structured values whole; write with `tools.archmax_set_variables` |
-| `messages` | the **whole** transcript, oldest first, `{ role, text, toolCalls?, tool?, id?, note? }`; roles `user`/`assistant`/`tool`/`system`/`runtime` (a runtime note, `note` naming its kind; match `role === "runtime"`, never a `[bracket]`). A `tool` entry carries `tool` and the call's `id` with an empty `text`: its result is in `toolCalls` |
-| `trail` | the whole trail, oldest first, `{ to, kind, reason?, ts }`; `kind` is `trigger`/`agent`/`human`/`grader`/`code`/`sub-workflow`/`reset`/`on_error` — count rounds here |
-| `toolCalls(filter?)` | async; the session's domain tool calls across every visit, oldest first, as `{ id?, name, args, result?, status, state, visit }` (`status` `completed`/`pending`/`failed`/`rejected`; `result` parsed when JSON, absent while `pending`; `visit` numbered from 1). Filter keys `name`, `state`, `visit` (a number), `status`, `last` (only the last N matches); every key must match, an unknown key is refused. Read a result here, never from `messages` |
-| `tools` | **exactly this state's surface**, async, by own name or camelCase (`tools.read_file`, `tools.readFile`): its grants (the workflow-wide grant included, minus `write_todos`, `archmax_eval`, `archmax_run`), the host's essential tools, and the controls `archmax_advance` (absent when terminal), `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`. Anything else is `undefined` |
+| `tools` | **exactly this state's surface**, async, by own name or camelCase (`tools.read_file`, `tools.readFile`): its grants (the workflow-wide grant included, minus `write_todos`, `archmax_eval`, `archmax_run`), the host's essential tools, and the controls `archmax_advance` (absent when terminal), `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` — the same set a grader gets. Anything else is `undefined`; a call with no argument passes `{}` |
+
+**The session's history** is read, not passed in:
+`const { messages, trail } = JSON.parse(await tools.archmax_get_history())` — the
+same `SessionHistory` a grader reads, the session as it stood when the state was
+entered, whole and oldest first.
+
+| Field | Meaning |
+| --- | --- |
+| `messages` | the **whole** transcript, `{ role, text, toolCalls?, tool?, id?, note? }`; roles `user`/`assistant`/`tool`/`system`/`runtime` (a runtime note, `note` naming its kind; match `role === "runtime"`, never a `[bracket]`). An `assistant` entry lists the calls it made in `toolCalls` (`{ id?, name, args }`); the `tool` entry whose `id` matches carries the tool's name in `tool` and its result in `text` (`JSON.parse` it when the tool returns JSON) |
+| `trail` | the whole trail, `{ to, kind, reason?, workflow?, status?, ts }`; `kind` is `trigger`/`agent`/`human`/`grader`/`code`/`sub-workflow`/`reset`/`on_error` — count rounds here |
 
 | The script… | Effect |
 | --- | --- |

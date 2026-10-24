@@ -95,13 +95,15 @@ a root `name`, a root `triggers`, a root `extensions`, a state's `trigger`, and 
 
 The spec root SHALL accept exactly: `title` (string, a human label — the workflow's identity
 is its directory slug), `instructions` (non-empty string of standing guidance rendered into
-the system prompt for the whole session), `disabled` (boolean), `runtime`, `budget`,
+the system prompt for the whole session), `disabled` (boolean), `runtime`,
 `settings`, `tools` (`allow_always`, `forbid_always`), `skills` (`allow_always`, `forbid_always`),
 `mounts` (`allow_always`, `forbid_always`), `tests`, `metadata`, and `states` — a mapping of
 state slug to state, which SHALL be present and non-empty. A spec with no `instructions` SHALL
 load with a lint warning that the workflow ships no standing guidance. There SHALL be no root
 `triggers`: a trigger is declared on the state it enters. There SHALL be no root `extensions`
-block: it held only the custom hook kinds, which no longer exist.
+block: it held only the custom hook kinds, which no longer exist. There SHALL be no root `budget`:
+a budget is a state's, and a turn is bounded by LangGraph's recursion limit (see the `runtime`
+capability).
 
 #### Scenario: Empty states rejected
 
@@ -134,10 +136,11 @@ block: it held only the custom hook kinds, which no longer exist.
   schema does — denial is declared beside the grant it overrides (`tools.forbid_always`,
   `skills.forbid_always`), and there is one skills model rather than a ceiling and a grant
 
-#### Scenario: A root budget is a recognized root key
+#### Scenario: A root budget is a load error
 
 - **WHEN** a spec declares `budget: { maxModelCalls: 80 }` at the root
-- **THEN** it is accepted, and a state-only budget key at the root (`budget: { maxTurns: 8 }`) is a load error naming the key and its path
+- **THEN** loading fails with `Unrecognized key: "budget"`, and `archmax validate` fails with the
+  same error
 
 ### Requirement: State keys
 
@@ -311,8 +314,8 @@ decided only by its existence and the state's `requires`, whoever takes it.
 
 #### Scenario: An undescribed edge into an automated state is refused
 
-- **WHEN** an agent state declares `transitions: [{ to: review-reply }]`, where `review-reply` is a
-  grader state with `instructions`, or `transitions: [{ to: check-refund }]`, where `check-refund`
+- **WHEN** an agent state declares `transitions: [{ to: review-report }]`, where `review-report` is
+  a grader state with `instructions`, or `transitions: [{ to: check-refund }]`, where `check-refund`
   is a code state
 - **THEN** loading fails with one error addressed to that transition's `description`, saying that
   a grader's instructions are its criteria and never shown to the work it judges, or that a code
@@ -363,24 +366,18 @@ A state's `budget` SHALL accept `maxTurns`, `timeoutMs` and `maxParks`, each a p
 integer when present and unbounded when absent. In an agent state, `maxTurns` counts the state's
 model turns, `timeoutMs` bounds a model call in the state, and `maxParks` counts the state's
 `archmax_wait` parks. In a grader state, `maxTurns` bounds the grader's own model calls and
-`timeoutMs` bounds the grader's run; the session agent's turn budget is not spent there. A
+`timeoutMs` bounds the grader's run; neither spends the session agent's `maxTurns`. A
 `budget.maxParks` on a grader and any `budget` on a code state are lint errors (see "Keys a
 state type never reads are lint errors"). Exhausting any budget fails the state, which routes
-through `on_error` when declared and otherwise rejects the session. The root `budget` SHALL accept
-only `maxModelCalls`, a positive integer bounding the session agent's model calls of one turn
-across every state, `50` when absent; an automated state's run spends none of it.
+through `on_error` when declared and otherwise rejects the session. A budget SHALL be declared
+only on a state; the spec root carries none (see "Root keys").
 
 #### Scenario: Non-positive budget rejected
 
 - **WHEN** a state declares `budget: { maxParks: 0 }` or a non-integer value
 - **THEN** loading fails with "must be a positive number" addressed to that field
 
-#### Scenario: Non-positive root budget rejected
-
-- **WHEN** a spec declares `budget: { maxModelCalls: 0 }` at the root
-- **THEN** loading fails with "must be a positive number" addressed to that field
-
-#### Scenario: A grader's turn budget bounds the grader
+#### Scenario: A grader's `maxTurns` bounds the grader
 
 - **WHEN** a grader state declares `budget: { maxTurns: 3 }` and its grader has made three model
   calls without calling `archmax_advance` or `archmax_raise`
@@ -926,9 +923,9 @@ state may use — and both SHALL be part of the spec hash, because they change w
 
 #### Scenario: A grader state's model
 
-- **WHEN** a spec declares `settings: { model: small-model }`, grader state `review-reply`
+- **WHEN** a spec declares `settings: { model: small-model }`, grader state `review-report`
   declares `model: careful-model`, and grader state `check-tone` declares none
-- **THEN** the `review-reply` grader's model calls run on `careful-model` and the `check-tone`
+- **THEN** the `review-report` grader's model calls run on `careful-model` and the `check-tone`
   grader's on `small-model`
 
 #### Scenario: An unknown id is not the schema's business
@@ -1403,7 +1400,7 @@ state's script — with the same arguments and refusals.
 ### Requirement: A state may own variables
 
 A state MAY declare `locks:`, a list of variable names it **owns**. Only the owning state SHALL
-write a variable it owns, on any of its visits and in any turn, before or after the variable is
+write a variable it owns, whenever the session is in it and in any turn, before or after the variable is
 set; a write from any other state is refused (see "The variable tools"). Ownership SHALL apply to
 any variable, whether or not a guard reads it, and SHALL be read from the spec, never from the
 session. Loading SHALL fail when two states own the same variable, when `locks` names `trigger` or
@@ -1752,8 +1749,8 @@ which would fail open.
 
 #### Scenario: A well-formed grader validates clean
 
-- **WHEN** grader state `review-reply` declares `instructions` and transitions to `answered` and
-  back to `orders-question`
+- **WHEN** grader state `review-report` declares `instructions` and transitions to
+  `report-delivered` and back to `report-requested`
 - **THEN** `archmax validate` reports no diagnostic about the state
 
 ### Requirement: Keys a state type never reads are lint errors

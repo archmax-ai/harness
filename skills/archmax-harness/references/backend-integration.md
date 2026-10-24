@@ -146,7 +146,7 @@ const sessionId = `run-${runId}`;
 try {
   const result = await agent.invoke(
     { messages: [{ role: "user", content: prompt }] },
-    { configurable: { thread_id: sessionId }, recursionLimit: 50 },
+    { configurable: { thread_id: sessionId } },
   );
   // result: { messages, status?, workflowState?, pendingDecision? }
   if (result.status === WORKFLOW_STATUSES.awaitingDecision) {
@@ -158,6 +158,12 @@ try {
   agent.dispose(sessionId);   // frees the session's sandbox/PTC state and its checkpoints in memory; the next turn reloads them from the store
 }
 ```
+
+A turn runs under LangGraph's `recursionLimit` — 400 unless the config passes its
+own, which wins. It is the one bound on a whole turn (every model call, tool batch
+and automated state is a step; a state's `budget.maxTurns`/`maxParks` bound that
+state); a turn that hits it ends the session `failed` with exit code
+`recursion-limit`.
 
 To cancel a turn, pass an `AbortSignal` as `signal` in the same config (or in
 `agent.workflow.send(sessionId, input, { signal })`) and abort it. The turn's
@@ -188,12 +194,12 @@ checkpoint:
 // turn 1
 await agent.invoke(
   { messages: [{ role: "user", content: "Look up order 1234" }] },
-  { configurable: { thread_id: "chat-42" }, recursionLimit: 50 },
+  { configurable: { thread_id: "chat-42" } },
 );
 // turn 2 — SAME thread_id; only the new message
 await agent.invoke(
   { messages: [{ role: "user", content: "And when did it ship?" }] },
-  { configurable: { thread_id: "chat-42" }, recursionLimit: 50 },
+  { configurable: { thread_id: "chat-42" } },
 );
 ```
 
@@ -216,20 +222,20 @@ await agent.invoke(
       { role: "user", content: "what was my first message?" }, // the new turn
     ],
   },
-  { configurable: { thread_id: "chat-42" }, recursionLimit: 50 },
+  { configurable: { thread_id: "chat-42" } },
 );
 ```
 
 Gotchas:
 
-- **A code state reads the whole session, not a visit.** Its `messages` are the
-  whole transcript, oldest first, which can span turns: a script that keys off
-  "the current request" should take the *last* `user` entry, not the first — the
-  first is the message that opened the session. A tool entry carries its tool and
-  call `id` with an empty `text`; the result is in the records `toolCalls(filter?)`
-  returns (`visit` filters by a visit's number). A grader reads the same view
-  (`{ messages, trail, toolCalls }`) with `archmax_get_history`; neither's own
-  messages enter the session's transcript.
+- **An automated state reads the whole session.** A code state and a grader
+  both call `archmax_get_history` for `{ messages, trail }` (a script:
+  `JSON.parse(await tools.archmax_get_history())`). Its `messages` are the whole
+  transcript, oldest first, which can span turns: a script that keys off "the
+  current request" should take the *last* `user` entry, not the first — the
+  first is the message that opened the session. A tool entry carries its tool,
+  the call `id` and the result as its `text`. Neither's own calls or messages
+  enter the session's transcript.
 - **A definition edit is adopted, not refused.** A session takes its next turn
   under the `workflow.yaml` in force now; the recorded `specHash` says which
   definition each turn ran under but gates nothing. A turn positioned in a state
@@ -266,6 +272,7 @@ if (result.status === WORKFLOW_STATUSES.awaitingDecision && result.pendingDecisi
   // When they pick:
   const outcome = await agent.workflow.decide(sessionId, { target: chosenTo, comment });
   // DecideOutcome: { status?, workflowState?, reparked, state?, reply, rejected?, exit?, messages }
+  // `reply` is every assistant text of the turn, in order ("" when it said nothing).
   // `rejected` says why when status is "rejected"; Outcome from send() carries it too.
   // `exit` is { success: false, code, reason } when the agent ended the run with
   // archmax_raise (status "failed"), { success: true } when it completed.

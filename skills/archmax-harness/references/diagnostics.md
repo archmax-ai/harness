@@ -17,6 +17,7 @@ message alone. Migrations for removed keys in full:
 | transitions to / on_error routes to undefined state | Fix the slug or add the state |
 | no start state / multiple states declare trigger | Exactly one state per trigger id declares it under `triggers:` |
 | `Unrecognized key: "before"` / `"after"` (on a state) or `"extensions"` (at the root) | Hooks are removed — rewrite each as a state: a `before` check → a **code state in front** of the state (the trigger's entry, or the target of the edge into it); an `after` check → a **code state behind** it (the state's transition points at it, and it advances onward or back with the reason); a `rubric:` → a **grader state** behind it with an edge back. `max_iterations` has no successor: count rounds from the trail. Move `workflows/<slug>/hooks/*.js` to `scripts/` and rewrite them to the code-state contract. Delete `extensions` |
+| `Unrecognized key: "budget"` (at the root) | The root turn budget (`budget.maxModelCalls`) is removed: delete the key. A turn is bounded by LangGraph's `recursionLimit` (400 unless the host's invoke config sets one); bound a state with its own `budget.maxTurns` |
 | Code state declares no `script` | Add `script: scripts/<x>.js`, file at `workflows/<slug>/scripts/<x>.js` |
 | state declares `script`, which only a code state runs | Declare `type: code`, or drop the key |
 | `script` must be a workflow-relative path inside `scripts/` ending in .js or .mjs | `scripts/<x>.js` — no `hooks/`, no `skills/…` path, no `..` |
@@ -59,7 +60,8 @@ root `skills.allow`→`skills.allow_always`; state `type: wait`→`archmax_wait`
 transition `on:`→nothing (the resumed state picks its edge); state
 `before:`/`after:` (with `{ script }`, `{ rubric }`, `subagent:`, custom kinds,
 `max_iterations`/`max_corrections`)→code and grader states; root
-`extensions:`→nothing; single-file `WORKFLOW.md` with
+`extensions:`→nothing; root `budget: { maxModelCalls }`→nothing (the
+`recursionLimit` bounds a turn); single-file `WORKFLOW.md` with
 frontmatter→`workflow.yaml` + prose.
 
 ## Reading a failed run
@@ -81,4 +83,4 @@ the run failed. The raw events (`--verbose`, or `onEvent` in a host) are
 | `archmax_advance rejected: cannot advance from '<s>' to '<t>'` / `cannot leave '<s>' yet: '<v>' is not set` | The script's `to` is not one of its state's transitions, or its `requires` are unmet — fix the target, or set the variable first |
 | `archmax_advance rejected: this state has decided` | A script or grader decided twice; only the first advance or raise counts |
 | a tool refused, or `tools.<x>` is `undefined`, inside a code state | Grant it on the **code state itself** (`tools.allow`, `skills.allow`, `mounts.allow`); another state's grant does not reach it |
-| `GraphRecursionError` | Two automated states advance to each other forever; add an edge out, or count rounds from `trail` |
+| `GraphRecursionError` / the session `failed` with `recursion-limit` | The turn hit LangGraph's `recursionLimit` (400 unless the host sets one): states cycle within one turn — automated states advancing to each other, or an agent looping between states. Add an edge out, or count rounds from the trail and give up; where one state loops on its own, bound it with `budget.maxTurns` + `on_error` |

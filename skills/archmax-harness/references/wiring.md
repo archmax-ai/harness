@@ -19,7 +19,7 @@ const agent = await createAgent({
 const sessionId = `run-${runId}`;
 const result = await agent.invoke(
   { messages: [{ role: "user", content: prompt }] },
-  { configurable: { thread_id: sessionId }, recursionLimit: 50 },
+  { configurable: { thread_id: sessionId } },   // recursionLimit: 400 unless you pass one
 );
 if (result.status === WORKFLOW_STATUSES.awaitingDecision) {
   // result.pendingDecision.transitions → show to a person, then:
@@ -82,7 +82,10 @@ agent.dispose(sessionId);
   `SessionSummary.exit` carries the same while the session is `failed`, and a
   later message is an ordinary new turn. `rejected` is governance ending it
   (`Outcome.rejected`, no `exit`). A host that read "not rejected" as success
-  must check `failed` too.
+  must check `failed` too. A turn that throws also ends the session `failed`,
+  with code `turn-error`, `turn-cancelled` or `recursion-limit` — LangGraph's
+  `recursionLimit` (400 unless the invoke config passes one) is the one bound on
+  a whole turn. `Outcome.reply` is every assistant text of the turn, in order.
 - **Events**: `onEvent` receives the one typed stream — `state-enter/leave`,
   `advance`, `code-start/output/result` and `grader-start/result` (a code or
   grader state's run; `status` `ok`/`error`, `reason` on a failure),

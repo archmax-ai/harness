@@ -108,42 +108,48 @@ states:
                                     # instructions
       - to: orders-question
         description: The user is asking about orders, status, shipping, or tracking.
-  orders-question:
-    instructions: >-
-      Answer from skills/order-data/assets/orders.json, and send the reply in a
-      message that also advances to review-reply.
+  orders-question:                  # no transitions: terminal, so a live answer
+                                    # ends where it is given
+    instructions: Answer from skills/order-data/assets/orders.json.
                                     # no skills block: the workflow's grant reaches
                                     # here, and enabling a bundle is the whole grant
+  report-requested:
+    triggers:
+      report_requested:             # a host event: no person is waiting on this path
+    instructions: >-
+      Write the company's delayed orders to scratchpad/report.json, then
+      archmax_advance to review-report. If a note sends it back, fix what it names.
     transitions:
-      - to: review-reply
-        description: The reply has been sent to the customer.
-  review-reply:                     # a grader state: an isolated grader judges the work
+      - to: review-report
+        description: scratchpad/report.json is written for the requested company.
+  review-report:                    # a grader state: an isolated grader judges the work
     type: grader                    # against these criteria and decides the edge
     instructions: >-
-      Judge the tone of the last reply. Friendly: advance to answered. Curt: send it
-      back saying what to change. After two send-backs, raise reply-tone.
+      Check scratchpad/report.json against the order records. Correct: advance to
+      report-delivered. Wrong: send it back naming what to fix. After two
+      send-backs, raise report-incorrect.
     transitions:
-      - to: answered
-        description: The reply is friendly and professional.
-      - to: orders-question
-        description: The tone is off; send it back naming what to change.
-  answered:                         # a terminal code state: approving ends the
-    type: code                      # session with no further model call
-    script: scripts/answered.js
-  # decline: a terminal state that tells the person why
+      - to: report-delivered
+        description: The report lists exactly the company's delayed orders.
+      - to: report-requested
+        description: The report is wrong; send it back naming what to fix.
+  # decline, report-delivered: terminal states that tell the person why, and
+  # summarize the approved report
 ```
 
 Grader and code states are **automated states**: the runtime runs them on entry, with no model
 call of the session's agent, so a chain of code states costs nothing. A code state's script
 (`workflows/<slug>/scripts/`) runs in the sandbox; a grader is an isolated subagent whose system
-prompt is the state's `instructions` and which reads the session's history with
-`archmax_get_history`. Both read the whole session: its transcript, its trail, and every tool call
-with its result. Each is offered exactly its own state's tools, and each leaves the way every
-state does: `archmax_advance` along one of its transitions, whose reason reaches the next state as a
-note (a send-back is the correction the agent reads), or `archmax_raise` to end the session as
-failed. A check is a state on the graph, in front of the work or behind it, and an edge into one
-always carries a description: a grader's instructions are its criteria, and a code state has none.
-Both live on the authoring plane, so the agent they check can neither read nor call them. See
+prompt is the state's `instructions`. Both read the session with `archmax_get_history`: its whole
+transcript, tool results included, and its trail. Each is offered exactly its own state's tools,
+and each leaves the way every state does: `archmax_advance` along one of its transitions, whose
+reason reaches the next state as a note (a send-back is the correction the agent reads), or
+`archmax_raise` to end the session as failed. A check is a state on the graph, in front of the
+work or behind it, and an edge into one always carries a description: a grader's instructions are
+its criteria, and a code state has none. A grader suits work the agent hands on, such as the
+report above, rather than a live answer: everything the agent says in a turn reaches the person,
+a draft sent back included. Both live on the authoring plane, so the agent they check can neither
+read nor call them. See
 [grader and code states](https://harness.archmax.ai/guides/automated-states/).
 
 A trigger may also declare the contract a caller relies on: what a firing must supply and what the

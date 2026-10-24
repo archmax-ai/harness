@@ -34,12 +34,8 @@ The runtime runs an automated state whenever the session's position reaches it:
 - an `archmax_reset` back to it.
 
 It runs **in place of the next model call** of the session's agent. The agent's
-model is not called while the session stands in an automated state, so an
-automated state's run spends none of the turn's
-[`budget.maxModelCalls`](/reference/machine-spec/#budget-the-turn-budget), which
-counts the agent's calls. The agent's calls after an automated state's move count
-as any other, and an exhausted budget routes through `on_error` there too. A
-grader's own model calls are bounded by its `budget.maxTurns` instead.
+model is not called while the session stands in an automated state. A grader's
+own model calls are bounded by its `budget.maxTurns`.
 
 When an automated state moves the session into another automated state, that one
 runs next, again with no model call. A **chain of code states makes no model call
@@ -49,9 +45,10 @@ stops at the first agent state (whose model call is made for real), human state
 (which parks), completion or failure.
 
 A chain that never reaches any of those, such as two code states advancing to
-each other, is stopped by the turn's step limit like any runaway turn. The turn
-throws LangGraph's `GraphRecursionError` and ends the session `failed` with the
-code `recursion-limit` (see
+each other, is stopped like any runaway turn by LangGraph's `recursionLimit`
+(400 steps a turn, unless the caller's config sets its own). The turn throws
+LangGraph's `GraphRecursionError` and ends the session `failed` with the code
+`recursion-limit` (see
 [a turn that throws](/reference/public-api/#a-turn-that-throws)); it does not
 route through `on_error`. An intentional bounded loop (a counter in a variable, a
 round count read from the trail) works as you would expect.
@@ -75,9 +72,10 @@ of the assembly beyond it:
 | State type | Control tools |
 | --- | --- |
 | agent, human | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` |
-| code | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` |
-| grader | the code set plus `archmax_get_history` |
+| grader, code | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` |
 
+Both automated types get the same controls, and only they get
+[`archmax_get_history`](#the-history), which reads the session they check.
 `archmax_advance` is left out in a terminal state, as it is for the agent. No
 automated state is ever offered `write_todos`, `archmax_eval`, `archmax_run`,
 `archmax_wait` or `archmax_reset`, even where the workflow-wide grant names one.
@@ -165,17 +163,25 @@ The input (`CodeStateInput` in `@archmax-ai/harness/sandbox`):
 | `state` | The code state's own slug. |
 | `trigger` | The id of the trigger the turn carries. The session's input is in `variables`. |
 | `variables` | The session's variables as a flat `name → value` map, the built-in `trigger` included. Assigning to it changes nothing: write with `tools.archmax_set_variables`. |
-| `messages` | The session's whole transcript, oldest first, in the [history](#the-history) shape. A tool entry carries its `tool` and call `id` with an empty `text`: its result is in `toolCalls`. |
-| `trail` | The session's whole trail, oldest first. |
-| `toolCalls(filter?)` | Async. The session's tool calls with their results, oldest first, as [tool-call records](#tool-call-records). `filter` narrows them. |
 | `tools` | The code state's tools, as async functions. |
+
+The session itself is not in the input. The script reads it the way a grader
+does, through a tool:
+
+```js
+const { messages, trail } = JSON.parse(await tools.archmax_get_history());
+```
+
+That is the session's whole transcript and whole trail, oldest first (see
+[the history](#the-history)).
 
 What the contract says:
 
 - **`tools` is the state's surface.** A tool answers to its own name
   (`tools.read_file`, `tools["archmax_workflow_enrich-order"]`) and to its
   camelCased key (`tools.readFile`). `Object.keys(tools)` lists the camelCased keys.
-  A name outside the surface is `undefined`.
+  A name outside the surface is `undefined`. A call with no argument is made with
+  `{}`, so `tools.archmax_get_history()` needs none.
 - **The script moves the session.** `tools.archmax_advance({ to, reason })` takes
   one of the state's transitions, and the `reason` is what the next state reads.
   `tools.archmax_raise({ code, reason })` ends the session as failed.
@@ -210,61 +216,69 @@ global `args`, without `tools` there, and calls the global `tools`.
 ### Checking a tool's result
 
 A check compares against what a tool returned, not against what the agent said
-about it. `toolCalls(filter?)` resolves to the session's tool calls as
-[records](#tool-call-records), filtered outside the sandbox, so only the calls the
-script asks for are copied in:
+about it. In the history, a tool message carries the call's result inline, as its
+`text`, with the tool's name and the id of the call it answers:
 
 ```js
-export default async function ({ toolCalls, tools }) {
-  const [order] = await toolCalls({ name: "get_order", last: 1 });
-  if (!order) {
+import { defineCodeState } from "@archmax-ai/harness/sandbox";
+
+export default defineCodeState(async ({ tools }) => {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
+  const answer = messages.filter((m) => m.role === "tool" && m.tool === "get_order").at(-1);
+  if (!answer) {
     await tools.archmax_advance({ to: "cancel-order", reason: "Look the order up with get_order before cancelling it." });
-  } else if (order.result.status !== "pending") {
-    await tools.archmax_advance({ to: "cancel-order", reason: `Order ${order.args.id} is ${order.result.status}.` });
-  } else {
-    await tools.archmax_advance({ to: "confirm-cancel", reason: `order ${order.args.id} is pending` });
+    return;
   }
-}
+  const order = JSON.parse(answer.text);
+  if (order.status !== "pending") {
+    await tools.archmax_advance({ to: "cancel-order", reason: `Order ${order.id} is ${order.status}.` });
+  } else {
+    await tools.archmax_advance({ to: "confirm-cancel", reason: `order ${order.id} is pending` });
+  }
+});
 ```
 
-`filter` narrows by any of these keys, and every key given must match:
-
-| Key | Matches |
-| --- | --- |
-| `name` | the tool's name, as the agent called it |
-| `state` | the state whose visit made the call |
-| `visit` | a visit's number, as the records carry it |
-| `status` | `completed`, `pending`, `failed` or `rejected` |
-| `last` | only the last `last` matches |
-
-A key outside these, or a value of the wrong kind (`visit: "current"`, say), is
-refused: the call rejects, so a misspelt filter never matches everything. The
-records answer from the session as it stood when the code state was entered.
+The result is text, exactly as the agent saw it, so a script parses a JSON result
+itself. The arguments the call was made with are on the assistant message before
+it: the entry in its `toolCalls` whose `id` is the tool message's `id`. A refused
+or failed call's answer is its error text, so parse inside a `try` when the
+call may not have succeeded.
 
 ## Grader states
 
 ```yaml
 states:
-  review-reply:
+  review-report:
     type: grader
     budget:
-      maxTurns: 4
+      maxTurns: 6
     on_error: escalation
+    skills:
+      allow: [order-data]
     instructions: |-
-      Judge only the tone of the reply: the last assistant message with text in
-      the history's messages.
+      You check a delayed-orders report before it is delivered.
 
-      - Friendly and professional: advance to `answered`.
-      - Curt, cold or blunt: advance back to `orders-question`, saying exactly
-        what to change.
-      - Count the trail's steps with kind "grader" and to "orders-question". If
-        there are already two, raise `reply-tone` instead of sending it back.
+      1. Read the requested `company` with `archmax_get_variables`.
+      2. Read `scratchpad/report.json` and `skills/order-data/assets/orders.json`.
+      3. The report is correct when its `company` is the requested company and
+         its `delayedOrderIds` are exactly that company's orders whose status is
+         `delayed`.
+
+      - Correct: advance to `report-delivered`.
+      - Wrong or unreadable: advance back to `report-requested`, naming exactly
+        what to fix.
+      - Before sending it back, call `archmax_get_history` and count the steps
+        in `trail` with `kind: "grader"` and `to: "report-requested"`: if there
+        are already two, raise `report-incorrect` instead.
     transitions:
-      - to: answered
-        description: The reply is friendly and professional.
-      - to: orders-question
-        description: The reply's tone is off; send it back naming what to change.
+      - to: report-delivered
+        description: The report lists exactly the company's delayed orders.
+      - to: report-requested
+        description: The report is wrong; send it back naming exactly what to fix.
 ```
+
+The grader judges with its own state's tools: this state enables `order-data`,
+so it reads the order records itself rather than trusting the report.
 
 A grader state must declare non-empty `instructions`, which are its criteria. It
 must also declare at least one transition: a grader decides by advancing, and one
@@ -301,16 +315,21 @@ closed.
 
 ### Counting rounds
 
-There is **no visit counter and no iteration budget**. A send-back loop between an
-agent state and its grader runs until the grader approves, raises, or the
-session's recursion limit stops it. A grader that should give up after N rounds
-says so in its `instructions` and counts the rounds itself, from the trail that
+There is **no iteration budget**. A send-back loop between an agent state and its
+grader runs until the grader approves, raises, or the turn's recursion limit
+stops it. A grader that should give up after N rounds says so in its
+`instructions` and counts the rounds itself, from the trail that
 `archmax_get_history` returns. Each earlier send-back is a step
-`{ kind: "grader", to: "<the graded state>" }`. The example above raises on the
-third visit.
+`{ kind: "grader", to: "<the graded state>" }`. The example above raises once it
+has sent the report back twice.
 
-A code state counts the same way, from its `trail` input. The reference
-workspace's `check-refund` escalates after two send-backs.
+A code state counts the same way, from the same trail. The reference workspace's
+`check-refund` escalates after two send-backs:
+
+```js
+const { trail } = JSON.parse(await tools.archmax_get_history());
+const sentBack = trail.filter((step) => step.kind === "code" && step.to === "refund-request").length;
+```
 
 ### Budget and model
 
@@ -332,65 +351,60 @@ and they are added to the session's usage.
 
 ## The history
 
-`archmax_get_history` takes no arguments and is offered in grader states only. It
-returns the session's **history** as JSON, `{ messages, trail, toolCalls }`: its
-whole transcript, its whole trail, and every tool call with its result.
+`archmax_get_history` takes no arguments and is offered in grader and code states
+only. It returns the session's **history** as JSON, `{ messages, trail }`
+(`SessionHistory` in `@archmax-ai/harness/sandbox`): its whole transcript and its
+whole trail, oldest first. A grader calls it as a tool; a code state's script
+calls `tools.archmax_get_history()` and parses the answer. Both read the same
+view, so a grader and a script counting the same rounds read the same thing.
+
+What `review-report` reads on its second round:
 
 ```jsonc
 {
   "messages": [
-    { "role": "user", "text": "Hi, I'm support@acmecorp.com. Where is ORD-1002?" },
-    { "role": "runtime", "text": "[code] 'screen-request' moved the run to 'identify-case': …", "note": "code" },
-    { "role": "assistant", "text": "", "toolCalls": [{ "id": "call_1", "name": "read_file", "args": { "file_path": "…" } }] },
-    { "role": "tool", "text": "", "tool": "read_file", "id": "call_1" },
-    { "role": "assistant", "text": "Hi! ORD-1002 has shipped and is on its way …" }
+    { "role": "user", "text": "A delayed-orders report was requested." },
+    { "role": "assistant", "text": "", "toolCalls": [{ "id": "call_1", "name": "read_file", "args": { "file_path": "skills/order-data/assets/orders.json" } }] },
+    { "role": "tool", "text": "[{\"id\":\"ORD-1001\",\"customer\":\"Acme Corp\",\"status\":\"delivered\", …}]", "tool": "read_file", "id": "call_1" },
+    // … the report written, and the agent's archmax_advance into review-report
+    { "role": "runtime", "text": "[grader] The 'review-report' grader moved the run to 'report-requested': ORD-1003 is missing. …", "note": "grader" }
+    // … the report fixed, and the advance into review-report again
   ],
   "trail": [
-    { "to": "screen-request", "kind": "trigger", "reason": "manual", "ts": 1761300000000 },
-    { "to": "identify-case", "kind": "code", "reason": "The requester support@acmecorp.com is known …", "ts": 1761300000210 }
-  ],
-  "toolCalls": [
-    { "id": "call_1", "name": "read_file", "args": { "file_path": "…" }, "result": "…", "status": "completed", "state": "orders-question", "visit": 3 }
+    { "to": "report-requested", "kind": "trigger", "reason": "report_requested", "ts": 1761300000000 },
+    { "to": "review-report", "kind": "agent", "reason": "…", "ts": 1761300004120 },
+    { "to": "report-requested", "kind": "grader", "reason": "ORD-1003 is missing. …", "ts": 1761300009870 },
+    { "to": "review-report", "kind": "agent", "reason": "…", "ts": 1761300013450 }
   ]
 }
 ```
 
-Each message is `{ role, text, toolCalls?, tool?, id?, note? }`. `role` is `user`,
-`assistant`, `tool`, `system` or `runtime`. A `tool` entry names its tool and the
-call it answers (`tool`, `id`) with an empty `text`: its result is read once, from
-the tool-call records. A runtime note (an arrival, a decision, an error route, an
-automated state's move) is one `runtime` entry, and `note` names its kind. A code
-state's `messages`, `trail` and `toolCalls(filter?)` are the same view, so a
-grader and a script counting the same rounds read the same thing.
+Each message is `{ role, text, toolCalls?, tool?, id?, note? }` (`HistoryMessage`).
+`role` is `user`, `assistant`, `tool`, `system` or `runtime`:
 
-The history is read from the checkpointed session, earlier turns included, not
-from the request a summary shortened for the model. Nothing is windowed: a grader
-asked to give up after N send-backs has to see all N. What bounds it is the
-grader model's context and, for a script, the sandbox's `maxResultChars` and
-`memoryLimitBytes`.
+- An `assistant` message lists the calls it made in `toolCalls`, each
+  `{ id?, name, args }`.
+- A `tool` message carries the call's result inline, as its `text`, with the tool
+  that answered (`tool`) and the id of the call it answers (`id`). The result is
+  what the tool returned, as the agent saw it, so a check reads the result itself,
+  never a copy the model made. A result too large for the transcript is the
+  pointer to its file under `large_tool_results/`.
+- A runtime note (an arrival, a decision, an error route, an automated state's
+  move) is one `runtime` entry, and `note` names its kind.
 
-### Tool-call records
+Each trail step is a `TrailStep`, `{ to, kind, reason?, ts }`, plus `workflow` and
+`status` on a sub-workflow step.
 
-Each record is one domain tool call the session's transcript holds, oldest first:
+The transcript holds the calls of the session's agent, its control calls included.
+The calls a code state's script or a grader makes are not in it: they are not
+messages of the session, and only the move they decide reaches it, as a trail
+step and a runtime note.
 
-| Field | Meaning |
-| --- | --- |
-| `id` | The call's id, as the transcript's `tool` entry names it. |
-| `name` | The tool's name. |
-| `args` | The arguments the call was made with. |
-| `result` | What the tool returned, parsed when it is JSON text. Absent while `pending`. |
-| `status` | `completed`, `pending` (no result yet), `failed` (the tool answered with an error) or `rejected` (governance refused it). |
-| `state`, `visit` | The state and the visit, numbered from 1 across the session, of the message that made the call. |
-
-A **visit** is the span from the session's entry into a state until it next enters
-one (see
-[what an automated state reads](/guides/workflow-machine/#what-an-automated-state-reads-the-session-and-its-records)).
-The runtime keeps the results as the tools returned them, so a check reads the
-result itself, never a copy the model made. The runtime's control tools are not in
-the records, and neither are the calls a script makes through `tools.*` or a
-grader's own calls: those are not tool calls of the session. A result too large
-for the transcript is the pointer to its file under `large_tool_results/`, as the
-agent saw it.
+The history is read from the checkpointed session as it stood when the automated
+state was entered, earlier turns included, not from the request a summary
+shortened for the model. Nothing is windowed: a grader asked to give up after N
+send-backs has to see all N. What bounds it is the grader model's context and, for
+a script, the sandbox's `maxResultChars` and `memoryLimitBytes`.
 
 ## How a run settles
 
@@ -420,7 +434,7 @@ The agent standing in the next state learns why it was entered from a runtime
 note:
 
 ```text
-[grader] The 'review-reply' grader moved the run to 'orders-question': the reply never thanks the customer. You are now in 'orders-question'.
+[grader] The 'review-report' grader moved the run to 'report-requested': ORD-1003 is delayed and missing from delayedOrderIds. You are now in 'report-requested'.
 [code] 'check-refund' moved the run to 'refund-review': "denied" matches the refund policy. You are now in 'refund-review'.
 ```
 
@@ -433,7 +447,7 @@ From the state before, the agent sees only the transition line, marked with the
 target's type:
 
 ```text
-- to `review-reply` (grader) — The reply answering the question has been sent to the customer.
+- to `review-report` (grader) — scratchpad/report.json is written for the requested company.
 ```
 
 So an edge **into** a grader or a code state must carry a `description`. An
@@ -453,18 +467,15 @@ work and advance again.
 ### The turn's reply
 
 A turn's [`reply`](/reference/public-api/#agent-in-detail) is every text the
-agent wrote during the turn, joined by a blank line. Once a grader or a code state
-has moved the session, the next thing the agent says **replaces** what it said
-before:
+agent wrote during the turn, in order, joined by a blank line, and `""` when it
+said nothing. An automated state changes nothing about that: a draft the agent
+wrote before a grader or a code state sent it back stays in the reply, beside
+the corrected one. A grader's own text never enters the transcript, so it is
+never part of a reply.
 
-- A draft sent back for revision never reaches the person: the agent's corrected
-  answer, written after the send-back note, is the reply.
-- A draft a grader passed, with nothing said after it, is the reply. An approval
-  into a terminal code state completes the turn on that draft.
-- A turn that said nothing has `reply: ""`.
-
-No other runtime note resets the reply. A grader's own text never enters the
-transcript, so it is never part of a reply.
+So put a send-back loop where the work is handed on and no person is waiting on
+the turn's text, such as a triggered report, rather than in front of a live
+answer.
 
 ## Events
 
@@ -539,42 +550,48 @@ agent reads the send-back reason as a note and fixes the work.
 ### Approve, then end
 
 A grader that approves into a terminal agent state costs one more model call:
-that state's agent has to finish. Approve into a **terminal code state** instead.
-Its script runs and the session completes, with no further model call:
+that state's agent has to finish. The reference workspace's `report-delivered`
+does, because its summary is the point. When nothing more needs saying, approve
+into a **terminal code state** instead. Its script runs and the session completes,
+with no further model call:
 
 ```yaml
-  answered:
+  report-filed:
     type: code
-    script: scripts/answered.js
+    script: scripts/report-filed.js
 ```
 
 ```js
 /**
- * Approved-reply record.
+ * Report filing.
  *
- * Writes the last assistant message with text — the reply review-reply
- * approved — to scratchpad/answered.json, replacing the record of an earlier
- * approval in the same session, then returns: the session completes.
+ * Copies the approved scratchpad/report.json to scratchpad/filed-report.json,
+ * with the number of rounds the review took, then returns: the session
+ * completes.
  */
-export default async function ({ messages, tools }) {
-  const reply = messages.filter((m) => m.role === "assistant" && m.text.trim()).at(-1)?.text ?? "";
-  try {
-    await tools.remove_file({ file_path: "scratchpad/answered.json" });
-  } catch {
-    // Nothing recorded yet.
-  }
-  await tools.write_file({ file_path: "scratchpad/answered.json", content: JSON.stringify({ reply }) });
-}
+import { defineCodeState } from "@archmax-ai/harness/sandbox";
+
+export default defineCodeState(async ({ tools }) => {
+  const report = JSON.parse(await tools.read_file({ file_path: "scratchpad/report.json" }));
+  const { trail } = JSON.parse(await tools.archmax_get_history());
+  const rounds = trail.filter((step) => step.to === "review-report").length;
+  await tools.write_file({
+    file_path: "scratchpad/filed-report.json",
+    content: JSON.stringify({ ...report, rounds }),
+  });
+});
 ```
 
 ### A send-back loop that gives up
 
 Put a grader behind the state it grades, with an edge back to it. The grader's
 `instructions` say how many rounds to allow and to raise after that, counting the
-trail. `review-reply` above approves to `answered`, sends the reply back to
-`orders-question` with the correction, and raises `reply-tone` on the third visit.
-The graded state's `instructions` tell the agent to send its reply in the same
-message that advances to the grader, and to correct it when a note sends it back.
+trail. `review-report` above approves to `report-delivered`, sends the report back
+to `report-requested` with the correction, and raises `report-incorrect` once it
+has sent it back twice. The graded state's `instructions` tell the agent to
+advance to the grader once the work is written, and to fix what the note names
+when it is sent back. Every draft the agent writes stays in the turn's
+[reply](#the-turns-reply), so the loop suits work no person is waiting on.
 
 ## Testing automated states
 
@@ -583,13 +600,20 @@ step with `kind: code` or `kind: grader` and its `reason`, `raised` for its rais
 `variables` for what it set, `ranWorkflow` for its dispatches. A code state's and a
 grader's own tool calls are not in the transcript, so `calledTool`,
 `notCalledTool` and `usedNoTools` see only the agent's. A `grade` scores the
-action's turn reply, as [the rule above](#the-turns-reply) shapes it. Mocks answer their calls as they answer the
-agent's, and a control tool is never mocked: an automated state's
-`archmax_advance` is always the runtime's. See [testing workflows](/guides/testing/#assertions).
+action's turn reply. Mocks answer their calls as they answer the agent's, and a
+control tool is never mocked: an automated state's `archmax_advance` and
+`archmax_get_history` are always the runtime's. See
+[testing workflows](/guides/testing/#assertions).
 
 ```yaml
+# workflows/order-lookup/tests/triggered-report.test.yaml (excerpt)
+trigger:
+  id: report_requested
+variables:
+  company: "Acme Corp"
 steps:
-  - send: "Hi, I'm support@acmecorp.com. Where are my orders?"
-  - trail: { kind: code, to: identify-case, count: 1 }
-  - trail: { kind: grader, to: answered, count: 1 }
+  - send: "A delayed-orders report was requested."
+  - trail: { kind: grader, to: report-delivered, count: 1 }
+  - reply:
+      includes: ["ORD-1003", "Acme"]
 ```

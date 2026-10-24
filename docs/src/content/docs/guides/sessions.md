@@ -472,7 +472,7 @@ follow-ups in place.
 A turn boundary resets the turn's own mechanics:
 
 - the pending rejection, and the failure a previous turn raised;
-- the turn budget's count of model calls in the current state;
+- the count of model calls in the current state that `budget.maxTurns` bounds;
 - per-state park counts.
 
 Everything belonging to the conversation carries forward: position, variables,

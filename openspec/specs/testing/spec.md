@@ -219,7 +219,7 @@ The engine SHALL interpret a case on the host: it opens one session for the case
 
 ### Requirement: Structural assertions read the session's trail and park
 
-The engine SHALL evaluate these assertions from the view's audit trail, park state and exit record: `succeeded: true` (the turn neither parked, nor ended with `archmax_raise`, nor recorded a failed tool call; a governance rejection is not a failure); `parked: true` (parked on either channel), `parked: decision` / `parked: input` (pinning the channel) or `parked: { channel?, state? }` (pinning the channel and/or the state the session parked in — which `reachedState` cannot express, since a park commits no transition); `raised: true` (the turn ended with `archmax_raise`), `raised: <code>` (pinning the exit code exactly) or `raised: { code?, reason? }` (pinning the code exactly and/or matching the reason with the one partial-match vocabulary, a `/pattern/flags` string included); `reachedState: <slug>` (a committed trail step of any kind but `trigger` has `to` equal to the slug, so a session reaches its start state only by moving into it, never by its trigger arrival); `noTraversal: true` (every trail step is a trigger arrival); `triggerArrival: <id>` (a `trigger` step carries that id as its `reason`, including one delivered into a park); `trail: { to?, kind?, reason?, count }` (at least one field, `kind` compared exactly with a step's kind, and the number of steps matching every given field equals `count`). An `raised` mapping with neither field, or an `raised` value of any other shape, SHALL be a schema error.
+The engine SHALL evaluate these assertions from the view's audit trail, park state and exit record: `succeeded: true` (the action's outcome is `completed`: the turn neither parked, nor ended with `archmax_raise`, nor failed or was rejected; a tool call that failed or was blocked along the way, and that the turn recovered from, does not fail it); `parked: true` (parked on either channel), `parked: decision` / `parked: input` (pinning the channel) or `parked: { channel?, state? }` (pinning the channel and/or the state the session parked in — which `reachedState` cannot express, since a park commits no transition); `raised: true` (the turn ended with `archmax_raise`), `raised: <code>` (pinning the exit code exactly) or `raised: { code?, reason? }` (pinning the code exactly and/or matching the reason with the one partial-match vocabulary, a `/pattern/flags` string included); `reachedState: <slug>` (a committed trail step of any kind but `trigger` has `to` equal to the slug, so a session reaches its start state only by moving into it, never by its trigger arrival); `noTraversal: true` (every trail step is a trigger arrival); `triggerArrival: <id>` (a `trigger` step carries that id as its `reason`, including one delivered into a park); `trail: { to?, kind?, reason?, count }` (at least one field, `kind` compared exactly with a step's kind, and the number of steps matching every given field equals `count`). An `raised` mapping with neither field, or an `raised` value of any other shape, SHALL be a schema error.
 
 These assertions SHALL read an automated state's outcome as they read the agent's. A grader's or a code state's move commits a trail step of kind `grader` or `code` (see `automated-states`), beside the kinds `trigger`, `agent`, `human`, `sub-workflow`, `reset` and `on_error`: `reachedState` reaches its target, `trail` matches it by `kind: grader` or `kind: code` and by the `reason` the state passed to `archmax_advance`, and `noTraversal` counts it as a traversal. A raise by a grader or a code state ends the session as the agent's raise does, so `raised` reads its code and reason and `succeeded` fails.
 
@@ -245,10 +245,10 @@ These assertions SHALL read an automated state's outcome as they read the agent'
 
 #### Scenario: A grader's send-backs are counted
 
-- **WHEN** the grader state `review-reply` sends the session back to `orders-question` twice and then
-  approves to `answered`
-- **THEN** `trail: { kind: grader, to: orders-question, count: 2 }` and
-  `trail: { kind: grader, to: answered, count: 1 }` pass
+- **WHEN** the grader state `review-report` sends the session back to `report-requested` twice and
+  then approves to `report-delivered`
+- **THEN** `trail: { kind: grader, to: report-requested, count: 2 }` and
+  `trail: { kind: grader, to: report-delivered, count: 1 }` pass
 
 #### Scenario: Trail counting
 
@@ -266,6 +266,14 @@ These assertions SHALL read an automated state's outcome as they read the agent'
 
 - **WHEN** a turn completes without `archmax_raise`
 - **THEN** `raised: true` fails, with a detail saying the session did not raise
+
+#### Scenario: A recovered tool error is not a failed turn
+- **WHEN** the agent's lookup tool fails, the agent moves on and the turn completes
+- **THEN** `succeeded: true` passes
+
+#### Scenario: A rejected turn did not succeed
+- **WHEN** governance rejects the turn and no tool call failed
+- **THEN** `succeeded: true` fails, saying the turn did not complete
 
 ### Requirement: The `variables` assertion
 

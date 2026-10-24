@@ -1,6 +1,6 @@
 ---
 title: Machine spec
-description: The workflow.yaml schema, covering states and their types, grader and code states, budget, on_error, governance, tests, and metadata.
+description: The workflow.yaml schema, covering states and their types, grader and code states, budgets, on_error, governance, tests, and metadata.
 sidebar:
   order: 3
 ---
@@ -8,7 +8,7 @@ sidebar:
 `workflows/<name>/workflow.yaml` is the enforced state machine, a pure YAML
 mapping with these top-level keys:
 
-`title`, `instructions`, `disabled`, `runtime`, `budget`, `settings`, `tests`, `tools`,
+`title`, `instructions`, `disabled`, `runtime`, `settings`, `tests`, `tools`,
 `skills`, `mounts`, `metadata`, `states`.
 
 This page documents the schema fields, focusing on those added by the core
@@ -97,15 +97,15 @@ states:
     transitions:
       - to: orders-question
         description: "User is asking about orders."   # when to take it; omit to route on the target's instructions
-  review-reply:
+  review-report:
     type: grader            # an automated state: the runtime runs it (see type)
-    instructions: "Judge the reply's tone; approve it or send it back."
+    instructions: "Check the report against the order records; approve it or send it back."
     transitions:
-      - { to: answered, description: "The reply is friendly." }
-      - { to: orders-question, description: "The tone is off; send it back." }
-  answered:
+      - { to: report-filed, description: "The report is correct." }
+      - { to: report-requested, description: "The report is wrong; send it back." }
+  report-filed:
     type: code              # runs its script and completes, with no model call
-    script: scripts/answered.js
+    script: scripts/report-filed.js
 ```
 
 A state with **no `transitions`** is terminal. The turn ends when the agent
@@ -298,7 +298,7 @@ Every state also has the runtime controls `archmax_reset`, `archmax_wait`,
 [`essentialTools`](/reference/public-api/), whatever the workflow declares. A
 grader or a code state is the exception: it is never offered `write_todos`,
 `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, even where the
-workflow-wide grant names one, and a grader adds `archmax_get_history`.
+workflow-wide grant names one, and it adds `archmax_get_history`.
 Everything else is declared: consumer-supplied custom tools, sub-workflow
 delegation tools, and the rest.
 
@@ -729,9 +729,10 @@ authoring backend does not hold, and an import from anything but
 `@archmax-ai/harness/*`.
 
 The file is an ordinary hand-authored JavaScript module. Its default export is
-called with `{ state, trigger, variables, messages, trail, tools }`, moves the
-session with `tools.archmax_advance({ to, reason })` or ends it with
-`tools.archmax_raise({ code, reason })`, and its return value is not read. See
+called with `{ state, trigger, variables, tools }`, reads the session with
+`tools.archmax_get_history()`, moves it with `tools.archmax_advance({ to, reason })`
+or ends it with `tools.archmax_raise({ code, reason })`, and its return value is
+not read. See
 [the script contract](/guides/automated-states/#the-script-contract).
 
 ### Keys each state type reads
@@ -755,18 +756,18 @@ behind it, and a grading rubric a grader state (see the
 
 ### `budget`
 
-Per-state execution budget bounding the turn:
+A state's execution budget:
 
 ```yaml
 states:
   research:
     budget:
-      maxTurns: 8       # model calls this state may make per visit
+      maxTurns: 8       # model calls this state may make once entered
       timeoutMs: 30000  # time budget per model call; the failure routes through on_error
       maxParks: 5       # how many times this state may park itself with archmax_wait
 ```
 
-- `maxTurns` bounds the model calls a state may make per visit.
+- `maxTurns` bounds the model calls a state may make, counted from its entry.
 - `timeoutMs` races each of the state's model calls against a timer. When the
   timer wins, the runtime stops waiting: the result is discarded, the state is
   treated as failed, and it is routed through `on_error`. The in-flight model request itself is **not aborted**, because Deep
@@ -776,15 +777,23 @@ states:
   Parks are counted per state in the checkpoint, so the count survives restarts,
   and the park that would exceed the bound is refused.
 - Any exhaustion is treated as a **turn failure**, subject to `on_error`
-  routing. A state with no `budget` may make any number of model calls per visit,
-  within the workflow's [turn budget](#budget-the-turn-budget), and may park any
-  number of times.
+  routing. A state with no `budget` may make any number of model calls, and may
+  park any number of times.
 
 In a **grader state**, `maxTurns` bounds the grader's own model calls and
 `timeoutMs` its whole run; exhausting either fails the state. A grader cannot
 park, so `maxParks` there is an `archmax validate` error. A **code state**
 declares no `budget` at all (an error): it makes no model call, and its script is
-bounded by `settings.timeoutMs`. Neither spends the agent's turn budget.
+bounded by `settings.timeoutMs`.
+
+What bounds a whole turn, across every state, is LangGraph's `recursionLimit`: 400
+graph steps unless the caller's invoke config sets its own. Every model call, tool
+batch and automated state's run is a step. A state's `maxTurns` starts over on
+every entry, so an agent moving back and forth between states never exhausts it;
+the recursion limit is what stops that turn. Hitting it does not route through
+`on_error`: the turn throws, and the session ends `failed` with the code
+`recursion-limit` (see
+[a turn that throws](/reference/public-api/#a-turn-that-throws)).
 
 `archmax validate` checks that `maxTurns`, `timeoutMs` and `maxParks` are
 positive numbers.
@@ -914,7 +923,7 @@ ones empty (`null`) plus a `note` naming them.
 ### `locks`
 
 The variables this state **owns**. Only the owner may write a variable it owns,
-on any of its visits and in any turn, before or after the variable is set. A
+whenever it is entered and in any turn, before or after the variable is set. A
 write from any other state is refused, naming the owner:
 
 ```yaml
@@ -1342,40 +1351,6 @@ caller's. A block from an inherited rule names the workflow that declared it.
 A child can narrow what is permitted, and re-granting is closed to it. The
 per-state `allow` and `forbid` lists stay local, inherited in neither
 direction.
-
-### `budget`: the turn budget
-
-The agent's model calls one turn may make, counted across every state:
-
-```yaml
-budget:
-  maxModelCalls: 80   # default 50
-```
-
-A turn is one invocation: a message, a decision, a reply or a delivery. Each
-counts from zero. A state's `maxTurns` starts over every time the state is
-entered, so an agent moving back and forth between states never exhausts it.
-This bound is the one that ends such a turn.
-
-- The call that would exceed `maxModelCalls` is not made. The exhaustion is a
-  failure of the current state: it routes through that state's `on_error`, else
-  the turn ends rejected. It routes once per turn. The error handler then runs
-  under its own `maxTurns`.
-- While a fifth of the budget or less is left, every model call is told how many
-  calls the turn has left, and to finish its work and answer the person.
-- The turn's step limit (LangGraph's `recursionLimit`) follows the budget, so the
-  budget runs out first: `(maxModelCalls + 10) × 8` graph steps, never fewer
-  than 400. A host's own `recursionLimit` in the invoke config takes precedence.
-- A delegated child counts against its own workflow's budget, not its caller's.
-- A park's single reply-only call is not counted.
-- A grader or code state's run is not a call of the agent's, so a chain of them
-  spends none of it; a grader's own calls are bounded by its `budget.maxTurns`.
-  The agent's calls after an automated state's move count as any other, and an
-  exhausted budget routes through `on_error` there too.
-
-Raise it for a workflow whose turns legitimately take more calls, such as a long
-chain of states or a review cycle the agent repeats on its own. `archmax validate`
-checks that it is a positive number.
 
 ### `tests`
 

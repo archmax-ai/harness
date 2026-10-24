@@ -100,7 +100,7 @@ the notes below.
 Several of these names are also on the root. They are the same bindings, exported
 here for the weight of the import.
 
-- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `workflowBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `codeScriptPathSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `StateBudget` `WorkflowBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecMetadata` `SpecSchemaIssue`.
+- **The schema:** `machineSpecSchema` `machineStateSchema` `triggerDeclarationSchema` `stateTriggersSchema` `machineTransitionSchema` `transitionTypeSchema` `stateTypeSchema` `stateBudgetSchema` `allowEntrySchema` `forbidEntrySchema` `FORBID_ANY_TOOL` `toolsBlockSchema` `skillsBlockSchema` `mountAccessSchema` `mountGrantEntrySchema` `mountsBlockSchema` `workflowMountsConfigSchema` `codeScriptPathSchema` `workflowToolsConfigSchema` `workflowSkillsConfigSchema` `machineSettingsSchema` `machinePromptCacheSettingsSchema` `workflowTestsConfigSchema` `runtimeMetadataSchema` `specMetadataSchema` `signatureEntrySchema` `parseMachineSpec` `refineSpec` `specDisabled`. Types: `MachineSpec` `MachineState` `MachineTransition` `TransitionType` `StateBudget` `AllowEntry` `ForbidEntry` `ToolsBlock` `SkillsBlock` `MountAccess` `MountGrantEntry` `MountsBlock` `WorkflowMountsConfig` `StateType` `WorkflowToolsConfig` `WorkflowSkillsConfig` `MachineSettings` `MachinePromptCacheSettings` `WorkflowTestsConfig` `RuntimeMetadata` `TriggerDeclaration` `SignatureEntryDeclaration` `SpecMetadata` `SpecSchemaIssue`.
 - **Validation:** `validateSpec` `lintSpec` `schemaIssueDiagnostic` `SpecValidation` `Diagnostic` `DiagnosticSeverity`.
 - **Mount grants:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
@@ -298,8 +298,7 @@ if (agent.workflow) {
   outcome.state;         // where the session is — for a park, the state it is parked at
   outcome.pending;       // the park record, when parked
   outcome.delegation;    // when the pending decision is a delegated child's: which child, which call
-  outcome.reply;         // what the agent said this turn, each text in order ("" when it said nothing);
-                         // after a grader's or code state's move, only what it said since
+  outcome.reply;         // what the agent said this turn, each text in order ("" when it said nothing)
   outcome.rejected;      // why, when kind is "rejected" (a refused start, an unmet `returns`, a failed state)
   outcome.exit;          // SessionExit on a turn that ended: { success: true } when "completed",
                          // { success: false, code, reason } when "failed" (archmax_raise: the agent's,
@@ -323,11 +322,9 @@ if (agent.workflow) {
 `deliver` return, is every text the agent wrote during this turn, in order, joined
 by a blank line. Text written next to an `archmax_advance`, `archmax_wait` or
 `archmax_raise` is part of it, because the agent is told to write what a person
-should read in that same message. A park's handoff message is part of it too.
-Once a grader or code state has moved the session, the next thing the agent says
-replaces what it said before: a draft sent back for revision never reaches the
-person, and a draft a grader passed, with nothing said after it, is the reply. A
-turn that said nothing has `reply: ""`, not the previous turn's text. For the last
+should read in that same message. A park's handoff message is part of it too, and
+so is a draft a grader or code state sent back, beside the corrected one. A turn
+that said nothing has `reply: ""`, not the previous turn's text. For the last
 thing the session ever said, read `lastAgentText(outcome.messages)`.
 
 **Handing a turn files.** `TurnInput.files` maps a variable to a `TurnFile`,
@@ -378,10 +375,10 @@ aborted turn, and `turn-error` for anything else, with the error's message as th
 reason. `sessions.get` reports it as `exit`, and the session's next message
 starts a fresh turn from where it stood.
 
-The step limit a governed turn runs under follows the workflow's turn budget:
-`(budget.maxModelCalls + 10) × 8` graph steps, and never fewer than 400. So the
-budget, which ends a runaway turn through `on_error`, runs out first. A
-`recursionLimit` the host passes in the invoke config takes precedence.
+The step limit is LangGraph's `recursionLimit`, which bounds a whole turn across
+states: 400 graph steps by default, or the `recursionLimit` the host passes in the
+invoke config. A turn that hits it ends the session `failed` with
+`recursion-limit`; it does not route through `on_error`.
 
 ### Cancelling a turn
 
@@ -455,12 +452,12 @@ await agent.invoke(
 
 Three things to know:
 
-- **A code state reads the session's whole transcript from `messages`, newest
-  last**, seeded history included. A script that keys off "the current request"
-  should take the *last* `user` entry. What a check compares against is better
-  stored in a variable, a file, or a tool result `toolCalls` returns than read
-  from what the model said. See
-  [what an automated state reads](/guides/workflow-machine/#what-an-automated-state-reads-the-session-and-its-records).
+- **A code state reads the session's whole transcript with
+  `tools.archmax_get_history()`, newest last**, seeded history included. A
+  script that keys off "the current request" should take the *last* `user`
+  entry. What a check compares against is better read from a variable, a file,
+  or a tool result in the history than from what the model said. See
+  [the history](/guides/automated-states/#the-history).
 - **A definition edit is adopted.** A session takes its next turn under the
   `workflow.yaml` in force now. The recorded `specHash` is a record of which
   definition each turn ran under, resolvable via `getSpecSnapshot`, and it binds
@@ -1575,7 +1572,7 @@ and parked sessions](/guides/sessions/).
 The runtime's own tools carry the `archmax_` prefix. Nine are fixed:
 `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_eval`,
 `archmax_run`, `archmax_get_variables`, `archmax_set_variables` and
-`archmax_get_history`, the last offered in grader states only. One more,
+`archmax_get_history`, the last offered in grader and code states only. One more,
 `archmax_workflow_<slug>`, appears per sub-workflow a state allows.
 
 The namespace is a guarantee rather than a convention, so a tool passed through
@@ -1604,29 +1601,30 @@ package `exports`):
 
 - **`@archmax-ai/harness/sandbox`** holds `defineCodeState`, its one runtime
   member, and the types of a [code state's](/guides/automated-states/#code-states)
-  input: `CodeStateInput`, `CodeStateArgs`, `CodeStateFn`, `HistoryMessage`,
-  `TrailStep`, `ToolCallRecord`, `ToolCallFilter` and `SandboxTools`:
+  input and of the history it reads: `CodeStateInput`, `CodeStateArgs`,
+  `CodeStateFn`, `HistoryMessage`, `SessionHistory`, `TrailStep` and
+  `SandboxTools`:
 
   ```js
   import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
   /** Sends a refund the policy forbids back to the agent. */
-  export default defineCodeState(async ({ variables, messages, trail, toolCalls, tools }) => {
+  export default defineCodeState(async ({ variables, tools }) => {
+    const { messages, trail } = JSON.parse(await tools.archmax_get_history());
     // …
     await tools.archmax_advance({ to: "refund-review", reason: "the decision matches the policy" });
   });
   ```
 
   `defineCodeState(fn)` is the identity: it marks the default export and changes
-  nothing at runtime. `CodeStateArgs` is `{ state, trigger?, variables, messages,
-  trail, toolCalls }`, also the global `args`; `CodeStateInput` adds `tools`.
-  `messages` is `HistoryMessage[]` and `trail` is `TrailStep[]`.
-  `toolCalls(filter?)` resolves to `ToolCallRecord[]`
-  (`{ id?, name, args, result?, status, state, visit }`), narrowed by a
-  `ToolCallFilter` (`name`, `state`, `visit` as a number, `status`, `last`; an
-  unknown key is refused). There is no verdict vocabulary: the script moves the
-  session with `tools.archmax_advance` or `tools.archmax_raise`, and its return
-  value is not read.
+  nothing at runtime. `CodeStateArgs` is `{ state, trigger?, variables }`, also
+  the global `args`; `CodeStateInput` adds `tools` (`SandboxTools`). The session
+  is read through `tools.archmax_get_history()`, whose JSON answer is a
+  `SessionHistory`, `{ messages, trail }`: `messages` is `HistoryMessage[]`
+  (`{ role, text, toolCalls?, tool?, id?, note? }`, a tool message carrying its
+  result in `text`) and `trail` is `TrailStep[]`. There is no verdict
+  vocabulary: the script moves the session with `tools.archmax_advance` or
+  `tools.archmax_raise`, and its return value is not read.
 
 The import is a **type carrier only**. The prelude provides `defineCodeState`,
 and the import line is stripped before QuickJS evaluation, so authoring against

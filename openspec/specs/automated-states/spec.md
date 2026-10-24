@@ -28,7 +28,8 @@ automated state. A reply-only turn SHALL never run in one, since an automated st
 #### Scenario: A turn opening at an automated state
 
 - **WHEN** a trigger's entry state is a code state and a turn opens there
-- **THEN** the script runs as the turn's first step, with the turn's message in its `messages`
+- **THEN** the script runs as the turn's first step, and the history it reads with
+  `tools.archmax_get_history()` ends with the turn's message
 
 ### Requirement: Chained code states make no model call
 
@@ -70,8 +71,9 @@ outside the surface SHALL be reachable.
 
 - **WHEN** a workflow without `tools.allow_always` has a code state that grants no host tool, and
   its script lists `Object.keys(tools)`
-- **THEN** the listing holds the file tools and the code state's control tools, and no host tool
-  the assembly registered, `write_todos`, `archmax_eval` or `archmax_run`
+- **THEN** the listing holds the file tools and the code state's control tools,
+  `archmax_get_history` among them, and no host tool the assembly registered, `write_todos`,
+  `archmax_eval` or `archmax_run`
 
 #### Scenario: A workflow-wide agent-only grant stays with the agent
 
@@ -97,9 +99,9 @@ outside the surface SHALL be reachable.
 
 ### Requirement: An automated state's controls
 
-An automated state SHALL be offered `archmax_advance` (omitted in a terminal state),
-`archmax_raise`, `archmax_get_variables` and `archmax_set_variables`, and a grader state
-additionally `archmax_get_history`.
+An automated state SHALL be offered one control set, the same for a grader and a code state:
+`archmax_advance` (omitted in a terminal state), `archmax_raise`, `archmax_get_variables`,
+`archmax_set_variables` and `archmax_get_history`.
 
 - `archmax_advance` SHALL be validated when called: the edge must be declared and the state's
   `requires` met by the variables at that moment, and evidence is accepted only into a human state.
@@ -108,7 +110,15 @@ additionally `archmax_get_history`.
   later one SHALL be refused.
 - The variable tools SHALL behave as the agent's own (locks, `title`, typed and `file` returns).
   A write SHALL be visible to the state's later calls.
+- `archmax_get_history` SHALL answer with the session's history (see "The session's history").
 - A control SHALL never be served from a case's mock, as on the agent's own path.
+
+#### Scenario: A grader and a code state share one control set
+
+- **WHEN** a workflow has a non-terminal grader state and a non-terminal code state
+- **THEN** each is offered `archmax_advance`, `archmax_raise`, `archmax_get_variables`,
+  `archmax_set_variables` and `archmax_get_history`, and neither is offered `archmax_wait` or
+  `archmax_reset`
 
 #### Scenario: An invalid edge is refused and can be retried
 
@@ -163,7 +173,7 @@ session `failed` with its code and reason. A completion SHALL be checked against
 
 #### Scenario: A raise ends the session
 
-- **WHEN** a grader calls `archmax_raise({ code: "tone-unfixable", reason })`
+- **WHEN** a grader calls `archmax_raise({ code: "report-incorrect", reason })`
 - **THEN** the session ends `failed` with that code and reason in its outcome, and no further
   state runs in the turn
 
@@ -197,7 +207,7 @@ naming the code and reason. A grader's own messages SHALL NOT enter the session'
 #### Scenario: A send-back reaches the agent as a note
 
 - **WHEN** a grader advances back to the agent state it grades with
-  `reason: "the reply never names the order's status"`
+  `reason: "the report misses ORD-1003"`
 - **THEN** the agent's next model call reads a `grader` runtime note carrying that reason, and
   the trail records a `grader` step into the agent state
 
@@ -205,15 +215,16 @@ naming the code and reason. A grader's own messages SHALL NOT enter the session'
 
 A code state SHALL run its `script` (`workflows/<slug>/scripts/<file>`, read from the authoring
 backend) in the sandbox, in a fresh REPL per run. The script's default export SHALL be called
-with `{ state, trigger, variables, messages, trail, toolCalls, tools }` (see "The session's
-history" for `messages`, `trail` and `toolCalls`). A script without a default export
-SHALL simply run, its return value SHALL NOT be read, and its console lines SHALL be reported.
-A script that cannot be read, imports a module other than `@archmax-ai/harness/*`, or throws
-SHALL fail the state.
+with `{ state, trigger, variables, tools }`, `trigger` absent when the turn has none; the script
+reads the session through `tools.archmax_get_history()` (see "The session's history"). A script
+without a default export SHALL simply run, its return value SHALL NOT be read, and its console
+lines SHALL be reported. A script that cannot be read, imports a module other than
+`@archmax-ai/harness/*`, or throws SHALL fail the state.
 
 #### Scenario: The script reads its input and moves the session
 
-- **WHEN** a code state's script reads `variables.order_id` and `messages`, then calls
+- **WHEN** a code state's script reads `variables.order_id` and the `messages` of
+  `JSON.parse(await tools.archmax_get_history())`, then calls
   `tools.archmax_advance({ to: "answer", reason: "order found" })`
 - **THEN** the session moves to `answer` with a `code` trail step carrying that reason
 
@@ -235,12 +246,12 @@ by the state's `instructions`, and whose task names the state and its transition
 SHALL be isolated: it SHALL read the session only through its tools, its tokens SHALL NOT stream
 as the session's text, and it SHALL write nothing into the session's checkpoint. The run SHALL
 end as soon as it decides. `budget.maxTurns` SHALL bound its model calls and `budget.timeoutMs`
-its run time. There SHALL be no iteration budget and no visit threshold: a grader that gives up
-after a number of rounds says so in its instructions and counts them from the history's trail.
+its run time. There SHALL be no iteration budget: a grader that gives up after a number of
+rounds says so in its instructions and counts them from the history's trail.
 
 #### Scenario: The grader reads the history and sends the work back
 
-- **WHEN** a grader calls `archmax_get_history`, finds the reply curt, and calls
+- **WHEN** a grader calls `archmax_get_history`, finds the report incomplete, and calls
   `archmax_advance` back to the agent state
 - **THEN** the session moves back with that reason, and the grader made no further model call
 
@@ -248,14 +259,14 @@ after a number of rounds says so in its instructions and counts them from the hi
 
 - **WHEN** a grader's instructions say to raise after two send-backs, and the history's trail
   holds two `grader` steps back into the graded state
-- **THEN** the grader can count them from `archmax_get_history` and raise on the third visit
+- **THEN** the grader can count them from `archmax_get_history` and raise on its third run
 
 #### Scenario: A grader that only answers in text
 
 - **WHEN** a non-terminal grader ends its run with a text reply and no tool call
 - **THEN** the state fails closed and routes through `on_error`
 
-#### Scenario: The grader's turn budget
+#### Scenario: A grader's `maxTurns` bounds its model calls
 
 - **WHEN** a grader state declares `budget: { maxTurns: 2 }` and its subagent has not decided
   after two model calls
@@ -263,85 +274,61 @@ after a number of rounds says so in its instructions and counts them from the hi
 
 ### Requirement: The session's history
 
-An automated state SHALL read the whole session, never a window of it: a grader through
-`archmax_get_history`, a code state through its input's `messages`, `trail` and
-`toolCalls(filter?)`. Both SHALL be one view, built from the session's checkpointed transcript and
-trail, never from the request the runtime prepared for a model call, so a summary made for the
-model never reads as the person speaking.
-
-`archmax_get_history` SHALL return JSON `{ messages, trail, toolCalls }`: the session's full
-transcript, its full trail, and every domain tool call of the session with its result. A code
-state's `messages` and `trail` SHALL be the same transcript and trail, and its `toolCalls(filter?)`
-SHALL resolve to the same records, narrowed by the filter.
+An automated state SHALL read the whole session, never a window of it, through one tool,
+`archmax_get_history`: a grader by calling it, a code state's script by
+`tools.archmax_get_history()`. The tool SHALL return JSON `{ messages, trail }`: the session's whole
+transcript and its whole trail, oldest first. Both SHALL be built from the session's checkpointed
+state as it stood when the automated state was entered, never from the request the runtime
+prepared for a model call, so a summary made for the model never reads as the person speaking.
 
 Each message SHALL be `{ role, text, toolCalls?, tool?, id?, note? }`, where `role` is `user`,
 `assistant`, `tool`, `system` or `runtime`. An assistant message's calls SHALL be carried as
-`toolCalls`, each `{ id?, name, args }`. A tool result SHALL carry the tool that answered as `tool`
-and the id of the call it answers as `id`, with an empty `text`: its result is read from the
-tool-call records. A runtime note SHALL be one `runtime` entry naming its kind as `note`. Control
-calls and runtime notes SHALL stay in `messages` and take nothing else out of it.
+`toolCalls`, each `{ id?, name, args }`. A tool result SHALL carry its result inline as `text`, the
+tool that answered as `tool` and the id of the call it answers as `id`; a result too large for the
+transcript SHALL be the transcript's pointer to its offloaded file, as the agent saw it. A runtime
+note SHALL be one `runtime` entry naming its kind as `note`. Control calls and runtime notes SHALL
+stay in `messages` and take nothing else out of it. Calls a script makes through `tools.*` and a
+grader's own calls are not calls of the session's transcript and SHALL NOT appear.
 
-A **visit** SHALL be the span of a session from its entry into a state until it next enters one.
-Entering a state by an advance (the agent's or an automated state's), a person's decision, an
-`on_error` route or `archmax_reset` SHALL start a new visit, also when the state entered is the
-one the session was in. A turn that opens a state its session was not in, the session's first turn
-included, SHALL start a new visit that begins with the turn's opening message. A turn, a reply, a
-delivery or a sub-workflow's return that continues in the state the session is in SHALL continue
-its visit, so a visit can span turns. Visits SHALL be numbered from 1 in the order they start.
+#### Scenario: A code state reads the history through the tool
 
-Each tool-call record SHALL be `{ id, name, args, result, status, state, visit }`, in the order the
-calls were made, across every visit: `result` the tool's result (parsed when it is JSON text, and
-absent while the call is pending), `status` one of `completed`, `failed`, `rejected` (refused by
-governance) or `pending` (no result yet), and `state` and `visit` those of the message that made
-the call. The control tools of an agent state (`archmax_advance`, `archmax_reset`, `archmax_wait`,
-`archmax_raise`, `archmax_get_variables`, `archmax_set_variables`) and runtime notes SHALL NOT
-appear in the records. Calls a script makes through `tools.*` and a grader's own calls are not
-calls of the session's transcript and SHALL NOT appear either, so an automated state's own visit
-holds no call: a code state reads the agent's calls by `state` or by a visit's number. A result too
-large for the transcript SHALL be the transcript's pointer to its offloaded file, as the agent saw
-it. The filter SHALL accept `name`, `state`, `visit` (a visit's number), `status` and `last` (only
-the last _n_ matches), every given key narrowing the result, and SHALL refuse any other key.
+- **WHEN** a code state's script calls
+  `const { messages, trail } = JSON.parse(await tools.archmax_get_history())`
+- **THEN** `messages` holds the session's transcript, oldest first, and `trail` its trail ending
+  with the step into the code state, the same history a grader at that point reads
+
+#### Scenario: A tool result is read inline
+
+- **WHEN** the agent calls `write_file` on `scratchpad/note.txt` and then advances into a code state
+  that reads the history
+- **THEN** `messages` holds the assistant entry listing the call with its `id`, `name` and `args`,
+  and a `tool` entry with `tool: "write_file"`, the same `id`, and the tool's result as its `text`
 
 #### Scenario: A runtime note in the history
 
 - **WHEN** a decision note precedes the grader's run
 - **THEN** the history holds it as one entry with `role: "runtime"` and `note: "decision"`
 
-#### Scenario: A tool result is read through toolCalls, not messages
-
-- **WHEN** the agent calls `lookup` and then advances into a code state that reads `messages` and
-  `toolCalls`, and later into a grader state that calls `archmax_get_history`
-- **THEN** `messages` holds a `tool` entry naming `lookup` with the call's `id` and an empty
-  `text`, `await toolCalls({ name: "lookup" })` returns that call with its arguments and its
-  result, and the grader's history carries the same entry and the same record
-
 #### Scenario: Control calls do not hide a tool result
 
 - **WHEN** in one turn the agent calls `lookup`, makes twelve `archmax_get_variables` calls and then
   advances into a code state
-- **THEN** the script finds the `lookup` call in `messages` and in `toolCalls()`, and no control
-  call is among the records
+- **THEN** the script finds the `lookup` call and its result in the history's `messages`, beside
+  the control calls
 
-#### Scenario: A visit spans turns
+#### Scenario: The history spans turns
 
 - **WHEN** a session's first turn opens `confirm`, where the agent calls `lookup` and the turn ends,
   and in the next turn the person writes "yes, go ahead" and the agent advances into a code state
-- **THEN** the script's `messages` holds both turns, the person's message included, and
-  `toolCalls({ state: "confirm", visit: 1 })` returns the `lookup` call
-
-#### Scenario: Re-entering a state starts a new visit
-
-- **WHEN** the session moves `a` → `b` → `a`, calling `lookup` in each visit of `a`, and then
-  advances into a code state
-- **THEN** `toolCalls({ name: "lookup" })` returns both calls with `state: "a"` and the visit
-  numbers 1 and 3, and `toolCalls({ visit: 3 })` returns the second alone
+- **THEN** the history's `messages` holds both turns, the `lookup` call and its result and the
+  person's message included
 
 #### Scenario: A summary is never the person speaking
 
 - **WHEN** the session's transcript has been summarized for the model and an automated state then
   runs
-- **THEN** its `messages`, and a grader's history, hold the session's checkpointed messages and no
-  summary entry
+- **THEN** the history it reads, a code state's and a grader's alike, holds the session's
+  checkpointed messages and no summary entry
 
 ### Requirement: A grader's model is resolved under the grader role
 

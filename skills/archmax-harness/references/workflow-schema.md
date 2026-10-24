@@ -118,18 +118,12 @@ runtime?:
                               # an unsupported runtime contract, naming the
                               # supported set.
 
-budget?:
-  maxModelCalls?: number      # default 50 — the AGENT's model calls ONE TURN may make
-                              # across EVERY state (a turn = one message, decision, reply
-                              # or delivery; each counts from zero). A grader or code
-                              # state's run is none of them; the agent's calls after an
-                              # automated move count as any other. A state's maxTurns
-                              # restarts on every entry, so only this ends an agent
-                              # cycling between states. Exhaustion routes once through the current
-                              # state's on_error, else the turn ends rejected; the agent
-                              # is warned once a fifth is left. The step limit follows
-                              # it. RAISE it for turns that legitimately run long (a long
-                              # state chain, a self-driven review cycle).
+# There is NO root `budget`: declaring one is an unknown-key load error
+# (`Unrecognized key: "budget"`). A whole turn — one message, decision, reply or
+# delivery, across every state — is bounded by LangGraph's `recursionLimit`:
+# 400 unless the host's invoke config sets its own, which wins. A turn that hits
+# it ends the session `failed` (exit code `recursion-limit`). A state's own
+# `budget` bounds that state (see Budgets & error routing).
 
 settings?:
   model?: string              # MODEL ID ONLY — the id every state of this workflow runs
@@ -283,7 +277,7 @@ states:
                                # behavior. Name here anything a downstream guard
                                # reads.
     locks?: [string]           # RUN VARIABLES this state OWNS: only it may write them,
-                               # on any visit, before or after they are set; a write
+                               # whenever it is active, before or after they are set; a write
                                # from another state is refused naming the owner. To
                                # change one (the person meant another order), the
                                # session goes BACK to the owner, whose rules apply
@@ -792,7 +786,7 @@ success.
   state's script (`tools.archmax_raise`) and a grader can, and their raise ends the
   session the same way (the note and `exit` carry their code).
 - Test it with the structural `raised` assertion; `succeeded: true` fails on a
-  raise.
+  raise (it passes only on a `completed` outcome).
 
 ## Transitions
 
@@ -1304,21 +1298,25 @@ states:
       - to: refund-request
         description: The recorded decision contradicts the policy; send it back with the fix.
 
-  review-reply:                  # GRADER state: an isolated grader decides the edge
+  review-report:                 # GRADER state: an isolated grader decides the edge
     type: grader
-    budget: { maxTurns: 4 }      # the grader's own model calls
+    budget: { maxTurns: 6 }      # the grader's own model calls
     on_error: escalation
+    skills: { allow: [order-data] }      # what the GRADER reads is granted HERE too
     instructions: |-             # REQUIRED — its criteria
-      Judge only the tone of the last assistant message with text.
-      - Friendly and professional: advance to `answered`.
-      - Curt, cold or blunt: advance back to `orders-question`, saying what to change.
-      - Count the trail's steps with kind "grader" and to "orders-question"; if there
-        are already two, raise `reply-tone` instead.
+      Read the requested `company` with archmax_get_variables, then
+      scratchpad/report.json and skills/order-data/assets/orders.json.
+      - Its `delayedOrderIds` are exactly that company's `delayed` orders:
+        advance to `report-delivered`.
+      - Otherwise advance back to `report-requested`, naming what to fix. Before
+        that, count the steps in archmax_get_history's trail with kind "grader"
+        and to "report-requested"; if there are already two, raise
+        `report-incorrect` instead.
     transitions:                 # REQUIRED — at least one
-      - to: answered
-        description: The reply is friendly and professional.
-      - to: orders-question
-        description: The reply's tone is off; send it back naming what to change.
+      - to: report-delivered
+        description: The report lists exactly the company's delayed orders.
+      - to: report-requested
+        description: The report is wrong; send it back naming what to fix.
 ```
 
 - **When it runs.** Whenever the session's position reaches it — the agent's
@@ -1326,23 +1324,24 @@ states:
   `on_error` route, a turn that opens there, an `archmax_reset` back to it — the
   runtime runs it **in place of the next model call** of the session's agent. The
   agent's model is not called while the session stands there (and an automated
-  state spends none of the agent's `maxTurns` or of the turn's
-  `budget.maxModelCalls`). Consecutive automated states run one after another,
-  each committed as its own checkpointed step, so **a chain of code states makes
-  no model call at all**. A chain that never reaches an agent
-  state, a human state or a completion is stopped by the session's recursion limit
-  (`GraphRecursionError`, not an `on_error` route).
+  state spends none of the agent's `maxTurns`). Consecutive automated states run
+  one after another, each committed as its own checkpointed step, so **a chain of
+  code states makes no model call at all**. A chain that never reaches an agent
+  state, a human state or a completion is stopped by the turn's recursion limit
+  (`GraphRecursionError`: the session ends `failed` with `recursion-limit`, not an
+  `on_error` route).
 - **What it is offered** — exactly its own state's surface: its `tools.allow`, the
   workflow-wide grant (`allow_always`, or the default tools when it is absent), the
-  host's essential tools, and its controls `archmax_advance` (absent when
-  terminal), `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` —
-  plus `archmax_get_history` for a grader. Never `write_todos`, `archmax_eval`,
+  host's essential tools, and its controls — one set for both types:
+  `archmax_advance` (absent when terminal), `archmax_raise`,
+  `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` (which
+  no agent or human state is offered). Never `write_todos`, `archmax_eval`,
   `archmax_run`, `archmax_wait` or `archmax_reset` — not even when `allow_always`
   lists one (it is left out), and naming one in its own `tools.allow` is a
-  `validate` error. An automated state **cannot park**. Every call is decided by the kernel against
-  that state, like the agent's: its `forbid`, `forbid_always`, its skill and mount
-  grants and every safety rule bind it, and a tool another state grants is not
-  reachable.
+  `validate` error. An automated state **cannot park**. Every call is decided by
+  the kernel against that state, like the agent's: its `forbid`, `forbid_always`,
+  its skill and mount grants and every safety rule bind it, and a tool another
+  state grants is not reachable.
 - **How it moves.** `archmax_advance({ to, reason })` is checked at the call (the
   edge exists, the state's `requires` hold against the variables at that moment;
   `evidence` only into a human state); a refusal can be retried. The **first
@@ -1362,12 +1361,17 @@ states:
     calling archmax_advance or archmax_raise`) — routed through `on_error`, else the
     session ends rejected. A raise wins over an error; an error discards a recorded
     advance. Finishing undecided is never read as approval.
+- **The history.** Both types read the session with `archmax_get_history`, which
+  answers `{ messages, trail }` (`SessionHistory`) as JSON: the session as it
+  stood when the state was entered, built from the checkpointed session, whole
+  and oldest first, nothing windowed. A message is `{ role, text, toolCalls?,
+  tool?, id?, note? }`: an `assistant` entry lists its calls (`{ id?, name, args
+  }`), the `tool` entry with the matching `id` carries the result inline in
+  `text`, and a runtime note is `role: "runtime"` with its `note` kind.
 - **Code state.** `script` (required, `scripts/<file>.js|.mjs`) runs in the QuickJS
-  sandbox in a fresh REPL per run. Its default export receives `{ state, trigger,
-  variables, messages, trail, toolCalls, tools }`: `messages` and `trail` are the
-  session's whole transcript and trail (a tool entry carries its `tool` and call
-  `id` with an empty `text`), and `toolCalls(filter?)` resolves to every domain
-  tool call with its result, status, state and visit. Its return value is never
+  sandbox in a fresh REPL per run. Its default export receives `{ state, trigger?,
+  variables, tools }` and reads the history with
+  `JSON.parse(await tools.archmax_get_history())`. Its return value is never
   read. `instructions`, `model`, `budget`, `evidence` and `approvers` on a code
   state are `validate` errors; `settings.timeoutMs` bounds the script. A
   **terminal** code state completes the session when its script returns: approve
@@ -1376,9 +1380,8 @@ states:
 - **Grader state.** A subagent with its own isolated context, built per run: its
   system prompt is a compiled-in grader preamble followed by the state's
   `instructions`; its task names the state and lists its transitions; it reads the
-  session only through `archmax_get_history` (`{ messages, trail, toolCalls }` —
-  the whole transcript, trail and tool calls with their results as JSON, not
-  windowed). Its messages never enter the session's transcript, its tokens never
+  session only through `archmax_get_history`, and the work with its own state's
+  tools. Its messages never enter the session's transcript, its tokens never
   stream, it writes no checkpoint; the session reads its decision as the trail
   step and the note. `instructions` (non-empty) and at least one transition are
   required; `evidence`, `approvers` and `budget.maxParks` are errors. Every edge
@@ -1386,7 +1389,7 @@ states:
   work it judges). `budget.maxTurns` bounds its own model calls and
   `budget.timeoutMs` its run. `model` (else `settings.model`) is resolved under the
   **`grader`** model role.
-- **No iteration budget.** Nothing caps how often a state is visited. A
+- **No iteration budget.** Nothing caps how often a state is entered. A
   state that gives up after N rounds counts them in the trail — each earlier
   send-back is `{ kind: grader | code, to: <graded state> }` — and raises (or routes
   to an escalation) on the round after.
@@ -1402,7 +1405,7 @@ states:
 | A deterministic check **in front of** a state | Make the trigger's entry (or the edge's target) a code state that advances to the work, or to a state that declines it (its agent reads the reason from the note) — or raises |
 | A check **behind** a state | Point the state's transition at a code state with an edge onward and an edge **back**; a send-back's `reason` is the correction the agent reads |
 | **Approve, then end** | Approve into a terminal code state (records the result, completes the session, no model call) |
-| Judgment (tone, completeness) | A grader behind the graded state, with an edge back; its `instructions` say when to raise, counting send-backs in the trail |
+| Judgment (tone, completeness) | A grader behind the graded state, with an edge back; its `instructions` say when to raise, counting send-backs in the trail. Grade work the agent hands on (a report, a draft), not a live answer: a turn's `reply` is every text the agent said in it, a draft sent back included |
 
 **Migrating hooks.** `before:`/`after:` are removed, with every hook kind
 (`{ script }`, `{ rubric }`, custom kinds), `max_iterations` and the root
@@ -1425,13 +1428,13 @@ states:
   escalation: { instructions: "Explain the failure and hand off." }  # terminal
 ```
 
-The workflow's root `budget: { maxModelCalls }` (default 50) bounds the agent's
-model calls across a whole turn, beside each state's own `maxTurns`; its exhaustion
-routes the same way. A grader or code state's run spends none of it (a grader's own
-calls are bounded by its `budget.maxTurns`). A turn that throws (model failure,
-cancellation, the step limit) ends the session `failed` with exit code
-`turn-error`, `turn-cancelled` or `recursion-limit`; the next message starts a
-fresh turn.
+A state's `budget` bounds that state (a grader's own calls are bounded by its
+`budget.maxTurns`). There is no workflow-wide budget: a whole turn is bounded by
+LangGraph's `recursionLimit`, 400 unless the host's invoke config sets its own (a
+sub-workflow's child session runs under the same bound). A turn that throws (model
+failure, cancellation, the recursion limit) ends the session `failed` with exit
+code `turn-error`, `turn-cancelled` or `recursion-limit`; the next message starts
+a fresh turn.
 
 Two failure classes, routed differently:
 
@@ -1453,7 +1456,7 @@ Two failure classes, routed differently:
 error or an undecided grader routes somewhere instead of ending the session
 rejected. The bundled example demonstrates this: `refund-request` pairs
 `budget.maxTurns: 12` with `on_error: escalation`, and its `screen-request`,
-`check-refund` and `review-reply` route to the same terminal escalation state.
+`check-refund` and `review-report` route to the same terminal escalation state.
 
 ## Human states
 
@@ -1776,6 +1779,7 @@ This is a change: these keys used to be ignored without a diagnostic. A spec tha
 | root `extensions:` (custom hook kinds) and `createAgent({ hookExecutors })` | Nothing: a custom check is a code state |
 | `workflows/<slug>/hooks/*.js` returning `ok`/`veto`/`correct` | `workflows/<slug>/scripts/*.js` that call `tools.archmax_advance` / `tools.archmax_raise` |
 | `runtime.version: "1"` / `"2"` | `"3"` (or omit `runtime`) — 1 and 2 are refused as unsupported |
+| root `budget: { maxModelCalls }` | Nothing — delete it. A turn is bounded by LangGraph's `recursionLimit` (400 unless the host's invoke config sets one); bound a state with its own `budget.maxTurns` |
 
 **No fan-out.** There is no concurrent branching: a run traverses **one state at a
 time**, moved only by `archmax_advance`, a human decision, or `on_error` routing.
@@ -1987,12 +1991,8 @@ status — so no state repeats them. Its shape:
   `identify-case`, or to `decline` (a terminal agent state that tells the person
   why) with the reason.
 - `identify-case` routes to one of four paths via transition descriptions.
-- `orders-question` answers from `skills/order-data/assets/orders.json` and
-  advances to `review-reply`, a **grader** with the tone criteria: it approves to
-  `answered` — a **terminal code state** (`scripts/answered.js`) that records the
-  approved reply in `scratchpad/answered.json`, so approval ends the session with
-  no further model call — sends the reply back with the correction, or raises
-  `reply-tone` after two send-backs, counted on the trail.
+- `orders-question` (terminal) answers from `skills/order-data/assets/orders.json`:
+  a live answer ends where it is given.
 - `refund-request` records a decision to `scratchpad/refund.json` (no allow entry
   narrows it — the working area is open to `write_file` wherever it is granted;
   what holds the agent to a correct file is the check) and advances to
@@ -2005,6 +2005,14 @@ status — so no state repeats them. Its shape:
 - `escalation` (terminal) is the error handler entered via `on_error` (and from
   `check-refund`'s give-up edge).
 - `general-question` (terminal) answers and writes `scratchpad/answer.json`.
+- `report-requested` (`triggers: { report_requested: }`) — a host-fired path no
+  person waits on — writes `scratchpad/report.json` for the requested `company`
+  and advances to `review-report`, a **grader** behind it: its state enables
+  `order-data`, so it reads the order records with its own state's tools; it
+  reads the requested `company` with `archmax_get_variables`. It approves into
+  `report-delivered` (a terminal agent state that summarizes the report), sends
+  the report back naming what to fix, or raises `report-incorrect` once it has
+  sent it back twice, counted on `archmax_get_history`'s trail.
 
 ### Source of truth in code
 

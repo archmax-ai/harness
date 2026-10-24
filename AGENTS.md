@@ -91,19 +91,21 @@ workflows, case files, kernel probes.
 `createAgent` (`src/assembly/index.ts`; composition in `compose.ts`, plain agent in `plain.ts`,
 lazy child compositions in `delegation-registry.ts`) returns a `ArchmaxAgent` (`src/agent.ts`)
 wrapping the one `createDeepAgent` graph. The graph's checkpointed state carries the machine's
-position, variables, trail, visits and park records as extra channels (`src/workflow/state.ts`).
+position, variables, trail and park records as extra channels (`src/workflow/state.ts`).
 Governance is middleware (`src/workflow/middleware.ts`): `beforeAgent` is the turn boundary
 (trigger → start state or retained position; `disabled`/`requires` refusals; locked seeds; spec
 snapshot), `wrapModelCall` applies the per-state tool surface and prompt (or, in an automated
 state, runs the state in place of the model call), `wrapToolCall` services the control tools and
-applies the kernel verdict to every call, `afterModel` does budgets, `on_error` and the commit of
-an automated state's outcome. The agent moves only by `archmax_advance({ to, reason })`: edge
-and `requires` validated, then the target's tools unlock (an automated target runs before any
+applies the kernel verdict to every call, `afterModel` does state budgets, `on_error` and the
+commit of an automated state's outcome. The agent moves only by `archmax_advance({ to, reason })`:
+edge and `requires` validated, then the target's tools unlock (an automated target runs before any
 further model call). **Parks are LangGraph interrupts**
 (`src/workflow/parks.ts`): a human state parks for a decision, `archmax_wait` for input. Every way
 back in is `agent.workflow.send(sessionId, input)` → one `Outcome` (`src/sessions/resume.ts`;
 `decide`/`reply`/`deliver` are conveniences). A park, a decision routed to another human
 state, or a reply to a parked session spends one reply-only model call — the handoff message.
+A turn is bounded by LangGraph's `recursionLimit`: `DEFAULT_RECURSION_LIMIT` (400) unless the
+caller's config sets one; hitting it ends the session `failed` (`recursion-limit`).
 Assembly **fails closed**: `WorkflowLoadError`, `SessionStoreRequiredError`,
 `AuthoringBackendExposedError`.
 
@@ -119,9 +121,9 @@ state's surface (`disclosedTools`, which for an automated state holds no `write_
 `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, even when `allow_always`
 lists them), each tool wrapped by the
 PTC gateway so the kernel decides every call against that state. Its controls
-(`machine.controlTools`, bound to one step recorder per run) are `archmax_advance` (edge and
-`requires` checked at the call; absent when terminal), `archmax_raise`, `archmax_get_variables`,
-`archmax_set_variables`, plus `archmax_get_history` for a grader; never `archmax_wait` or
+(`machine.controlTools`, bound to one step recorder per run) are the same for both types:
+`archmax_advance` (edge and `requires` checked at the call; absent when terminal), `archmax_raise`,
+`archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`; never `archmax_wait` or
 `archmax_reset`, since an automated state cannot park. The first accepted advance or raise is the
 decision. A run settles as `advanced` (trail kind `grader`/`code`, a runtime note carrying the
 reason), `raised` (session `failed`), `completed` (a terminal state; `returns` checked) or
@@ -130,16 +132,16 @@ through `on_error`. A raise beats an error; an error discards a recorded advance
 completed in a terminal automated state opens its next turn at the trigger's entry; a control is
 never served from a case's mock. A **code state** runs `script: scripts/<file>.js` (confined to
 `workflows/<slug>/scripts/`) in a fresh `code` REPL; its default export receives
-`{ state, trigger?, variables, messages, trail, toolCalls(filter?), tools }` and its return value
-is not read. A **grader state** is an isolated langchain agent built per run: the compiled grader
-preamble plus the state's `instructions`, its transitions as the task, the `grader` model role, no
-checkpointer, tokens tagged `nostream`; it reads the session only through `archmax_get_history`
-(`{ messages, trail, toolCalls }`), and `budget.maxTurns`/`timeoutMs` bound its own calls. Both
-read the whole session, never a visit (`history.ts`, `tool-calls.ts`), and neither spends the
-turn's `budget.maxModelCalls`, which counts the agent's calls. Events `code-start/output/result`,
-`grader-start/result`. Types: `@archmax-ai/harness/sandbox` (`defineCodeState`, `CodeStateInput`).
-Runner: `src/workflow/automated.ts` (with `automated-controls.ts`, `code-state.ts`,
-`grader-state.ts`, `history.ts`).
+`{ state, trigger?, variables, tools }` and its return value is not read. A **grader state** is an
+isolated langchain agent built per run: the compiled grader preamble plus the state's
+`instructions`, its transitions as the task, the `grader` model role, no checkpointer, tokens
+tagged `nostream`; `budget.maxTurns`/`timeoutMs` bound its own calls. Both read the session only
+through `archmax_get_history` (a script: `JSON.parse(await tools.archmax_get_history())`):
+`{ messages, trail }`, the checkpointed session's whole transcript and trail, oldest first, a tool
+message carrying its result inline in `text` (`history.ts`). Events `code-start/output/result`,
+`grader-start/result`. Types: `@archmax-ai/harness/sandbox` (`defineCodeState`, `CodeStateInput`,
+`SessionHistory`, `HistoryMessage`, `TrailStep`, …). Runner: `src/workflow/automated.ts` (with
+`automated-controls.ts`, `code-state.ts`, `grader-state.ts`, `history.ts`).
 
 ### Sandbox
 
@@ -149,9 +151,10 @@ execute) and code-state scripts share one QuickJS sandbox (`@langchain/quickjs`)
 gets one REPL session per session scope (`src/sessions/scope.ts`), a code state a fresh REPL per
 run. Scripts get `args` (flat `args.variables` for `archmax_run`; a code state's input) and
 `tools.*`, the governed tool-call bridge: exactly the active state's surface, anything else
-`undefined` (an agent's script never reaches a control tool). Contexts `ptc` and `code`.
-`src/sandbox/`: `prelude.ts` + `assets/parts/code-state.js`, `executor.ts` (reads sources through
-the authoring backend), `tools.ts`, `ptc-gateway.ts`. Cases do not run in the sandbox.
+`undefined` (an agent's script never reaches a control tool); a call with no input passes `{}`.
+Contexts `ptc` and `code`. `src/sandbox/`: `prelude.ts` + `assets/parts/code-state.js`,
+`executor.ts` (reads sources through the authoring backend), `tools.ts`, `ptc-gateway.ts`. Cases
+do not run in the sandbox.
 `runtime.ts` holds each REPL as a lease: an eval takes the turn's abort signal (a cancelled turn's
 eval settles at once and its `tools.*` calls are refused), and `dispose` frees a REPL only once
 every host call made from it has settled. `@langchain/quickjs` cannot survive a call settling into

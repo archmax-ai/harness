@@ -195,10 +195,12 @@ or `archmax_reset`, even when `tools.allow_always` lists them), and leave like e
 `archmax_advance({ to, reason })` — the `reason` is the note the next state
 reads — or `archmax_raise({ code, reason })`. Finishing without either fails
 closed through `on_error`, so give every automated state an `on_error`. Both
-read the **whole session**, not a visit: a code state gets `messages`, `trail`
-and `toolCalls(filter?)`, a grader calls `archmax_get_history` for
-`{ messages, trail, toolCalls }`. Every edge into one needs a `description`.
-Contract:
+read the **whole session** the same way, with `archmax_get_history` →
+`{ messages, trail }` (a script: `JSON.parse(await tools.archmax_get_history())`);
+a tool result is inline in its tool message's `text`. Every edge into one needs
+a `description`. Put a grader on work the agent hands on (a report, a record),
+not on a live answer: everything the agent says in a turn is that turn's reply,
+a draft sent back included. Contract:
 [`references/code-states-and-scripts.md`](references/code-states-and-scripts.md).
 
 | Want | Shape |
@@ -208,8 +210,8 @@ Contract:
 | **Approve, then end** | Approve into a **terminal code state**: its script records the result and the session completes, no model call; the session's next message opens at its trigger's entry state |
 | Judgment with a bounded loop | A grader behind the graded state, edges onward and back; its `instructions` say "raise after N send-backs", counted as trail steps `{ kind: grader, to: <graded state> }` |
 
-The graded state's `instructions` say to send its result in the same message that
-advances into the check, and to fix the work when a note sends it back. There is
+The checked state's `instructions` say that advancing into the check is what
+hands the work in, and to fix the work when a note sends it back. There is
 no `before:`/`after:`, no `rubric:`, no `max_iterations`: a leftover key fails to
 load.
 

@@ -92,9 +92,9 @@ evaluation while preserving line count, and SHALL reject any other import specif
 `ForbiddenSandboxImportError` naming the specifier — at execution and in `archmax validate`. The
 package SHALL ship `@archmax-ai/harness/sandbox` as an entry point whose one runtime member is
 `defineCodeState` and whose types describe a code state's input (`CodeStateInput`,
-`CodeStateArgs`, `CodeStateFn`, `HistoryMessage`, `TrailStep`, `ToolCallRecord`,
-`ToolCallFilter`, `SandboxTools`). It SHALL export none of the removed hook vocabulary (`ok`,
-`veto`, `correct`, `defineHook`, `HookArgs`, `HookResult`).
+`CodeStateArgs`, `CodeStateFn`, `HistoryMessage`, `SessionHistory`, `TrailStep`,
+`SandboxTools`). It SHALL export none of the removed hook vocabulary (`ok`, `veto`, `correct`,
+`defineHook`, `HookArgs`, `HookResult`).
 
 #### Scenario: @archmax-ai/harness import stripped
 
@@ -282,46 +282,25 @@ pending" state them.
 When a session enters a code state, the runtime SHALL read the state's `script`
 (`workflows/<slug>/scripts/<file>.js` or `.mjs`) through the authoring backend and evaluate it in
 the `code` context. Its default export, optionally wrapped in `defineCodeState`, SHALL be called
-with `{ state, trigger, variables, messages, trail, toolCalls, tools }`; a bare-body script SHALL
-simply run, reading the same input, without `tools`, from the global `args`. The return value SHALL
-NOT be read, and console lines SHALL become `code-output` events.
-
-`toolCalls(filter?)` SHALL be an async function whose filtering runs outside the sandbox, over the
-session's tool-call records as the `automated-states` capability defines them: a call copies into
-the sandbox only the records it returns, and the input itself carries no tool results. The filter
-keys SHALL be `name`, `state`, `visit` (a visit's number), `status` and `last`; a call with any
-other key, or with a `visit` that is not a positive whole number, SHALL reject in the script rather
-than match everything. The query SHALL be no tool: it is not in the script's `tools`, governance
-never decides it, and an `archmax_eval` or `archmax_run` script has no `toolCalls`.
+with `{ state, trigger, variables, tools }`, `trigger` absent when the turn has none; a bare-body
+script SHALL simply run, reading the same input, without `tools`, from the global `args`, and its
+tools from the global `tools`. The input SHALL carry no transcript, trail or tool result: the script
+reads the session through `tools.archmax_get_history()`, whose answer the `automated-states`
+capability defines. The return value SHALL NOT be read, and console lines SHALL become
+`code-output` events.
 
 #### Scenario: The default export receives the state's input
 
 - **WHEN** code state `check-refund` runs a script whose
-  `export default async function ({ state, trigger, variables, messages, trail, toolCalls, tools })`
-  reads its input
+  `export default async function ({ state, trigger, variables, tools })` reads its input
 - **THEN** `state` is `check-refund`, `trigger` is the id of the trigger the turn carries,
-  `variables` is the session's flat variable map, `messages` is the session's full transcript in
-  the history message shape, `trail` is the session's full trail, `toolCalls` is the query over the
-  session's tool calls, and `tools` is the code state's scoped view
+  `variables` is the session's flat variable map, and `tools` is the code state's scoped view
 
-#### Scenario: Only the queried tool results enter the sandbox
+#### Scenario: The script reads the history through its tools
 
-- **WHEN** a session has made a hundred `search` calls and one `lookup` call, and a code state's
-  script calls `await toolCalls({ name: "lookup" })`
-- **THEN** the script receives the one `lookup` record, and no `search` result is part of the
-  state's input or of what the call returned
-
-#### Scenario: An unknown filter key is refused
-
-- **WHEN** a code state's script calls `await toolCalls({ visit: "current" })` or
-  `await toolCalls({ tool: "lookup" })`
-- **THEN** each call rejects, and the script can catch the rejection
-
-#### Scenario: The query is not a tool
-
-- **WHEN** a code state's script lists `Object.keys(tools)`, or the agent's `archmax_eval` script
-  reads `toolCalls`
-- **THEN** the listing does not include the query, and the agent's script finds no `toolCalls`
+- **WHEN** a code state's script calls
+  `const { messages, trail } = JSON.parse(await tools.archmax_get_history())`
+- **THEN** it receives the session's whole transcript and trail, and its input holds neither
 
 #### Scenario: The export default rewrite keeps the function
 
@@ -331,8 +310,8 @@ never decides it, and an `archmax_eval` or `archmax_run` script has no `toolCall
 
 #### Scenario: A bare-body script reads the global args
 
-- **WHEN** a code state's script has no default export and reads `args.variables.case_id` and
-  `args.trail`
+- **WHEN** a code state's script has no default export and reads `args.state` and
+  `args.variables.case_id`
 - **THEN** `args` carries the same input the default export would receive, without `tools`, and
   the script runs to its end with no function to call
 
@@ -387,18 +366,19 @@ evaluation, so each quota in `settings` bounds it whole.
 ### Requirement: A code state's script sees only its state's tools
 
 A code state's script SHALL see under `tools` exactly its state's surface: its own grants, the file
-tools, `archmax_advance` (outside a terminal state), `archmax_raise`, `archmax_get_variables` and
-`archmax_set_variables`. Each call SHALL be governed with origin `script` against that code state,
-under either spelling (`tools.read_file`, `tools.readFile`); a name outside the surface SHALL be
-`undefined`. What the control tools do is the `automated-states` capability's.
+tools, `archmax_advance` (outside a terminal state), `archmax_raise`, `archmax_get_variables`,
+`archmax_set_variables` and `archmax_get_history`. Each call SHALL be governed with origin `script`
+against that code state, under either spelling (`tools.read_file`, `tools.readFile`); a name
+outside the surface SHALL be `undefined`. What the control tools do is the `automated-states`
+capability's.
 
 #### Scenario: The listing names the surface only
 
 - **WHEN** code state `check-refund` allows `lookup_order`, state `refund-request` allows
   `issue_refund`, and the script of `check-refund` lists `Object.keys(tools)`
 - **THEN** it sees `lookupOrder`, the file tools, `archmaxAdvance`, `archmaxRaise`,
-  `archmaxGetVariables` and `archmaxSetVariables`, and none of `issueRefund`, `writeTodos`,
-  `archmaxEval`, `archmaxRun`, `archmaxWait`, `archmaxReset` or `archmaxGetHistory`
+  `archmaxGetVariables`, `archmaxSetVariables` and `archmaxGetHistory`, and none of `issueRefund`,
+  `writeTodos`, `archmaxEval`, `archmaxRun`, `archmaxWait` or `archmaxReset`
 
 #### Scenario: A tool outside the surface is undefined
 
@@ -554,6 +534,22 @@ keys only. The kernel SHALL still decide every call made through the view.
 - **WHEN** an `archmax_eval` in `work` calls `tools.alpha` with arguments a consumer rule blocks
 - **THEN** the call reaches the kernel, which refuses it with the rule's reason and emits
   `tool-blocked`, and the script can catch the rejection
+
+### Requirement: A tool called with no argument is called with `{}`
+
+A tool a script calls through `tools.*` with no argument SHALL be called with the empty input
+`{}`, under either spelling, in an `archmax_eval` or `archmax_run` script and in a code state's
+script alike. A call with an argument SHALL pass it unchanged.
+
+#### Scenario: The history with no argument
+
+- **WHEN** a code state's script calls `tools.archmax_get_history()` with no argument
+- **THEN** the call is made with `{}` and returns the session's history
+
+#### Scenario: An agent script's call with no argument
+
+- **WHEN** an `archmax_eval` in a state that offers `ls` calls `await tools.ls()`
+- **THEN** `ls` runs with `{}`, governed and evented as `tools.ls({})` would be
 
 ### Requirement: No sandbox context provides `task()`
 

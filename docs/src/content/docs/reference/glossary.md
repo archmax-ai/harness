@@ -50,13 +50,12 @@ the concepts below is a defect. Please report it.
 | --- | --- | --- |
 | **session** | The durable conversation a workflow runs in, and the folder that holds it under `sessions/<id>/`. | run, thread, conversation |
 | **turn** | One invocation on a session: a prompt, a decision, a reply, or a delivery. | segment, step |
-| **visit** | The span of a session from its entry into a state until it next enters one. It can span turns; entering the state again starts a new one. Every tool-call record names the state and visit that made the call. | segment, stay |
 | **session store** | Where sessions physically live: the filesystem by default, any Deep Agents backend, or memory. | run store |
 | **mount** | A route in the agent's workspace composite: a key at the root served by a backend, read-only by default. Where the host declares it `governed`, each state reaches it through `mounts.allow` / `mounts.forbid`, read or read/write per the grant's `access`. | zone (for a mount), plane |
 | **zone** | The kernel's classification of a path: a mount, the working area, an offload area, a runtime-internal area, or the authoring backend. | area |
 | **authoring backend** | The backend the runtime reads specs (grader states' criteria included), code-state scripts and cases from. The runtime alone reads it; assembly fails if a workspace exposes it. | authoring plane, governance plane |
 | **scratchpad** | `scratchpad/`, the one working area a session can always write to. | output, work |
-| **control tools** | `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, and in a grader state `archmax_get_history`. An automated state has no `archmax_wait` or `archmax_reset`. | workflow tools |
+| **control tools** | `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, and in a grader or code state `archmax_get_history`. An automated state has no `archmax_wait` or `archmax_reset`. | workflow tools |
 | **sandbox tools** | `archmax_eval` (inline code) and `archmax_run` (an authored script), both executing in the QuickJS sandbox. | interpreter tools |
 | **delegation tools** | `archmax_workflow_<slug>`, one per sub-workflow a state allows. | task tools |
 | **file tools** | Deep Agents' `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`. | filesystem middleware |
@@ -66,7 +65,7 @@ the concepts below is a defect. Please report it.
 | **decide · reply · deliver** | The three ways a parked session resumes: a person picks a transition; a person sends a message the model answers on a reply-only turn; the host delivers a trigger with variables. | respond, resume, send |
 | **runtime note** | A transcript message the runtime itself wrote: an arrival, a decision, an error route, a sub-workflow result, or an automated state's move or raise (kinds `grader` and `code`). | narration, system message |
 | **trail** | The checkpointed audit trail of a session: every transition (the agent's, a person's, a grader's, a code state's), reset and delegation. | trajectory |
-| **history** | A session's whole transcript, its whole trail and its tool calls with their results, `{ messages, trail, toolCalls }`: what `archmax_get_history` returns to a grader, and what a code state's script receives as `messages`, `trail` and `toolCalls(filter?)`. | transcript (for the whole), context |
+| **history** | A session's whole transcript and its whole trail, `{ messages, trail }`, a tool message carrying its call's result inline: what `archmax_get_history` returns to a grader and to a code state's script. | transcript (for the whole), context |
 | **state flow** | The CLI's rendering of the event stream while a session runs. | trail (for the rendering) |
 | **artifacts** | Files the runtime writes about a session on request: `graph.json`, `trail.json`, `variables.json`, `metadata.json`. | outputs |
 | **events** | The typed stream (`onEvent`) every diagnostic flows through. | logs |

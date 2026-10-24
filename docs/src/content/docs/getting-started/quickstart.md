@@ -32,6 +32,7 @@ just the answer:
 
 ● screen-request
     › code scripts/screen-request.js
+    › archmax_get_history via script
     › read_file skills/order-data/assets/orders.json via script
       Allowed: "support@acmecorp.com" is recognized (authorized for Acme Corp).
     → The requester support@acmecorp.com is known and authorized for Acme Corp.
@@ -44,19 +45,7 @@ just the answer:
 ● orders-question
     › read_file skills/order-data/assets/orders.json
     │ Hi! For Acme Corp, one order is delayed: ORD-1003, placed on 2026-03-15 …
-    → Answered with the delayed order.
-✔ orders-question → review-reply
-
-● review-reply
-    › grader grading
-    › archmax_get_history
-    → The reply is friendly and professional.
-✔ review-reply → answered
-
-● answered
-    › code scripts/answered.js
-    › write_file scratchpad/answered.json via script
-✔ answered → answered
+✔ orders-question → orders-question
 ```
 
 The example implements a small router. `screen-request`, a code state, checks
@@ -69,13 +58,15 @@ request from an unknown requester or one reaching for another company's orders.
 - `general-question` for everything else
 - `clarify` for an order question that needs one identifying detail first
 
-Order answers come from `skills/order-data/assets/orders.json`, and the
-`review-reply` grader state checks their tone: it approves into `answered`, a
-terminal code state that completes the session with no further model call, or
-sends the reply back. Refund decisions pass the `check-refund` code state, which
-re-derives the policy before a person reviews them. `refund-request` also
-demonstrates a `budget.maxTurns` limit and an `on_error` route to a terminal
-`escalation` state. Each state's guidance lives inline in its `instructions`.
+Order answers come from `skills/order-data/assets/orders.json`, and a live
+answer ends where it is given: `orders-question` is terminal. Refund decisions
+pass the `check-refund` code state, which re-derives the policy before a person
+reviews them. A delayed-orders report, started by the `report_requested` trigger
+with no person waiting on it, passes the `review-report` grader state, which
+checks it against the order records and approves it into `report-delivered` or
+sends it back with what to fix. `refund-request` also demonstrates a
+`budget.maxTurns` limit and an `on_error` route to a terminal `escalation` state.
+Each state's guidance lives inline in its `instructions`.
 
 ## Use as a library
 

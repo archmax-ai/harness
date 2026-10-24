@@ -23,8 +23,6 @@ tests:                           # case suite config (no tests.config.js exists)
   maxConcurrency: 1              # only 1 accepted
   caseTimeoutMs: 120000          # per-case wall clock, distinct from settings.timeoutMs
   judge: {}                      # required for grade:; {} = env default model, or { model, modelOptions }
-budget: { maxModelCalls: 50 }    # the AGENT's model calls one turn may make across ALL states
-                                 #   (default 50; an automated state's run is none). Raise for long turns
 metadata: { canvas: {} }         # host data, never read; accepted at root and on a state — leave as found
 
 tools:                           # tool governance, workflow level
@@ -120,29 +118,31 @@ states:
 
   reply:                         # agent state (type omitted)
     instructions: >-
-      Tell the customer the decision in a message that also calls archmax_advance
-      to grade-reply; if a note sends it back, rewrite the reply as it says.
+      Draft the customer's email in scratchpad/reply.md, then archmax_advance to
+      grade-reply; if a note sends it back, revise the draft as it says.
     transitions:
-      - { to: grade-reply, description: The reply has been sent to the customer. }
+      - { to: grade-reply, description: The email is drafted in scratchpad/reply.md. }
 
-  grade-reply:                   # GRADER state: an isolated grader judges and decides the edge
-    type: grader
+  grade-reply:                   # GRADER state: an isolated grader judges WORK HANDED ON (a draft,
+    type: grader                 #   a report), never a live answer: a turn's reply is every text
+                                 #   the agent said, a draft sent back included
     instructions: |-             # REQUIRED: its criteria, appended to a compiled-in grader preamble
-      Judge only the tone of the last assistant message with text.
-      - Friendly and professional: advance to `answered`.
+      Judge only the tone of scratchpad/reply.md.
+      - Friendly and professional: advance to `send-reply`.
       - Curt or cold: advance back to `reply`, saying exactly what to change.
-      - If the trail already holds two steps with kind "grader" and to "reply",
-        raise `reply-tone` instead of sending it back again.
+      - If archmax_get_history's trail already holds two steps with kind
+        "grader" and to "reply", raise `reply-tone` instead of sending it back.
     model: gpt-4.1-mini          # optional; resolved under the `grader` model role
     budget: { maxTurns: 4, timeoutMs: 60000 }   # ITS OWN model calls / run time; no maxParks
     on_error: closed             # fails closed: an undecided grader routes here
     transitions:                 # REQUIRED, at least one; no evidence/approvers on a grader
-      - { to: answered, description: The reply is friendly and professional. }
+      - { to: send-reply, description: The draft is friendly and professional. }
       - { to: reply, description: The tone is off; send it back naming what to change. }
 
-  answered:                      # TERMINAL code state: the session completes when the script
+  send-reply:                    # TERMINAL code state: the session completes when the script
     type: code                   #   returns — "approve, then end" with no further model call
-    script: scripts/record-reply.js
+    script: scripts/send-reply.js
+    tools: { allow: [send_email] }   # the host tool its script calls, granted HERE
 
   closed:                        # bare key = terminal (agent) state with no declarations
 ```
@@ -218,9 +218,10 @@ states:
   `refine` edge delivers the reviewer's comment as correction.
 - **Grader and code states** (automated states). A **code** state runs
   `script: scripts/<x>.js` in the sandbox; a **grader** state runs an isolated
-  grader whose criteria are the state's `instructions` and which reads the
-  session with `archmax_get_history` (`{ messages, trail, toolCalls }`: the
-  whole transcript, trail and tool calls with their results). Both run on
+  grader whose criteria are the state's `instructions`. Both read the session
+  with `archmax_get_history` (`{ messages, trail }`: the whole transcript, a
+  tool result inline in its tool message's `text`, and the trail; a script
+  calls `JSON.parse(await tools.archmax_get_history())`). Both run on
   entry — however the session got there — with **no call of the agent's model**
   (a chain of code states makes none at all), and leave like every state:
   `archmax_advance` along one of their transitions, whose `reason` reaches the
@@ -228,9 +229,9 @@ states:
   trail step, or `archmax_raise`. A **terminal** code state completes the
   session when its script returns. Throwing, timing out, a spent grader budget,
   or a non-terminal state that finishes without either call **fails closed** →
-  `on_error`. Each is offered exactly its own state's surface (its grants,
-  `archmax_advance`, `archmax_raise`, the variable tools; a grader also
-  `archmax_get_history`), governed like the agent's calls — never
+  `on_error`. Each is offered exactly its own state's surface (its grants and
+  one control set for both types: `archmax_advance`, `archmax_raise`, the
+  variable tools, `archmax_get_history`), governed like the agent's calls — never
   `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`,
   `archmax_reset`, even when `allow_always` lists one (a state's own
   `tools.allow` naming one is an error): an automated state cannot park.
@@ -249,13 +250,16 @@ states:
   then end**: approve into a terminal code state, which costs no model call.
   Judgment (tone, completeness): a grader behind the graded state with an edge
   back; its `instructions` say when to raise ("after two send-backs" = two
-  trail steps `{ kind: grader, to: <graded state> }`).
+  trail steps `{ kind: grader, to: <graded state> }`). Grade work the agent
+  hands on (a report, a draft), not a live answer: a turn's `reply` is every
+  text the agent said in it, so a draft sent back has reached the person.
 - **Budgets and `on_error`.** `budget.maxTurns`/`timeoutMs`/`maxParks` bound
   a state's segment (on a grader: its own model calls and run time; a code
-  state takes no `budget`, `settings.timeoutMs` bounds its script); the root
-  `budget.maxModelCalls` (default 50) bounds the agent's model calls across a
-  whole turn, so a cycle between states ends there (an automated state's run
-  spends none of it). A terminal failure (exhausted budget, exhausted parks, a
+  state takes no `budget`, `settings.timeoutMs` bounds its script). There is
+  no root `budget` (declaring one is a load error): a whole turn is bounded by
+  LangGraph's `recursionLimit` (400 unless the host's invoke config sets one),
+  and a turn that hits it — a cycle between states, say — ends the session
+  `failed` (`recursion-limit`). A terminal failure (exhausted budget, exhausted parks, a
   grader or code state that fails) routes to `on_error` instead of failing the
   run; recoverable rejections (invalid edge, unmet `requires`) keep the agent
   in place. Declare `on_error` on every automated state and on bounded loops.
@@ -314,7 +318,7 @@ script, criteria or transitions, and no count of the states:
 Transitions — choose one with `archmax_advance` when this state's work is done:
 - to `check-policy` (code) — The decision is recorded in scratchpad/refund.json.
 - to `review` (human decision node) — The decision is recorded and needs a person's approval.
-- to `grade-reply` (grader) — The reply has been sent to the customer.
+- to `grade-reply` (grader) — The email is drafted in scratchpad/reply.md.
 - to `closed` (terminal) — Nothing to refund; the case is answered.
 ```
 
@@ -361,9 +365,10 @@ Closed by default; **deny beats allow, and no narrower level widens a denial.**
   workflow-wide grant included), minus `write_todos`, `archmax_eval`,
   `archmax_run`, `archmax_wait` and `archmax_reset` even when `allow_always` lists
   them (naming one in the state's
-  own `tools.allow` is an error), plus `archmax_advance`, `archmax_raise`,
-  `archmax_get_variables`, `archmax_set_variables`, and `archmax_get_history`
-  for a grader — never `archmax_wait` or `archmax_reset`.
+  own `tools.allow` is an error), plus one control set for both types:
+  `archmax_advance`, `archmax_raise`, `archmax_get_variables`,
+  `archmax_set_variables` and `archmax_get_history` — never `archmax_wait` or
+  `archmax_reset`.
 - **Entries**: bare name; `{ tool, args: { <arg>: ["glob", …] } }` (matches
   if any glob matches; `${{var}}` allowed). An argument the tool declares as a
   path (else `file_path`) is canonicalized first; any other argument (a URL, an
