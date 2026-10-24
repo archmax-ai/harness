@@ -105,7 +105,7 @@ here for the weight of the import.
 - **Mount grants:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
 - **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
-- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `DEFAULT_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
+- **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `STATE_TYPE_TOOLS` `DEFAULT_TOOLS` `TASK_TOOL` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
 - **Tool paths:** `BUILT_IN_TOOL_PATHS` `PATH_ACCESSES` `ToolPaths` `PathAccess`.
 - **Binary types:** `BINARY_MIME_TYPES` `binaryMimeTypeOf`, Deep Agents' table of the
   extensions it treats as binary. A write to such a path carries base64, which a
@@ -173,6 +173,31 @@ code-state scripts, sibling workflows, the skill registry, kernel probes.
 Some names stay on the root because they cannot be pure: `loadMachineSpec`,
 `WorkflowMachine`, `validateWorkflow`, `resolveTrigger`,
 `createWorkspaceContext`, every store and mount.
+
+### Tool tables
+
+The tables the runtime reads to build a state's tool surface are exported here,
+so a host reasons about a surface with the same data:
+
+| Name | Value |
+| --- | --- |
+| `STATE_TYPE_TOOLS` | per state type, `{ controls, withheld }`: two `ReadonlySet<string>`s, the harness tools the type always has whatever its `tools` governance, and the tools no grant gives it |
+| `HARNESS_CONTROL_TOOLS` | every type's controls, plus `archmax_eval` and `archmax_run` |
+| `DEFAULT_TOOLS` | the workflow-wide grant when `tools.allow_always` is absent; a declared list replaces it |
+| `RUNTIME_FILE_TOOLS` | `copy_file`, `move_file` and `remove_file`, registered in every agent |
+| `TASK_TOOL` | `"task"`, Deep Agents' subagent tool: no list may grant it, and the kernel refuses every call to it |
+
+`STATE_TYPE_TOOLS` holds:
+
+| Type | `controls` | `withheld` |
+| --- | --- | --- |
+| `agent`, `human` | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | empty |
+| `grader`, `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+
+The machine's tool surface, the kernel's grant and `archmax validate` all read
+this one table. A `forbid` still blocks a control, and `archmax_advance` is left
+out of a terminal state's surface. See
+[`tools.allow`](/reference/machine-spec/#toolsallow-closed-by-default-governance).
 
 ### Building a host schema from a signature
 
@@ -377,8 +402,11 @@ starts a fresh turn from where it stood.
 
 The step limit is LangGraph's `recursionLimit`, which bounds a whole turn across
 states: 400 graph steps by default, or the `recursionLimit` the host passes in the
-invoke config. A turn that hits it ends the session `failed` with
-`recursion-limit`; it does not route through `on_error`.
+invoke config. Every model call, tool batch and automated state's run is a step.
+A turn that hits it ends the session `failed` with `recursion-limit`; it does not
+route through `on_error`. A state's
+[`budget`](/reference/machine-spec/#budget) bounds its time and its parks, not
+its model calls.
 
 ### Cancelling a turn
 
@@ -476,10 +504,9 @@ A trigger carries an id and nothing else, so a firing's input travels as
 `variables`. In the SDK a trigger is always a **manual invocation**: the caller
 supplies the id, and listening for external events is the host's job.
 
-> `createAgent` returns an agent wrapping the compiled graph rather than a record
-> holding it. Narrow on `agent.workflow` (`undefined` on an ungoverned assembly)
-> before calling workflow-only operations. The earlier `createWorkflowAgent` entry
-> point no longer exists. See the [changelog](/reference/changelog/).
+> `createAgent` returns an agent wrapping the compiled graph. Narrow on
+> `agent.workflow` (`undefined` on an ungoverned assembly) before calling
+> workflow-only operations.
 
 ### Reading what a session returned
 
@@ -884,8 +911,7 @@ The agent exposes session handles over the same store:
 
 ## Extension options
 
-All options are additive. Omit every one and the agent behaves exactly as it did
-before they existed.
+Every option is optional. Omit one and its default applies.
 
 ### `tools`, `toolPaths`: host tools on the governed workspace
 
@@ -1069,9 +1095,9 @@ Call `env()` when you want to build on the env-configured settings:
 The third argument is the model id the workflow asked for, or `undefined`: for
 the `agent` role a state's `model` or `settings.model`, and for the `grader` role
 the grader state's `model`, else `settings.model`. It is resolved once per
-distinct id per composition. It is additive, so a factory taking `(role, env)`
-behaves exactly as before and may ignore the request. The default path applies it
-over `ARCHMAX_MODEL`, keeping the configured endpoint and credentials.
+distinct id per composition. A factory taking `(role, env)` ignores it. The
+default path applies it over `ARCHMAX_MODEL`, keeping the configured endpoint and
+credentials.
 
 With `model` and `modelFactory` both omitted, the runtime defaults to the
 env-configured OpenAI-compatible model for every role. With both given, `model`
@@ -1436,10 +1462,9 @@ tool over it without running a suite:
   heads the rendered workflow header. A top-level `name` key is a load error
   under the strict schema. See the
   [changelog](/reference/changelog/).
-- **`MachineTransition.description` is optional.** It is what the agent routes
-  on. An undescribed edge (absent, empty or blank) routes on the target state's
-  `instructions` instead, and loading refuses one whose target has none, as well
-  as an undescribed transition of a human state. See
+- **`MachineTransition.description` is required**, a non-empty string on every
+  edge: it is all the agent is told about the edge, and at a human state the
+  decision's button label. Loading refuses a missing or blank one. See
   [`transitions`](/reference/machine-spec/#transitions-the-only-part-of-the-graph-the-agent-sees).
 - **`resolveSystemPrompt(workspace, options)`** assembles the layered system
   prompt. `options.platformBackendPath` is where a workspace may override the
@@ -1555,13 +1580,17 @@ list.
 `SessionSummary` carries `sessionId` and the open/finished `classification`,
 which is where consumers read that partition. An agent park adds `waitReason`,
 the reason the agent gave. A `failed` session (`status: "failed"`, finished)
-adds `exit`: `{ success: false, code, reason }`, what the agent raised.
+adds `exit`: `{ success: false, code, reason }`, what was raised or what threw.
 
-The status a session settles to tells a host who ended it. `completed` and
-`failed` are the agent's own account (`Outcome.exit` is `{ success: true }` or
-the raised `{ success: false, code, reason }`), while `rejected` is governance's
-(`Outcome.rejected` carries why, and there is no `exit`). A host that treated
-"not rejected" as success must now also check for `failed`.
+The status a session settles to tells a host who ended it:
+
+| Status | Means | Read |
+| --- | --- | --- |
+| `completed` | the session finished its work | `Outcome.exit` is `{ success: true }` |
+| `failed` | `archmax_raise` ended it (the agent's, a grader's or a code state's), or a turn threw | `Outcome.exit` is `{ success: false, code, reason }` |
+| `rejected` | governance or the runtime ended it: a refused start, an unmet `returns`, a failed state with no `on_error` | `Outcome.rejected` says why; there is no `exit` |
+
+Treat only `completed` as success.
 
 A wait that declared an `until` also carries `resumeAt`, as an absolute instant.
 Scheduling is the host's, so that instant is what its cron queries. See [sessions
@@ -1569,11 +1598,12 @@ and parked sessions](/guides/sessions/).
 
 ## Reserved tool names
 
-The runtime's own tools carry the `archmax_` prefix. Nine are fixed:
-`archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_eval`,
-`archmax_run`, `archmax_get_variables`, `archmax_set_variables` and
-`archmax_get_history`, the last offered in grader and code states only. One more,
-`archmax_workflow_<slug>`, appears per sub-workflow a state allows.
+The runtime's own tools carry the `archmax_` prefix: the nine of
+`HARNESS_CONTROL_TOOLS` (`archmax_advance`, `archmax_reset`, `archmax_wait`,
+`archmax_raise`, `archmax_eval`, `archmax_run`, `archmax_get_variables`,
+`archmax_set_variables` and `archmax_get_history`), and one
+`archmax_workflow_<slug>` per sub-workflow a state allows. Which state type is
+offered which is in [tool tables](#tool-tables).
 
 The namespace is a guarantee rather than a convention, so a tool passed through
 `tools` whose name starts with the prefix is rejected at assembly with
@@ -1590,50 +1620,46 @@ is accepted **only** when `to` is a `type: human` state. The paths are merged
 after that state's declared `evidence`, in the `PendingDecision` record a host
 reads.
 
-Three things are refused back to the agent with the transition left untaken: an
-agent target, a path the agent cannot read, and more than 20 paths. See
+Three things are refused back to the agent, the transition left untaken:
+`evidence` toward a state that is not a human state, a path the agent cannot
+read, and more than 20 paths. See
 [human-in-the-loop states](/guides/workflow-machine/#evidence-declared-plus-whatever-the-session-attached).
 
 ## Typed sandbox entry point
 
-One package entry point carries the sandbox authoring types (declared in the
-package `exports`):
+`@archmax-ai/harness/sandbox` is the typed surface for a
+[code state's](/guides/automated-states/#code-states) script. Its one runtime
+member is `defineCodeState`; the rest are types:
 
-- **`@archmax-ai/harness/sandbox`** holds `defineCodeState`, its one runtime
-  member, and the types of a [code state's](/guides/automated-states/#code-states)
-  input and of the history it reads: `CodeStateInput`, `CodeStateArgs`,
-  `CodeStateFn`, `HistoryMessage`, `SessionHistory`, `TrailStep` and
-  `SandboxTools`:
+| Export | What it is |
+| --- | --- |
+| `defineCodeState(fn)` | the identity: it marks the default export and changes nothing at runtime |
+| `CodeStateArgs` | `{ state, trigger?, variables }`, also the global `args` |
+| `CodeStateInput` | `CodeStateArgs` plus `tools`: the object the default export is called with |
+| `CodeStateFn` | `(input: CodeStateInput) => unknown`; the return value is not read |
+| `SandboxTools` | `tools.*`: the state's surface as async functions, by name (`tools.read_file`) or camelCase (`tools.readFile`); a tool the state is not offered is `undefined` |
+| `SessionHistory` | what `tools.archmax_get_history()` answers, as JSON: `{ messages, trail }`, oldest first |
+| `HistoryMessage` | one transcript message, `{ role, text, toolCalls?, tool?, id?, note? }`; a tool message carries its result in `text` |
+| `TrailStep` | one trail step, `{ to, kind, reason?, workflow?, status?, ts }` |
 
-  ```js
-  import { defineCodeState } from "@archmax-ai/harness/sandbox";
+```js
+import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-  /** Sends a refund the policy forbids back to the agent. */
-  export default defineCodeState(async ({ variables, tools }) => {
-    const { messages, trail } = JSON.parse(await tools.archmax_get_history());
-    // …
-    await tools.archmax_advance({ to: "refund-review", reason: "the decision matches the policy" });
-  });
-  ```
+/** Sends a refund the policy forbids back to the agent. */
+export default defineCodeState(async ({ variables, tools }) => {
+  const { trail } = JSON.parse(await tools.archmax_get_history());
+  // …
+  await tools.archmax_advance({ to: "refund-review", reason: "the decision matches the policy" });
+});
+```
 
-  `defineCodeState(fn)` is the identity: it marks the default export and changes
-  nothing at runtime. `CodeStateArgs` is `{ state, trigger?, variables }`, also
-  the global `args`; `CodeStateInput` adds `tools` (`SandboxTools`). The session
-  is read through `tools.archmax_get_history()`, whose JSON answer is a
-  `SessionHistory`, `{ messages, trail }`: `messages` is `HistoryMessage[]`
-  (`{ role, text, toolCalls?, tool?, id?, note? }`, a tool message carrying its
-  result in `text`) and `trail` is `TrailStep[]`. There is no verdict
-  vocabulary: the script moves the session with `tools.archmax_advance` or
-  `tools.archmax_raise`, and its return value is not read.
-
-The import is a **type carrier only**. The prelude provides `defineCodeState`,
-and the import line is stripped before QuickJS evaluation, so authoring against
-the bare globals stays fully valid.
-
-Every import specifier must start with `@archmax-ai/harness/`. Anything else is an
-error, flagged by `archmax validate` and rejected at execution. Cases are
-[declarative YAML documents](/guides/testing/) interpreted on the
-host, which is why they have no entry point of their own here.
+The script moves the session with `tools.archmax_advance` or ends it with
+`tools.archmax_raise`. The import is a **type carrier only**: the prelude
+provides `defineCodeState`, and the import line is stripped before QuickJS
+evaluation, so a script written against the bare globals is valid too. Every
+import specifier must start with `@archmax-ai/harness/`; anything else is an
+error, reported by `archmax validate` and refused at execution. See
+[the script contract](/guides/automated-states/#the-script-contract).
 
 ## Lifecycle event stream
 
@@ -1680,7 +1706,7 @@ subscriber and the CLI pass over them silently:
 | Event | Payload highlights |
 | --- | --- |
 | `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint, and `origin: "script"` for a programmatic call (an agent's script or a code state's); absent for a model's call, the session's agent's or a grader's. Emitted for **every** governed call, including the control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`. |
-| `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason` (renamed from `message`). A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
+| `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason`. A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
 | `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
 | `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. A grader's tokens never stream as the session's text. A sub-workflow child's chunks are the child's own: they carry the child's `sessionId` and the dispatch's `subWorkflowDispatchId`, and never reach the caller as its text, so concurrent children cannot interleave into the caller's reply. |
 | `model-usage` | Per-turn tokens from the provider's own usage metadata, a grader's model calls included, under its grader state: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model`, and `costUsd` when pricing is configured (the whole event is omitted when the endpoint reports no usage) |
@@ -1877,7 +1903,7 @@ createAgent({
 
 :::note
 `WorkflowLifecycleEvent` is a discriminated union, so an exhaustive `switch` over
-it in your own code will surface this new member at compile time. A consumer that
+it in your own code surfaces every member at compile time. A consumer that
 ignores unknown types carries on unchanged.
 :::
 

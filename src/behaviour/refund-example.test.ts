@@ -1,20 +1,31 @@
 /**
  * The README's example, run as written: `examples/refund`'s workflow, its
  * code-state script and its host tools, with a scripted model standing in for
- * the agent and the grader. When this fails, the README is wrong.
+ * the agent and the grader. When this fails, the README or the docs quickstart
+ * is wrong.
  */
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { StructuredTool } from "@langchain/core/tools";
 import { describe, expect, it } from "vitest";
-import { advanceTo, assemble, freshSessionId, ScriptedModel, type ScriptedTurn } from "./support.js";
+import { isRuntimeNote, runtimeNoteKind } from "../index.js";
+import {
+  advanceTo,
+  assemble,
+  freshSessionId,
+  ScriptedModel,
+  type ScriptedTurn,
+} from "./support.js";
 
 const ROOT = resolve(import.meta.dirname, "../../examples/refund");
 
 /** The example's own `lookup_customer` and `send_email`. */
 async function hostTools(): Promise<StructuredTool[]> {
-  const tools = (await import(pathToFileURL(join(ROOT, "tools.js")).href)) as Record<string, StructuredTool>;
+  const tools = (await import(pathToFileURL(join(ROOT, "tools.js")).href)) as Record<
+    string,
+    StructuredTool
+  >;
   return [tools.lookupCustomer!, tools.sendEmail!];
 }
 
@@ -30,7 +41,9 @@ function decide(email: string, decision: string, body: string): ScriptedTurn[] {
 
 async function run(email: string, agentTurns: ScriptedTurn[]) {
   const agentModel = new ScriptedModel(agentTurns);
-  const grader = new ScriptedModel([advanceTo("send", "polite, states the decision, names the order")]);
+  const grader = new ScriptedModel([
+    advanceTo("send", "polite, states the decision, names the order"),
+  ]);
   const { agent } = await assemble(ROOT, {
     workflow: "refund",
     model: agentModel,
@@ -81,23 +94,42 @@ describe("the README's refund example", () => {
       "code:review-email",
       "grader:send",
     ]);
-    expect(outcome.auditTrail[2]?.reason).toBe("Order ORD-1002 is shipped, so the refund must be denied.");
+    expect(outcome.auditTrail[2]?.reason).toBe(
+      "Order ORD-1002 is shipped, so the refund must be denied.",
+    );
+    // The agent reads the reason as the check wrote it, one sentence and one full stop.
+    const notes = outcome.messages
+      .filter((m) => isRuntimeNote(m) && runtimeNoteKind(m) === "code")
+      .map((m) => String((m as { content?: unknown }).content));
+    expect(notes).toContain(
+      "[code] 'check-decision' moved the run to 'decide': Order ORD-1002 is shipped, so the refund must be denied. " +
+        "You are now in 'decide'.",
+    );
     // Only the corrected email reached the grader.
     expect(grader.calls).toHaveLength(1);
   });
 
-  it("is exactly the code the README shows", () => {
-    const readme = readFileSync(resolve(ROOT, "../../README.md"), "utf8");
-    for (const [label, path] of [
-      ["yaml\n# workflows/refund/workflow.yaml", "workflows/refund/workflow.yaml"],
-      ["js\n// workflows/refund/scripts/check-decision.js", "workflows/refund/scripts/check-decision.js"],
-      ["js\n// tools.js", "tools.js"],
-      ["js\n// index.js", "index.js"],
-    ] as const) {
-      const start = readme.indexOf("```" + label + "\n");
-      expect(start, `README shows ${path}`).toBeGreaterThanOrEqual(0);
-      const body = readme.slice(start + label.length + 4, readme.indexOf("\n```", start + label.length + 4) + 1);
-      expect(body, path).toBe(readFileSync(join(ROOT, path), "utf8"));
-    }
-  });
+  it.each(["README.md", "docs/src/content/docs/getting-started/quickstart.md"])(
+    "is exactly the code %s shows",
+    (page) => {
+      const shown = readFileSync(resolve(ROOT, "../..", page), "utf8");
+      for (const [label, path] of [
+        ["yaml\n# workflows/refund/workflow.yaml", "workflows/refund/workflow.yaml"],
+        [
+          "js\n// workflows/refund/scripts/check-decision.js",
+          "workflows/refund/scripts/check-decision.js",
+        ],
+        ["js\n// tools.js", "tools.js"],
+        ["js\n// index.js", "index.js"],
+      ] as const) {
+        const start = shown.indexOf("```" + label + "\n");
+        expect(start, `${page} shows ${path}`).toBeGreaterThanOrEqual(0);
+        const body = shown.slice(
+          start + label.length + 4,
+          shown.indexOf("\n```", start + label.length + 4) + 1,
+        );
+        expect(body, path).toBe(readFileSync(join(ROOT, path), "utf8"));
+      }
+    },
+  );
 });

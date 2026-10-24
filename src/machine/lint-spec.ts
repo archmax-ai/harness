@@ -311,9 +311,8 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
       );
     }
 
-    // No routing-context advisory here: the schema refuses an edge with neither a
-    // `description` nor target `instructions` to route on, and a state's
-    // `summary` reaches no model call.
+    // No routing-context advisory here: the schema refuses an edge without a
+    // `description`, and a state's `summary` reaches no model call.
 
     if (state.type === "human") {
       if (!state.instructions?.trim()) {

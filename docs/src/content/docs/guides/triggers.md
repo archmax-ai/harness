@@ -26,11 +26,11 @@ states:
   triage:
     triggers:
       manual:
-    transitions: [{ to: answer }]
+    transitions: [{ to: answer, description: The request is understood. }]
   on-email:
     triggers:
       email_received:
-    transitions: [{ to: answer }]
+    transitions: [{ to: answer, description: The email is read. }]
   answer: {}
 ```
 
@@ -57,7 +57,7 @@ states:
       manual:
       email_received:
         session: conversation_id
-    transitions: [{ to: answer }]
+    transitions: [{ to: answer, description: The request is understood. }]
   answer: {}
 ```
 
@@ -293,6 +293,7 @@ states:
         returns: [enrichment_file, risk_level]
     transitions:
       - to: write
+        description: The account is researched.
   write: {}
 ```
 

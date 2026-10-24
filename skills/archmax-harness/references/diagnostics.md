@@ -1,86 +1,64 @@
-# `archmax validate` diagnostics → fix
+# Diagnostics
 
-Load this when `validate` or `test` reports something you cannot fix from the
-message alone. Migrations for removed keys in full:
-[`workflow-schema.md`](workflow-schema.md#removed-keys-you-may-meet-in-an-older-workflow).
+Load this when `archmax validate` or `archmax test` reports something the message alone
+does not fix. Every diagnostic names the file and the field. Fix errors first, then
+every warning you can.
 
-## Diagnostics
+## `archmax validate`
 
-`validate` output names file and field. The recurring ones:
-
-| Diagnostic says | Fix |
+| The diagnostic says | Fix |
 | --- | --- |
-| unknown key `<k>` (anywhere) | Misspelling, or a removed key — see the table below; `metadata` is the only free slot |
-| `name:` / `description:` at root | Rename to `title:` / `instructions:` (reread the text as direction, delete narration) |
-| `policy:` or root `skills.allow:` | Move to `tools.forbid_always` / `skills.allow_always` + state lists |
-| Workflow slug / state key not kebab-case, or empty | Rename the directory or key; update every `to`, `on_error`, `reachedState` |
-| transitions to / on_error routes to undefined state | Fix the slug or add the state |
-| no start state / multiple states declare trigger | Exactly one state per trigger id declares it under `triggers:` |
-| `Unrecognized key: "before"` / `"after"` (on a state) or `"extensions"` (at the root) | Hooks are removed — rewrite each as a state: a `before` check → a **code state in front** of the state (the trigger's entry, or the target of the edge into it); an `after` check → a **code state behind** it (the state's transition points at it, and it advances onward or back with the reason); a `rubric:` → a **grader state** behind it with an edge back. `max_iterations` has no successor: count rounds from the trail. Move `workflows/<slug>/hooks/*.js` to `scripts/` and rewrite them to the code-state contract. Delete `extensions` |
-| `Unrecognized key: "budget"` (at the root) | The root turn budget (`budget.maxModelCalls`) is removed: delete the key. A turn is bounded by LangGraph's `recursionLimit` (400 unless the host's invoke config sets one); bound a state with its own `budget.maxTurns` |
-| Code state declares no `script` | Add `script: scripts/<x>.js`, file at `workflows/<slug>/scripts/<x>.js` |
-| state declares `script`, which only a code state runs | Declare `type: code`, or drop the key |
-| `script` must be a workflow-relative path inside `scripts/` ending in .js or .mjs | `scripts/<x>.js` — no `hooks/`, no `skills/…` path, no `..` |
-| Code state `<s>` script not found / imports from `<x>` | Create the file under the workflow's `scripts/`; import only from `@archmax-ai/harness/*` |
-| Code state declares `instructions` / `model` / `budget` / `evidence` / `approvers` | Drop them: a code state makes no model call and cannot park. Say what the script does in its JSDoc and `summary`; `settings.timeoutMs` bounds it |
-| Grader state must declare `instructions` / at least one transition | Write the criteria in `instructions`; give it an edge onward and, to send work back, one to the graded state |
-| Grader state declares `evidence` / `approvers` / `budget.maxParks` | Drop them: a grader presents nothing to a person and cannot park |
-| `<type>` state is never offered `write_todos` / `archmax_eval` / `archmax_run` / `archmax_wait` / `archmax_reset` | Drop the entry from the state's `tools.allow`: a script calls tools directly, and an automated state cannot park or reset. The same tools in the workflow's `allow_always` are simply not offered there |
-| Human state must declare instructions / transitions / description; self-edge; two transitions of one type | Add them; route out of the state; one target per labelled type |
-| `'*'` is not a tool name a grant may use | Move the wildcard to `forbid`/`forbid_always` |
-| allows `task` — not grantable | Delete the entry; grade with a grader state, delegate with `archmax_workflow_<slug>` |
-| allows `archmax_run` on `skills/<x>/…` which the state does not enable | Add `x` to the state's `skills.allow` (or `allow_always`), or drop the entry |
-| `forbid_always` denies `archmax_advance` | Remove it |
-| not a skill slug (path/glob given) | Use the bundle directory name; narrow paths with a `tools.allow` entry |
-| `${{…}}` not a valid variable reference | `${{name}}` or `${{name.path}}`; snake_case names |
-| guards on `${{x}}` but no state requires it (warning) | Add `x` to an earlier state's `requires`, or seed it at assembly |
-| `allow` or `allow_always` on a path in `scratchpad/` (warning) | Drop it, or govern a non-reserved run path instead |
-| `tools.allow_always` is declared but grants none of the default tools (warning) | A declared list replaces the default tools: list the ones the workflow needs (`ls`, `read_file`, `write_file`, … as in the skeleton), or remove the key to grant them all |
-| state both allows and forbids / forbids what nothing enables / enables what allow_always already does / `skills: { allow: [] }` reads like a deny (warnings) | Drop the redundant entry; use `forbid` to subtract |
-| no top-level `instructions` (warning) | Add the standing block |
-| state has several transitions but no `instructions` (warning) | Add routing guidance so the agent classifies the request before it advances |
-| `transitions.<i>.description` must be a non-empty string here: '<target>' declares none (error) | The edge is undescribed and its target has no `instructions` to route on. Add the condition under which the edge is taken (say *when*, not *where*), or give the target instructions |
-| `transitions.<i>.description` must be a non-empty string on a human state's transition (error) | It is the decision's button label: say what choosing it means |
-| `transitions.<i>.description` must be a non-empty string here: '<target>' is a grader / is a code state (error) | An edge into an automated state cannot route on its target: a grader's instructions are its criteria, never shown to the work it judges, and a code state has none. Say when the work is ready for the check (`The reply is drafted`). A code state's own edges may stay undescribed |
-| `transitions.<i>.description` must be a string (error) | Quote it, or omit it to route on the target's instructions |
-| trigger declares unknown key (warning) | Keys read: `session`, `message`, `connection`, `requires`, `returns`; others are preserved |
-| `maxConcurrency` above 1 | Set to 1 or remove |
-| `WORKFLOW.md` has frontmatter | Strip it; the machine is `workflow.yaml` |
-| `Unsupported runtime contract 'archmax-harness@1'` (or `@2`). Supported: `archmax-harness@3` | Contracts 1 and 2 (the hook contract) are retired: rewrite any hooks as states (above), then set `runtime: { engine: archmax-harness, version: "3" }` or drop the block (omitted resolves to `3`) |
-| case: missing/over-long `title`/`description`; unknown key; assertion before action; `expect:` block; malformed regex; unknown trigger; `from:` missing | Fix the field named; assertions are steps; regexes are `"/p/f"` strings |
-| `agent cannot read workflows/**` (instructions/evidence/workspace path) | Move the text to a skill bundle or the path to `scratchpad/` |
+| `Unrecognized key: "<k>"` | A typo, or a removed key: see [Removed keys](workflow-schema.md#removed-keys). `metadata` is the one free slot. |
+| `Unrecognized key: "maxTurns"` at `states.<s>.budget` | Delete it. LangGraph's `recursionLimit` bounds a turn; a state's `budget` takes `timeoutMs` and `maxParks`. |
+| `Unrecognized key: "budget"` at the root | Delete it: the `recursionLimit` bounds a turn. |
+| `Unrecognized key: "before"` or `"after"` on a state, `"extensions"` at the root | Rewrite each check as a state: a `before` check as a code state in front of the state, an `after` check as a code state behind it, a rubric as a grader state behind it. Count rounds on the trail instead of `max_iterations`. Move `hooks/*.js` to `scripts/` and rewrite them to the code-state contract. |
+| `Unrecognized key` for root `name`, `description`, `policy` | `title`, `instructions`, `tools.forbid_always`. A root `skills.allow` becomes `skills.allow_always` plus the state lists. |
+| `transitions.<i>.description`: must be a non-empty string: it is the only thing the agent is told about this edge … | Add the condition under which the transition is taken. Say *when* (`The refund is over $50`), not *where*. Every transition needs one, whatever the state's type. |
+| workflow slug or state key not kebab-case, or empty | Rename it, and update every `to`, `on_error` and `reachedState`. |
+| transitions to, or `on_error` routes to, an undefined state | Fix the slug, or add the state. |
+| no start state, or several states declare one trigger | Exactly one state declares each trigger id under `triggers:`. |
+| trigger declares an unknown key (warning) | The runtime reads `session`, `message`, `connection`, `description`, `requires` and `returns`; it keeps other keys for the host. |
+| code state declares no `script`, or `script` on another type | Add `script: scripts/<x>.js` to the code state; elsewhere, declare `type: code` or drop the key. |
+| `script` must be a workflow-relative path inside `scripts/` ending in .js or .mjs | Write `scripts/<x>.js`: no `hooks/`, no `skills/…`, no `..`. |
+| code state `<s>` script not found, or imports from `<x>` | Create the file in the workflow's `scripts/`, and import only from `@archmax-ai/harness/*`. |
+| Code state declares `instructions` / `model` / `budget` / `evidence` / `approvers` | Drop it: a code state makes no model call and cannot park. Say what the script does in its JSDoc header and `summary`. |
+| Grader state must declare `instructions` / at least one transition | Write its criteria, and give it a transition onward and one back to the state it grades. |
+| Grader state declares `evidence` / `approvers` / `budget.maxParks` | Drop it: a grader presents nothing to a person and cannot park. |
+| `<type>` state is never offered `write_todos` / `archmax_eval` / `archmax_run` / `archmax_wait` / `archmax_reset` | Drop the entry from the state's `tools.allow`. The same tools in `allow_always` are left out of that state without an error. |
+| Human state must declare instructions or transitions; a transition to itself; two transitions of one type | Add them; point the transition at the state that does the further work; map each labelled type to one target. |
+| `'*'` is not a tool name a grant may use | Move the wildcard into `forbid` or `forbid_always`. |
+| allows `task` | Delete the entry: grade with a grader state, delegate with `archmax_workflow_<slug>`. |
+| allows `archmax_run` on `skills/<x>/…`, which the state does not enable | Add `x` to the state's `skills.allow` (or `allow_always`), or drop the entry. |
+| `tools.forbid_always` denies `archmax_advance` | Remove it: no state could move. |
+| not a skill slug (a path or a glob) | Use the bundle's directory name; narrow paths with a `tools.allow` entry. |
+| `${{…}}` is not a valid variable reference | Write `${{name}}` or `${{name.path}}`. |
+| guards on `${{x}}`, but nothing guarantees it (warning) | Add `x` to an earlier state's or the trigger's `requires`, or seed it. |
+| an allow entry on a path in `scratchpad/` (warning) | Drop it, or govern a path outside the reserved zones. |
+| `tools.allow_always` grants none of the default tools (warning) | A declared list replaces them: list the ones the workflow needs, or remove the key. |
+| a state both allows and forbids, forbids what nothing enables, repeats `allow_always`, or declares `allow: []` (warnings) | Drop the redundant entry. `forbid` is what subtracts. |
+| a state declares the workflow's own `model` (warning) | Drop it, or name a different id. |
+| no top-level `instructions` (warning) | Add the rules that hold for the whole session. |
+| a state has several transitions but no `instructions` (warning) | Say how the agent decides which transition to take. |
+| `maxConcurrency` above 1 | Set it to 1, or remove it. |
+| `WORKFLOW.md` has frontmatter | Strip it: the machine is `workflow.yaml`. |
+| `Unsupported runtime contract 'archmax-harness@1'` (or `@2`) | Rewrite any hooks as states (above), then set `version: "3"` or drop the `runtime` block. |
+| case: missing or too long `title` or `description`, unknown key, assertion before an action, an `expect:` block, malformed regex, unknown trigger, missing `from:` file | Fix the field it names. Assertions are steps; regexes are `"/pattern/flags"` strings. |
+| the agent cannot read `workflows/**` (an `instructions`, `evidence` or case `workspace` path) | Move the text into a skill bundle, or the path under `scratchpad/`. |
 
-**Removed keys** you may meet (all load errors; details and migrations in
-`references/workflow-schema.md#removed-keys-you-may-meet-in-an-older-workflow`):
-`name:`→`title:`; `description:`→`instructions:`; `policy:`→`forbid_always`;
-root `skills.allow`→`skills.allow_always`; state `type: wait`→`archmax_wait`;
-`type: trigger`→`triggers:` on the entered state; `type: workflow`,
-`workflow:`, `params:`, `for_each:`, `result:`→an agent state allowing
-`archmax_workflow_<slug>` + `requires`; `parallel:`/`join:`→sequenced states;
-transition `on:`→nothing (the resumed state picks its edge); state
-`before:`/`after:` (with `{ script }`, `{ rubric }`, `subagent:`, custom kinds,
-`max_iterations`/`max_corrections`)→code and grader states; root
-`extensions:`→nothing; root `budget: { maxModelCalls }`→nothing (the
-`recursionLimit` bounds a turn); single-file `WORKFLOW.md` with
-frontmatter→`workflow.yaml` + prose.
+## A failed session
 
-## Reading a failed run
+The CLI's state flow, on stderr, shows an automated state's run: `› code scripts/<x>.js`
+with each `console.log` line beneath it, `› grader grading`, and `✖ code failed <reason>`
+or `✖ grader failed <reason>`. With `--verbose`, or `onEvent` in a host, the events are
+`code-start`, `code-output`, `code-result`, `grader-start` and `grader-result`. A failure
+then shows as `state-error-routed` (its `on_error`) or as a rejected session.
 
-`archmax test` and `archmax run` report an automated state's run in the state
-flow (stderr): `› code scripts/<x>.js` with each `console.log` line beneath it,
-`› grader grading`, and `✖ code failed <reason>` / `✖ grader failed <reason>` when
-the run failed. The raw events (`--verbose`, or `onEvent` in a host) are
-`code-start { state, script }`, `code-output { state, line }`,
-`code-result { state, status, durationMs, reason? }`, `grader-start { state }` and
-`grader-result { state, status, durationMs, reason? }`; a failure then shows as
-`state-error-routed` (its `on_error`) or a rejected session.
-
-| Reason says | Fix |
+| The reason says | Fix |
 | --- | --- |
-| `code state '<s>' finished without calling archmax_advance or archmax_raise` | Every path through a non-terminal state's script must advance or raise; returning a value does nothing |
-| `grader state '<s>' finished without calling …` | The grader answered in text: say in its `instructions` exactly when to take each transition and when to raise |
-| `grader state '<s>' exhausted its turn budget (maxTurns: N)` / `exceeded its time budget` | Raise `budget.maxTurns`/`timeoutMs` (reading the history and deciding is two calls), or narrow what it must read |
-| `archmax_advance rejected: cannot advance from '<s>' to '<t>'` / `cannot leave '<s>' yet: '<v>' is not set` | The script's `to` is not one of its state's transitions, or its `requires` are unmet — fix the target, or set the variable first |
-| `archmax_advance rejected: this state has decided` | A script or grader decided twice; only the first advance or raise counts |
-| a tool refused, or `tools.<x>` is `undefined`, inside a code state | Grant it on the **code state itself** (`tools.allow`, `skills.allow`, `mounts.allow`); another state's grant does not reach it |
-| `GraphRecursionError` / the session `failed` with `recursion-limit` | The turn hit LangGraph's `recursionLimit` (400 unless the host sets one): states cycle within one turn — automated states advancing to each other, or an agent looping between states. Add an edge out, or count rounds from the trail and give up; where one state loops on its own, bound it with `budget.maxTurns` + `on_error` |
+| `code state '<s>' finished without calling archmax_advance or archmax_raise` | Every path through a non-terminal state's script must advance or raise; a return value does nothing. |
+| `grader state '<s>' finished without calling archmax_advance or archmax_raise` | The grader answered in text. Say in its `instructions` exactly when to take each transition, and when to raise. |
+| `exceeded its time budget (timeoutMs: N)` | Raise the state's `budget.timeoutMs`, or narrow what it must read. |
+| `cannot advance from '<s>' to '<t>'`, or `cannot leave '<s>' yet: '<v>' …` | The target is not one of the state's transitions, or its `requires` are unmet. Fix the target, or set the variable first. |
+| `archmax_advance rejected: this state has decided` | A script or grader decided twice. Only the first advance or raise counts. |
+| a tool refused, or `tools.<x>` is `undefined`, in a code state | Grant it on the code state itself (`tools.allow`, `skills.allow`, `mounts.allow`). |
+| the session `failed` with `recursion-limit` (`GraphRecursionError`) | The turn passed LangGraph's `recursionLimit` (400 unless the host sets one): states cycle within one turn, automated states advancing to each other or an agent looping. Add a way out, or count rounds on the trail and give up. |

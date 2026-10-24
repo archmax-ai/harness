@@ -168,6 +168,7 @@ states:
           - risk_level
     transitions:
       - to: write
+        description: The account is researched.
   write: {}
 ```
 

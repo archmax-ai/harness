@@ -140,6 +140,7 @@ agent as a note it reads before trying again.
 
 ```js
 // workflows/refund/scripts/check-decision.js
+/** A refund is due only for a delivered order: any other decision goes back to the agent. */
 export default async function ({ variables, tools }) {
   const customer = JSON.parse(await tools.lookup_customer({ email: variables.email }));
   const order = customer?.order;
