@@ -6,8 +6,8 @@
 # without inventing data, which the workflow forbids, so the run has to end as
 # a failure with `archmax_raise` rather than complete — and must not write a
 # report it could not have compiled.
-# The code is the agent's own free-form token, so the case pins only that the
-# run raised; what it said is graded rather than matched word for word.
+# The state names the code to raise with, but the case pins only that the run
+# raised; what it said is graded rather than matched word for word.
 title: Order store down - the report run raises
 description: >-
   Every read of the order records fails, so the agent ends the report run with

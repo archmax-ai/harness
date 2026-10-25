@@ -249,11 +249,11 @@ describe("run-rooted workspace routing", () => {
         backend: ctx.backend,
         sources: ["./skills/"],
       }) as unknown as {
-        beforeAgent(state: unknown): Promise<{ skillsMetadata?: { name: string }[] } | undefined>;
+        beforeModel(state: unknown): Promise<{ skillsMetadata?: { name: string }[] } | undefined>;
       };
 
       const loaded = await ctx.sessionZone.sessionScoped("session-a", async () =>
-        middleware.beforeAgent({ messages: [] }),
+        middleware.beforeModel({ messages: [] }),
       );
       expect(loaded?.skillsMetadata?.map((s) => s.name)).toEqual(["refund-request"]);
     }));

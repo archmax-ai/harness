@@ -13,7 +13,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { StructuredTool } from "@langchain/core/tools";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { mergeConfigs } from "@langchain/core/runnables";
-import { createMiddleware, todoListMiddleware, type AgentMiddleware } from "langchain";
+import { createMiddleware, TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT, todoListMiddleware, type AgentMiddleware } from "langchain";
 import { createDeepAgent, type BackendProtocolV2, type CreateDeepAgentParams } from "deepagents";
 import { AGENT_DEFAULT_CONFIG } from "../agent.js";
 import {
@@ -205,9 +205,26 @@ export function frameworkPassthrough(
  * `[static, volatile]` blocks. On a model with the Codex profile, Deep Agents
  * merges it into the profile's tail position instead, past the split (pinned in
  * `behaviour/upstream-additions.test.ts`).
+ *
+ * A governed agent gets the guidance without langchain's "Finishing a task"
+ * section, and the `write_todos` description without its "When You Finish"
+ * section. Both tell the model to end on a text answer, and a governed turn may
+ * end by raising, waiting or advancing in that same message.
  */
-export function todoMiddleware(): AgentMiddleware {
-  return todoListMiddleware() as unknown as AgentMiddleware;
+export function todoMiddleware(opts: { governed?: boolean } = {}): AgentMiddleware {
+  if (!opts.governed) return todoListMiddleware() as unknown as AgentMiddleware;
+  return todoListMiddleware({
+    systemPrompt: withoutSection(TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT, "Finishing a task"),
+    toolDescription: withoutSection(UPSTREAM_TODO_DESCRIPTION, "When You Finish"),
+  }) as unknown as AgentMiddleware;
+}
+
+/** langchain's `write_todos` description, which it does not export. */
+const UPSTREAM_TODO_DESCRIPTION = String(todoListMiddleware().tools?.[0]?.description ?? "");
+
+/** `text` without its `## <heading>` section, which runs to the next heading or the end. */
+function withoutSection(text: string, heading: string): string {
+  return text.replace(new RegExp(`\\n+## ${heading}\\n[\\s\\S]*?(?=\\n## |$)`), "");
 }
 
 /**
@@ -588,7 +605,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   const agentMiddleware = [
     instrumentation.parkMiddleware,
     // Decided once per composition: the guidance it adds is part of the static prefix.
-    ...(target.grantsAnywhere(TODO_TOOL) ? [todoMiddleware()] : []),
+    ...(target.grantsAnywhere(TODO_TOOL) ? [todoMiddleware({ governed: true })] : []),
     interpreter.middleware,
     instrumentation.middleware,
     // Inside the workflow's own, so a governed read is decided before either acts.

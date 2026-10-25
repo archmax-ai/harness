@@ -53,7 +53,8 @@ export type FileOperationResult = FileOperationDone | { error: string };
 /** Why the store refused a path, from whatever it said or threw. */
 function classify(detail: string): string {
   if (/read-only mount/.test(detail)) return "it is served by a read-only mount";
-  if (/symlink|symbolic link|ELOOP/i.test(detail)) return "it is a symbolic link, which the workspace does not follow";
+  // A link leaving the root is refused on its resolved target, before the link itself.
+  if (/symlink|symbolic link|ELOOP|resolves outside root/i.test(detail)) return "it is a symbolic link, which the workspace does not follow";
   if (/EISDIR|is_directory|is a directory/i.test(detail)) return "it is a directory; this tool works on one file";
   if (/ENOENT|not found|file_not_found/i.test(detail)) return "it does not exist";
   if (/EACCES|EPERM|permission/i.test(detail)) return "permission was denied";

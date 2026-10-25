@@ -77,7 +77,8 @@ describe("a binary read", () => {
         "read_file returns text files only.",
       expect.stringContaining('{"name":"Acme"}'),
     ]);
-    expect(reads.every((r) => r.status !== "error")).toBe(true);
+    // Deep Agents marks a refused read as an error-status result; the text read succeeds.
+    expect(reads.map((r) => r.status === "error")).toEqual([true, true, false]);
 
     const blocks = blocksOf(messages);
     expect(blocks.filter((b) => ["image", "audio", "video", "file", "image_url"].includes(b.type))).toEqual([]);
