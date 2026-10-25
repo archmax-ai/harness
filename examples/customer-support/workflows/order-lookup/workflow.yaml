@@ -357,9 +357,12 @@ states:
       { "company": "<name>", "delayedOrderIds": ["<id>", ...] } and reply with
       a one-paragraph summary naming the company and each delayed order id.
       Answer only from orders.json - never fabricate order data. If orders.json
-      cannot be read, there is no report: write none, and end the run with
-      archmax_raise in the message that says so. This state is terminal - stop
-      once the report is written and summarized.
+      cannot be read, retry once. If the retry fails too, there is no report:
+      write none. Tell the requester the report could not be compiled, in a
+      message that also calls archmax_raise with code `orders-unavailable` and
+      no other tool. The call is what fails the run: a message that explains
+      the failure without calling archmax_raise ends the run as a success. This
+      state is terminal - stop once the report is written and summarized.
 
   enrich-order:
     title: Enrich the requested orders

@@ -63,6 +63,9 @@ describe("write_todos guidance follows the grant", () => {
     await turn(agent, "s1", "hi");
     expect(systemText(model)).toContain("## Important To-Do List Usage Notes to Remember");
     expect(systemText(model)).not.toContain("## Finishing a task");
+    const described = model.calls[0]?.toolDescriptions["write_todos"] ?? "";
+    expect(described).toContain("structured task list");
+    expect(described).not.toContain("## When You Finish");
   });
 });
 

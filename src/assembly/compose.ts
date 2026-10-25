@@ -207,15 +207,25 @@ export function frameworkPassthrough(
  * `behaviour/upstream-additions.test.ts`).
  *
  * A governed agent gets the guidance without langchain's "Finishing a task"
- * section. It tells the model to end on a final answer, and a governed turn may
+ * section, and the `write_todos` description without its "When You Finish"
+ * section. Both tell the model to end on a text answer, and a governed turn may
  * end by raising, waiting or advancing in that same message.
  */
 export function todoMiddleware(opts: { governed?: boolean } = {}): AgentMiddleware {
-  const systemPrompt = opts.governed ? GOVERNED_TODO_PROMPT : TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT;
-  return todoListMiddleware({ systemPrompt }) as unknown as AgentMiddleware;
+  if (!opts.governed) return todoListMiddleware() as unknown as AgentMiddleware;
+  return todoListMiddleware({
+    systemPrompt: withoutSection(TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT, "Finishing a task"),
+    toolDescription: withoutSection(UPSTREAM_TODO_DESCRIPTION, "When You Finish"),
+  }) as unknown as AgentMiddleware;
 }
 
-const GOVERNED_TODO_PROMPT = TODO_LIST_MIDDLEWARE_SYSTEM_PROMPT.replace(/\n+## Finishing a task\n[\s\S]*$/, "");
+/** langchain's `write_todos` description, which it does not export. */
+const UPSTREAM_TODO_DESCRIPTION = String(todoListMiddleware().tools?.[0]?.description ?? "");
+
+/** `text` without its `## <heading>` section, which runs to the next heading or the end. */
+function withoutSection(text: string, heading: string): string {
+  return text.replace(new RegExp(`\\n+## ${heading}\\n[\\s\\S]*?(?=\\n## |$)`), "");
+}
 
 /**
  * Hand the model a `read_file` whose description matches the workspace's
