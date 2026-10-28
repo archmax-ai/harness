@@ -49,7 +49,7 @@ separate submission step.
 | `references/workflow-schema.md` | Every `workflow.yaml` key as a skeleton that validates, the machine's rules, and governance |
 | `references/code-states-and-scripts.md` | Grader and code states at run time, the code-state script contract, and `archmax_run` scripts |
 | `references/cases.md` | The case grammar: keys, actions, assertions, mocks, and seeding from a real session |
-| `references/diagnostics.md` | Each `validate` diagnostic and failed-session reason, with its fix |
+| `references/diagnostics.md` | Each `validate` diagnostic, failed-session reason and `archmax test` verdict, with its fix |
 | `references/backend-integration.md` | `createAgent`, outcomes and parked sessions, events, storage, artifacts, and `runTests` |
 
 Each reference owns one topic, so none repeats another. Two workspaces in the repository

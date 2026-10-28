@@ -24,20 +24,17 @@ code states makes no model call at all. A chain that never reaches an agent stat
 human state or a completion ends at the turn's `recursionLimit`, with the session
 `failed` (`recursion-limit`).
 
-**What it is offered.** Exactly its own state's tools: its `tools.allow`, the
-workflow-wide grant and the host's `essentialTools`, plus five controls:
-`archmax_advance` (absent in a terminal state), `archmax_raise`,
-`archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`. It is never
-offered `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`
-([Tool governance](workflow-schema.md#tool-governance) has the table), so it cannot park.
-The kernel decides each call against that state. Grant what a check reads on the
-check's own state: a tool, a skill bundle or a mount that another state grants is out
-of reach.
+**What it is offered.** Exactly its own state's surface: its `tools.allow`, the
+workflow-wide grant, the host's `essentialTools` and its type's controls
+([the table](workflow-schema.md#tool-governance)). It has no `archmax_wait`, so it
+cannot park. The kernel decides each call against that state, so grant what a check
+reads (a tool, a skill bundle, a mount) on the check's own state.
 
 **How it decides.** `archmax_advance({ to, reason })` is checked at the call: the
-transition must exist and the state's `requires` must hold. The first accepted advance
-or raise is the decision, and a later one is refused. The decision takes effect when
-the state finishes cleanly.
+transition must exist and the state's `requires` must hold. There is no person to
+tell, so its controls take no `message`. The first accepted advance or raise is the
+decision, and a later one is refused. The decision takes effect when the state
+finishes cleanly.
 
 **How it settles.** Exactly one of:
 
@@ -65,25 +62,12 @@ own calls are not in the transcript.
 
 ## Code states
 
-A code state runs the file its `script` names. Wire it in `workflow.yaml`, here adapted
-from [`examples/refund/`](https://github.com/archmax-ai/harness/tree/main/examples/refund):
-
-```yaml
-check-decision:
-  type: code
-  script: scripts/check-decision.js     # workflows/refund/scripts/check-decision.js
-  tools:
-    allow: [lookup_customer]            # the script calls it, so this state grants it
-  on_error: escalate
-  transitions:
-    - to: review-email
-      description: The decision matches the refund policy.
-    - to: decide
-      description: The decision contradicts the refund policy.
-```
-
-The script's default export is called once. It moves the session itself, and the
-runtime ignores what it returns:
+A code state runs the file its `script` names. Wire it like the
+[skeleton](workflow-schema.md#the-skeleton)'s `check-decision`: the `script`, every tool
+the script calls in its own `tools.allow`, and an `on_error`. The script's default
+export is called once. It moves the session itself, and the runtime ignores what it
+returns. Adapted from
+[`examples/refund/`](https://github.com/archmax-ai/harness/tree/main/examples/refund):
 
 ```js
 /**
@@ -91,7 +75,7 @@ runtime ignores what it returns:
  *
  * Looks the customer up with lookup_customer by the `email` variable. A refund is
  * due ("approved") only when the latest order is delivered, otherwise "denied".
- * Advances to review-email when `decision` matches; otherwise back to decide,
+ * Advances to review when `decision` matches; otherwise back to decide,
  * naming the decision the policy requires.
  */
 export default async function ({ variables, tools }) {
@@ -99,7 +83,7 @@ export default async function ({ variables, tools }) {
   const order = customer?.order;
   const due = order?.status === "delivered" ? "approved" : "denied";
   if (variables.decision === due) {
-    await tools.archmax_advance({ to: "review-email", reason: `The refund is ${due}, as the policy requires.` });
+    await tools.archmax_advance({ to: "review", reason: `The refund is ${due}, as the policy requires.` });
   } else {
     await tools.archmax_advance({
       to: "decide",
@@ -118,25 +102,26 @@ export default async function ({ variables, tools }) {
 
 - **The return value is not read.** Only `archmax_advance` and `archmax_raise` decide,
   and every path through a non-terminal state's script must call one.
-- **Send work back; throw on infrastructure.** Parse what the agent wrote defensively,
-  and send it back with the fix as the `reason`. Let an unreadable database throw, so
-  the state fails through `on_error`.
+- **Send work back; throw on infrastructure.** A send-back's `reason` names the fix. A
+  throw (an unreadable database) fails the state through `on_error`.
 - **One evaluation in a fresh sandbox.** Each entry runs in a fresh QuickJS REPL, with
-  top-level `await` and no Node APIs, bounded as a whole by `settings.timeoutMs`.
+  top-level `await` and no Node APIs, bounded as a whole by `settings.timeoutMs`
+  (default 15000), every tool and sub-workflow call it awaits included.
   `console.log` lines become `code-output` events, which the CLI prints under the
   state.
 - **Imports** are limited to `@archmax-ai/harness/*` type carriers, which are stripped
   before evaluation. `import { defineCodeState } from "@archmax-ai/harness/sandbox"`
   types the input (`CodeStateInput`, `SessionHistory`). Any other import fails the
-  state.
+  state. Put imports after the JSDoc block, which must open the file.
 - **No references.** `${{…}}` in a script's tool call is plain text: compose strings
   from `variables`.
 - **Approve, then end.** A terminal code state completes the session when its script
   returns, with no further model call. Set any declared `returns` with
   `tools.archmax_set_variables` first.
-- **Files.** `tools.read_file` answers a missing or binary file with an `Error: …`
-  string instead of throwing, so check before you parse. Use `copy_file`, `move_file`
-  and `remove_file` to duplicate, move or delete a file.
+- **Files.** `tools.read_file` returns the raw text of the first 100 lines unless you
+  pass a larger `limit`, and answers a missing or binary file with an `Error: …` string
+  instead of throwing, so check before you parse. There is no `fs`: copy, move
+  and delete through `copy_file`, `move_file` and `remove_file`.
 
 ## Grader states
 
@@ -144,42 +129,21 @@ A grader state runs an isolated subagent. Its system prompt is a compiled-in pre
 followed by the state's `instructions`, which are its criteria, and its task lists the
 state's transitions. It reads the session only through `archmax_get_history`, and the
 work with its own state's tools. It decides with `archmax_advance`, or ends the session
-with `archmax_raise`.
+with `archmax_raise`. The [skeleton](workflow-schema.md#the-skeleton)'s `review-email`
+is a complete one, give-up rule and `on_error` included.
 
-The refund example's grader, with a give-up rule and an `on_error` added:
-
-```yaml
-review-email:
-  type: grader
-  instructions: |-
-    Read scratchpad/email.md and the `decision` variable. Approve the email
-    when it is polite, states the decision plainly and names the order.
-    Otherwise send it back to `decide`, saying exactly what to change. If the
-    trail from archmax_get_history already holds two steps with kind "grader"
-    and to "decide", raise `email-rejected` instead.
-  on_error: escalate
-  transitions:
-    - to: send
-      description: The email is ready to send.
-    - to: decide
-      description: The email needs changes.
-```
-
-- `instructions` and at least one transition are required; `evidence`, `approvers` and
-  `budget.maxParks` are errors.
 - Say in the criteria exactly when to take each transition and when to raise. A grader
   that answers in text without deciding fails through `on_error`.
 - There is no iteration budget. To give up after N rounds, count the earlier send-backs
   on the trail (`{ kind: grader, to: <graded state> }`) and raise.
-- `budget.timeoutMs` bounds its whole run, and the turn's `recursionLimit` bounds its
-  loop. Its `model`, else `settings.model`, is resolved under the `grader` model role.
+- `budget.timeoutMs` bounds its whole run, and a recursion limit of 400 bounds its
+  loop, whatever the host sets for the turn. Its `model`, else `settings.model`, is
+  resolved under the `grader` model role.
 - Its messages never enter the session's transcript, and its tokens never stream. The
   session sees its decision as a trail step and a runtime note. Its model calls are
   `model-usage` events under its state.
 - The history is not windowed, so name the part that counts: "the last assistant
   message", "the files `enrichments` names".
-- Grade work the agent hands on, not a live answer: everything the agent says in a turn
-  is that turn's reply, a draft sent back included.
 
 ## `archmax_run` scripts
 
@@ -192,35 +156,16 @@ decides to run. It is a plain script with top-level `await`.
 | `tools` | The calling state's tools, as for a code state, re-scoped at every evaluation. No control tool and no `task`. |
 | its result | The value of its last expression, returned to the model as the tool result. |
 
-Write one in this order:
-
-1. **Get the shapes first**: tool inputs and outputs from the host's describe tools, and
-   the variables a session carries from `archmax sessions <id>`. A guessed field name
-   costs a whole session.
-2. **Write it**, JSDoc header first.
-3. **Land the result in a variable.** The result is one tool message and nothing more,
-   and a script cannot set variables. Return structured data and name the variable in
-   the calling state's `requires`, so the agent records it with `archmax_set_variables`.
-   Later states can then guard on it and quote it as `${{name}}`.
-4. **Announce it in the bundle's `SKILL.md`.** The `description` says when to run it; the
-   body gives its path, its arguments and the variable its result belongs in. A script
-   nothing points at is never run.
-5. **Grant it.** The calling state enables the bundle and allows every tool the script
-   calls. Narrow execution with `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }`.
-   Then validate.
-
-A script may fan out over a delegation tool with `Promise.all`. Each call runs one child
-session and succeeds or fails on its own, so `Promise.allSettled` keeps the successes.
-When the host cancels the turn, a pending call fails and later calls are refused.
-
-## The JSDoc header
-
-Both kinds of workspace JavaScript, code-state scripts and `archmax_run` scripts, open
-with a JSDoc block: a title line, a blank line, then what the script reads, what it
-checks or computes, and each outcome. For a code state, that is every `archmax_advance`
-target and why, and every raise. The description ends at the first `@tag`.
-
-Admin UIs show this block instead of the code (`parseCodeDescription` extracts it), so
-write it first and keep the code true to it. `archmax validate` does not check it: it is
-an authoring standard. Cases carry the same depth in their `description`, which
-`validate` does check.
+- **Land the result in a variable.** The result is one tool message, and a script
+  cannot set variables. Return structured data and name the variable in the calling
+  state's `requires`, so the agent records it with `archmax_set_variables`. Later
+  states can then guard on it and quote it as `${{name}}`.
+- **Announce it in the bundle's `SKILL.md`.** The `description` says when to run it; the
+  body gives its path, its arguments and the variable its result belongs in. A script
+  nothing points at is never run.
+- **Grant it.** The calling state enables the bundle and allows every tool the script
+  calls. Narrow execution with `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }`.
+- **Fan out** over a delegation tool with `Promise.all`. Each call runs one child
+  session and succeeds or fails on its own, so `Promise.allSettled` keeps the
+  successes. When the host cancels the turn, a pending call fails and later calls are
+  refused.
