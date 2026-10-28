@@ -103,6 +103,10 @@ then starts a session *or* continues the one that conversation already has. A
 delivery resumes a session parked for input, and a message is answered on a
 session parked at a human state.
 
+The trigger's `requires` is checked on every turn, against that turn's own
+variables, so a follow-up `archmax run --session <id>` passes the same
+`--variables` again.
+
 A park is a successful outcome. What the session *said* as it parked goes to
 `stdout`. `stderr` reports the park itself: the state, the reason, and the
 command that resumes it (`archmax deliver …` or `archmax decide …`). The exit

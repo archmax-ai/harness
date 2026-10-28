@@ -64,6 +64,10 @@ session option is given. A `resume` disposition delivers the trigger to a
 session parked for input, and a `reply` disposition answers a session parked at
 a human state. Otherwise a turn starts.
 
+A trigger's `requires` is checked on every turn, against that turn's own
+variables. A follow-up `archmax run --session <id>` therefore passes the same
+`--variables` again.
+
 A park exits `0`. What the session said goes to `stdout`, the park report and
 the resuming command to `stderr`.
 

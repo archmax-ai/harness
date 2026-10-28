@@ -120,7 +120,14 @@ with no model call:
 
 ```js
 // workflows/refund/scripts/check-decision.js
-/** A refund is due only for a delivered order: any other decision goes back to the agent. */
+/**
+ * Refund decision check — the recorded decision must follow the refund policy.
+ *
+ * Looks the customer up with lookup_customer by the `email` variable. A refund is
+ * due ("approved") only when their order is delivered, otherwise "denied".
+ * Advances to review-email when `decision` matches; otherwise back to decide,
+ * naming the order, its status and the decision the policy requires.
+ */
 export default async function ({ variables, tools }) {
   const customer = JSON.parse(await tools.lookup_customer({ email: variables.email }));
   const order = customer?.order;
@@ -252,10 +259,15 @@ The **trail** records every move and who made it:
   done.
 - `rejected`: governance or the runtime stopped it, such as a start without `email`.
 
-`outcome.reply` holds what the agent wrote during the turn.
+A turn that throws, such as on a provider error, returns no outcome: `send` rejects with the error.
+
+`outcome.reply` holds what the agent said to the person during the turn: its text, and the
+`message` it may hand `archmax_advance` as it moves on.
 
 Sessions are durable. They live under `sessions/` in the workspace root, so a second `send` with
-the same id continues the same conversation. See [sessions](/guides/sessions/).
+the same id continues the same conversation. Pass the same `variables` with it: the trigger's
+`requires` is checked on every turn, against that turn's own variables. See
+[sessions](/guides/sessions/).
 
 ## When the decision is wrong
 

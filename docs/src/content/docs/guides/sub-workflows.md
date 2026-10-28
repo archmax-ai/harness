@@ -135,7 +135,7 @@ Where the fan-out must be deterministic, write a script:
 ```js
 // scripts/enrich-orders.js
 // The bridge camelCases tool names, and a tool result arrives as text.
-const orders = args.variables?.orders_to_enrich?.value ?? [];
+const orders = args.variables?.orders_to_enrich ?? [];
 
 const enriched = await Promise.all(
   orders.map(async (entry) => {
@@ -149,6 +149,12 @@ enriched;
 ```
 
 The list never enters the model's context, and the script decides how many run.
+
+The calling workflow's `settings.timeoutMs` (15,000 ms by default) bounds the
+script's whole evaluation, time spent awaiting its calls included, so every
+child's whole session runs inside it. The same holds for a code state's script.
+A fan-out of slow children needs a larger one; past it the script fails with
+`Promise timed out — execution interrupted`.
 
 ## The target: its `manual` entry is its call signature
 
@@ -440,12 +446,13 @@ A delegated machine may declare a `type: human` state. When a child session reac
 one, **the child suspends and the delegating session suspends with it**. The
 session parks exactly as it would at the parent's own human state.
 
-The decision presented is the **child's**: its state, its instructions, its
-evidence, its declared transitions. That is the decision the person is actually
-being asked to make. Resolve it the usual way:
+The decision presented is the **child's**: its state and title, its evidence,
+its declared transitions. That is the decision the person is actually being
+asked to make. The record carries no `instructions`; a host that shows them
+reads them from the child's spec. Resolve it the usual way:
 
 ```bash
-archmax decide <sessionId> <target>       # a target from the CHILD's transitions
+archmax decide <sessionId> --to <state>   # a target from the CHILD's transitions
 ```
 
 The child continues from that state, finishes, and the delegating session carries on

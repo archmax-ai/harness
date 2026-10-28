@@ -1,10 +1,10 @@
 /**
- * `archmax_run` scripts carry their human-facing contract as a leading JSDoc
- * block comment — the code-file analogue of a case file's `description`. Admin
- * UIs display only that description. A code state's script is NOT covered by this convention:
- * it is a hand-authored file whose only validation is that the referenced file
- * exists and imports nothing foreign. This module is the canonical extractor so consumers never
- * scrape comments themselves. It operates on source strings only (callers read
+ * Workspace JavaScript — a code state's script and an `archmax_run` script —
+ * carries its human-facing contract as a leading JSDoc block comment, the
+ * code-file analogue of a case file's `description`. Admin UIs display only that
+ * description. It is an authoring convention: `archmax validate` does not check
+ * it. This module is the canonical extractor so consumers never scrape comments
+ * themselves. It operates on source strings only (callers read
  * the file through their configured backend) and never touches the filesystem.
  */
 

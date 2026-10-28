@@ -64,10 +64,10 @@ Deep Agents' own options keep their names: `model`, `tools`, `systemPrompt`,
 
 | Option | What it does |
 | --- | --- |
-| `workflow` | The workflow's slug under `workflows/`. Always name it: omitted, only `workflows/order-lookup/` is looked for. `false` assembles a plain Deep Agent. |
+| `workflow` | The workflow's slug under `workflows/`. Omitted or `false`, a plain Deep Agent: no spec is read. |
 | `workspace` | `{ rootDir, mounts?, sessionStore? }`. `rootDir` defaults to the current directory only when nothing else is composed: with `mounts`, `sessionStore` or `authoring` but no `backend`, omitting it throws `WorkspaceRootRequiredError`. |
 | `authoring` | The backend that serves `workflows/**` (specs, `WORKFLOW.md`, code-state scripts, cases) to the runtime only. It defaults to `backend`, else the files under `rootDir`. Exposing it through a writable mount throws `AuthoringBackendExposedError`. |
-| `variables`, `sessionPath` | Seeded variables (locked) and the session path for every `send`. A turn's trigger is the `trigger` of its `send` input (default `manual`). |
+| `trigger`, `variables`, `sessionPath` | The trigger of every `send` (and `resolveSession`) that names none, else `manual`; seeded variables (locked) and the session path for every `send`. |
 | `modelFactory` | `(role, env, requested?) => model`, called per role: `agent`, `judge` (a case's `grade`) and `grader` (a grader state, asked with the state's model id). |
 | `essentialTools` | Host tools that are on in every state, whatever `allow_always` says. A state's entry still narrows one. |
 | `toolPaths` | Each host tool's path arguments and how it uses them (`{ get_markdown: { path: "read" } }`), governed like a built-in tool's. |
@@ -219,10 +219,11 @@ a bracket prefix.
   `mountSubtree(backend, "skills")` rebases a backend. Mounts are read-only unless
   declared otherwise. `governed: true` hands the spec's `mounts` lists the decision of
   which states reach a mount. A key over a session zone or `workflows/` throws
-  `MountCollisionError`. Pass the same table to `validateWorkflow({ mounts })` so that
-  validation checks the spec's mount names.
+  `MountCollisionError`. Pass the same table to `validateWorkflow({ workflow, mounts })` so
+  that validation checks the spec's mount names.
 - **Artifacts**: nothing writes them unless the host calls
-  `agent.emitRunArtifacts(sessionId, trajectory)`. It writes `graph.json`, `graph.mmd`,
+  `agent.emitRunArtifacts(sessionId, trajectory)`, the `Trajectory` being the host's own
+  per-state record of messages and tool calls. It writes `graph.json`, `graph.mmd`,
   `trajectory.json`, `trail.json`, `variables.json` (each variable with its value and
   lock) and `metadata.json` (the contract, the package version, the `specHash` and
   usage) under `<id>/artifacts/` in the session store. An API reads them to draw past

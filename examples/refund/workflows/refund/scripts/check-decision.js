@@ -1,4 +1,11 @@
-/** A refund is due only for a delivered order: any other decision goes back to the agent. */
+/**
+ * Refund decision check — the recorded decision must follow the refund policy.
+ *
+ * Looks the customer up with lookup_customer by the `email` variable. A refund is
+ * due ("approved") only when their order is delivered, otherwise "denied".
+ * Advances to review-email when `decision` matches; otherwise back to decide,
+ * naming the order, its status and the decision the policy requires.
+ */
 export default async function ({ variables, tools }) {
   const customer = JSON.parse(await tools.lookup_customer({ email: variables.email }));
   const order = customer?.order;

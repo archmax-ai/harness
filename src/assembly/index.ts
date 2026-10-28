@@ -78,7 +78,7 @@ import {
 import { createSessionFiles, isPlainFileName } from "../core/attachments.js";
 import { turnAnchorOf } from "../core/messages.js";
 import { BackendCheckpointSaver } from "../workflow/checkpointer.js";
-import { DEFAULT_WORKFLOW, workflowPaths } from "../workflow/paths.js";
+import { workflowPaths } from "../workflow/paths.js";
 import type { PromptCacheOptions } from "../workflow/prompt-cache.js";
 import { createPlainTurnRunner } from "../workflow/turn-runner.js";
 import { composeGoverned, renderSystemPrompt, sessionBinder, type AssemblyContext } from "./compose.js";
@@ -188,15 +188,11 @@ export interface CreateAgentParams {
   // --- harness additions ----------------------------------------------------------------
   /**
    * The governance layer: a named workflow under `workflows/<slug>/`. Omit it
-   * and the result is a plain Deep Agent — no machine, no `archmax_advance`, no
-   * per-state gating — and `agent.workflow` is `undefined`. A named workflow
-   * with no loadable spec throws {@link WorkflowLoadError} rather than silently
-   * returning an ungoverned agent.
-   *
-   * Omitted, the default workflow (`DEFAULT_WORKFLOW`) is still *looked for* on
-   * the authoring backend, and governs the agent when found. Pass `false` for an
-   * agent that is ungoverned **by declaration**: no spec is read, so a stray
-   * `workflows/` tree under the resolved root cannot govern it.
+   * (or pass `false`) and the result is a plain Deep Agent — no machine, no
+   * `archmax_advance`, no per-state gating — and `agent.workflow` is
+   * `undefined`; no spec is read, so a `workflows/` tree under the resolved root
+   * cannot govern it. A named workflow with no loadable spec throws
+   * {@link WorkflowLoadError} rather than silently returning an ungoverned agent.
    */
   workflow?: string | false;
   /** Where files come from and where sessions go. See {@link AgentWorkspaceParams}. */
@@ -209,7 +205,10 @@ export interface CreateAgentParams {
    * *writable* mount fails assembly (`AuthoringBackendExposedError`).
    */
   authoring?: BackendProtocolV2;
-  /** How a session is started when a turn names no trigger. Defaults to `{ id: "manual" }`. */
+  /**
+   * The trigger a firing uses when it names none: a `send` (a new turn or a
+   * delivery), `resolveSession`, a raw invoke. Defaults to `{ id: "manual" }`.
+   */
   trigger?: TriggerInput;
   /**
    * Variables seeded before any turn, keyed by name. Every seed is **locked**:
@@ -303,10 +302,9 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   } catch (err) {
     throw new Error(`createAgent: 'clock' ${(err as Error).message}`, { cause: err });
   }
-  // `false` declares the agent ungoverned: nothing is looked for. Otherwise a
-  // named workflow — or the default — is read off the authoring backend.
-  const governed = params.workflow !== false;
-  const workflowName = params.workflow === false ? "" : (params.workflow ?? DEFAULT_WORKFLOW);
+  // Only a named workflow governs: omitted or `false`, nothing is looked for.
+  const governed = typeof params.workflow === "string";
+  const workflowName = governed ? (params.workflow as string) : "";
   const paths = workflowPaths(workflowName);
 
   // Root resolution and backend selection (session store as the workspace root +
@@ -352,15 +350,11 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       ? WorkflowMachine.fromSpec(loaded.spec, params.essentialTools, toolPaths)
       : null;
 
-  // Fail closed when governance was requested but cannot be loaded. The plain
-  // agent remains for the unrequested-default case with no definition, and for
-  // `workflow: false`.
+  // Fail closed when governance was requested but cannot be loaded.
   if (!machine && governed) {
     const fileMissing = loaded.issues.some((i) => i.kind === "missing");
     if (!fileMissing) throw new WorkflowLoadError(workflowName, loaded.specFile, "no valid machine spec");
-    if (params.workflow !== undefined) {
-      throw new WorkflowLoadError(workflowName, paths.workflowYaml, "no workflow.yaml found");
-    }
+    throw new WorkflowLoadError(workflowName, paths.workflowYaml, "no workflow.yaml found");
   }
 
   // Enforce the runtime contract before any model-driven work.
@@ -528,7 +522,12 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
           findSession: (sessionId) => agentMembers.sessions.get(sessionId),
           mintSessionId: () => `session-${randomUUID()}`,
         },
-        { ...(params.sessionPath ? { sessionPath: params.sessionPath } : {}), ...input },
+        {
+          // The assembly's defaults, each overridden by what the firing names.
+          ...(params.trigger ? { trigger: params.trigger } : {}),
+          ...(params.sessionPath ? { sessionPath: params.sessionPath } : {}),
+          ...input,
+        },
         (message) => emit({ type: "warning", scope: "session", message }),
       ),
     send: async (sessionId, input, config) => {
@@ -559,7 +558,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
         // The person's message travels with the firing rather than being dropped.
         const seeds = { ...(turn.variables ?? {}), ...(await placeTurnFiles(sessionId, turn)) };
         const delivery = {
-          trigger: turn.trigger ?? { id: DEFAULT_TRIGGER_ID },
+          trigger: turn.trigger ?? params.trigger ?? { id: DEFAULT_TRIGGER_ID },
           ...(Object.keys(seeds).length > 0 ? { variables: seeds } : {}),
           ...(turn.message?.trim() ? { message: turn.message } : {}),
         };
@@ -568,7 +567,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       if (machine.disabled) throw new WorkflowDisabledError(workflowName);
       const message = (turn.message ?? "").trim();
       if (!message) throw new EmptyMessageError(sessionId);
-      const trigger = { id: resolveTrigger(machine, turn.trigger).id };
+      const trigger = { id: resolveTrigger(machine, turn.trigger ?? params.trigger).id };
       // Validated here, so a bad name is refused before anything runs.
       if (turn.variables) buildSeededVariables(turn.variables);
       const seeds = { ...(turn.variables ?? {}), ...(hasFiles ? await placeTurnFiles(sessionId, turn) : {}) };

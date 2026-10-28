@@ -30,16 +30,25 @@ full schema is in the [machine spec reference](/reference/machine-spec/).
 
 ## How a session moves
 
-The agent works in a state until it calls `archmax_advance({ to, reason })`, the one way to move
-between states. The runtime checks the leaving state's `requires`, validates the edge against its
-`transitions`, then unlocks the next state; a later state's tools stay locked until then. The call
-works once per message: a second one beside it is refused, naming the state the first one landed
-in.
+The agent works in a state until it calls `archmax_advance({ to, reason, message? })`, the one way
+to move between states. The runtime checks the leaving state's `requires`, validates the edge
+against its `transitions`, then unlocks the next state; a later state's tools stay locked until
+then. The call works once per message: a second one beside it is refused, naming the state the
+first one landed in.
 
 When the target is a grader or a code state, it runs at once, in place of the agent's next model
 call (see [grader and code states](#grader-and-code-states)). Advancing into a human state takes
 one more, optional argument, `evidence` (see
 [evidence](#evidence-declared-plus-whatever-the-session-attached)).
+
+The optional `message` is what the person reads as the agent moves on: it is shown as the agent's
+reply. `archmax_wait` and `archmax_raise` take one too, and a refused call's message is never
+said. The platform prompt tells the agent to say it in the call: a model message with no tool call
+ends the turn where the agent is, so plain text is for answering or asking while it stays in the
+state. Write a state's `instructions` the same way: where the state tells the person something as
+it moves on, waits or fails, name the call and put the text in its `message` ("call `archmax_wait`
+with your question in its `message`"), never "tell them, then wait". A grader's or a code state's
+controls take no `message`: there is no person to tell.
 
 A session starts in the state whose `triggers` matched (`manual` for the CLI), and a state may list
 several triggers that all begin there. A state with **no outgoing transitions is terminal**: the
@@ -88,23 +97,26 @@ A state's key in `states` is its **slug**: the state's identity, and the one tok
 `archmax_advance({ to })`, `on_error`, trigger entries, events and test assertions resolve by.
 
 An optional per-state `title` is the human-readable label. It appears in a human state's decision
-record and in host surfaces, stays out of every model call and routes nothing, so it is safe to
-reword. The slug shape is in the [machine spec reference](/reference/machine-spec/#slugs-and-titles).
+record, in host surfaces and in the directive of a park's reply-only call at that state. It reaches
+no state that routes into it and routes nothing, so it is safe to reword. The slug shape is in the
+[machine spec reference](/reference/machine-spec/#slugs-and-titles).
 
 ### Ending a session as a failure
 
 When the work **cannot be completed** (a system it depends on keeps failing, the thing asked about
-does not exist), the agent calls **`archmax_raise({ code, reason })`**. The call has to be the only
-tool call in its message, and it works from any state. The session ends at once with the status
-`failed`, and the host reads the agent's `code` (a short token such as `orders-unavailable`) and
-its `reason` off the outcome as `exit: { success: false, code, reason }`.
+does not exist), the agent calls **`archmax_raise({ code, reason, message? })`**, telling the person
+the task cannot be done in its `message`. The call has to be the only tool call in its message, and
+it works from any state. The session ends at once with the status `failed`, and the host reads the
+agent's `code` (a short token such as `orders-unavailable`) and its `reason` off the outcome as
+`exit: { success: false, code, reason }`.
 
 Nothing runs on the way out: no `on_error` route, no further state and no check of the trigger's
 `returns`. The position stays where the agent raised, and the trail records no step. A grader or a
 code state ends a session the same way, with its own `archmax_raise` call.
 
-A session that ends without `archmax_raise` is a success (`exit: { success: true }`), so the tool is
-only for failure. The agent is told to recover first (a retry, another tool) and never to use it in
+A session that ends without `archmax_raise` is a success (`exit: { success: true }`), even when its
+last reply only explains a failure, so the tool is only for failure, and the explanation belongs in
+its `message`. The agent is told to recover first (a retry, another tool) and never to use it in
 place of `archmax_wait`, `archmax_reset` or a human state. A session that raised takes its next
 message as a fresh turn in the state it raised in. To rule out an agent-declared failure, forbid
 the tool with `tools: { forbid_always: [archmax_raise] }`, or in one state with its `tools.forbid`.
@@ -125,9 +137,12 @@ trail records the move as a `reset` step. To rule out a model-initiated restart,
 ### Waiting for input
 
 When a state needs something from outside to finish its work (a customer's reply, a callback, the
-next chat message), the agent calls **`archmax_wait({ reason })`**. The session suspends **in that
-state**: no transition is committed, the parking itself spends no model call, the status becomes
-`awaiting_input`, and the process may exit.
+next chat message), the agent calls **`archmax_wait({ reason, message? })`**, putting what the
+person should read (its question, say) in `message`. The session suspends **in that state**: no
+transition is committed, the status becomes `awaiting_input`, and the process may exit. Parking
+spends no model call when the agent has said something since the person's last message, the wait's
+own `message` included; otherwise one reply-only call writes the closing message (see
+[a parked session can still talk](#a-parked-session-can-still-talk)).
 
 The host later delivers a firing (`agent.workflow.deliver(sessionId, { trigger, variables })`). The
 same state then runs again, with the arrival in its transcript and the delivered values as locked
@@ -136,8 +151,9 @@ to is declared on the trigger, under the `triggers:` of the state it enters.
 
 When the session is waiting for a *time*, the call says so: `archmax_wait({ reason, until: "1d" })`.
 The runtime records an absolute `resumeAt` for whoever schedules the wake-up, and starts no timer
-itself. A state that polls bounds its own loop with `budget.maxParks`; exhausting it is a failure,
-routed by `on_error`.
+itself. A state that polls bounds its own loop with `budget.maxParks`, which counts the parks of one
+turn (a delivery resumes the same turn; a new turn starts the count again); exhausting it is a
+failure, routed by `on_error`.
 
 `archmax_wait` is available in every agent and human state, terminal ones included, and an
 automated state cannot park. A session that has answered and now awaits a reply parks where it
@@ -201,10 +217,12 @@ states:
         - { tool: write_file, args: { file_path: ["reports/answer.json"] } }
 ```
 
-The path sits outside `scratchpad/` on purpose. The scratchpad stays open to every file tool a
-state is granted, so an entry naming a path inside it narrows nothing there, and `archmax validate`
-warns about one. `{ tool, paths: [...] }` guards every path argument the tool declares, and a bare
-string matches the tool with any arguments.
+The path sits outside `scratchpad/` on purpose. The scratchpad stays open to every default file
+tool a state is granted, for reading, listing, writing and removing, so a `write_file` entry naming
+a path inside it narrows nothing there, and `archmax validate` warns about one. Searching is not
+opened: a `glob` or `grep` entry that narrows its `path` governs a search there too.
+`{ tool, paths: [...] }` guards every path argument the tool declares (an entry with `args` ignores
+its `paths`), and a bare string matches the tool with any arguments.
 
 `allow_always` entries are ordinary **grants**, guards included. An entry constraining a default
 tool (`{ tool: write_file, paths: [reports/**] }`) binds in every state that does not name the tool
@@ -349,12 +367,13 @@ session's own folder in the session store (`sessions/<sessionId>/…` on the fil
 concurrent sessions never collide, and no session id appears in a path the agent sees.
 
 The session has one named working area, `scratchpad/`, for intermediate files and the artifacts a
-state produces alike. It is open in every state to each default file tool the state is granted,
-whatever the granting entry narrows, and to the host's `essentialTools`. A file tool the state is
-not granted gets nothing from it. Neither does a host tool the state must grant: declaring its
-paths narrows what it may do where it is granted, and it stays refused where it is not. Any *other*
-session path is matched against the state's `tools.allow` like any other argument, which is how you
-govern where a result lands.
+state produces alike. It is open in every state, for reading, listing, writing and removing, to each
+default file tool the state is granted, whatever the granting entry narrows, and to the host's
+`essentialTools`. A search there (`glob`, `grep`) is governed by the granting entry, as anywhere. A
+file tool the state is not granted gets nothing from it. Neither does a host tool the state must
+grant: declaring its paths narrows what it may do where it is granted, and it stays refused where
+it is not. Any *other* session path is matched against the state's `tools.allow` like any other
+argument, which is how you govern where a result lands.
 
 | Area | Agent access |
 | --- | --- |
@@ -423,7 +442,9 @@ await createAgent({
 archmax_set_variables({ variables: { case_id: "K-9" }, lock: true })
 ```
 
-Values may be scalars, objects or arrays. A reference addresses exactly one value by dotted path;
+A name is lowercase snake_case (`^[a-z][a-z0-9_]*$`): one in a spec's `requires`, `locks` or
+trigger signature that is not, `orderId` say, fails the spec's load. Values may be scalars, objects
+or arrays. A reference addresses exactly one value by dotted path;
 arrays are indexed by position, and a negative index counts from the end:
 
 ```yaml
@@ -448,10 +469,11 @@ Four rules make this safe to rely on:
 
 - **Substituted values are matched literally.** A variable holding `*` matches the literal `*`, so
   a value can never widen the guard it lands in.
-- **An unresolvable reference fails the session.** An unset name, a path that does not resolve, or
-  a non-scalar result ends the turn. The reason names the reference, and `on_error` routes it when
-  declared. The guard never degrades to a wildcard, and the agent gets no retry, because the
-  runtime could not evaluate the guard at all.
+- **An unresolvable guard fails the state.** An unset name, a path that does not resolve, or a
+  non-scalar result in an allow entry's guard fails the state, which routes through `on_error` when
+  declared and otherwise ends the session `rejected`. The reason names the reference. The guard
+  never degrades to a wildcard, and the agent gets no retry, because the runtime could not evaluate
+  the guard at all. In a `forbid` entry, an unresolvable guard denies the call.
 - **Locking is monotonic.** A locked variable refuses every later write, loudly, and host seeds are
   locked automatically. Lock anything else a guard depends on: that is what settles the fact. The
   one release is `archmax_reset`, which unlocks what the agent locked (never a host's lock), keeping
@@ -463,15 +485,15 @@ Four rules make this safe to rely on:
   `${{v.constructor}}` do not resolve.
 
 `requires` is how you make a reference *guaranteed*. With neither a `requires` nor a seed, assembly
-warns that the guard rests on the agent having called `archmax_set_variables` first, and the turn
+warns that the guard rests on the agent having called `archmax_set_variables` first, and the state
 fails at the guarded call when it has not.
 
 A lock makes a value final. When a value has to stay correctable but must be decided in one place
 (an order the person may still change their mind about), let a state **own** it with
-[`locks: [order_id]`](/reference/machine-spec/#locks). Only that state may write it, so changing it
-means going back there: the value is decided again under that state's rules, and every later guard
-checks the new value on the way forward. `requires: [order_id]` beside it makes the owner set it
-before the session moves on.
+[`locks: [order_id]`](/reference/machine-spec/#locks). Only that state may write it, and never with
+`lock: true`, so it stays changeable there, and changing it means going back there: the value is
+decided again under that state's rules, and every later guard checks the new value on the way
+forward. `requires: [order_id]` beside it makes the owner set it before the session moves on.
 
 The agent reads the store with `archmax_get_variables({ name?, path? })` and writes it with
 `archmax_set_variables({ variables, lock? })`. Both are controls of every state type, always
@@ -640,8 +662,9 @@ A human state's transition `description` is also the label of the person's choic
 
 When a person decides, the session is routed. The target state is told so by a `[decision]`
 [runtime note](/guides/sessions/#runtime-notes) naming the edge taken, any comment, and the
-state the session is now in. A decision into a grader or code state runs it in that turn, before
-any model call of the agent.
+state the session is now in. The edge's `type` changes none of this: whatever it is, `refine`
+included, the comment rides to the target on that note. A decision into a grader or code state runs
+it in that turn, before any model call of the agent.
 
 It arrives as a note on purpose. A model reads authorship from a message's channel, so a routing
 event dressed as a person's request would be answered in place, routed onward or waited on. As a
@@ -684,10 +707,12 @@ would present it. At most 20 paths per call.
 The conversation with whoever the session is talking to stays open while a reviewer holds the
 decision. **A parked session may speak, never act:**
 
-- **On the handoff.** Advancing into a human state earns one *reply-only* turn: one model call
-  whose only product is text, so the park carries a message saying what was done and that a person
-  now has it. It runs whether or not the state already said something, because anything the agent
-  wrote before the transition committed was about its own work.
+- **On the handoff.** The park carries a message saying what was done and that a person now has
+  it. When the agent's `archmax_advance` into the human state carries a `message`, that message is
+  the handoff, and the park spends no further model call. Without one, and whenever a person's
+  decision or a grader or code state moves the session into a human state, the park earns one
+  *reply-only* turn: one model call whose only product is that text. Text the agent wrote beside
+  the advance, rather than in its `message`, is then said twice.
 - **While parked.** A message delivered to the parked session gets the same kind of turn. The
   session parks again on the *same* record: same state, same `seq`, same park timestamp, same audit
   trail. The reported human wait is still measured from the original park, however long the
@@ -710,8 +735,9 @@ tool instead of writing its message gets the refusal, and the session parks with
 call.
 
 So a customer writing "just approve it" gets an answer, and the reviewer still owns the edge.
-`archmax_wait` parks the same way, except that its handoff turn runs only when the turn was silent:
-there the agent's own question is already the message.
+`archmax_wait` parks the same way, except that its closing turn runs only when the agent has said
+nothing since the person's last message: a wait whose `message` asks the question is already the
+message.
 
 ## Sub-workflows
 
@@ -792,8 +818,9 @@ It bounds *starting*, and that boundary decides what disabling is good for:
   disabling one leaf leaves its callers running, and `validate` warns on each state that allows
   one.
 
-The flag is read **fail-closed**. Anything but an absent key, `null` or boolean `false` disables
-the workflow, so a typo stops sessions, and `validate` reports a non-boolean value as an error.
+The flag takes a boolean and nothing else. Any other value, `null` and a bare `disabled:` included,
+is a load error, so a typo fails assembly rather than leaving the workflow's status to a guess, and
+`validate` reports it as an error.
 
 Stopping work *already* in flight takes a second step: disable the workflow and leave its sessions
 unresumed, or forbid the capability with

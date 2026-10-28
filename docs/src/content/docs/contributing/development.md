@@ -22,7 +22,7 @@ npm run dev          # run the CLI from source via tsx (src/cli.ts)
 npm run build        # clean + tsc + copy assets; emits dist/
 npm start            # run the compiled CLI (node dist/cli.js)
 npm run typecheck    # tsc --noEmit over everything INCLUDING tests
-npm test             # vitest run — colocated *.test.ts unit tests
+npm test             # vitest run — colocated *.test.ts unit tests + the src/behaviour/ suite
 npm run test:watch   # vitest watch
 npm run docs:build   # build the docs site
 npx openspec validate --specs   # validate the specs under openspec/specs
@@ -56,7 +56,7 @@ declarative YAML documents, interpreted host-side by `archmax test`.
   `machine/` (the schema and the compiled machine), `validate/`, `workflow/`
   (governance middleware, parks, control tools, grader and code states),
   `kernel/`, `sandbox/`, `sessions/`, `testing/` (the case engine), `cli/`, `core/`,
-  `public/` (the `sandbox`, `testing` and `cli` subpaths), `behaviour/`,
+  `public/` (the `sandbox`, `testing`, `cli`, `spec` and `messages` subpaths), `behaviour/`,
   `env.ts`, `index.ts`. `core/platform-prompt.md` is the platform prompt,
   the graph-state execution model merged into every governed agent's system
   prompt. `npm run build` generates `core/platform-prompt.generated.ts` from
@@ -78,7 +78,8 @@ declarative YAML documents, interpreted host-side by `archmax test`.
 
 User-facing behavior covers the CLI, configuration, the authoring model, the
 skills or workflow schema, and the public API. Any change affecting it must
-update the relevant pages under `docs/` in the same change. This convention is
+update the relevant pages under `docs/`, `README.md` and the authoring skill
+(`skills/archmax-harness/`) in the same change. This convention is
 encoded in `openspec/config.yaml` and surfaced when authoring proposals and task
 lists.
 

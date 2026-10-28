@@ -4,7 +4,8 @@
 
 Define how the archmax harness executes a workflow: one Deep Agents graph whose checkpointed state carries the
 machine's position, variables, trail and park records, governed by middleware. This spec covers the
-turn boundary, the control tools (`archmax_advance`, `archmax_reset`, `archmax_wait`), budgets and
+turn boundary, the control tools (`archmax_advance`, `archmax_reset`, `archmax_wait`,
+`archmax_raise`) and the `message` a control call carries for the person, budgets and
 `on_error` routing, human states and parks, the handoff message, runtime notes, the layered system
 prompt and its caching, and the typed event stream. Grader and code states are specified by the
 `automated-states` capability.
@@ -242,9 +243,10 @@ state.
 
 ### Requirement: `archmax_wait` parks the session in place
 
-The runtime SHALL expose `archmax_wait({ reason, until? })` in every agent and human state, terminal
-states included, rejecting an empty `reason`; no automated state offers it, since an automated
-state cannot park. A wait SHALL commit a `pendingInput` record (state, `title` when declared,
+The runtime SHALL expose `archmax_wait({ reason, message?, until? })` in every agent and human state,
+terminal states included, rejecting an empty `reason`; no automated state offers it, since an
+automated state cannot park. `message` SHALL be what the person reads as the session waits (see "A
+control call's message is what the person reads"). A wait SHALL commit a `pendingInput` record (state, `title` when declared,
 reason, `parkedAt`, `resumeAt` when declared), set `status: awaiting_input`, increment the state's
 park count, emit `parked` with `awaiting: "input"`, the reason and the call's `callId`, and tell the
 model to stop; the position SHALL be unchanged and no transition committed. `until` SHALL be a
@@ -399,8 +401,9 @@ into an automated state SHALL run that state before any model call of the sessio
 
 A park SHALL suspend the session through `interrupt(record)` from the `WorkflowParkMiddleware`, the
 one middleware that suspends, positioned so every other hook has committed and emitted first. A park
-SHALL progress through `parkPhase` `closing` (a message is owed) to `suspend`, suspending only once
-nothing is owed and no tool calls dangle. Both channels — a human state awaiting a `decision` and
+SHALL progress through `parkPhase` `closing` (a message is owed) to `suspend`, or be committed in
+`suspend` when nothing is owed (see "The handoff message"), suspending only once nothing is owed and
+no tool calls dangle. Both channels — a human state awaiting a `decision` and
 `archmax_wait` awaiting `input` — SHALL use this one mechanism and one resume path
 (`src/sessions/resume.ts`), differ only in what resolves them and where the run continues, classify
 as open, survive process exit, and keep the statuses `awaiting_decision` and `awaiting_input`
@@ -463,20 +466,68 @@ child's `sessionId` (`<parent>~<identity>`), `identity`, `dispatchId`, `toolCall
 - **THEN** the calling session parks presenting the child's state and transitions, and no sibling
   call in the batch is re-executed on resume
 
+### Requirement: A control call's message is what the person reads
+
+The agent's `archmax_advance`, `archmax_wait` and `archmax_raise` SHALL each take an optional string
+`message`: what the person reads as the agent moves on, waits or fails. Each tool's description
+SHALL say that what the person should read goes in `message`, and the parameter's description that
+it belongs there, not in a separate message, since a message without a tool call ends the turn
+where the agent is; the platform prompt SHALL say the same
+("say it in the call's `message`"), and SHALL keep plain text for answering or asking the person
+while the run stays in its state.
+
+What one assistant message says SHALL be its text, then the `message` of each of those three calls
+it made that was not refused, each trimmed, empty ones skipped, joined by a blank line (`\n\n`). A
+refused call said nothing, so its `message` SHALL count nowhere: a call answered with an
+error-status tool message, or with a tool message the runtime marks refused for the agent to correct
+(an `archmax_advance` along an undeclared edge or past an unmet `requires`). Every reader of what the
+agent said SHALL read it this way: an outcome's `reply` (see the `assembly` capability),
+`lastAgentText` (and so a sub-workflow child's closing message), the session view a case's
+assertions read (see the `testing` capability), whether the agent has spoken since the last message
+that opened a turn (see "The handoff message"), and the `agent-text` event (see "Text, usage and
+variable events"). A runtime note SHALL say nothing.
+
+A grader's and a code state's controls SHALL take no `message`: an automated state has no person to
+tell (see the `automated-states` capability).
+
+#### Scenario: An advance's message joins the reply
+
+- **WHEN** in one turn the agent calls `archmax_advance({ to: "work", reason: "more to do", message:
+  "Looking into it." })`, then advances into the terminal state `done` and writes "All done."
+- **THEN** the outcome is `completed` and its `reply` is "Looking into it.\n\nAll done."
+
+#### Scenario: A refused call said nothing
+
+- **WHEN** the agent calls `archmax_advance` on an undeclared target with `message: "Moving on."`,
+  then along a declared edge with `message: "Moving on, for real."`, and finishes with "Finished."
+- **THEN** the outcome's `reply` is "Moving on, for real.\n\nFinished."
+
+#### Scenario: The last thing said can be a call's message
+
+- **WHEN** a session's last assistant message carries no text and calls `archmax_wait` with
+  `message: "Which order do you mean?"`
+- **THEN** `lastAgentText` over its transcript returns "Which order do you mean?"
+
 ### Requirement: The handoff message
 
 A parked session SHALL speak before it suspends: the runtime spends exactly one reply-only model
 call — handed the parked state's tool list like any other call in that state, text the only
-product — when a session parks by `archmax_advance` into a
-human state (always, whether the agent or an automated state advanced), by `archmax_wait` (only when
-the agent has said nothing since the last message that opened a turn), when a decision or `on_error`
-routes it into another human state, when a delegated child's decision is presented, and when a
-person replies to a parked session. The reply SHALL be composed by the model from the transcript and
-a runtime directive, never a fixed string or an authored notice; a human state's `instructions`
-SHALL be withheld from it. The turn SHALL be one model call: no text leaves the park unchanged
-without a retry, and a tool call the model makes is refused by the kernel's reply-only rule, after
-which the session suspends without another model call. That reply SHALL be the park's `reply` on
-every surface.
+product — when a session parks by `archmax_advance` into a human state, unless the agent's advance
+carried a non-blank `message`; by `archmax_wait` (only when the agent has said nothing — no text and
+no `message` of a control call that was not refused, the wait's own included — since the last
+message that opened a turn); when a decision or
+`on_error` routes it into another human state; when a delegated child's decision is presented; and
+when a person replies to a parked session. An agent's advance into a human state whose `message` is
+non-blank SHALL owe no closing message: that message is the handoff, the park is committed with
+`parkPhase: "suspend"`, and the session suspends with no reply-only call. Text the agent writes
+beside the advance SHALL NOT stand in for a `message`, and an automated state's advance into a human
+state, which carries none, SHALL always owe the reply-only call. The reply SHALL be composed by the
+model from the transcript and a runtime directive, never a fixed string or an authored notice; a
+human state's `instructions` SHALL be withheld from it. The turn SHALL be one model call: no text
+leaves the park unchanged without a retry, and a tool call the model makes is refused by the
+kernel's reply-only rule, after which the session suspends without another model call. The handoff —
+the reply-only call's text, or the advance's `message` — SHALL reach the park's `reply` on every
+surface.
 
 The directive SHALL head the volatile block `## This run is parked` and open with one of four
 shapes chosen structurally from the state: answering a person's message while a decision is pending
@@ -491,9 +542,23 @@ slug and title.
 - **WHEN** the agent records a refund with tool calls only and advances into `refund-review`
 - **THEN** one reply-only call runs before the session suspends and its text is the outcome's `reply`
 
+#### Scenario: An advance that carries a message is the handoff
+
+- **WHEN** the agent's first model call of a turn calls `archmax_advance({ to: "refund-review",
+  reason, message: "Your refund for ORD-1001 is with a reviewer." })`
+- **THEN** no reply-only call runs, the session suspends at `refund-review` after that one model
+  call, and the parked outcome's `reply` is "Your refund for ORD-1001 is with a reviewer."
+
+#### Scenario: Text beside the advance does not replace the handoff
+
+- **WHEN** the agent writes "Your refund is eligible" in the message that calls `archmax_advance`
+  into `refund-review` with no `message`
+- **THEN** one reply-only call runs before the session suspends
+
 #### Scenario: A wait that already spoke spends no extra call
 
-- **WHEN** the agent asks for an order id and then calls `archmax_wait`
+- **WHEN** the agent asks for an order id and then calls `archmax_wait`, or calls
+  `archmax_wait({ reason, message: "Which order do you mean?" })`
 - **THEN** no reply-only call runs and the park's `reply` is the question already asked
 
 #### Scenario: A runtime note opens the silence window
@@ -816,8 +881,8 @@ seeding) SHALL omit it.
 
 The turn runner SHALL drive every turn with LangGraph streaming and emit `agent-text-delta` (state,
 text, `messageId` when known) for each text chunk, whether the consumer used `invoke` or `stream`.
-After each model call the middleware SHALL emit `agent-text` with the message's full text and its
-committed `messageId`, and `model-usage` with input, output and cache token counts, the `model` the
+After each model call the middleware SHALL emit `agent-text` with the message's full text, when it
+has any, and its committed `messageId`, and `model-usage` with input, output and cache token counts, the `model` the
 call was priced against — the id the response reported, else the id the runtime asked the endpoint
 to run — and `costUsd` only when priced, accumulating the session's `usage` channel. `model` SHALL
 be omitted only when neither source names one. A turn that
@@ -825,6 +890,14 @@ fails mid-stream SHALL emit one `agent-text` flagged `partial: true` per streame
 error propagates. A landed `archmax_set_variables` SHALL emit `variables-set` (names, `locked`,
 `callId`, never values) and, for `title`, `title-set` with the trimmed value; a refused write emits
 nothing.
+
+When an agent's control call carrying a non-blank `message` lands — an `archmax_advance` that moved
+the session, an `archmax_wait` that parked it, an `archmax_raise` that ended it — the runtime SHALL
+emit `agent-text` again for the assistant message that made the call, under its `messageId`, with
+everything that message says: its text and its control calls' messages (see "A control call's
+message is what the person reads"). `agent-text` can therefore arrive twice for one `messageId`, the
+later one whole, so a consumer replaces by `messageId` rather than appending. A refused control
+call's `message` SHALL be emitted in no `agent-text`.
 
 A sub-workflow child's text SHALL reach the event stream only from the child's own turn runner,
 carrying the child's `sessionId` and the dispatch's `subWorkflowDispatchId`. A caller's turn runner
@@ -840,6 +913,19 @@ A grader's model calls are no model calls of the session's agent: their text SHA
 - **WHEN** the model generates text in state `S`
 - **THEN** `agent-text-delta` events with `state: S` arrive before the `agent-text` for that message,
   sharing its `messageId`
+
+#### Scenario: A landed call's message is announced under its message's id
+
+- **WHEN** one assistant message writes "Checking." and calls `archmax_advance({ to: "work",
+  reason, message: "Looking into it." })`, and the advance lands
+- **THEN** `agent-text` carries "Checking." after the model call, and again, under the same
+  `messageId`, "Checking.\n\nLooking into it."
+
+#### Scenario: A message-only advance into a human state is said once
+
+- **WHEN** the agent's message carries no text and its `archmax_advance` into a human state carries
+  `message: "Your refund is with a reviewer."`
+- **THEN** the turn emits exactly one `agent-text`, "Your refund is with a reviewer."
 
 #### Scenario: Usage attributes a call that named no model
 
@@ -983,12 +1069,15 @@ A seed of a return of the trigger in force SHALL land unlocked:
 
 ### Requirement: `archmax_advance` moves the session along a declared edge
 
-The runtime SHALL expose `archmax_advance({ to, reason, evidence? })`, rejecting an empty `reason`,
-and on a call SHALL in order: check the leaving state's `requires`; validate the edge against the
-declared transitions; then commit the position, an `agent` trail step with the reason, and a tool
-message saying the target's tools are now usable. A refusal SHALL answer
-`archmax_advance rejected: <reason>` — listing the valid target slugs for an undeclared edge — and
-leave the position unchanged; every such refusal is recoverable and leaves the agent to retry. The
+The runtime SHALL expose `archmax_advance({ to, reason, message?, evidence? })`, rejecting an empty
+`reason`, and on a call SHALL in order: check the leaving state's `requires`; validate the edge
+against the declared transitions; then commit the position, an `agent` trail step with the reason,
+and a tool message saying the target's tools are now usable. `message` SHALL be what the person
+reads as the session moves on (see "A control call's message is what the person reads"); into a
+human state it is the handoff (see "The handoff message"). A refusal SHALL answer
+`archmax_advance rejected: <reason>` — listing the valid target slugs for an undeclared edge — in a
+tool message marked refused, so a `message` the call carried is never said, and leave the position
+unchanged; every such refusal is recoverable and leaves the agent to retry. The
 `to` parameter SHALL be described as a slug. A target that is an automated state SHALL run in place
 of the next model call. An automated state's own `archmax_advance` SHALL be validated the same way
 and SHALL commit when its run settles, with a `grader` or `code` trail step in place of the `agent`
@@ -1078,8 +1167,10 @@ revision.
 
 ### Requirement: `archmax_raise` ends the session failed from any state
 
-The runtime SHALL expose `archmax_raise({ code, reason })` in every state, terminal and automated
-states included. Calling it SHALL always mean failure; the tool SHALL take no argument that declares
+The runtime SHALL expose `archmax_raise({ code, reason, message? })` in every agent and human state,
+terminal ones included, and `archmax_raise({ code, reason })`, with no `message`, in every automated
+state. `message` SHALL be what the person reads as the session fails (see "A control call's message
+is what the person reads"). Calling it SHALL always mean failure; the tool SHALL take no argument that declares
 success. A session whose turn ends without `archmax_raise` SHALL be a success. `code` SHALL be a
 free-form string of 1 to 64 characters after trimming, holding no line break; `reason` SHALL be
 non-empty after trimming. An invalid argument SHALL be refused with an error-status tool message
@@ -1105,8 +1196,15 @@ answered and noted is the `automated-states` capability's.
 The tool description and the platform prompt SHALL tell the model to call `archmax_raise` only when
 the task cannot be completed and recovery has been tried; never to finish work that succeeded; and
 never in place of `archmax_wait` (something has to arrive), `archmax_reset` (a wrong branch) or a
-human state (a person has to decide). They SHALL tell the model that any message for the person
-belongs in the text of the same assistant message.
+human state (a person has to decide). They SHALL tell the model that what the person should read
+goes in the call's `message`, and that a reply that only explains the failure ends the session as a
+success.
+
+#### Scenario: A raise's message is what the person reads
+
+- **WHEN** the agent calls `archmax_raise({ code: "orders-unavailable", reason: "the store is down",
+  message: "I can't reach the order records." })` as the only call in a message with no text
+- **THEN** the outcome is `failed` and its `reply` is "I can't reach the order records."
 
 #### Scenario: A raise ends the session failed
 

@@ -19,9 +19,10 @@ archmax test order-lookup requester   # filter by path substring
 ```
 
 Discovery is recursive under `tests/` and sorted by path, and a case's **id** is its
-`tests/`-relative path minus the extension. Anything in the directory that is not a
-`*.test.yaml` or `*.test.yml` document, such as a leftover `tests.config.js` or a `*.test.js`
-file, is ignored without a diagnostic.
+`tests/`-relative path minus the extension. A filter matches any substring of the case file's
+workspace-relative path, such as `workflows/order-lookup/tests/refund-approved.test.yaml`.
+Anything in the directory that is not a `*.test.yaml` or `*.test.yml` document, such as a leftover
+`tests.config.js` or a `*.test.js` file, is ignored without a diagnostic.
 
 `archmax test` narrates on **stderr**, in the same visual language as `archmax run`: a session
 header, then each case's live state flow under a dimmed case header, a verdict line (✔ passed,
@@ -77,8 +78,8 @@ The top-level keys:
 | `trigger` | Which trigger starts the session (see [start conditions](#start-conditions-trigger-variables-and-workspace)). |
 | `variables` | The session's input, seeded locked on every driven turn. |
 | `workspace` | Files seeded into the session workspace before any step. |
-| `mocks` | Tool-result mocks the driven session sees. |
-| `clock` | The date and time every model call of the case states as "now" (see [cases and the date](#cases-and-the-date)). |
+| `mocks` | Tool-result mocks for the turns `send` steps drive (see [mocking tool results](#mocking-tool-results)). |
+| `clock` | The date and time the session agent's model calls state as "now" (see [cases and the date](#cases-and-the-date)). |
 | `steps` | The flat list of actions and assertions. |
 
 The schema **fails closed**. An unknown top-level key or step key is an error, raised at
@@ -183,7 +184,8 @@ To recover a real payload from a session that already ran, see
 **`workspace: { <path>: <content> }`** seeds input files into the session workspace before any
 step, as a host materializes a trigger's payload as a workspace file. Keys are agent-visible
 session paths: root-level files like `trigger.json`, or `scratchpad/…`. Mounts (`skills/…`) and
-runtime areas are rejected before anything is written. String values are written verbatim, other
+runtime areas are rejected before anything is written, with
+`Cannot seed "<path>": it resolves to the '<zone>' zone`. String values are written verbatim, other
 YAML values as JSON, and `{ from: <path> }` copies an existing file (see
 [file fixtures](#file-fixtures-from-references)). Reading a seeded file is still governed: the
 start state must allow the read tool the agent needs.
@@ -206,24 +208,25 @@ of them [halts the case](#which-assertions-halt-a-case).
 | `parked: true` | **Structural.** The turn parked, in either channel. `parked: decision` / `parked: input` pins the channel; `parked: { channel?, state? }` also pins the state it parked in. |
 | `raised: true` | **Structural.** The turn ended with `archmax_raise`: the agent's, a grader's or a code state's. `raised: <code>` pins the code exactly. `raised: { code?, reason? }` pins the code and matches the reason, exactly or as a regex when written `/pattern/flags`. A miss names the code that was raised, or says the session did not raise. |
 | `reachedState: <state>` | **Structural.** A **committed** (non-trigger) trail step entered the state, whoever made the move: the agent, a person, a grader or a code state. The trigger-arrival step does not count, so a session reaches its start state only by moving into it. |
-| `reply: { includes?, excludes? }` | `includes`: every token must match. `excludes`: none may match (leak checks). Each is a single token or a list, and a token is a substring or a `/pattern/flags` regex. Tokens match against the **whole assistant transcript** so far, because a session that parks often closes with a short "advancing to review" note after the substantive answer. |
-| `calledTool: { name, input? }` | The session's agent recorded a matching tool call in the transcript. A grader's and a code state's calls are not in it, so they never match. `input` matches partially: declared keys must match, others are ignored. String values of the form `/pattern/flags` match as regexes, and arrays match element-wise. The same matcher decides a mock's `whenInput`. |
-| `notCalledTool: { name, input? }` | The session recorded no matching tool call. |
-| `blockedTool: { name, input? }` | A matching call was made **and refused by governance**: the assertion for testing a guard, such as a state's `tools.allow` narrowing or its `skills.allow` set. `notCalledTool` also passes when the agent never tried, and neither is a tool that ran and errored. |
-| `usedNoTools: true` | The session's agent has recorded no tool calls at all, earlier turns included. A grader's or a code state's calls do not count. |
-| `ranWorkflow: { workflow, status?, count? }` | The session dispatched that sub-workflow. It reads the trail, so a dispatch a script, a code state or a grader made counts too. `status` defaults to `ok`. With `count`, exactly that many dispatches must match; without it, at least one. |
-| `trail: { to?, kind?, reason?, count }` | **Structural.** Exactly `count` trail steps match **all** given fields, and at least one of `to`/`kind`/`reason` is required. `kind` is one of `trigger`, `agent`, `human`, `grader`, `code`, `sub-workflow`, `reset` or `on_error`, so `{ kind: grader, to: orders-question, count: 2 }` counts a grader's send-backs. |
+| `reply: { includes?, excludes? }` | `includes`: every token must match. `excludes`: none may match (leak checks). Each is a single token or a list, and a token is a substring or a `/pattern/flags` regex. Each token is tested once against the **whole assistant transcript** so far, all the session's assistant messages joined together, so the tokens may match in different messages. A control call's `message` counts as said. The check reads the whole transcript because a session that parks often closes with a short "advancing to review" note after the substantive answer. |
+| `calledTool: { name, input? }` | The session's agent recorded a matching tool call in the transcript. A call governance refused counts as called. A grader's and a code state's calls are not in it, so they never match. `input` matches partially: declared keys must match, others are ignored. String values of the form `/pattern/flags` match as regexes, and arrays match element-wise. The same matcher decides a mock's `whenInput`. |
+| `notCalledTool: { name, input? }` | The session recorded no matching tool call. A refused call counts as called, so a refused attempt fails it. |
+| `blockedTool: { name, input? }` | A matching call was made **and refused by governance**: the assertion for testing a guard, such as a state's `tools.allow` narrowing or its `skills.allow` set. `notCalledTool` passes only when the agent never tried, and a tool that ran and errored was not blocked. |
+| `usedNoTools: true` | The session's agent has recorded no tool calls at all, earlier turns included. Every call counts, control tools (`archmax_advance`, …) and refused calls included, so an agent that advanced fails it. A grader's or a code state's calls do not count. |
+| `ranWorkflow: { workflow, status?, count? }` | The session dispatched that sub-workflow. It reads the trail, so a dispatch a script, a code state or a grader made counts too. `status` defaults to `ok`, so a failed dispatch matches only with `status: error`. With `count`, exactly that many dispatches must match; without it, at least one. |
+| `trail: { to?, kind?, reason?, count }` | **Structural.** Exactly `count` trail steps match **all** given fields, and at least one of `to`/`kind`/`reason` is required. `reason` matches by exact equality, with no regex form. The kinds are `trigger`, `agent`, `human`, `grader`, `code`, `sub-workflow`, `reset` and `on_error`, so `{ kind: grader, to: orders-question, count: 2 }` counts a grader's send-backs. `kind` is not checked against that list: a misspelt kind matches no step, and with `count: 0` it passes. |
 | `noTraversal: true` | **Structural.** The trail holds only trigger arrivals: the session never moved, as when its entry code state raised. |
 | `triggerArrival: <trigger-id>` | **Structural.** Some trail step has `kind: trigger` and that reason, confirming the session started from the declared trigger. |
-| `variables: { expect, path?, locked? }` | **Structural.** Every named variable is set to the expected value, by deep equality. `path` addresses into a value per name (`items.-1.sku` is the last element), and `locked` asserts the lock state. |
-| `grade: { closedQA: <criterion>, atLeast: <0..1> }` | A model scores the turn's **evidence** against a yes/no criterion: what the action's turn said *and* what the session did to get there (see [what the judge sees](#what-the-judge-sees)). **`atLeast` decides the outcome**: at or above it passes, below it fails the case, whatever the model's own boolean says. Requires `tests: { judge: … }` in `workflow.yaml`; without it, a `grade` entry records an actionable failure. |
+| `variables: { expect, path?, locked? }` | **Structural.** Every named variable is set to the expected value, by deep equality. `path` and `locked` are maps keyed by variable name: `path: { order: items.0.sku }` compares the expected `order` with that path into its value (`items.-1.sku` is the last element), and `locked: { order: true }` asserts its lock state. |
+| `grade: { closedQA: <criterion>, atLeast: <0..1> }` | A model scores the turn's **evidence** against a yes/no criterion: what the action's turn said *and* what the session did to get there (see [what the judge sees](#what-the-judge-sees)). **`atLeast` decides the outcome**: at or above it passes, below it fails the case, whatever the model's own boolean says. Requires `tests: { judge: … }` in `workflow.yaml`; without it, a `grade` entry fails with `grading model unavailable: declare 'tests: { judge: ... }' in workflow.yaml`. |
 
 The **trail** is the session's durable, typed record of every committed move: trigger arrivals,
 the agent's advances, a person's decisions, grader and code state moves, sub-workflow dispatches,
-resets and `on_error` routes. It is checkpointed and written to
-`sessions/<sessionId>/artifacts/trail.json`. Each turn begins with a `trigger` step whose `reason`
-names the trigger id, and a `trail:` count after several actions counts the whole accumulated
-trail. The assistant transcript and the recorded tool calls accumulate the same way.
+resets and `on_error` routes. It is checkpointed, and written to
+`sessions/<sessionId>/artifacts/trail.json` only when a host calls `emitRunArtifacts`. Each turn
+begins with a `trigger` step whose `reason` names the trigger id, and a `trail:` count after
+several actions counts the whole accumulated trail. The assistant transcript and the recorded tool
+calls accumulate the same way.
 
 A string of the form `/pattern/flags` is compiled as a regular expression in three places: the
 tokens of a `reply` entry, the input values of `calledTool`, `notCalledTool` and `blockedTool`, and
@@ -243,7 +246,8 @@ session. The grading input has two labelled sections:
    [mock](#mocking-tool-results) carries the mocked value, so the judge scores the turn the agent
    actually experienced.
 2. **The final reply to the user**: the action's turn `reply`, every text the agent said during it,
-   in order. A turn that said nothing has an empty reply, never an earlier turn's.
+   a control call's `message` included, in order. A turn that said nothing has an empty reply,
+   never an earlier turn's.
 
 The prompt weighs the two differently. A criterion about what the user was *told* is met only by
 the final reply; a criterion about what the assistant *did* may be met by the record. So a
@@ -285,10 +289,11 @@ there, before later steps spend model calls.
 ### Reading a case that stopped early
 
 A case can stop before its steps run out: a structural halt, a thrown action, or a `caseTimeoutMs`
-overrun. It still reports every record produced up to that point, each with the `steps` index it
-came from, and every assertion step that never ran with `status: "not-executed"`. Those contribute
-no failures, so an assertion that never ran stays visibly distinct from one that passed, both in
-the CLI's `N assertions not executed` line and to a host reading
+overrun (`<case> timed out after <N>ms (tests.caseTimeoutMs)`). It still reports every record
+produced up to that point, each with the `steps` index it came from, and every assertion step that
+never ran with `status: "not-executed"`. Those contribute no failures, so an assertion that never
+ran stays visibly distinct from one that passed, both in the CLI's `N assertions not executed` line
+and to a host reading
 [the records](/reference/public-api/#what-a-case-reports).
 
 A halt is a verdict the case reached; an error is a failure of the machinery running it. A case
@@ -338,9 +343,11 @@ mocks:
 `partialMatch` from `@archmax-ai/harness/testing`. `/pattern/flags` strings are regexes, and arrays
 match element-wise.
 
-Mocks answer the agent's tool calls, the programmatic calls scripts make inside the driven session,
-and the calls of its grader and code states: a code state's script reading
-`skills/order-data/assets/orders.json` sees the mocked result, and so does a grader. Governance
+Mocks ride only `send` steps. In a turn a `send` drives, they answer the agent's tool calls, the
+programmatic calls scripts make inside the driven session, and the calls of its grader and code
+states: a code state's script reading `skills/order-data/assets/orders.json` sees the mocked
+result, and so does a grader. A turn a `decide` or `deliver` step drives runs every tool call for
+real, so a state the session enters after a decision or a delivery calls its real tools. Governance
 decides each call first, and the mock answers once it is permitted. A control tool is never mocked.
 
 Mocking is capability-gated. A case that declares `mocks:` against a target that cannot intercept
@@ -385,9 +392,10 @@ closed:
 
 ## Cases and the date
 
-Every model call states the current date and time. A case whose fixtures or prompts carry dates (an
-order placed on `2026-03-15`, a refund window of 30 days) would otherwise read a different "now" on
-every run, and its verdict would drift with the calendar. Pin it:
+Every model call of the session's agent states the current date and time. A case whose fixtures
+or prompts carry dates (an order placed on `2026-03-15`, a refund window of 30 days) would
+otherwise read a different "now" on every run, and its verdict would drift with the calendar. Pin
+it:
 
 ```yaml
 title: Refund inside the window
@@ -404,6 +412,8 @@ clock: 2026-03-20            # or "2026-03-20T14:30:00Z", "2026-03-20T16:30+02:0
   sub-workflow's calls included. It outranks the host's
   [`clock` option](/reference/public-api/#clock-pinning-the-date) for this case, and a case without
   one runs on the host's choice.
+- **A grader is told no date.** The pin reaches the session agent's model calls only, and a
+  grader state's prompt carries no "now" at all.
 - **Only the prompt is pinned.** The sandbox's `Date`, in code states' scripts as in the agent's,
   recorded timestamps and a park's `resumeAt` stay real. A script that needs the case's "today"
   reads it from a variable the case seeds. An absolute `archmax_wait` `until` the model derives
@@ -498,7 +508,7 @@ workflow's graph, which is plain JavaScript that moves the session itself.
 
 A host embedding the SDK runs the same cases by calling
 [`runTests`](/reference/public-api/#runtests-cases-from-a-host). Its agent is assembled differently
-from the CLI's, so it supplies three more things:
+from the CLI's, so it supplies four more things:
 
 - **`authoring`**, the backend the suite is read from: the spec, the case documents and their
   `from:` fixtures. It defaults to the local filesystem under `rootDir`. A host whose authored tree
@@ -510,6 +520,9 @@ from the CLI's, so it supplies three more things:
 - **`sessionIdForCase`**, which names the session a case runs on, given the case file's path. That
   makes the case's checkpoints, artifacts and token usage addressable from the host's own records.
   Whatever id is used is reported back on `CaseResult.sessionId`.
+- **`modelFactory`**, which builds the judge's model (the `judge` role), and the default target's
+  models. Without it the judge runs on the `ARCHMAX_*` env model, even when `createTarget`
+  supplies the agent.
 
 `runTests` returns data and prints nothing. The CLI's test view is one renderer of its
 `CaseResult`s, and a host's reporter is another. Its two halves, `discoverCases` and `runCase`, are

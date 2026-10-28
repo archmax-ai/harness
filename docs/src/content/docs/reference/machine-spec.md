@@ -12,7 +12,7 @@ how a session moves through the machine, see
 
 | Root key | Holds |
 | --- | --- |
-| [`title`](#slugs-and-titles) | the workflow's display name, metadata only |
+| [`title`](#slugs-and-titles) | the workflow's display name, rendered in its prompt and in a caller's delegation tool |
 | [`instructions`](#instructions-the-workflows-standing-instructions) | direction that holds for the whole session |
 | [`disabled`](#disabled-take-a-workflow-out-of-service) | `true` to start no new turns |
 | [`runtime`](#runtime) | the runtime contract the workflow is written against |
@@ -236,6 +236,11 @@ The other load errors are listed under
 state they are the grader's criteria. `archmax validate` warns when an agent
 state with several transitions has no `instructions` to route by.
 
+Where a state tells the person something as it moves on, waits or fails, its
+`instructions` name the call and put the text in its `message` ("call
+`archmax_wait` with your question in its `message`"), never "tell them, then
+wait": a model message with no tool call ends the turn where the agent is.
+
 `summary` is a label for authors and hosts: an editor's node caption, a line in a
 generated diagram. It stays out of the prompt (see
 [Token efficiency and cost](/guides/token-efficiency/)).
@@ -258,16 +263,19 @@ at all. The runtime itself treats a slug as an opaque identifier.
 
 `title` is the state's optional display label: free text, repeatable, and
 **never a routing target**. It is carried in a human state's pending-decision
-record and exposed to hosts as `machine.stateTitle(slug)`. It reaches no model
-call.
+record and exposed to hosts as `machine.stateTitle(slug)`. The one model call
+that reads it is a park's reply-only call at that state, whose directive names
+the state by it; no state that routes into it is told it.
 
 Governance, transitions, events, session artifacts, and the CLI state-flow trail
 all use the slug, so retitling a state changes no behavior. Reword a title
 freely. Rename a slug deliberately, since it is a reference target.
 
-At the top level, `title:` is the workflow's display name, metadata only.
+At the top level, `title:` is the workflow's display name. It is rendered as the
+prompt's `# Workflow: <title>` heading, and it labels the workflow in the
+description of the `archmax_workflow_<slug>` tool a calling workflow binds.
 [`instructions`](#instructions-the-workflows-standing-instructions) is the
-top-level field that carries prompt text.
+top-level field that carries direction.
 
 The workflow's identity is its **workflow slug**: the `workflows/<slug>/`
 directory name, which is also the CLI's `<workflow>` argument. It follows the
@@ -344,7 +352,7 @@ these keys:
 | Key | Meaning |
 | --- | --- |
 | `args` | per-argument glob guards |
-| `paths` | globs every path argument the tool declares must match (`file_path` for the file tools, `path` for `ls`, `glob` and `grep`, both `source` and `destination` for `copy_file` and `move_file`); a tool that declares none is guarded on `file_path` |
+| `paths` | globs every path argument the tool declares must match (`file_path` for the file tools, `path` for `ls`, `glob` and `grep`, both `source` and `destination` for `copy_file` and `move_file`); a tool that declares none is guarded on `file_path`. An entry with `args` ignores its `paths` |
 | `connection` | the connection slug the tool resolves through, when its collection has more than one; consumer-defined, and governance never resolves it |
 | `source` | a free-form label naming where the tool came from, for the host that authored the entry; governance matches on `tool` alone and never reads it |
 
@@ -404,7 +412,9 @@ and for host tools (see
   for each default file tool the state is granted (by the workflow-wide grant or
   by its own entry, whatever that entry narrows) and for a host's
   `essentialTools`. A file tool the state is not granted gets nothing from it,
-  and any other tool needs its state's grant there as anywhere.
+  and any other tool needs its state's grant there as anywhere. A `search` (a
+  `glob` or `grep`) and an `execute` are not opened there, so a `glob` or `grep`
+  entry that narrows its `path` governs a search in `scratchpad/` too.
 
 A call naming several paths is refused when any one of them is, and the refusal
 names the argument (`'copy_file' on 'skills/x.md' (destination)`). An argument
@@ -751,13 +761,13 @@ states:
   research:
     budget:
       timeoutMs: 30000  # per model call; on expiry the state fails
-      maxParks: 5       # how many times this state may park itself with archmax_wait
+      maxParks: 5       # how many times this state may park itself with archmax_wait in one turn
 ```
 
 | Key | In an agent state | In a grader state |
 | --- | --- | --- |
 | `timeoutMs` | races each model call against a timer | bounds the grader's whole run |
-| `maxParks` | bounds how many times the state parks with `archmax_wait` | an `archmax validate` error: a grader cannot park |
+| `maxParks` | bounds how many times the state parks with `archmax_wait` in one turn | an `archmax validate` error: a grader cannot park |
 
 - **`timeoutMs`**: in an agent state, when the timer wins, the call's result is
   discarded and the state fails. The in-flight request is **not aborted**,
@@ -765,8 +775,10 @@ states:
   completes, and is billed, in the background. In a grader state the run is
   aborted.
 - **`maxParks`** bounds the "wait, re-check, wait again" loop of a polling state.
-  Parks are counted per state in the checkpoint, so the count survives restarts,
-  and the park that would exceed the bound is refused.
+  Parks are counted per state within one turn: a delivery resumes the same turn,
+  so its parks count on, and every new turn starts the count again. The count is
+  checkpointed, so it survives restarts, and the park that would exceed the bound
+  is refused.
 - An exhausted budget fails the state, which routes through
   [`on_error`](#on_error). A state with no `budget` has neither bound.
 - A **code state** declares no `budget` (an `archmax validate` error): it makes no
@@ -782,9 +794,9 @@ Hitting the limit does not route through `on_error`: the turn throws, and the
 session ends `failed` with the code `recursion-limit` (see
 [a turn that throws](/reference/public-api/#a-turn-that-throws)).
 
-A grader's own run is bounded by the same 400-step limit and by its
-`timeoutMs`. Hitting either fails the grader state, which does route through
-`on_error`.
+A grader's own run is bounded by a 400-step limit of its own, whatever the
+caller sets for the turn, and by its `timeoutMs`. Hitting either fails the
+grader state, which does route through `on_error`.
 
 ### `model`
 
@@ -864,7 +876,8 @@ state. These cause a terminal rejection:
   grader or code state finished without calling `archmax_advance` or
   `archmax_raise`;
 - an exhausted [`budget`](#budget): `timeoutMs` or `maxParks`;
-- a `${{…}}` guard that cannot be evaluated;
+- an allow entry's `${{…}}` guard that cannot be resolved (in a `forbid` entry,
+  one that cannot be resolved denies the call instead);
 - a failed sub-workflow call still unrecovered when the model finishes.
 
 An automated state's `on_error` is its own: a code state whose script throws
@@ -923,8 +936,9 @@ variables.
 - **Any variable, guarded or not.** `locks` ties a variable to the state that
   decides it.
 - **One owner.** Loading fails when two states own the same variable, when
-  `locks` names `trigger` or `title`, when it lists a name twice, or when it is on
-  a human state, which makes no tool calls.
+  `locks` names `trigger` or `title`, when it lists a name twice or one that is
+  not lowercase snake_case, or when it is on a human state, which makes no tool
+  calls.
 - **An owned variable stays changeable in its owner.** `archmax_set_variables`
   with `lock: true` is refused for it.
 - **The host's value wins.** A variable the host supplies (a seed, a trigger
@@ -969,10 +983,11 @@ What still works:
   is still bound, so disabling one leaf does not take its callers (or their
   parked sessions) offline. `validate` warns on each state that allows one.
 
-The value is read **fail-closed**. An absent key, `null` and boolean `false`
-leave the workflow running; every other value disables it, so a mis-authored
-`disabled: "no"` stops new turns. `archmax validate` reports a non-boolean value
-as an **error**.
+The value is a boolean and nothing else. Any other value, `null` and a bare
+`disabled:` included, is a load error naming the key, so a mis-authored
+`disabled: "no"` fails assembly instead of being guessed at, and
+`archmax validate` reports it as an **error**. Omit the key, or write `false`,
+to leave the workflow running.
 
 The switch is workflow-wide, and it acts on new turns. To stop an underway
 session, disable the workflow and leave its sessions unresumed. To forbid
@@ -1001,7 +1016,7 @@ states:
     triggers:
       manual:                                # the one entry: CLI, host firing, or a caller
         description: Enrich one order and say whether it is late.  # for a caller, never the agent
-        requires:                            # a firing must supply these to start
+        requires:                            # every turn it opens must supply these
           - order_id                         # a bare name: untyped
           - { name: due, type: date, description: The day the order is due. }
         returns:                             # the session guarantees these when it completes
@@ -1015,7 +1030,7 @@ states:
 | `message` | the **host** | Dotted path to a firing's words, or `false` for none |
 | `connection` | the **host** | Slug of the access connection governing the trigger's endpoint |
 | `description` | a **caller** | What calling this entry does, for whoever calls it |
-| `requires` | the machine | Variables a firing must supply for the session to start |
+| `requires` | the machine | Variables every turn the trigger opens must supply |
 | `returns` | the machine | Variables the session guarantees are set when it completes |
 
 The state a declaration sits on is the trigger's entry state, and the key it sits
@@ -1029,8 +1044,12 @@ and both are enforced.
 
 `requires:` is the entry-boundary counterpart of a state's `requires:`: the same
 word, the same grammar, the same fail-closed intent, applied at the session's
-boundary. A firing that does not supply every name does not start. A delegating
-parent that does not is refused **before** the child is composed.
+boundary. It is checked on **every** turn the trigger opens, against the
+variables that turn itself seeds: a value the session already holds does not
+count, so a follow-up turn passes the same variables again. A turn that omits a
+name, or supplies a mistyped value, is refused before any model call. A
+delegating parent that does not supply every name is refused **before** the
+child is composed.
 
 `returns:` is the exit half. The named variables are ordinary variables, set
 with `archmax_set_variables` or by a script. The check runs once, as the session
@@ -1048,14 +1067,17 @@ one the agent ended with `archmax_raise`: a failed session owes no returns.
 
 Nothing reads the returns before then. `archmax_advance` checks a state's own
 `requires:`, not the trigger's `returns:`, and a later write of a return
-replaces an earlier one, until the agent locks it. A seed of one (a name in both
-lists) lands **unlocked**, so the session can still write its result. See
+replaces an earlier one, until the agent locks it. A seed of one lands
+**unlocked**, so the session can still write its result, and it loses to a value
+the session already holds. See
 [a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
 
 Each entry is a bare variable name, or an object `{ name, type?, description? }`
-naming one. The two spellings mix freely in one list. A bare name and an object
-with only `name` are the same **untyped** entry, which takes any value, `null`
-included. Names are distinct across both spellings, so
+naming one. The two spellings mix freely in one list. A variable name is
+lowercase snake_case, `^[a-z][a-z0-9_]*$`, here as in a state's `requires` and
+`locks` and as the first segment of a `session:` path: any other spelling
+(`orderId`) is a load error. A bare name and an object with only `name` are the
+same **untyped** entry, which takes any value, `null` included. Names are distinct across both spellings, so
 `[total, { name: total, type: number }]` is a duplicate. The object is strict: any
 other key (a misspelled `type`, say) is a load error naming the entry and the key,
 rather than a silent "untyped".
@@ -1083,9 +1105,9 @@ property schemas, no enums and no ranges.
 
 Where the types are held:
 
-- **At the start.** A firing whose value for a typed `requires` entry does not
-  conform is refused like one that misses a name, before any model call, naming
-  the trigger, the variable, the type and what arrived.
+- **At the start of every turn.** A turn whose value for a typed `requires`
+  entry does not conform is refused like one that misses a name, before any
+  model call, naming the trigger, the variable, the type and what arrived.
 - **At the write.** An `archmax_set_variables` call writing a typed return of the
   current turn's trigger with a non-conforming value is refused, atomically, as a
   correctable tool refusal. The agent writes a conforming value and the session
@@ -1304,10 +1326,12 @@ into it. (A `paths:` grant needs **every** path to match.) An argument holding a
 list of paths contributes each element.
 
 `archmax validate` flags three shapes here: a state whose `allow` list would
-permit a call a denial blocks, a state that both allows and forbids one tool,
-and a denial of `archmax_advance` in a workflow that has anywhere to move, since
-no run could leave its start state. The globs cover dotfiles, so a denial of
-`secrets/**` blocks a write to `secrets/.env`.
+permit a call a denial blocks (an **error** for an entry naming a tool that
+`forbid_always` or the same state's bare `forbid` denies), a state that both
+allows and forbids one tool, and a denial of `archmax_advance` in a workflow
+that has anywhere to move, since no session could leave its start state. The
+globs cover dotfiles, so a denial of `secrets/**` blocks a write to
+`secrets/.env`.
 
 A **grader or a code state** is bound by its own state's `forbid` and by every
 workflow-wide denial, like the agent in that state, and a denial can refuse even

@@ -56,6 +56,14 @@ export type {
 /** Session handles over the configured session store (`agent.sessions`). */
 export type { SessionOperations } from "./sessions/operations.js";
 export type {
+  /** What `agent.emitRunArtifacts` records as `trajectory.json`: per-state messages and tool calls. */
+  Trajectory,
+  /** One state's stretch of a turn, with the activity produced while it was active. */
+  TrajectorySegment,
+  /** A message or a tool call (with its result) in a segment. */
+  TrajectoryItem,
+} from "./workflow/session-artifacts.js";
+export type {
   /** How a session is started: a trigger id. */
   TriggerInput,
   /** A resolved trigger: its id plus the start state it enters. */
@@ -305,8 +313,6 @@ export type {
   TriggerSignature,
   SignatureValueIssue,
 } from "./machine/signature.js";
-/** Default workflow slug when none is named. */
-export { DEFAULT_WORKFLOW } from "./workflow/paths.js";
 export {
   /** Prefix of every delegation tool name. */
   WORKFLOW_TOOL_PREFIX,

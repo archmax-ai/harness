@@ -1456,8 +1456,9 @@ SHALL NOT diagnose a required name nothing references. A
 
 ### Requirement: archmax validate checks the document and what surrounds it
 
-Static validation SHALL make no model calls: `validateWorkflow({ rootDir?, workflow?,
-skills? })` and `archmax validate [workflow] [--root <dir>] [--json]` return diagnostics —
+Static validation SHALL make no model calls: `validateWorkflow({ rootDir?, workflow,
+skills? })`, which names its workflow (there is no default), and
+`archmax validate [workflow] [--root <dir>] [--json]` return diagnostics —
 `severity` `error` or `warning`, a message, and where known a `file` and dotted `field` — with
 `valid` false when any error is present. Beyond the schema and lint (reported in the loader's
 words), validation SHALL check: the workflow slug shape; the runtime contract; every state

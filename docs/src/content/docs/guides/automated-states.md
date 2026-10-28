@@ -62,7 +62,9 @@ An automated state is offered exactly its own state's tool surface:
 
 `archmax_advance` is left out in a terminal state, whatever its type. On a grader or code state, a
 grant naming a withheld tool offers nothing, and a `tools.allow` entry naming one is an
-`archmax validate` error. A host reads the same table as `STATE_TYPE_TOOLS` from
+`archmax validate` error. The agent's `archmax_advance`, `archmax_wait` and `archmax_raise` take
+an optional `message` for the person; a grader's or code state's controls take none, since there
+is no person to tell. A host reads the same table as `STATE_TYPE_TOOLS` from
 [`@archmax-ai/harness/spec`](/reference/public-api/#archmax-aiharnessspec).
 
 Every call an automated state makes is decided by the kernel against **that state**, as the
@@ -150,12 +152,22 @@ The rules:
 - **Each run starts clean.** The script evaluates in a fresh REPL every time the state is entered,
   shared with neither the agent's `archmax_eval` nor another code state.
 - **The sandbox bounds it.** `settings.timeoutMs` (15,000 ms by default), `memoryLimitBytes`,
-  `maxPtcCalls` and `maxResultChars` bound the whole run. A cancelled turn stops it at once.
+  `maxPtcCalls` and `maxResultChars` bound the whole run. The timeout counts the time the script
+  spends awaiting its tool calls, so a call of `archmax_workflow_<slug>` has the child's whole
+  session inside it. A run past it fails with `Promise timed out — execution interrupted`; the fix
+  is a larger `settings.timeoutMs`, since a code state takes no `budget`. A cancelled turn stops it
+  at once.
+- **`tools.read_file` answers a page.** It resolves to the file's raw text, line numbers stripped,
+  but only its first 100 lines unless the call passes a larger `limit`, so `JSON.parse` on a longer
+  file fails without one. A missing or binary file answers an `Error: …` string rather than
+  rejecting, so check before you parse.
 - **Console lines are reported.** Each `console.log` line is a `code-output` event, which the CLI's
   state flow prints under the state.
 - **Imports are type carriers.** `@archmax-ai/harness/*` imports, such as `defineCodeState` from
   `@archmax-ai/harness/sandbox`, are stripped before evaluation. Any other import fails the state
-  and `archmax validate`. There is no `task()` global and no `tools.task`.
+  and `archmax validate`. Put them after the
+  [description block](/guides/code-interpreter/#description-frontmatter), which must be the very
+  first content of the file. There is no `task()` global and no `tools.task`.
 
 A file with no default export runs as a plain script. It reads the same input from the global
 `args`, and calls the global `tools`.
@@ -213,9 +225,9 @@ without deciding, such as one that answers in text alone, fails closed.
 
 ### Budget and model
 
-A grader's own loop runs under LangGraph's recursion limit of 400 steps, as a turn does, and its
-`budget.timeoutMs` bounds its running time. Hitting either fails the state. Neither counts the
-session agent's calls.
+A grader's own loop always runs under a LangGraph recursion limit of 400 steps, whatever the host
+sets for the turn, and its `budget.timeoutMs` bounds its running time. Hitting either fails the
+state. Neither counts the session agent's calls.
 
 `model` names the model id the grader runs on. It resolves under the **`grader` model role**, as
 `modelFactory("grader", env, id)`, where `id` is the state's `model`, else the workflow's
@@ -343,9 +355,10 @@ should then fix the work and advance again.
 ### The turn's reply
 
 A turn's [`reply`](/reference/public-api/#agent-in-detail) is every text the agent wrote during the
-turn, in order, joined by a blank line, and `""` when it said nothing. A draft the agent wrote
-before a grader or a code state sent it back stays in the reply, beside the corrected one. A
-grader's own text never enters the transcript, so it is never part of a reply.
+turn and the `message` of every control call it made that was not refused, in order, joined by a
+blank line, and `""` when it said nothing. A draft the agent wrote, or sent as an advance's
+`message`, before a grader or a code state sent it back stays in the reply, beside the corrected
+one. A grader's own text never enters the transcript, so it is never part of a reply.
 
 So put a send-back loop where the work is handed on rather than said, in front of no live answer.
 The refund workflow drafts its email into a file and sends it with a tool, so a rejected draft
@@ -430,9 +443,10 @@ emails-filed:
 A case asserts an automated state by what it committed: `reachedState`, a `trail` step with
 `kind: code` or `kind: grader` and its `reason`, `raised` for its raise, `variables` for what it
 set, `ranWorkflow` for its dispatches. A code state's and a grader's own tool calls are not in the
-transcript, so `calledTool`, `notCalledTool` and `usedNoTools` see only the agent's. Mocks answer
-their calls as they answer the agent's, but a control tool is never mocked: an automated state's
-`archmax_advance` and `archmax_get_history` are always the runtime's. See
+transcript, so `calledTool`, `notCalledTool` and `usedNoTools` see only the agent's. In a turn a
+`send` step drives, mocks answer their calls as they answer the agent's; a turn a `decide` or
+`deliver` step drives runs every call for real. A control tool is never mocked: an automated
+state's `archmax_advance` and `archmax_get_history` are always the runtime's. See
 [testing workflows](/guides/testing/#assertions).
 
 ```yaml

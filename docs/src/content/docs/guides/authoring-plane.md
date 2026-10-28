@@ -115,8 +115,8 @@ bundle's data enables that bundle in its own `skills.allow`.
 ### `archmax_run` executes only skill-bundled scripts
 
 The decision kernel enforces the agent-facing half of the same rule. It is a
-non-overridable safety rule (`script.skill-only`), evaluated ahead of workflow
-`policy`, consumer rules, and the per-state `allow` list:
+non-overridable safety rule (`script.skill-only`), evaluated ahead of the
+workflow's denials, consumer rules, and the per-state `allow` list:
 
 ```
 archmax_run("skills/order-enrichment/scripts/fan-out.js")  → allowed

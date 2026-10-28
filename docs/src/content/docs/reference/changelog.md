@@ -11,8 +11,9 @@ as it is today; the guides themselves describe only the present. Every release a
 
 ## 2.0.0
 
-A smaller schema and a smaller first example. Upgrading from 1.0.0 means deleting `maxTurns`,
-describing every edge and renaming two imports, in [three steps](#migrating-from-10).
+A smaller schema and a smaller first example, and what the agent tells the person travels in the
+control call. Upgrading from 1.0.0 means deleting `maxTurns`, describing every edge, renaming two
+imports and naming the workflow, in [four steps](#migrating-from-10).
 
 ### Breaking changes
 
@@ -30,11 +31,33 @@ describing every edge and renaming two imports, in [three steps](#migrating-from
   state type's `controls` and `withheld` tools, and `TASK_TOOL`. `ALWAYS_ALLOWED_TOOLS` and
   `UNGRANTABLE_TOOLS` are removed. What each state is offered is unchanged. See
   [tool tables](/reference/public-api/#tool-tables).
+- **An omitted `workflow` governs nothing.** `createAgent` without `workflow` assembles a plain
+  Deep Agent, exactly as `workflow: false` does: no spec is read. It no longer looks for
+  `workflows/order-lookup/`, the reference workspace's slug. `DEFAULT_WORKFLOW` is removed, and
+  `validateWorkflow` requires `workflow`. See [`Agent`, in detail](/reference/public-api/#agent-in-detail).
+
+### Features
+
+- **What the agent tells the person travels in the control call.** `archmax_advance`,
+  `archmax_wait` and `archmax_raise` take an optional `message`: what the person reads as the agent
+  moves on, waits or fails. Handing work on is one tool call rather than text beside one, which
+  reasoning models that answer on a final channel often could not produce. The turn's `reply`,
+  `lastAgentText` and the `agent-text` event read a control call's `message` unless the call was
+  refused; `agent-text` can arrive twice for one `messageId`, so replace by id. An advance into a
+  human state that carries a `message` owes no handoff, so no reply-only model call runs. Grader and
+  code states have no person to tell, and their controls take none. The platform prompt says "say it
+  in the call", and the reference workspace's instructions name the call that carries each message.
+  See [how a session moves](/guides/workflow-machine/#how-a-session-moves).
 
 ### Fixes
 
 - **A note reads as one sentence.** The note a grader or a code state leaves on a move added a full
   stop after a reason that already ended in one.
+- **`createAgent({ trigger })` reaches `send`.** The assembly's `trigger` is the trigger of every
+  `send` that names none, a new turn or a delivery, and of `resolveSession`. `send` used to ignore
+  it and open every turn at `manual`.
+- **The trajectory types are exported.** `Trajectory`, `TrajectorySegment` and `TrajectoryItem`,
+  the argument of `agent.emitRunArtifacts`, are root type exports.
 
 ### Examples and documentation
 
@@ -56,6 +79,9 @@ describing every edge and renaming two imports, in [three steps](#migrating-from
 3. **Rename the tool sets.** Replace `ALWAYS_ALLOWED_TOOLS.has(name)` with
    `STATE_TYPE_TOOLS.agent.controls.has(name)`, and `UNGRANTABLE_TOOLS.has(name)` with
    `name === TASK_TOOL`.
+4. **Name the workflow.** A host that relied on `createAgent()` picking up
+   `workflows/order-lookup/` passes `workflow: "order-lookup"`. Replace `DEFAULT_WORKFLOW` with the
+   slug, and pass `workflow` to `validateWorkflow`.
 
 ## 1.0.0
 

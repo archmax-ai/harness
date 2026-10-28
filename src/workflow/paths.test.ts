@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_WORKFLOW,
   PLATFORM_PROMPT_PATH,
   resolveCodeScript,
   runArtifactPaths,
@@ -12,7 +11,6 @@ import {
 
 describe("constants", () => {
   it("exports the expected values", () => {
-    expect(DEFAULT_WORKFLOW).toBe("order-lookup");
     expect(PLATFORM_PROMPT_PATH).toBe(".platform/system/GRAPH_STATE.md");
     expect(SCRIPTS_DIR).toBe("scripts");
   });

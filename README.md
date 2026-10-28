@@ -140,7 +140,14 @@ agent as a note it reads before trying again.
 
 ```js
 // workflows/refund/scripts/check-decision.js
-/** A refund is due only for a delivered order: any other decision goes back to the agent. */
+/**
+ * Refund decision check — the recorded decision must follow the refund policy.
+ *
+ * Looks the customer up with lookup_customer by the `email` variable. A refund is
+ * due ("approved") only when their order is delivered, otherwise "denied".
+ * Advances to review-email when `decision` matches; otherwise back to decide,
+ * naming the order, its status and the decision the policy requires.
+ */
 export default async function ({ variables, tools }) {
   const customer = JSON.parse(await tools.lookup_customer({ email: variables.email }));
   const order = customer?.order;
@@ -229,9 +236,12 @@ grader → send
 ```
 
 One call is one turn, and `outcome` says how it ended: `completed`, `parked` (waiting on a person
-or an event), or `failed` (the agent called `archmax_raise` because the work cannot be done). The
-trail records every move and who made it. Sessions are durable, under `sessions/` by default, so
-`send` with the same id continues the conversation.
+or an event), `failed` (the agent called `archmax_raise` because the work cannot be done), or
+`rejected` (governance or the runtime stopped it, such as a start without `email`). A turn that
+throws, a provider error for one, makes `send` reject with that error instead. The trail records
+every move and who made it. Sessions are durable, under `sessions/` by default, so `send` with the
+same id continues the conversation. Pass the same `variables` again: the trigger's `requires` is
+checked on every turn.
 
 ### The CLI
 

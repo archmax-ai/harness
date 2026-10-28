@@ -230,8 +230,9 @@ not supply, so it runs from the host's code.
 
 The project SHALL provide one Agent Skill under `skills/archmax-harness/` — a `SKILL.md` with frontmatter
 (`name`, `description`) and a concise playbook body, plus `references/workflow-schema.md`,
-`references/code-states-and-scripts.md`, `references/cases.md`, `references/backend-integration.md` and a
-`README.md` with the `npx skills add` command, license and safety notes. The build SHALL copy it to
+`references/code-states-and-scripts.md`, `references/cases.md`, `references/diagnostics.md`,
+`references/backend-integration.md` and a `README.md` with the `npx skills add` command, license and
+safety notes. The build SHALL copy it to
 `dist/authoring-skill/archmax-harness/` and the package SHALL export `BUNDLED_AUTHORING_SKILL_DIR`, the
 `dist/authoring-skill` directory holding `archmax-harness/`. The published package SHALL also ship the
 source directory as `skills/archmax-harness/`, where the skills CLI discovers it in an installed package.
@@ -286,7 +287,8 @@ authoring backend split (the agent cannot read `workflows/**`; code-state script
 working area); **code states** (`type: code` with `script: scripts/<file>.js`, and the code-state
 script contract: a default-export function receiving `{ state, trigger, variables, tools }`,
 moving the session with `tools.archmax_advance({ to, reason })` or ending it with
-`tools.archmax_raise`, its return value not read, typed imports from `@archmax-ai/harness/sandbox`
+`tools.archmax_raise`, controls that take no `message` because an automated state has no person to
+tell, its return value not read, typed imports from `@archmax-ai/harness/sandbox`
 such as `defineCodeState` and `CodeStateInput`; that it reads the session with
 `JSON.parse(await tools.archmax_get_history())`, the history a grader reads: `{ messages, trail }`,
 the session's whole transcript and trail, a tool entry carrying its tool, its call `id` and its
@@ -303,19 +305,30 @@ send-backs count them from the history's trail; that a grader belongs on work th
 is that turn's reply, a draft sent back included; that approving into a terminal code state ends
 the session with no further model call; and that no sandbox context has `task()`); that every
 transition, whatever its state's type, carries a non-empty `description` saying when to take it,
-the only thing the agent is told about the edge; that a chain of code states makes no model call;
+the only thing the agent is told about the edge; **that what the person reads travels in the
+control call** — the agent's `archmax_advance`, `archmax_wait` and `archmax_raise` take an optional
+`message`, shown to the person as the reply and never said when the call is refused, an advance
+into a human state carrying one owes no reply-only handoff call, and a state that tells the person
+something as it moves on, waits or fails writes that call into its `instructions` (`call
+archmax_wait with your question in its message`), never "tell them, then wait", since a reply
+without a call ends the turn where the agent is; that a chain of code states makes no model call;
 that a turn, a runaway cycle of automated states included, is bounded by LangGraph's recursion
 limit (`DEFAULT_RECURSION_LIMIT`, 400, unless the caller sets one), a grader's run by the same
 limit and its `budget.timeoutMs`, and that neither a state nor the workflow declares a count of
 model calls; sub-workflows, including that a child inherits every ancestor's workflow-wide denials and no per-state list; cases (the strict YAML grammar, `title`/`description`,
 `trigger`/`variables`/`workspace` with `from:` fixtures, `mocks`, the flat `steps` list, `grade`,
-the `tests:` block); and the verify loop `archmax validate` → fix → `archmax test`. It SHALL teach
+the `tests:` block); and the verify loop `archmax validate` → fix → `archmax test`, with
+`references/diagnostics.md` mapping each `archmax validate` diagnostic, each failed-session reason
+and each `archmax test` verdict (a case timeout, a missing `tests.judge`, a `workspace` seed outside
+the session paths, mocks the target cannot intercept) to its fix. It SHALL teach
 sequential execution only (no `parallel`/`join`) and SHALL declare the runtime contract it targets
 (`engine: archmax-harness`, `version: "3"`).
 
 It SHALL stay concise: `SKILL.md` holds the procedure and routes each task to one short
-reference, and the skill shows one example per idea — one complete code-state script and one
-grader-state example — rather than variations of either.
+reference, each reference owns one topic and links to another rather than repeating it, and the
+skill shows one example per idea — one complete code-state script and one grader-state example
+(the schema reference's skeleton, which the grader section points at) — rather than variations of
+either.
 
 It SHALL teach one form per concept and no superseded one: no `subagents/` directory or
 `SUBAGENT.md`, no `before`/`after` hook of any kind (`script`, `rubric`, `subagent` or a custom
@@ -394,19 +407,37 @@ kin) or verdict return shape (a bare `false`, `{ ok: false }`).
 - **WHEN** an agent follows the skill to scaffold a new workflow
 - **THEN** the produced `workflow.yaml` declares `tools.allow_always` listing `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `copy_file`, `move_file`, `remove_file`, `write_todos`, `archmax_eval` and `archmax_run` (less any the workflow must not have), and the skill's skeleton declares no empty `tools.allow_always`
 
+#### Scenario: Skill puts what the person reads in the call
+
+- **WHEN** an agent follows the skill to write a state that asks the person something and waits, or
+  tells them something as it advances or fails
+- **THEN** the state's `instructions` name the control call and what its `message` says (`call
+  archmax_wait with your question in its message`), never a reply followed by the call, and no
+  grader or code state is given a `message`
+
+#### Scenario: Skill maps a failing test's verdict to its fix
+
+- **WHEN** `archmax test` reports a case `timed out after Nms (tests.caseTimeoutMs)` or
+  `grading model unavailable`
+- **THEN** `references/diagnostics.md` names the verdict and its fix (raise
+  `tests.caseTimeoutMs` or find the loop; add `tests: { judge: {} }`)
+
 ### Requirement: The skill teaches the wiring API as it is
 
 `references/backend-integration.md` SHALL teach `createAgent` with Deep Agents' own option names
 plus `workflow`, `workspace` (`rootDir`, `mounts`, `sessionStore`) and
 `authoring` (the backend serving `workflows/**`, that is specs, `WORKFLOW.md`, code-state scripts
 and cases, to the runtime only); `modelFactory` and its roles (`agent`, `judge`, `grader`), a
-grader state's model being resolved under `grader`; that `workflow: false` declares a plain Deep
-Agent, while an omitted `workflow` looks for the default workflow and is governed by it when found;
-the `agent.workflow.*` surface
+grader state's model being resolved under `grader`; that an omitted `workflow`, like
+`workflow: false`, assembles a plain Deep Agent and reads no spec, since there is no default
+workflow; that `trigger` is the trigger of every `send` (and `resolveSession`) that names none, else
+`manual`; the `agent.workflow.*` surface
 (`send`, `decide`, `reply`, `deliver`, `resolveSession`, `resolveTrigger`) and the session-level
-members on the agent (`sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `dispose`); the
-`onEvent` stream, including the `code-*` and `grader-*` events that bracket an automated state's
-run; the session artifacts (`graph.json`, `trail.json`, `variables.json`,
+members on the agent (`sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `dispose`); an
+`Outcome`'s `reply` as everything the agent said in the turn, its text and the `message` of each
+control call that was not refused; the `onEvent` stream, including the `code-*` and `grader-*`
+events that bracket an automated state's run, and an `agent-text` that carries a control call's
+`message` and can arrive twice for one `messageId`, to be replaced by id; the session artifacts (`graph.json`, `trail.json`, `variables.json`,
 `metadata.json`); and token accounting via `model-usage` events (a grader's calls included),
 `createUsageTracker` and the `pricing` option. Every code path or export it names SHALL exist in
 the current source, so it names no `hookExecutors` option and no `rubric` model role.
@@ -431,13 +462,16 @@ the current source, so it names no `hookExecutors` option and no `rubric` model 
 
 ### Requirement: Mandatory JSDoc header on authored code files
 
-The skill SHALL instruct that every JavaScript file authored in a workspace — code-state scripts
-and `archmax_run` sources — opens with a JSDoc block: a one-line title, a blank line, and a prose
-description of what the code reads, the sequence it performs, and each outcome (for a code state,
-the condition for each transition it advances to and for each raise). Cases, being YAML, SHALL
-carry the same depth in their mandatory `description`. The skill SHALL state accurately that
-`archmax validate` enforces the case `description` while the JSDoc header is an authoring
-standard, and every complete file example the skill ships SHALL model it.
+The skill SHALL instruct, in `SKILL.md`'s workspace layout, that every JavaScript file authored in a
+workspace — code-state scripts and `archmax_run` sources — opens with a JSDoc block: a one-line
+title, a blank line, and a prose description of what the code reads, the sequence it performs, and
+each outcome (for a code state, the condition for each transition it advances to and for each
+raise). It SHALL say that admin UIs show this block in place of the code, up to its first `@tag`,
+and that the block opens the file with any import after it: `parseCodeDescription`, the extractor
+those UIs use, reads only a block that opens the file. Cases, being YAML, SHALL carry the same depth in their mandatory
+`description`. The skill SHALL state accurately that `archmax validate` enforces the case
+`description` while it does not check the JSDoc header, an authoring standard, and every complete
+file example the skill ships SHALL model it.
 
 #### Scenario: The rule names the two kinds of workspace JavaScript
 
@@ -448,8 +482,8 @@ standard, and every complete file example the skill ships SHALL model it.
 #### Scenario: Agent authors a code-state script that satisfies the rule
 
 - **WHEN** an agent follows the skill to write a code state's script
-- **THEN** the file opens with a title-plus-description JSDoc block naming the inputs read and
-  the condition for each transition it advances to and each raise
+- **THEN** the file opens with a title-plus-description JSDoc block, before any import, naming the
+  inputs read and the condition for each transition it advances to and each raise
 
 ### Requirement: The skill reconstructs a case's inputs from previous sessions
 
