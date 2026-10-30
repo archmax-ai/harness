@@ -265,15 +265,20 @@ second reference to the former slug is left behind.
 
 A state's `transitions` SHALL be a list of `{ to, description?, type? }` where `to` names a
 declared state, `description` is a string, and `type` is one of `approve`, `reject`, `refine`,
-`none`. An absent, empty or whitespace-only `description` SHALL mark the edge **undescribed**: the
-agent routes on the target state's `instructions` instead (see the `governance` capability). A
-non-string `description`, an undescribed edge whose target has no non-blank `instructions`, and an
-undescribed edge into a grader or code state SHALL each be a load error addressed to
-`states.<slug>.transitions.<index>.description`, which names the edge, stating that the agent
-routes on the description or else on the target's instructions, and what to write instead: a
-grader's instructions are its criteria, never shown to the work it judges, and a code state has
-none. A code state's own edges MAY go undescribed, whatever their target: its script routes on
-them, and nothing reads their descriptions. A state with no transitions SHALL be terminal: the
+`none`. The description is the only thing the agent is told about the edge (see the `governance`
+capability), and at a human state it is also the decision's button label. A non-string
+`description` SHALL be a load error. An absent, empty or whitespace-only one makes the edge
+**undescribed**, which SHALL load only where nothing is chosen by it: the edge is the **single**
+transition of an **agent** state that declares non-blank `instructions`, and it leads into
+**another agent** state. Every other undescribed edge SHALL be a load error addressed to
+`states.<slug>.transitions.<index>.description`, which names the edge, saying why this edge needs
+one and what to write: the state has several transitions, and the agent chooses between them by
+their descriptions; the state is a human state (the description is the person's button label), a
+grader state (the grader chooses by the descriptions) or a code state (the description is what a
+reader of the spec and the trail goes by); the target is a human, grader or code state, to which
+the edge hands the session; the edge leads back into its own state; or the state declares no
+`instructions`, which are the undescribed edge's whole condition. A target's `instructions`
+SHALL never stand in for a description. A state with no transitions SHALL be terminal: the
 session completes when the state's work finishes there — the agent's last turn in an agent state,
 the script's return in a code state — and `archmax_advance` is not disclosed or offered in it.
 `on_error`, when declared, SHALL name a declared state; a state's failure (an exhausted budget, or
@@ -281,13 +286,26 @@ an automated state that errors, times out or finishes without deciding) routes t
 without one ends the session rejected. Transitions carry no preconditions of their own: an edge is
 decided only by its existence and the state's `requires`, whoever takes it.
 
-#### Scenario: Missing description rejected
+#### Scenario: A lone edge between agent states may go undescribed
 
-- **WHEN** a state declares `transitions: [{ to: review }]`, or a `description` that is empty or
-  whitespace-only, and `review` declares no `instructions` (or blank ones) — or a `description`
-  that is not a string, whatever the target
+- **WHEN** an agent state with `instructions` declares `transitions: [{ to: send }]`, or a
+  `description` that is empty or whitespace-only, and `send` is an agent state
+- **THEN** the spec loads, and the agent is told to take the edge as soon as the state's
+  instructions are done, without asking anyone whether to move on
+
+#### Scenario: Missing description rejected where an edge is chosen
+
+- **WHEN** an undescribed edge is one of its state's two or more transitions, leaves a human,
+  grader or code state, enters a human, grader or code state, leads back into its own state, or
+  leaves a state with no `instructions`
 - **THEN** loading fails with one error addressed to that transition's `description` field, saying
-  what the description is for and what to write instead
+  why this edge needs a description and what to write instead
+
+#### Scenario: A non-string description rejected
+
+- **WHEN** a transition's `description` is a number or a list
+- **THEN** loading fails with an error addressed to that transition's `description` field, on
+  whichever edge it is
 
 #### Scenario: Dangling targets rejected
 
@@ -300,33 +318,25 @@ decided only by its existence and the state's `requires`, whoever takes it.
   declares no transition to `x`
 - **THEN** `archmax validate` warns that the runtime will block the transition
 
-#### Scenario: An undescribed edge to an instructed state loads
-
-- **WHEN** an agent state declares `transitions: [{ to: lookup }]` and `lookup` declares non-blank
-  `instructions`
-- **THEN** the spec loads with no error and no warning about the edge, and `description: ""` on the
-  same edge loads the same way
-
 #### Scenario: An automated state's failure takes the error route
 
 - **WHEN** a code state declaring `on_error: escalate` has a script that throws
 - **THEN** the session moves to `escalate`; with no `on_error`, the session ends rejected
 
-#### Scenario: An undescribed edge into an automated state is refused
+#### Scenario: An edge into a grader needs a description like any other
 
-- **WHEN** an agent state declares `transitions: [{ to: review-enrichment }]`, where `review-enrichment` is
-  a grader state with `instructions`, or `transitions: [{ to: check-refund }]`, where `check-refund`
-  is a code state
-- **THEN** loading fails with one error addressed to that transition's `description`, saying that
-  a grader's instructions are its criteria and never shown to the work it judges, or that a code
-  state has none, and `archmax validate` fails with the same error
+- **WHEN** an agent state declares `transitions: [{ to: review-enrichment }]`, where
+  `review-enrichment` is a grader state with `instructions`
+- **THEN** loading fails with the same error as for an edge into any other state, addressed to that
+  transition's `description`, and `archmax validate` fails with the same error
 
-#### Scenario: A code state's own edges may go undescribed
+#### Scenario: A code state's own edges need descriptions
 
-- **WHEN** a code state declares `transitions: [{ to: answer }, { to: decline }]`, with no
-  `description` on either
-- **THEN** the spec loads with no error and no warning about the edges, whatever `answer` and
-  `decline` declare
+- **WHEN** a code state declares `transitions: [{ to: answer }, { to: decline }]`, neither carrying a
+  `description`
+- **THEN** loading fails with one error per edge, addressed to
+  `states.<slug>.transitions.0.description` and `states.<slug>.transitions.1.description`, although
+  the state's script chooses the edge itself
 
 ### Requirement: Human-state rules are split between schema and lint
 
@@ -335,18 +345,19 @@ A `type: human` state parks the session for a person's decision, so it SHALL dec
 labeled `type` (`approve`/`reject`/`refine`), and no transition to itself. These SHALL be
 **lint errors**: the runtime tolerates them and the spec still loads, while `archmax validate`
 fails on them. The shape rules a human state shares with every state — the `type` enum, the
-transition `type` enum, an existing `to` — remain schema errors, and so does a non-empty
-`description` on each of a human state's own transitions, which an agent state's edge may omit:
-there it is the decision's button label for a person, so a human state's decision button labels
-are guaranteed by the schema rather than by lint. The decision record SHALL be built from the
-state's `title`, `instructions`, declared `evidence` (leading, deduplicated with any evidence the
-advancing call attached) and its transitions' `to`/`description`/`type`.
+transition `type` enum, an existing `to`, a non-empty `description` on every transition of a
+state that is not an agent state — remain schema errors. On a human state the description is the decision's button label for a person, so a
+human state's decision button labels are guaranteed by the schema rather than by lint. The
+decision record SHALL be built from the state's `title`, `instructions`, declared `evidence`
+(leading, deduplicated with any evidence the advancing call attached) and its transitions'
+`to`/`description`/`type`.
 
 #### Scenario: Human state without a button label
 
-- **WHEN** a `type: human` state declares a transition with no `description`
-- **THEN** loading fails under the strict schema naming that transition's `description` and saying
-  that it is the decision's button label, even though the target declares `instructions`
+- **WHEN** a `type: human` state declares a transition without a `description`
+- **THEN** loading fails under the strict schema, addressed to that transition's `description`
+  and naming it the label of the person's button, even when it is the state's only transition
+  and the target is an agent state that declares `instructions`
 
 #### Scenario: A leftover hook key on a human state
 
@@ -362,33 +373,34 @@ advancing call attached) and its transitions' `to`/`description`/`type`.
 
 ### Requirement: Budgets
 
-A state's `budget` SHALL accept `maxTurns`, `timeoutMs` and `maxParks`, each a positive
-integer when present and unbounded when absent. In an agent state, `maxTurns` counts the state's
-model turns, `timeoutMs` bounds a model call in the state, and `maxParks` counts the state's
-`archmax_wait` parks. In a grader state, `maxTurns` bounds the grader's own model calls and
-`timeoutMs` bounds the grader's run; neither spends the session agent's `maxTurns`. A
-`budget.maxParks` on a grader and any `budget` on a code state are lint errors (see "Keys a
-state type never reads are lint errors"). Exhausting any budget fails the state, which routes
-through `on_error` when declared and otherwise rejects the session. A budget SHALL be declared
-only on a state; the spec root carries none (see "Root keys").
+A state's `budget` SHALL accept `timeoutMs` and `maxParks`, each a positive integer when present
+and unbounded when absent, and no other key: `budget.maxTurns` is an unknown key and a load error.
+In an agent state, `timeoutMs` bounds a model call in the state and `maxParks` counts the state's
+`archmax_wait` parks. In a grader state, `timeoutMs` bounds the grader's whole run. No budget
+counts model calls: how many a turn makes, and how many a grader's run makes, is bounded by
+LangGraph's recursion limit (see the `runtime` capability). A `budget.maxParks` on a grader and
+any `budget` on a code state are lint errors (see "Keys a state type never reads are lint
+errors"). Exhausting either budget fails the state, which routes through `on_error` when declared
+and otherwise rejects the session. A budget SHALL be declared only on a state; the spec root
+carries none (see "Root keys").
 
 #### Scenario: Non-positive budget rejected
 
 - **WHEN** a state declares `budget: { maxParks: 0 }` or a non-integer value
 - **THEN** loading fails with "must be a positive number" addressed to that field
 
-#### Scenario: A grader's `maxTurns` bounds the grader
+#### Scenario: A turn count is not a budget
 
-- **WHEN** a grader state declares `budget: { maxTurns: 3 }` and its grader has made three model
-  calls without calling `archmax_advance` or `archmax_raise`
-- **THEN** the grader's run fails, and the failure routes through the state's `on_error` when
-  declared and otherwise rejects the session
+- **WHEN** a state declares `budget: { maxTurns: 8 }`
+- **THEN** loading fails with `Unrecognized key: "maxTurns"` addressed to `states.<slug>.budget`,
+  and `archmax validate` fails with the same error
 
 #### Scenario: A grader's timeout bounds the run
 
 - **WHEN** a grader state declares `budget: { timeoutMs: 30000 }` and its grader has not decided
   30 seconds after it started
-- **THEN** the grader's run fails the same way
+- **THEN** the grader's run fails, and the failure routes through the state's `on_error` when
+  declared and otherwise rejects the session
 
 ### Requirement: Allow entries and the tools blocks
 
@@ -411,10 +423,10 @@ A state with no `tools` block permits the workflow-wide grant only. A state entr
 workflow grants narrows it there (`{ tool: archmax_run, paths: [skills/x/scripts/**] }`), and a state
 entry naming a default tool that a declared `allow_always` omits grants it in that state. A default
 tool listed in `allow_always`, bare or guarded, SHALL be an ordinary grant and draw no warning. In
-a grader or code state the workflow-wide grant SHALL leave out the agent-only tools
-(`write_todos`, `archmax_eval`, `archmax_run`) and `archmax_wait` and `archmax_reset`, whether
-they arrive as default tools or are listed in a declared `allow_always` (see the `governance`
-capability).
+a grader or code state the workflow-wide grant SHALL leave out the tools that state type withholds
+(`STATE_TYPE_TOOLS[type].withheld`: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`
+and `archmax_reset`), whether they arrive as default tools or are listed in a declared
+`allow_always` (see the `governance` capability).
 
 A workflow that declares `tools.allow_always` and names none of the default tools there or in any
 state's `tools.allow` SHALL draw one lint warning. The warning SHALL name the default tools and say
@@ -1791,14 +1803,15 @@ SHALL name the state, the key and the state's type.
 
 - **WHEN** a `type: grader` state declares `budget: { maxParks: 1 }`
 - **THEN** `archmax validate` reports an error naming `budget.maxParks`, while
-  `budget: { maxTurns: 4, timeoutMs: 60000 }` on the same grader draws no diagnostic
+  `budget: { timeoutMs: 60000 }` on the same grader draws no diagnostic
 
 ### Requirement: An automated state's allow list names no tool it is never offered
 
-In a `grader` or `code` state, a `tools.allow` entry naming `write_todos`, `archmax_eval`,
-`archmax_run`, `archmax_wait` or `archmax_reset` SHALL be a **lint error** naming the state and
-the tool. No automated state is offered those tools, so the entry grants nothing: the spec still
-loads, and the runtime leaves the tool off the state's surface. A `tools.allow_always` entry naming
+In a `grader` or `code` state, a `tools.allow` entry naming a tool its type withholds
+(`STATE_TYPE_TOOLS[type].withheld`: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`
+and `archmax_reset`) SHALL be a **lint error** naming the state and the tool. No automated state
+is offered those tools, so the entry grants nothing: the spec still loads, and the runtime leaves
+the tool off the state's surface. A `tools.allow_always` entry naming
 one of those tools SHALL draw no such error: it grants the tool in the workflow's agent and human
 states, and every automated state is left without it.
 

@@ -28,13 +28,11 @@ describe("workflow state field definition", () => {
     const schemaFields = Object.keys(workflowStateSchema.shape).sort();
     expect(new Set(schemaFields).size).toBe(schemaFields.length);
     expect(schemaFields).toContain("parkPhase");
-    expect(schemaFields).toContain("stateTurns");
   });
 
-  it("parses a checkpoint written before the park phase and turn budget existed", () => {
+  it("parses a checkpoint written before the park phase existed", () => {
     const parsed = workflowStateSchema.parse({ workflowState: "review", status: "running" });
     expect(parsed.parkPhase).toBeUndefined();
-    expect(parsed.stateTurns).toBeUndefined();
   });
 
   it("reads the parked state a record names, or nothing without a record", () => {

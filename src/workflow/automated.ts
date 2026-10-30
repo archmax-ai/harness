@@ -249,12 +249,18 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
   });
 }
 
+/** `text` as one sentence: trimmed, ending in its own full stop, or one added. */
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 /** The runtime note an automated move or raise leaves for the session to read. */
 export function automatedNoteText(outcome: AutomatedOutcome): string | undefined {
   const { state, type, result } = outcome;
   const who = type === "grader" ? `The '${state}' grader` : `'${state}'`;
   if (result.kind === "advanced") {
-    return `[${type}] ${who} moved the run to '${result.to}': ${result.reason}. You are now in '${result.to}'.`;
+    return `[${type}] ${who} moved the run to '${result.to}': ${sentence(result.reason)} You are now in '${result.to}'.`;
   }
   if (result.kind === "raised") {
     return `[${type}] ${who} ended the session as failed ('${result.code}'): ${result.reason}`;

@@ -314,7 +314,6 @@ export function transitionUpdate(
     workflowState: move.to,
     // A successful transition clears an earlier rejection marker and starts the target's turn budget afresh.
     ...NO_PENDING_FAILURE,
-    stateTurns: null,
     auditTrail: [step],
   };
   if (!machine.isHumanState(move.to)) return { update };
@@ -607,8 +606,7 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
     message: commit({
       workflowState: entry,
       ...NO_PENDING_FAILURE,
-      stateTurns: null,
-      auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
+        auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
       ...(released.length > 0
         ? {
             variables: Object.fromEntries(

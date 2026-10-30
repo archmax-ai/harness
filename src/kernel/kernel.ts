@@ -4,7 +4,7 @@ import {
   HARNESS_CONTROL_TOOLS,
   EVAL_TOOL,
   SET_VARIABLES_TOOL,
-  UNGRANTABLE_TOOLS,
+  TASK_TOOL,
 } from "../machine/tool-names.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { ForbidEntry } from "../machine/types.js";
@@ -276,7 +276,7 @@ const evalBlockRule: GovernanceRule = (action) => {
  * same fact.
  */
 const taskBlockRule: GovernanceRule = (action) => {
-  if (action.kind !== "tool-call" || !UNGRANTABLE_TOOLS.has(action.tool)) return null;
+  if (action.kind !== "tool-call" || action.tool !== TASK_TOOL) return null;
   return { decision: "block", ruleId: "tool.ungrantable", reason: TASK_BLOCK_MESSAGE, warn: false };
 };
 

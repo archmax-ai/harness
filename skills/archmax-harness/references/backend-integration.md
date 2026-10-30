@@ -1,816 +1,284 @@
-# Wiring @archmax-ai/harness into a backend — integration reference
+# Wiring the harness into a backend
 
-How to embed the `@archmax-ai/harness` package in a service so a worker can
-**execute** workflows and an API/frontend can **visualize** run state. All names
-below are the real public API (`src/index.ts`); confirm against the installed
-package's `dist/index.d.ts`.
+Load this when you embed `@archmax-ai/harness` in a service: a worker that sends turns,
+an API that answers parked sessions, a frontend that draws them. Every name here is an
+export of the installed package. When in doubt, check its `dist/index.d.ts`.
 
 ## Contents
 
-- [Install (registry & local tarball)](#install)
-- [Public exports](#public-exports)
-- [createAgent options](#createworkflowagent-options)
-- [Agent](#workflowruntime)
-- [Running a workflow](#running-a-workflow)
-- [Human-in-the-loop](#human-in-the-loop)
-- [Exposing a workflow to outside callers (MCP, forms, APIs)](#exposing-a-workflow-to-outside-callers)
-- [Lifecycle events (live visualization)](#lifecycle-events)
-- [Session artifacts (historical visualization)](#run-artifacts)
-- [Model configuration](#model-configuration)
-- [Custom backends](#custom-backends)
+- [Install](#install)
+- [The smallest program](#the-smallest-program)
+- [`createAgent` options](#createagent-options)
+- [Models](#models)
+- [Outcomes and parked sessions](#outcomes-and-parked-sessions)
+- [Events](#events)
+- [Sessions, storage and artifacts](#sessions-storage-and-artifacts)
+- [Host tools that use the workspace](#host-tools-that-use-the-workspace)
+- [Exposing a workflow to callers](#exposing-a-workflow-to-callers)
 - [Cases against your agent](#cases-against-your-agent)
-- [Suggested worker / API / frontend split](#suggested-split)
-
----
+- [Sub-workflows in a service](#sub-workflows-in-a-service)
+- [A typical split](#a-typical-split)
 
 ## Install
 
-**Registry** (once published): `npm i @archmax-ai/harness`.
+Install `@archmax-ai/harness`, plus `langchain` and `zod` to write host tools. It needs
+Node 22 or later. Before a release is published, `npm pack` the harness and install the
+tarball: a real copy behaves like production, and a symlink does not.
 
-**Local / pre-publish** — install exactly what the registry would ship (a real copy
-in `node_modules`, not a symlink), so behavior matches production:
+This skill ships inside the package. `BUNDLED_AUTHORING_SKILL_DIR` is the directory that
+holds it (`<dir>/archmax-harness/SKILL.md`), and
+`npx skills add ./node_modules/@archmax-ai/harness` installs the copy that matches the
+installed version.
 
-```bash
-# in the harness repo
-npm run build
-npm pack --pack-destination /tmp        # → /tmp/archmax-ai-harness-<version>.tgz
+## The smallest program
 
-# in the consuming service
-npm  add /tmp/archmax-ai-harness-<version>.tgz
-# or pnpm --filter <pkg> add /tmp/archmax-ai-harness-<version>.tgz
-```
+[`examples/refund/`](https://github.com/archmax-ai/harness/tree/main/examples/refund)
+runs a four-state workflow with two host tools. A host tool is an ordinary LangChain
+tool, built with `tool(fn, { name, description, schema })` from `langchain`, and a state
+grants it in `tools.allow`. The program, `index.js`:
 
-The published tarball contains only `dist/` + `README.md` (the package `files`
-allowlist), so `dist/index.d.ts` types travel with it — a shared types package can
-re-export the run-artifact/event shapes for an API/frontend without importing the
-runtime. Because the version rarely changes during development, `remove` then `add`
-(or prune the store) so a repack of the same version actually reinstalls.
+```js
+import { createAgent } from "@archmax-ai/harness";
+import { lookupCustomer, sendEmail } from "./tools.js";
 
-**This skill ships inside the package** (staged into `dist/authoring-skill/archmax-harness/`):
-resolve it from the install via the `BUNDLED_AUTHORING_SKILL_DIR` export — the
-`dist/authoring-skill` directory holding `archmax-harness/`, so this file is
-`<BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md` — e.g.
-`npx skills add ./node_modules/@archmax-ai/harness/dist/authoring-skill/archmax-harness`.
-Prefer this over
-syncing a copy from a source checkout, so the skill can never drift from the
-installed SDK's validator. Tooling that needs the install root without importing
-the runtime can use `require.resolve("@archmax-ai/harness/package.json")` (exposed in the
-`exports` map).
-
-## Public exports
-
-From `@archmax-ai/harness` (`src/index.ts`):
-
-| Export | Kind | Purpose |
-| --- | --- | --- |
-| `createAgent` | fn | Assemble a runnable workflow-governed agent |
-| `Agent` | type | Returned runtime (`graph`, `decide`, `deliver`, `resolveSession`, `runs`, `emitRunArtifacts`, `dispose`, `resolveTrigger`) |
-| `CreateAgentParams` | type | Assembly options |
-| `DecideOutcome` | type | Return of `decide()` |
-| `DeliverOutcome`, `TriggerDelivery` | type | Argument / return of `deliver()` |
-| `WorkflowLoadError` | class | Thrown when the workflow spec (`workflow.yaml`) is missing/invalid (fails closed) |
-| `DEFAULT_WORKFLOW` | const | `"order-lookup"` |
-| `BUNDLED_AUTHORING_SKILL_DIR` | const | The packaged `dist/authoring-skill` directory holding `archmax-harness/` (`<dir>/archmax-harness/SKILL.md`). The example workspace is not shipped in `dist/`; clone the repo to use it. |
-| `WORKFLOW_STATUSES` | const | `running` \| `completed` \| `failed` (the agent called `archmax_raise`) \| `rejected` \| `awaiting_decision` (`awaitingDecision`) \| `awaiting_input` (`awaitingInput`) |
-| `SessionExit` | type | `Outcome.exit` / `DecideOutcome.exit` / `SessionSummary.exit`: `{ success: true }` on a completed turn, `{ success: false, code, reason }` on a failed one |
-| `isFinished`, `classifyStatus` | fn | The open/finished partition — a parked session is **open** |
-| `WorkflowLifecycleEvent`, `WorkflowEventHandler` | type | Event stream types |
-| `createWorkflowEventEmitter`, `renderEventLine` | fn | Event emitter + console formatter |
-| `createWorkspaceContext` | fn | Compose the workspace backends (session zone + mounts + authoring backend) |
-| `createFilesystemSessionStore`, `createBackendSessionStore`, `createMemorySessionStore` | fn | Run-store factories (physical storage for the session zone) |
-| `SessionStoreRequiredError`, `SessionStoreCapabilityError` | class | Assembly / capability errors for run storage |
-| `workflowStateSchema`, `workflowPaths`, `sessionPaths`, `runArtifactPaths` | schema/fn | State schema + path helpers |
-| `runTests`, `RunTestsOptions`, `CaseResult` | fn/type | Run a workflow's cases — [against your own agent](#cases-against-your-agent) |
-| `toolsFromMap`, `AgentToolDescriptor`, `ToolContext`, `ToolPaths`, `PathAccess`, `ToolPathsError` | fn/type/class | Host tools: a `name → descriptor` map, each descriptor's declared `paths` and a handler handed the turn's workspace — [host tools](#host-tools) |
-| `SIGNATURE_TYPES`, `SIGNATURE_FORMATS`, `SIGNATURE_CONTENTS`, `normalizeSignature`, `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues` | const/fn | A trigger's typed signature, rules included, as JSON Schema and its conformance rule — [exposing a workflow](#exposing-a-workflow-to-outside-callers); also on `@archmax-ai/harness/spec` |
-
-## createAgent options
-
-All optional (`CreateAgentParams`, `src/assembly/index.ts`):
-
-| Option | Type | Notes |
-| --- | --- | --- |
-| `rootDir` | `string` | Workspace root for the default filesystem backend. Defaults to cwd. |
-| `workflow` | `string` | Named workflow under `workflows/<name>/`. |
-| `trigger` | `TriggerInput` | `{ id, args? }`; defaults to `{ id: "manual" }`. Selects the start state. |
-| `model` | `BaseChatModel` | Defaults to the env-configured OpenAI-compatible model. Inject your own to bypass env. An explicit instance outranks every model id a spec declares, grader states' included. |
-| `modelFactory` | `(role, env, requested?) => BaseChatModel` | Supplies the chat model per role: `agent` (the session's turns), `judge` (the case judge for `grade:`) and `grader` (a grader state's subagent). `requested` is the id the state or `settings.model` declares, for the `agent` and `grader` roles; a grader state's model is `modelFactory("grader", env, id)`, resolved once per composition. `env` is a thunk, so a factory with its own credentials never loads `.env`. |
-| `backend` | `BackendProtocolV2` | Serves the authored workspace. Defaults to a `FilesystemBackend` over `rootDir`. |
-| `authoring` | `BackendProtocolV2` | Serves the **authoring plane** — `workflows/**` (machine specs, `WORKFLOW.md`, code-state `scripts/`, `tests/`) — to the runtime only. Never a route in the agent's workspace, so no tool call or PTC call can reach it. Defaults to `backend` when you supply one, else a `FilesystemBackend` over the resolved root. Handing it to a **writable** mount throws `AuthoringBackendExposedError`; a read-only mount may share it. |
-| `mounts` | `Record<string, MountSpec>` | Authored mounts as a `CompositeBackend` route table: key → backend, or `{ backend, readOnly, governed, searchable }`. Trailing slash = directory mount; no slash = exact-path file mount (`"/AGENTS.md"`). Read-only unless declared otherwise. `governed: true` hands the spec's `mounts` block the decision of **which states** may reach it (closed by default, like a skill bundle) and whether each may write there; a mount not so declared is visible in every state exactly as today, so a table that marks nothing behaves unchanged. `readOnly` is a **ceiling** the spec cannot lift: a governed writable mount is written only by a workflow whose own grants ask `access: read_write` (a bare grant reads it, so serving one route writable for one workflow in a delegation tree opens it to no other), and a grant may narrow a writable mount to reads in a state, never open a read-only one. A key may be several segments deep (`"/catalogs/eu/"`); its **first** segment is what is reserved, so `/workflows/x/` fails as `/workflows/` does. Omitted on the default backend: `defaultMounts(rootDir)` (the conventional table — `/skills/`, `/.platform/`, `/AGENTS.md`, none governed — extend with `{ ...defaultMounts(root), "/templates/": … }`). Omitted with a custom `backend`: nothing authored is served; expose subtrees with `mountSubtree(backend, "skills")`. A key colliding with a run area — or naming the authoring-plane prefix (`/workflows/`) — throws `MountCollisionError`. `searchable: false` declares a mount the runtime never searches on its own initiative: a root-wide `grep`/`glob` fans out over the other mounts only, while a search the agent addresses at the mount (or a path inside it) still reaches its backend and returns the backend's own answer — matches or `{ error }` — verbatim. Use it for a backend that must refuse searches (a remote folder served live). Listing and reading are unchanged, the prompt marks it "browse only", names arrive as `MountPrefixes.unsearchable`, and it is ignored on a file mount. |
-| `sessionStore` | `SessionStore` | Physical storage for run state (checkpoints, artifacts, the per-session `scratchpad/`). Zero-config default: `createFilesystemSessionStore({ dir: "<rootDir>/sessions" })`. Required with a custom `backend` (else `SessionStoreRequiredError`). Build with `createBackendSessionStore({ backend, prefix? })` for S3-style storage or `createMemorySessionStore()` for ephemeral runs. |
-| `systemPrompt` | `string` | Appended after workspace `AGENTS.md`. |
-| `tools` | `StructuredTool[]` | Host tools, granted per state by `tools.allow`. Build them with `toolsFromMap` — see [host tools](#host-tools). A name starting `archmax_`, or naming a runtime file operation (`copy_file`, `move_file`, `remove_file`), throws `ReservedToolNameError`. |
-| `essentialTools` | `string[]` | Host tools treated as always on: disclosed and permitted in every state, whatever the workflow's `tools.allow_always` declares; a state's own entry still narrows one. |
-| `clock` | `string` | Pins the "now" every model call states, for cases and evaluations: an ISO 8601 date (`2026-03-20`, midnight UTC) or a date-time with `Z`/an offset; zoneless or impossible values fail assembly, `""` means the real clock. Rendered in UTC, rounded to ten minutes, no local time. Recorded timestamps, `resumeAt` and the sandbox's `Date` stay real. Not for production: a pinned session resumed days later still thinks it is the pinned day. A case's `clock:` outranks it. |
-| `images` | `boolean \| ImageReadOptions` | Show a model with vision the images it reads: the model's `read_file` of a PNG/JPEG/GIF/WebP answers with one line and the image is added to each later request as a `user` message after that batch of tool results, read per request — no bytes in history, checkpoints, events or scripts. `{ maxBytes?, keep? }` (default 10 MB, every image). Off by default; every other binary stays refused. |
-| `toolPaths` | `Record<string, ToolPaths>` | Each host tool's path arguments and how a call uses each (`read`, `list`, `search`, `write`, `remove`, `execute`): `{ get_markdown: { path: "read" } }`. Every path rule then governs them like the built-ins'. Wins over a descriptor's `paths`; declaring a built-in's paths throws `ToolPathsError`. |
-| `checkpointer` | `BaseCheckpointSaver` | Custom-adapter escape hatch; takes precedence over the session store for checkpoint persistence. Defaults to a durable `BackendCheckpointSaver` writing through the session store. Use `MemorySaver` for ephemeral runs. |
-| `middleware` | `AgentMiddleware[]` | Extra middleware appended after workflow instrumentation. |
-| `onEvent` | `WorkflowEventHandler` | Subscribe to all lifecycle diagnostics; suppresses console output when set. |
-| `promptCache` | `PromptCacheOptions` | `{ enabled?, ttl?: "5m" \| "1h" }`. Provider prompt caching for the stable prefix; on by default. Falls back to `settings.prompt_cache`, then `ARCHMAX_PROMPT_CACHE`/`_TTL`. Turning it off does not stop `ChatAnthropic` or `ChatBedrockConverse` caching: Deep Agents installs LangChain's caching middleware for them itself (5-minute lifetime). |
-| `pricing` | `PricingTable` | USD per 1M tokens, keyed by model id (`default` matches any): `{ input?, output?, cacheRead?, cacheWrite? }`. Looked up by the id the response reported, else the id the runtime was configured to run — so a keyed table prices a workload behind a proxy that echoes no model back. Input rate applies to the input tokens the cache did not serve. Makes `costUsd` appear on usage events, run metadata, and the CLI footer. Falls back to `ARCHMAX_PRICE_*`. Unpriced → tokens only. |
-
-Fails closed: throws `WorkflowLoadError` if the named workflow's `workflow.yaml`
-is missing or has no valid machine spec (never silently runs ungoverned; a
-`WORKFLOW.md` carrying frontmatter with no `workflow.yaml` — the removed
-single-file layout — is a load error with migration guidance).
-
-## Agent
-
-```ts
-interface Agent {
-  graph: /* LangGraph runnable */;
-  workflow: string;
-  runtimeContract: ResolvedRuntimeContract;
-  resolveTrigger(trigger?: TriggerInput): ResolvedTrigger;
-  emitRunArtifacts(sessionId: string, trajectory: Trajectory): Promise<string | null>;
-  runs: {                                // run handles over the configured session store
-    list(): Promise<SessionSummary[]>;    // [] when the store/checkpointer can't list
-    get(sessionId: string): Promise<SessionSummary | null>;
-    delete(sessionId: string): Promise<boolean>;  // throws SessionStoreCapabilityError
-  };
-  decide(sessionId: string, resolution: DecisionResolution): Promise<DecideOutcome>;
-  dispose(sessionId: string): void;
-}
-```
-
-## Running a workflow
-
-```ts
-import { createAgent, WORKFLOW_STATUSES } from "@archmax-ai/harness";
-
-const agent = await createAgent({ workflow, onEvent, workspace: { rootDir } });
-const sessionId = `run-${runId}`;
-
-try {
-  const result = await agent.invoke(
-    { messages: [{ role: "user", content: prompt }] },
-    { configurable: { thread_id: sessionId } },
-  );
-  // result: { messages, status?, workflowState?, pendingDecision? }
-  if (result.status === WORKFLOW_STATUSES.awaitingDecision) {
-    // parked — see Human-in-the-loop
-  } else {
-    return lastAssistantText(result.messages);
-  }
-} finally {
-  agent.dispose(sessionId);   // frees the session's sandbox/PTC state and its checkpoints in memory; the next turn reloads them from the store
-}
-```
-
-A turn runs under LangGraph's `recursionLimit` — 400 unless the config passes its
-own, which wins. It is the one bound on a whole turn (every model call, tool batch
-and automated state is a step; a state's `budget.maxTurns`/`maxParks` bound that
-state); a turn that hits it ends the session `failed` with exit code
-`recursion-limit`.
-
-To cancel a turn, pass an `AbortSignal` as `signal` in the same config (or in
-`agent.workflow.send(sessionId, input, { signal })`) and abort it. The turn's
-scripts stop with it, in the session and its child sessions: a pending `tools.*`
-call fails and later ones are refused. The `dispose` in the `finally` is safe even
-while a cancelled script's call is still pending.
-
-Use `agent.stream(...)` instead of `invoke` when you want to record a
-trajectory or push incremental updates.
-
-`lastAssistantText` walks `result.messages` from the end and returns the last
-assistant/AI message's text.
-
-## Multi-turn conversations (chat history)
-
-`agent.invoke` accepts an **array of role-tagged messages**, not just one user
-string — the `messages` channel is a LangChain `add_messages` channel, so
-whatever you pass is appended to the session's transcript. There is no need to
-concatenate a prior chat into one giant user prompt; give the model real turns.
-
-**Preferred — session persistence.** Sessions are durable by default (the
-`BackendCheckpointSaver` writes each turn to the session store). Drive a live
-conversation by re-invoking the **same `thread_id`** once per user message,
-sending only the new message each time — prior turns are already in the
-checkpoint:
-
-```ts
-// turn 1
-await agent.invoke(
-  { messages: [{ role: "user", content: "Look up order 1234" }] },
-  { configurable: { thread_id: "chat-42" } },
-);
-// turn 2 — SAME thread_id; only the new message
-await agent.invoke(
-  { messages: [{ role: "user", content: "And when did it ship?" }] },
-  { configurable: { thread_id: "chat-42" } },
-);
-```
-
-The `init` state re-runs on each turn, resetting `workflowState` to the trigger's
-start state while **preserving the accumulated messages** — exactly right for
-chat: each user message re-enters the workflow with full history retained.
-
-**Alternative — seed prior history on the first invoke.** When the transcript
-lives in your own store (not a harness session), pass it as the initial `messages`
-array with the newest user turn last:
-
-```ts
-await agent.invoke(
-  {
-    messages: [
-      { role: "user", content: "Test" },
-      { role: "assistant", content: "Test complete…" },
-      { role: "user", content: "who are you?" },
-      { role: "assistant", content: "I'm an agent that…" },
-      { role: "user", content: "what was my first message?" }, // the new turn
-    ],
-  },
-  { configurable: { thread_id: "chat-42" } },
-);
-```
-
-Gotchas:
-
-- **An automated state reads the whole session.** A code state and a grader
-  both call `archmax_get_history` for `{ messages, trail }` (a script:
-  `JSON.parse(await tools.archmax_get_history())`). Its `messages` are the whole
-  transcript, oldest first, which can span turns: a script that keys off "the
-  current request" should take the *last* `user` entry, not the first — the
-  first is the message that opened the session. A tool entry carries its tool,
-  the call `id` and the result as its `text`. Neither's own calls or messages
-  enter the session's transcript.
-- **A definition edit is adopted, not refused.** A session takes its next turn
-  under the `workflow.yaml` in force now; the recorded `specHash` says which
-  definition each turn ran under but gates nothing. A turn positioned in a state
-  the edit removed reopens at its trigger's entry state rather than failing.
-- **Seed assistant turns as text only.** Don't fabricate dangling `tool_calls`
-  in seeded history, or the provider may reject the turn.
-- **Not every message in a session's transcript is a person's.** The runtime
-  writes **runtime notes** of its own — `[decision]`, `[event]`, `[error]`,
-  `[grader]`, `[code]`, `[sub-workflow: …]` — carried as a synthetic `archmax_note` tool call
-  and its result, so a model cannot read them as a person speaking. Ask
-  `isRuntimeNote(message)` / `runtimeNoteKind(message)` rather than inferring
-  authorship from role or a `[bracket]` prefix: a turn's lower bound is a human
-  message **or** a note, and a transcript renderer should draw a note as a
-  runtime line, not as the user's own bubble. The one message a person really
-  sends into a running session — a reply to a run parked at a human state — is an
-  ordinary human message with no marker.
-
-```ts
-import { isRuntimeNote, runtimeNoteKind } from "@archmax-ai/harness";
-
-const opensTurn = (m: unknown) => isRuntimeNote(m) || m.role === "user";
-const label = (m: unknown) => runtimeNoteKind(m); // "decision" | "event" | "grader" | "code" | … | null
-```
-
-## Human-in-the-loop
-
-```ts
-if (result.status === WORKFLOW_STATUSES.awaitingDecision && result.pendingDecision) {
-  const { state, transitions, evidence } = result.pendingDecision;
-  // Present `transitions` (each { to, description?, type? }) + evidence to a human.
-  // `evidence` is the state's declared paths followed by whatever the advancing
-  // agent attached via `archmax_advance({ evidence })` — one merged list, no
-  // host-side assembly, and no need to re-read the spec.
-  // When they pick:
-  const outcome = await agent.workflow.decide(sessionId, { target: chosenTo, comment });
-  // DecideOutcome: { status?, workflowState?, reparked, state?, reply, rejected?, exit?, messages }
-  // `reply` is every assistant text of the turn, in order ("" when it said nothing).
-  // `rejected` says why when status is "rejected"; Outcome from send() carries it too.
-  // `exit` is { success: false, code, reason } when the agent ended the run with
-  // archmax_raise (status "failed"), { success: true } when it completed.
-  if (outcome.reparked) { /* parked again at another human state */ }
-}
-```
-
-`decide` throws `SessionNotParkedError` if the session isn't awaiting a decision, and
-`InvalidDecisionTargetError` if `target` isn't a declared transition of the parked
-state. `sessions.list()` enumerates durable sessions (empty with a `MemorySaver` or a non-listable session store).
-
-## Event-in-the-loop: a run that parked itself
-
-The agent can park the run with `archmax_wait({ reason })` — in any state, terminal
-ones included — when the work cannot continue without something from outside. The
-session's status becomes `awaiting_input` (classified **open**, never finished) and
-`result.pendingInput` carries `{ state, title?, reason, parkedAt }`: the state it
-stopped in and, in its own words, what it is waiting for.
-
-```ts
-if (result.status === WORKFLOW_STATUSES.awaitingInput && result.pendingInput) {
-  const { state, reason } = result.pendingInput;   // show "waiting in <state>: <reason>"
-}
-
-// When the event arrives, deliver it. The run continues in the state it parked in;
-// the trigger id becomes its current trigger and the variables arrive locked.
-const outcome = await agent.workflow.deliver(sessionId, {
-  trigger: { id: "email_reply" },
-  variables: { reply_body: "It's ORD-1001." },
-});
-// DeliverOutcome: DecideOutcome + { variables, parkedChannel? }
-if (outcome.reparked) { /* parked again — outcome.parkedChannel says which channel */ }
-```
-
-### Waking a scheduled park
-
-A park may declare when it wants to be resumed (`archmax_wait({ reason, until: "1d" })`),
-which lands on the record, the summary, and the park event as an absolute
-`resumeAt`. **The SDK schedules nothing** — no timer, no cron — so this is your
-job, and it is a query:
-
-```ts
-const now = new Date().toISOString();
-for (const t of await agent.sessions.list()) {
-  if (t.status === WORKFLOW_STATUSES.awaitingInput && t.resumeAt && t.resumeAt <= now) {
-    await agent.workflow.deliver(t.sessionId, { trigger: { id: "timer" }, variables: { now } });
-  }
-}
-```
-
-A duplicate firing is safe: `deliver` refuses a session that is no longer parked. A
-`resumeAt` gates nothing — an event arriving earlier resumes the park normally — and
-a state that polls can cap its own retry loop with `budget.maxParks`, whose overrun
-routes through the state's `on_error`.
-
-`deliver` throws `SessionNotAwaitingInputError` if the session isn't parked awaiting
-an event and `MissingDeliveryTriggerError` if no id is supplied. The id is
-**recorded, never matched**: any trigger resumes a park, so there is no awaited-id
-list to check against — an id no state declares is deliverable exactly like a
-declared one. `resolveSession({ trigger, variables })` tells you which of
-the two a firing is — a `turn` to invoke, or a `resume` to deliver into — always on
-the conversation's own id.
-
-An event that must **never start** a run is therefore declared nowhere in the spec:
-every trigger a state declares starts a session at that state. Name the session
-yourself — `send(sessionId, { delivery })` / `deliver(sessionId, …)` — or pass
-`sessionPath` with the firing (`resolveSession({ trigger, variables, sessionPath })`)
-and let the runtime read the id out of the firing's own variables. A firing that
-names neither, on a trigger no state declares, throws
-`UnknownSessionTriggerError`: there is nowhere for it to go.
-
-One turn per invoke, on **one** session. A finished session re-invoked with a new
-message takes its next turn on the same id, continuing in the state the previous
-turn ended in — the position, variables, transcript and files are already there, so
-**never seed a previous transcript into the `messages` channel**. Pass only the new
-message.
-
-The runtime does not reposition a later turn, so nothing is injected into the
-transcript to explain a jump. When the current state can serve the new message, the
-agent answers there without a reset. That includes a terminal state that is also the
-state the conversation began in, such as a one-state chat workflow. When a turn needs
-a path the current state cannot reach, the agent calls `archmax_reset` to return to
-the state the conversation began in (available in every state). To continue *mid-state* instead — inside the state
-that stopped, with the arrival in its transcript — the turn must park rather than
-finish.
-
-## Exposing a workflow to outside callers
-
-A workflow's trigger signature (`requires`/`returns`, optionally typed) is the
-contract the runtime already enforces at the session boundary. A host that
-exposes a workflow as an MCP tool, an OpenAPI operation or a typed start form
-builds its schema **from that signature**, with the helpers on the browser-safe
-`@archmax-ai/harness/spec` subpath (also on the root, as the same bindings), so
-the published contract and the enforced one cannot drift:
-
-```ts
-import {
-  parseMachineSpec,
-  signatureForTrigger,
-  signatureJsonSchema,
-  signatureValueIssues,
-} from "@archmax-ai/harness/spec";
-
-const parsed = parseMachineSpec(yaml.parse(workflowYaml));
-if (!parsed.ok) throw new Error(parsed.issues.map((i) => `${i.path}: ${i.message}`).join("\n"));
-const signature = signatureForTrigger(parsed.spec, "manual"); // { description?, requires, returns }
-
-// MCP tool (or an OpenAPI request/response body): the same mapping the delegation tool uses.
-const mcpTool = {
-  name: "refund-order",
-  description: signature?.description,                 // caller-facing; never shown to the session's agent
-  inputSchema: signatureJsonSchema(signature?.requires ?? []),
-  outputSchema: signatureJsonSchema(signature?.returns ?? []),
-};
-
-// On a request, before any session opens: the rule the turn boundary applies.
-const issues = signatureValueIssues(signature?.requires ?? [], body);
-if (issues.length) return reply(400, issues.map((i) => i.message)); // { kind, name, type?, found?, message }
-
-// A turn needs a message; an MCP call has none of its own, so say what was asked.
-const outcome = await agent.workflow!.send(sessionId, { message: "Refund the order.", variables: body });
-```
-
-- `signatureJsonSchema(entries)` → `{ type: "object", properties, required }`:
-  one property per entry in declaration order, every name required,
-  `date`/`date-time`/`file` as `{ type: "string", format }`, an untyped entry as `{}`,
-  an entry's `description` carried over. Rules map to their JSON Schema keywords:
-  `format: email` → `format: "email"`, `format: url` → `format: "uri"` plus
-  `pattern: "^https?://"`, `format: phone` → the E.164 `pattern`; `pattern`,
-  `minLength`/`maxLength`, `enum`, numeric `minimum`/`maximum` and
-  `minItems`/`maxItems` as themselves; `content` → `contentMediaType`. Date
-  bounds, `accept` and `maxSize` are not mapped (the runtime still enforces
-  them). It adds no `additionalProperties`; set it for your own ingress.
-- `signatureValueIssues(entries, values, options?)` → one issue per missing name
-  and per non-conforming value; `[]` means the turn boundary will not refuse the
-  map for its signature. A value breaking a rule is an `invalid` issue carrying
-  `rule` (one per entry, the first rule broken), so code that filters
-  `kind === "invalid"` enforces rules unchanged. `options.now` pins the clock
-  for `today`/`now` (tests, a host's own clock). It is synchronous, pure and
-  browser-safe, and a `pattern` runs in RE2, so it is safe in a request path on
-  input from anyone. It **never coerces or trims**: a form that collects text
-  converts `"4"` to `4` before it validates or seeds.
-- A trigger's `description` is written for the caller. Use it as the MCP tool
-  or operation description. The session's own model never sees it.
-- **A `file` entry** (`format: "file"` in the schema) takes a workspace path. To
-  hand a session an uploaded file, pass it on the turn rather than writing into
-  the store yourself:
-  `send(sessionId, { message, files: { invoice: { name: "invoice.pdf", content: bytes } } })`.
-  The runtime places the bytes in the session's `scratchpad/attachments/` (a taken
-  name gets `-1`, `-2`, …), seeds `invoice`, locked, with the placed path, and the
-  turn boundary then checks that the file is there and readable. `send` throws
-  `InvalidTurnFileError`, before anything is written, for a bad variable or file
-  name, a variable also given in `variables`, a session parked at a human state, or
-  bytes the store cannot hold exactly (a non-text file needs a store with
-  `uploadFiles`). `signatureValueIssues` checks only a `file` value's shape and its
-  `accept` extensions, so a start form validates the path the upload will
-  produce, or skips the entry and lets `files` supply it; `maxSize` is checked by
-  the runtime at the turn boundary, against the placed file.
-- A host that reads specs itself must read `requires`/`returns` through
-  `normalizeSignature` (both spellings → `{ name, type?, description?, …rules }[]`,
-  `maxSize` in bytes, `today`/`now` kept symbolic), never as `string[]`: an entry
-  may be an object. Hosts must be on the release that introduced typed entries
-  (and, for rules, 1.1.0) before any workspace they read uses them.
-
-## Lifecycle events
-
-Pass `onEvent`; every `WorkflowLifecycleEvent` carries a `level`
-(`info`/`warn`/`error`) plus a typed payload. Map these to a live run UI:
-
-| Event `type` | Meaning |
-| --- | --- |
-| `state-enter` / `state-leave` | state entered / left (`{ state, next? }`) |
-| `advance` | transition committed (`{ from, to, reason?, callId? }` — `callId` names the `archmax_advance` call that drove it; absent on the turn's opening arrival) |
-| `code-start` / `code-output` / `code-result` | a code state's run: `{ state, script }`, one `{ state, line }` per `console.log` line, then `{ state, status: "ok" \| "error", durationMs, reason? }` |
-| `grader-start` / `grader-result` | a grader state's run: `{ state }`, then `{ state, status, durationMs, reason? }`. `status` is `ok` when the run settled on a decision or a completion; a move then emits `advance`/`state-leave`/`state-enter` (a code state's tool calls carry `origin: "script"`, a grader's none) |
-| `parked` / `decided` | human state parked / resolved (`{ state, sessionId, awaiting, to? }` — a human park carries no `callId`, since no call asked for it) |
-| `parked` (`awaiting: "input"`) / `delivered` | the agent parked the run (`{ state, sessionId, reason, resumeAt?, callId }` — the `archmax_wait` call) / an event resumed it (`{ state, trigger, to }`, where `to` is the same state) |
-| `raised` | the agent ended the session as a failure (`{ state, sessionId, code, reason, callId }` — the `archmax_raise` call); a `state-leave` follows, and the outcome is `failed` |
-| `agent-text` | complete assistant message in a state (`{ state, text, messageId }` — always the id the message is stored under; absent only on a `partial: true` event from a failed turn) |
-| `agent-text-delta` | streaming text chunk (`{ state, text, messageId? }`) — flows for every run, even when the graph is driven with `invoke`; a sub-workflow child's chunks carry the child's `sessionId` and `subWorkflowDispatchId`, never the caller's state |
-| `tool-called` / `tool-result` / `tool-blocked` | tool passed governance (`callId`, `args`) / settled (`callId`, `status`, `durationMs`, `output` preview) / denied. **Every** governed call, `archmax_advance` included — so a UI drawing a row per call draws one per transition; filter it if you already draw transitions from `advance`/`state-leave`. A tool that **throws** settles `status: "error"` with the error's message as `output` while the turn **continues**: the model reads the same message as the call's answer, and nothing is thrown out of `send` — read tool failures here |
-| `model-usage` | per model call — the agent's or a grader's, under its state — provider token usage: `inputTokens` (the total, of which the cache counts are a breakdown), `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model?` (the id the call was priced against), `costUsd?` |
-| `prompt-shaping` | assembly-time payload summary: resolved `profile`, prompt-cache mechanism, `withheld` built-ins |
-| `skills-loaded`, `graph-topology`, `workflow-reset`, `warning` | assembly-time diagnostics |
-
-For a browser client, forward these over SSE/WebSocket keyed by `sessionId`. To
-render a live chat transcript: accumulate `agent-text-delta` into a bubble
-keyed by `messageId`, replace it with the final `agent-text` bearing the same
-`messageId`, and interleave tool cards from `tool-called`/`tool-result` paired
-by `callId` (order everything by `seq`).
-
-Building a **durable record** rather than a live view? The ids join the stream to
-the stored messages exactly: `callId` equals the issuing AI message's
-`tool_calls[].id` and the settling `ToolMessage.tool_call_id`, and
-`agent-text.messageId` equals the assistant message's `id`. Every event a call
-*causes* carries that call's id too (`advance`, `parked`, `variables-set`,
-`title-set`, and the sub-workflow pair's `toolCallId`), so the events one call
-produced group from ids alone — no scanning back to a message boundary. An event
-of those types with no `callId` is one the runtime caused, not a call: a turn
-opening, a human park, run-start seeding.
-
-`title-set` is the one event carrying a variable's **value** — the reserved
-`title`, whenever it changes. `variables-set` still carries names only; the value
-rides its own event so that rule needs no exception, and it is safe there because
-a title is bounded to one short line by its write check. Indexing a run's title on
-your own record is a handler for this event and nothing else — no checkpoint read,
-which matters when you install your own checkpointer. A sub-workflow's child is not
-asked to name itself, so it emits none unless its caller passed a `title` down.
-
-### Reading tokens and cost
-
-Usage figures are the **provider's own** (LangChain `usage_metadata`), not
-estimates — including how many input tokens were served from the prompt cache.
-Use the exported tracker instead of summing events yourself:
-
-```ts
-import { createAgent, createUsageTracker } from "@archmax-ai/harness";
-
-// Wrap your own subscriber, or omit `onEvent` if you have none.
-const usage = createUsageTracker({ onEvent: forwardToClient });
-const agent = await createAgent({ onEvent: usage.handler, /* … */ });
-
-await agent.invoke(input, { configurable: { thread_id: sessionId } });
-
-const totals = usage.totals(sessionId);
-// { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd? }
-usage.bySession();            // Map<sessionId, UsageSummary> for concurrent runs
-usage.reset(sessionId);       // drop a finished run's totals
-```
-
-Rising `cacheReadTokens` is how you confirm prompt caching is actually working;
-`costUsd` is present only when pricing is configured — report tokens rather than a
-guessed cost when it is absent. `formatUsage`, `addSummaries`, `emptyUsage` and
-`hasUsage` are exported for rendering and combining summaries; the extraction and
-pricing internals are not part of the public surface.
-
-### Reading a run's cost
-
-A run's usage is **checkpointed**, so a session handle answers it for a run that
-parked and resumed — including in another process:
-
-```ts
-const summary = await agent.sessions.get(sessionId);
-summary?.usage;
-// { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd? }
-```
-
-`costUsd` appears only when pricing is configured; without it, tokens are
-reported and cost is omitted, never guessed. A parked run reports what it has
-spent so far and keeps accumulating on resume. The same totals land in
-`sessions/<sessionId>/artifacts/metadata.json` as `usage`, and `createUsageTracker()`
-gives the same figure live in process.
-
-### Measuring anything else — fold the stream
-
-The SDK keeps no metrics ledger. Tool calls, governance refusals, the path a run
-took, every send-back by a grader or code state, and how long a session
-sat waiting for a person are all already on the typed event stream, and a backend
-counts what it needs:
-
-```ts
-const tally = { toolCalls: 0, toolBlocks: 0, path: [] as string[] };
 const agent = await createAgent({
-  onEvent: (e) => {
-    forwardToClient(e);
-    if (e.type === "tool-called") tally.toolCalls++;
-    if (e.type === "tool-blocked") tally.toolBlocks++;
-    if (e.type === "state-enter") tally.path.push(e.state);
-  },
-  /* … */
+  workflow: "refund",                           // workflows/refund/
+  tools: [lookupCustomer, sendEmail],           // host tools
+  workspace: { rootDir: import.meta.dirname },  // sessions are stored under sessions/
 });
+
+const outcome = await agent.workflow.send("ticket-1001", {
+  message: "Hi, I'd like a refund for my last order.",
+  variables: { email: "ann@example.com" },      // the trigger's requires, seeded locked
+});
+console.log(outcome.kind); // "completed"
 ```
 
-Two properties make this the right home for it: the events are the ones the
-runtime acts on, so a fold cannot drift from behavior the way a parallel ledger
-can; and a backend counts what it cares about — a per-tenant tool budget, a
-per-state SLA — rather than what the SDK guessed.
+- One `send` is one turn. The session id is yours to choose (a ticket, a conversation).
+  `send` with the same id continues the session, and each turn carries only the new
+  message: the session already holds the transcript.
+- `send` works out what the session needs: a new turn for a new or finished session, a
+  reply for one parked at a human state, a delivery for one parked with `archmax_wait`.
+- In TypeScript, `agent.workflow` is `undefined` on an ungoverned agent: narrow it
+  before you call it.
 
-A fold is a **live view**: it sees only events this process observed. Cost is the
-deliberate exception, because it is checkpointed.
+## `createAgent` options
 
-## Session artifacts
+Deep Agents' own options keep their names: `model`, `tools`, `systemPrompt`,
+`middleware`, `backend`, `checkpointer`, `store`, `skills`, `interruptOn`, `name`,
+`description`. The harness adds:
 
-Each run persists under its own folder in the session store — which is also the
-agent's workspace root for that run (`sessions/<sessionId>/` on the filesystem default):
+| Option | What it does |
+| --- | --- |
+| `workflow` | The workflow's slug under `workflows/`. When omitted, the default workflow governs the agent if it exists; `false` assembles a plain Deep Agent. |
+| `workspace` | `{ rootDir, mounts?, sessionStore? }`. `rootDir` defaults to the current directory. |
+| `authoring` | The backend that serves `workflows/**` (specs, `WORKFLOW.md`, code-state scripts, cases) to the runtime only. It defaults to `backend`, else the files under `rootDir`. Exposing it through a writable mount throws `AuthoringBackendExposedError`. |
+| `trigger`, `variables`, `sessionPath` | The default trigger, seeded variables (locked) and session path for turns. |
+| `modelFactory` | `(role, env, requested?) => model`, called per role: `agent`, `judge` (a case's `grade`) and `grader` (a grader state, asked with the state's model id). |
+| `essentialTools` | Host tools that are on in every state, whatever `allow_always` says. A state's entry still narrows one. |
+| `toolPaths` | Each host tool's path arguments and how it uses them (`{ get_markdown: { path: "read" } }`), governed like a built-in tool's. |
+| `images` | Shows a vision model the images it reads with `read_file`. Off by default. |
+| `policyRules`, `sandboxRuntime` | Extra governance rules, and a custom sandbox runtime. |
+| `onEvent` | Receives the event stream, in place of the console subscriber. |
+| `promptCache` | `{ enabled, ttl: "5m" \| "1h" }`, on by default. |
+| `pricing` | USD per million tokens by model id (`{ input, output, cacheRead, cacheWrite }`; `default` matches any id). Without it, usage reports tokens and no cost. |
+| `clock` | Pins "now" for cases. Not for production. |
 
-```
-sessions/<sessionId>/
-  checkpoints/               # LangGraph checkpoint records (durable resume; also
-                             # the sole record of a parked human decision)
-  scratchpad/                # the run's working area — intermediate files AND the
-                             # artifacts a state produces (agent-visible as
-                             # `scratchpad/…`; the only such area)
-  large_tool_results/        # runtime-offloaded oversized tool results (agent reads only)
-  conversation_history/      # runtime-offloaded history (agent reads only)
-  artifacts/
-    graph.json               # SerializedGraph (topology; includes mermaid)
-    graph.mmd                # Mermaid diagram
-    trajectory.json          # Trajectory (per-state messages + tool calls)
-    trail.json               # Audit trail (committed transitions + rationale)
-    variables.json           # The run's variables: name -> { value, locked }.
-                             # `locked` is the attribution: locked = host-established
-                             # (variables, a delivery's seeds, the built-in
-                             # `trigger`), unlocked = set by the agent. Written for a
-                             # governed run; an empty store still writes `{}`.
-    metadata.json            # RunMetadata (runtime contract, package version,
-                             # specHash, and the run's `usage` summary — tokens
-                             # by kind plus costUsd when priced)
-```
+Assembly fails closed. A missing or invalid spec throws `WorkflowLoadError`, a custom
+`backend` without a `sessionStore` throws `SessionStoreRequiredError`, and a host tool
+named `archmax_*`, or after a file operation, throws `ReservedToolNameError`.
 
-Schemas:
+## Models
+
+By default the model comes from the environment, for any OpenAI-compatible endpoint:
+`ARCHMAX_API_BASE_URL`, `ARCHMAX_API_KEY` and `ARCHMAX_MODEL`, optionally
+`ARCHMAX_TEMPERATURE`, `ARCHMAX_MAX_TOKENS` and `ARCHMAX_STREAMING`. They are read from
+the workspace's `.env`, and the process environment wins.
+
+Pass `model` to use your own instance; it then outranks every model id a spec declares.
+Pass `modelFactory` instead to honour those ids, and to put grader states on their own
+model, as the service below does.
+
+## Outcomes and parked sessions
+
+`send`, `decide`, `reply` and `deliver` each settle one turn and return what it did:
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `completed`; `parked` (waiting on a person or an event); `failed` (the agent, a grader or a code state called `archmax_raise`, or the turn threw); `rejected` (governance ended it). |
+| `exit` | `{ success: true }` when completed, `{ success: false, code, reason }` when failed. |
+| `reply` | Everything the agent said this turn, in order; `""` when it said nothing. |
+| `state`, `parkedChannel`, `pending` | Where the session is. For a park: `"decision"` or `"input"`, and the park record. |
+| `rejected` | Why, when the outcome is `rejected`. |
+| `delegation` | When a sub-workflow child is the one parked: which child, and which call. |
+| `auditTrail`, `variables`, `usage`, `messages` | The trail, the variables, the cumulative usage and the transcript. |
+
+A host that reads "not rejected" as success must check for `failed` too.
+
+A service that waits for people:
 
 ```ts
-interface SerializedGraph {
-  nodes: string[];
-  edges: { source: string; target: string; conditional: boolean; label?: string }[];
-  entry?: string; finals: string[]; mermaid: string;
+import { createAgent, createChatModel, createUsageTracker } from "@archmax-ai/harness";
+
+const usage = createUsageTracker({ onEvent: publish });   // publish: your event fan-out
+const agent = await createAgent({
+  workflow: "order-lookup",
+  workspace: { rootDir },
+  tools: hostTools,
+  onEvent: usage.handler,
+  modelFactory: (role, env, requested) =>
+    role === "grader" ? graderModel : createChatModel({ ...env(), model: requested ?? env().model }),
+});
+const flow = agent.workflow!;
+
+const outcome = await flow.send(sessionId, { message });
+if (outcome.kind === "parked" && outcome.parkedChannel === "decision") {
+  // outcome.pending.transitions: [{ to, description, type }], one button each
+  await flow.decide(sessionId, { target: chosen.to, comment });
 }
-interface Trajectory {
-  sessionId?: string; workflow: string; prompt?: string; finalAnswer: string;
-  segments: { state: string; enteredState?: string; exitedState?: string;
-              items: (MessageItem | ToolCallItem)[] }[];
-}
-// MessageItem: { kind:"message", role, content }
-// ToolCallItem: { kind:"tool_call", name, args, result: string|null }
-interface RunMetadata { sessionId: string; workflow: string;
-  runtimeContract: ResolvedRuntimeContract; packageVersion: string; }
-// trail.json: { sessionId, workflow, steps: TrailStep[] } — the audit trail,
-// re-derived from checkpointed state on every artifact write.
-// TrailStep: { to, kind: "trigger"|"agent"|"human"|"grader"|"code"|
-//              "sub-workflow"|"reset"|"on_error", reason?, workflow?, status?, ts }
+usage.totals(sessionId);   // tokens, plus costUsd when pricing is set
+agent.dispose(sessionId);  // frees the session's in-memory resources
 ```
 
-An **API** reads these files (through the same session store, or via `runArtifactPaths(sessionId)`
-path helpers) to render historical runs: `graph.json`/`graph.mmd` for the diagram,
-`trajectory.json` for the step-by-step timeline, `trail.json` for the decision
-path (which edges committed, by whom, and why), `variables.json` for the run's
-inputs and established facts (also what a test author reads to reproduce a real
-firing's payload — see
-[code-state-and-test-scripts.md](code-state-and-test-scripts.md#recovering-a-cases-inputs-from-previous-runs)).
-Note it holds whatever the run's variables held, verbatim: a host that must not
-persist an input should not seed it. To persist artifacts yourself,
-stream the run and call `agent.emitRunArtifacts(sessionId, trajectory)`.
+- **`decide(sessionId, { target, comment? })`** moves a session parked at a human state
+  along the chosen transition. It throws `SessionNotParkedError` when the session awaits
+  no decision, and `InvalidDecisionTargetError` for a target that is not one of the
+  state's transitions.
+- **`reply(sessionId, message)`** answers a person who writes to a parked session. The
+  session stays parked.
+- **`deliver(sessionId, { trigger: { id }, variables? })`** continues a session parked
+  with `archmax_wait`, in the state that parked, with the variables locked. Any trigger
+  id continues a park. It throws `SessionNotAwaitingInputError` when nothing waits.
+- **The same operations** are payloads of `send`: `{ decision }` and `{ delivery }`.
+- **Scheduled parks.** A park with `until` carries `resumeAt`. The harness schedules
+  nothing: your scheduler lists `agent.sessions.list()`, picks the parks whose
+  `resumeAt` has passed, and delivers to them. A duplicate delivery is refused.
+- **`resolveSession({ trigger, variables, sessionPath? })`** says which session a
+  trigger's arrival belongs to, and whether it is a turn or a delivery, without sending
+  it.
+- **Files.** `send(id, { message, files: { invoice: { name, content } } })` places the
+  bytes under the session's `scratchpad/attachments/` and seeds `invoice`, locked, with
+  the path: what a `file` input takes.
+- **A turn that throws** (a provider failure, a cancellation, the recursion limit)
+  rejects with the error, and the session ends `failed` with `turn-error`,
+  `turn-cancelled` or `recursion-limit`. The `recursionLimit` is 400 unless your config
+  sets one; `send`'s third argument merges into the invoke config. Cancel a turn with an
+  `AbortSignal` passed as `{ signal }`: its scripts stop with it. `dispose` in a
+  `finally` is always safe.
 
-## Model configuration
+## Events
 
-Env (loaded from the workspace root `.env`, real process env wins):
-`ARCHMAX_API_BASE_URL`, `ARCHMAX_API_KEY`, `ARCHMAX_MODEL`, optional
-`ARCHMAX_TEMPERATURE`, `ARCHMAX_MAX_TOKENS` — any OpenAI-compatible endpoint.
-Or inject a model directly:
+`onEvent` receives one typed stream, `WorkflowLifecycleEvent`, each event carrying its
+`sessionId`:
 
-```ts
-import { ChatOpenAI } from "@langchain/openai";
-const model = new ChatOpenAI({
-  model: "claude-sonnet-5",
-  apiKey: process.env.MY_KEY,
-  configuration: { baseURL: "https://api.example.com/v1" },
-});
-const agent = await createAgent({ model });
-```
+| Event | Meaning |
+| --- | --- |
+| `state-enter`, `state-leave`, `advance` | The session's movement. `advance` carries `from`, `to`, `reason` and `callId`. |
+| `code-start`, `code-output`, `code-result` | A code state's run: its script, each `console.log` line, its `status` and `reason`. |
+| `grader-start`, `grader-result` | A grader state's run. |
+| `parked`, `decided`, `delivered`, `raised`, `state-error-routed` | Parks, decisions, deliveries, raises and `on_error` routes. |
+| `tool-called`, `tool-result`, `tool-blocked` | Every governed call, `archmax_advance` included, grouped by `callId`. A code state's calls carry `origin: "script"`. |
+| `agent-text-delta`, `agent-text` | Streamed text and the complete message, grouped by `messageId`. A grader's tokens never stream. |
+| `model-usage` | The provider's token counts per model call (a grader's under its state), with `costUsd` when priced. |
+| `variables-set`, `title-set` | Variable writes, by name; the session's `title`, with its value. |
+| `sub-workflow-start`, `sub-workflow-result` | A child session's dispatch and its result. |
+| `warning`, `skills-loaded`, `graph-topology`, `prompt-shaping` | Diagnostics. |
 
-## Custom backends
+There is no end-of-turn event: `send` returning is the end. The ids join events to the
+stored messages: `callId` is the tool call's id, and `messageId` the message's.
 
-`BackendProtocolV2` (from `deepagents`) decouples storage — implement
-`readRaw`/`write`/`edit`/`ls` over filesystem, a store, a sandbox, S3, or a remote.
-Pass it as `backend` (authored workspace); run state goes through a `sessionStore`
-(e.g. `createBackendSessionStore({ backend: s3Backend, prefix: "tenants/a/runs" })`).
-A custom `backend` **requires** an explicit `sessionStore` — assembly throws
-`SessionStoreRequiredError` instead of inferring storage. The SDK owns the logical
-`sessions/<sessionId>/…` namespace; the store owns where it physically lives.
-Persisting the session zone off-box (an S3-backed session store) is how you share run
-state across a worker fleet and an API.
+The harness keeps no metrics ledger: count what you need by folding the stream. Cost is
+the exception. Usage is checkpointed, so `(await agent.sessions.get(id))?.usage` answers
+it for any session.
 
-A session's files are stored under `<sessionId>/` in the store (beneath its
-`prefix`): the agent's `scratchpad/x.txt` in session `s1` is `s1/scratchpad/x.txt`.
-That address is a contract, so a host may read or write a session's files through
-its own handle on the store (ranged reads, recursive listings, presigned URLs). A
-host tool keys them by `ToolContext.sessionId`, which inside a sub-workflow is the
-child's id, never the session the turn was sent to. `sessionIdRejection` refuses an
-id holding `~` in any shape but a child's (`<parent>~<n>`): mint top-level ids
-without it.
+The runtime writes its own messages into the transcript, as tool-call pairs: runtime
+notes such as `[decision]`, `[event]`, `[error]`, `[grader]` and `[code]`. Tell them
+apart with `isRuntimeNote(message)` and `runtimeNoteKind(message)`, never by role or by
+a bracket prefix.
 
-`downloadFiles`, `uploadFiles` and `delete` are optional in the protocol and stay
-optional in the workspace: a store with only the required methods serves skills,
-reads and text copies. `downloadFiles` is always present and reads a store without
-it through `readRaw` (exact bytes or `permission_denied`, never altered text);
-`uploadFiles` is present when the session store has it, and a mount without it
-refuses that file; `delete` answers a store without it with an error. What each
-buys the file operations (`copy_file`, `move_file`, `remove_file`): a write to a
-binary-typed path (an image, a PDF) carries **base64**, which the backend's
-`write` must decode — Deep Agents' convention, with the extensions in
-`BINARY_MIME_TYPES` on `@archmax-ai/harness/spec`. Other bytes the text channel
-cannot carry (a `.docx`, a `.zip`, Latin-1 text) need `uploadFiles`, and a move
-or removal needs `delete`. Every copy is read back; a store that kept something
-else is refused, never reported as copied. A read-only mount refuses an upload
-and a delete itself. Deep Agents is handed the workspace without `delete`, so its
-own recursive `delete` tool never exists: `remove_file` is the one way to delete
-a file.
+## Sessions, storage and artifacts
 
-A store's `grep` receives the call's match cap as its fourth argument,
-`maxCount` (the agent's `max_count`, else Deep Agents' 1,000). A store may stop
-there and return `truncated: true`; the workspace caps one that ignores it.
+- **Sessions** are durable by default, under `<rootDir>/sessions/<id>/`.
+  `agent.sessions.list()`, `.get(id)` and `.delete(id)` work over the session store.
+  Delete through them, never through the file system.
+- **Session stores**: `createFilesystemSessionStore({ dir })`,
+  `createBackendSessionStore({ backend, prefix? })` for S3 or any Deep Agents backend
+  (how a worker fleet shares sessions), and `createMemorySessionStore()`. A custom
+  `backend` needs an explicit `sessionStore`.
+- **Session ids**: a session's files sit at `<id>/<path>` in the store.
+  `sessionIdRejection(id)` is the rule every ingress applies. Mint top-level ids without
+  `~`, which separates a child session's number (`<parent>~<n>`).
+- **Mounts**: `workspace.mounts` is a route table, key → backend or
+  `{ backend, readOnly?, governed?, searchable? }`. `defaultMounts(rootDir)` is the
+  conventional table (`skills/`, `.platform/`, `AGENTS.md`), and
+  `mountSubtree(backend, "skills")` rebases a backend. Mounts are read-only unless
+  declared otherwise. `governed: true` hands the spec's `mounts` lists the decision of
+  which states reach a mount. A key over a session zone or `workflows/` throws
+  `MountCollisionError`. Pass the same table to `validateWorkflow({ mounts })` so that
+  validation checks the spec's mount names.
+- **Artifacts**: `agent.emitRunArtifacts(sessionId, trajectory)` writes `graph.json`,
+  `graph.mmd`, `trajectory.json`, `trail.json`, `variables.json` (each variable with its
+  value and lock) and `metadata.json` (the contract, the package version, the
+  `specHash` and usage) under `sessions/<id>/artifacts/`. An API reads them to draw past
+  sessions.
+- **Spec edits** are adopted. The next turn runs under the current `workflow.yaml`, the
+  recorded `specHash` says which version a turn ran under (`agent.getSpecSnapshot(hash)`
+  returns it), and a session positioned in a removed state reopens at its trigger's
+  entry.
 
-### Host tools
+## Host tools that use the workspace
 
-A host tool built with `toolsFromMap` reaches the workspace the way the
-built-in file tools do — no second routing table:
+`toolsFromMap({ <name>: { description, inputSchema, paths?, handler } })` builds host
+tools whose `handler(input, { workspace, sessionId })` reads and writes through the
+turn's workspace, bound to the session. Inside a sub-workflow, `sessionId` is the child's.
+Declared `paths` (`{ path: "read" }`) are governed like a built-in tool's path
+arguments, so a refused call never runs the handler.
 
-```ts
-const tools = toolsFromMap({
-  get_markdown: {
-    description: "Read a document as Markdown.",
-    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-    paths: { path: "read" },              // governed like read_file's file_path
-    handler: async (input, { workspace }) => {
-      const raw = await workspace.readRaw(String(input.path));
-      return raw.error ? `Error: ${raw.error}` : toMarkdown(raw.data!);
-    },
-  },
-});
-const agent = await createAgent({ tools, essentialTools: ["get_markdown"] });
-```
+## Exposing a workflow to callers
 
-- `paths` declares the arguments that name workspace paths and how the call
-  uses each. Every path rule binds them: the read-only zone, the runtime's own
-  areas, the skills and mounts the state was given (`mount.not-allowed`,
-  `skill.not-allowed`), a mount's `access: read` or a governed mount no grant
-  of the workflow asks `read_write` for (`mount.read-only` for a
-  `write` or `remove`), inherited denials and `paths:` guards. A refused call
-  never runs the handler. No declaration, no path rules. An argument may hold a
-  list of paths (`files: string[]`), each governed; any other shape is refused.
-  Declaring paths only narrows: `scratchpad/` is open in every state to the
-  default file tools the state is granted and to `essentialTools`, so a tool a
-  state must grant stays refused where it is not.
-- `context.workspace` is the turn's workspace, bound to the session — the
-  instance `read_file` uses — with `downloadFiles`, `uploadFiles` (when the
-  session store has it) and `delete` besides the text methods. The plain agent
-  hands the same context.
-- `context.sessionId` is the session the call is made in: inside a sub-workflow,
-  the child's own id (`<parent>~<n>`), for the model's call and a script's alike.
-  Key any session file your host stores itself by it (`<sessionId>/<path>` in the
-  session store), never by the session you sent the turn to.
-- Outside a turn, reading either throws; both are non-enumerable there, so
-  comparing or logging the context does not.
+A trigger's signature is the contract the runtime enforces, so build an MCP tool, an API
+operation or a start form from it. `@archmax-ai/harness/spec` is browser-safe and holds
+the helpers (they are also on the root):
+
+- `parseMachineSpec(raw)` parses a spec; `signatureForTrigger(spec, "manual")` returns
+  `{ description?, requires, returns }`.
+- `signatureJsonSchema(entries)` returns a JSON Schema object with every name required,
+  `date`, `date-time` and `file` as formatted strings, and each rule JSON Schema can
+  express as its keyword (date bounds, `accept` and `maxSize` are left out; the runtime
+  still enforces them).
+- `signatureValueIssues(entries, values, options?)` returns one issue per missing or
+  non-conforming value, a broken rule as an `invalid` issue carrying `rule`. A
+  `pattern` runs in RE2, so it is safe on anyone's input. It never coerces, so convert
+  form text first.
+- Use the trigger's `description` as the tool's description: the session never sees it.
+  Read `requires` and `returns` through `normalizeSignature`, never as `string[]`.
 
 ## Cases against your agent
 
-`runTests` runs a workflow's cases — declarative YAML documents
-under `workflows/<name>/tests/*.test.yaml`, interpreted host-side — with the
-same discovery, case interpretation, judge, and verdicts `archmax test` uses.
-By default it builds its own agent, which is *not* your agent: no connection
-tools, no mounts, no session store, no checkpointer — and it reads the suite off
-the local filesystem under `rootDir`, which is *not* your authored tree if that
-tree lives in a store. Supply both:
-
-```ts
-import { runTests, createAgent, createToolMockMiddleware } from "@archmax-ai/harness";
-
-const { results, exitCode } = await runTests({
-  workflow,
-  rootDir,
-  // Where the spec, the case documents and their `from:` fixtures are read
-  // from. Omit it only when they really are files under `rootDir`.
-  authoring,
-  createTarget: async ({ workflow, rootDir, onEvent }) =>
-    createAgent({
-  workflow,
-  onEvent,
-  backend,
-  tools: await resolveConnectionTools(tenant),
-  checkpointer,
-  middleware: [createToolMockMiddleware()],
-  // REQUIRED — see below,
-  workspace: { rootDir, sessionStore },
-}),
-  sessionIdForCase: (file) => `${hostRunId}/${file}`,
-});
-```
+`runTests` from `@archmax-ai/harness/testing` runs a workflow's cases with the discovery,
+judge and verdicts of `archmax test`. By default it builds its own agent, with none of
+your tools, mounts or stores. Supply yours:
 
 | Option | Why |
 | --- | --- |
-| `authoring` | The backend the **suite itself** is read from: the machine spec, `workflows/<name>/tests/*.test.yaml`, and the fixtures their `from:` entries name. The same option `createAgent` takes, and normally the same backend — the agent under test runs the authored tree the cases were read from. Defaults to a filesystem backend over the resolved root, so a host whose authored tree lives in a store and omits it discovers **no cases at all** and gets an empty run rather than a failure. |
-| `createTarget` | The agent under test — an already-built runtime, or a factory that builds one. Must be **workflow-governed** — a plain agent is refused before any case runs. In the factory form, `rootDir` in the context is the resolved workspace root. |
-| `sessionIdForCase` | Names the *agent* session the case runs on — a case is one conversation on one session (default `test-default-<runId>-<file>`), invoked once per case file — so its checkpoints, `scratchpad/…` files, and token usage join your own run record. |
+| `createTarget` | Your agent, or a factory `({ workflow, rootDir, onEvent }) => agent`. It must be workflow-governed. Wire `createToolMockMiddleware()` into its `middleware`, or a case that declares `mocks:` is refused before it runs. |
+| `authoring` | Where the spec, the cases and their fixtures are read. When omitted, they are read from files under `rootDir`, so a workspace kept in a store finds no cases. |
+| `sessionIdForCase` | The session id each case runs on, so its files and usage join your records. |
 
-**Your target owns its mocks — and the runtime checks.** A case's `mocks:`
-list intercepts agent-initiated tool calls through
-`createToolMockMiddleware()`, which the default target wires for you.
-`createAgent` stamps `capabilities.toolMocks` from the middleware
-actually wired; a case that declares mocks against a target without the
-capability **fails loudly before the agent runs**, naming the fix — never run
-with partial interception (scripts' PTC calls mocked, the agent's own calls
-real). A bespoke target that intercepts by other means sets
-`capabilities.toolMocks` itself. Mockless cases run against any
-workflow-governed target.
+Cases run one at a time, and `tests.caseTimeoutMs` bounds each.
 
-**Sub-workflows inherit the assembly.** When a workflow delegates (by calling
-an `archmax_workflow_<slug>` tool), the child runtime is
-composed from the *same* resolved inputs as the parent — model and
-`modelFactory`, `backend` and `mounts`, `sessionStore` and `checkpointer`, host
-`tools` and `essentialTools`, `sandboxRuntime`,
-`policyRules`, `promptCache` and `pricing` — differing only in
-the machine that governs it and the system prompt that machine renders. So a
-custom backend serves the child's spec too, and a `modelFactory` supplies its
-model. Composition is **lazy and memoized per workflow slug**: a workflow that is
-never delegated to is never loaded, and one delegated from many places is
-composed once. A child whose spec is broken surfaces as a *dispatch* failure, not
-an assembly failure — a parent still assembles.
+## Sub-workflows in a service
 
-The child runs as a **separate session**, `<parent>~<n>`, in the same session
-store, with its own checkpoints, its own token accounting and its own file space:
-its `scratchpad/` is not its caller's, so it can neither read nor overwrite a file
-of its caller's. `n` is the dispatch's number in the calling session, counted from 1
-across all its turns in its checkpointed state, so an agent built per turn never
-reuses one; a grandchild is `<parent>~<n>~<m>`. The `sub-workflow-*` events and a
-pending delegation name it by its `dispatchId`, the id below the root session (`1`,
-`1~1`). A host tool called in the child gets the child's id as
-`ToolContext.sessionId`, and its file work belongs to the child. `sessions.list()` reports it beside its caller
-with `parentSessionId` naming the caller, and `sessions.delete` removes it by its
-own id. The only files that cross are the runtime's copies of declared `file` arguments and
-`file` returns. `capabilities.subWorkflows` is stamped `true` for a governed
-assembly and `false` for the plain one.
+A child session is composed from its caller's inputs: the model and `modelFactory`, the
+backend and mounts, the session store and checkpointer, the host tools, the policy
+rules, the prompt cache and the pricing. Composition is lazy, per slug, so a child
+whose spec is broken fails its dispatch, not the assembly. The child is its own session
+(`<parent>~<n>`) in the same store, listed by `sessions.list()` with `parentSessionId`.
 
-Omit both options and behavior is identical to `archmax test`. Cases run
-sequentially (`tests.maxConcurrency` above 1 is rejected, not silently
-serialized) and there is no cancellation signal: call `runTests` once per file
-(`filter`) if you need to interrupt between cases; a single case is bounded by
-`tests.caseTimeoutMs`.
+## A typical split
 
-## Suggested split
-
-- **Worker**: `createAgent` + `agent.invoke`/`stream`; `agent.workflow.decide` for
-  approvals. Owns execution and the durable session store/checkpointer.
-- **API**: reads `sessions/<sessionId>/artifacts/*` (shared session store) and/or relays
-  the `onEvent` stream; exposes `sessions.list()`, run detail, and a decide endpoint.
-- **Frontend**: renders `graph.json`/`graph.mmd`, the `trajectory.json` timeline,
-  the `variables.json` inputs, and the live event stream; posts human decisions
-  back to the API.
-
-Keep the heavy runtime import (LangChain/LangGraph) in the worker; the API/frontend
-only need the artifact/event *types*, which ship in `dist/index.d.ts`.
+- **Worker**: `createAgent` and `send`. It owns the session store.
+- **API**: reads artifacts from the shared session store, relays `onEvent`, and exposes
+  `sessions.list()`, a session's detail and a decide endpoint.
+- **Frontend**: draws `graph.json`, the trail and the live stream, and posts decisions to
+  the API. It needs only the types, which ship in `dist/index.d.ts`.

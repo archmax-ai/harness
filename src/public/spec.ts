@@ -214,14 +214,14 @@ export {
   isWorkflowToolName,
   /** Whether a name is one the runtime owns (`archmax_*`). */
   isReservedToolName,
-  /** The control tools: advance, reset, wait, raise, get/set variables, and the two sandbox tools. */
+  /** Every harness-owned control tool: each state type's controls and the two sandbox tools. */
   HARNESS_CONTROL_TOOLS,
-  /** Tools permitted in every state regardless of `allow`. */
-  ALWAYS_ALLOWED_TOOLS,
+  /** Per state type: the controls it always has, and the tools no grant can give it. */
+  STATE_TYPE_TOOLS,
   /** The workflow-wide grant when `tools.allow_always` is absent; a declared list replaces it. */
   DEFAULT_TOOLS,
-  /** Tools no list may grant (`task`). */
-  UNGRANTABLE_TOOLS,
+  /** Deep Agents' `task`, which no list may grant and the kernel always refuses. */
+  TASK_TOOL,
   ReservedToolNameError,
   /** The runtime's file operations, registered in every agent and among the default tools. */
   COPY_FILE_TOOL,

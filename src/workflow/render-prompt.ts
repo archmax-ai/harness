@@ -14,21 +14,22 @@
  *    call for the state in force: its outgoing edges with their markers, and
  *    the run's trigger signature.
  *
- * No other state's slug, `title`, `summary`, budget or transitions is
- * rendered anywhere, and neither is a count of the states: a state the agent
- * cannot advance to is a state it cannot name. A state's `instructions` body is
- * surfaced for the active state, by the caller, and — quoted, for choosing — for
- * the target of an undescribed edge of the active state, by this renderer.
+ * No other state's slug, `title`, `summary`, `instructions`, budget or
+ * transitions is rendered anywhere, and neither is a count of the states: a
+ * state the agent cannot advance to is a state it cannot name. A state's
+ * `instructions` body is surfaced only for the active state, by the caller.
  */
 
 import type { WorkflowMachine } from "../machine/machine.js";
 import { signatureRulePhrases, type SignatureEntry } from "../machine/signature.js";
+import { isUndescribed } from "../machine/spec-schema.js";
 import { ADVANCE_TOOL, SET_VARIABLES_TOOL } from "../machine/tool-names.js";
 import type { MachineTransition } from "../machine/types.js";
 
 /**
  * One outgoing edge: the target's slug (the exact token `archmax_advance` takes),
- * its declared `type`, and the `description` the agent routes on.
+ * its declared `type`, and the `description` the agent routes on — none for an
+ * undescribed edge, which {@link renderStateGraph} introduces on its own.
  *
  * The markers a target may carry are disclosed because each changes what the
  * call must carry or what follows it: `evidence` is accepted only when the
@@ -36,14 +37,7 @@ import type { MachineTransition } from "../machine/types.js";
  * the run straight back with a note saying what to change; a human or terminal
  * target means *stop* rather than *continue*. They disclose the **consequence of
  * taking the edge**, not the state on the other side of it: nothing of the
- * target's own title, summary, script or transitions is rendered.
- *
- * An **undescribed** edge (no description, or a blank one) is transparent: the
- * target's `instructions` stand in for the description, quoted under the line
- * and framed as what the agent will do once there — given for choosing the edge,
- * not to be followed now. The author opts in per edge by leaving it undescribed;
- * the schema refuses one whose target has no instructions to show, and one into
- * a grader state, whose instructions are criteria the graded agent never reads.
+ * target's own title, summary, instructions, script or transitions is rendered.
  */
 function renderTransition(machine: WorkflowMachine, edge: MachineTransition): string {
   const notes: string[] = [];
@@ -54,17 +48,7 @@ function renderTransition(machine: WorkflowMachine, edge: MachineTransition): st
   if (machine.isTerminal(edge.to)) notes.push("terminal");
   const suffix = notes.length ? ` (${notes.join(", ")})` : "";
   const head = `- to \`${edge.to}\`${suffix}`;
-  const description = edge.description?.trim();
-  if (description) return `${head} — ${description}`;
-  const instructions = machine.spec.states[edge.to]?.instructions?.trim() ?? "";
-  const quoted = instructions
-    .split("\n")
-    .map((line) => (line.trim() ? `  > ${line.trimEnd()}` : "  >"));
-  return [
-    `${head} — no description; the instructions you will follow once in \`${edge.to}\`, ` +
-      `given only for choosing this edge:`,
-    ...(instructions ? quoted : []),
-  ].join("\n");
+  return isUndescribed(edge) ? head : `${head} — ${edge.description!.trim()}`;
 }
 
 /** The lines of `state`'s outgoing edges, one per transition, as the graph section and a grader's task render them. */
@@ -149,6 +133,19 @@ export interface StateGraphContext {
 }
 
 /**
+ * How a state's lone undescribed edge is introduced. The schema admits one only
+ * as an agent state's single edge into another agent state, so there is nothing
+ * to choose, and the condition is the state's own instructions: the agent is
+ * told to move on once they are done, so it neither guesses at a condition nor
+ * stops to ask a person whether to go on — a go-ahead the author wants is a
+ * human state or a described edge.
+ */
+const LONE_EDGE =
+  `Transition — the only one out of this state, with no condition of its own: take it with ` +
+  `\`${ADVANCE_TOOL}\` as soon as this state's instructions are done, without asking anyone ` +
+  `whether to move on.`;
+
+/**
  * The active state's half of the graph: the run's trigger signature, and either
  * its outgoing edges or the statement that it has none.
  *
@@ -169,10 +166,13 @@ export function renderStateGraph(
   sections.push(...renderSignature(machine, ctx.trigger, ctx.child === true));
 
   const transitions = declared.transitions ?? [];
+  const lone = transitions.length === 1 && isUndescribed(transitions[0]!);
   sections.push(
     transitions.length > 0
       ? [
-          `Transitions — choose one with \`${ADVANCE_TOOL}\` when this state's work is done:`,
+          lone
+            ? LONE_EDGE
+            : `Transitions — choose one with \`${ADVANCE_TOOL}\` when this state's work is done:`,
           ...renderTransitions(machine, state),
         ].join("\n")
       : `This state is terminal: no transition leads out of it. Finish its work and stop.`,

@@ -960,7 +960,6 @@ states:
     expect(update.auditTrail).toMatchObject([{ to: "done", kind: "agent", reason: "all set" }]);
     expect(update.rejected).toBeNull();
     // The target's turn budget starts afresh.
-    expect(update.stateTurns).toBeNull();
     const [message] = update.messages as ToolMessage[];
     expect(String(message.content)).toContain("Advanced to state 'done'");
     expect(message.tool_call_id).toBe("call-9");
@@ -2027,24 +2026,8 @@ describe("workflow middleware — the gate before the model", () => {
     expect(gate).toBeUndefined();
   });
 
-  it("counts the model call against the state's turn budget", async () => {
-    const first = await beforeModel({ workflowState: "work", messages: [userMessage("go")] });
-    expect(first).toEqual({ stateTurns: { state: "work", count: 1 } });
-    const later = await beforeModel({
-      workflowState: "work",
-      stateTurns: { state: "work", count: 2 },
-      messages: [userMessage("go")],
-    });
-    expect(later).toEqual({ stateTurns: { state: "work", count: 3 } });
-  });
-
-  it("starts the count over in a new state", async () => {
-    const gate = await beforeModel({
-      workflowState: "done",
-      stateTurns: { state: "work", count: 5 },
-      messages: [userMessage("go")],
-    });
-    expect(gate).toEqual({ stateTurns: { state: "done", count: 1 } });
+  it("lets an ordinary model call through untouched: no state counts its calls", async () => {
+    expect(await beforeModel({ workflowState: "work", messages: [userMessage("go")] })).toBeUndefined();
   });
 
   it("ends the turn after a raise, before any model call and without counting one", async () => {
@@ -2053,9 +2036,8 @@ describe("workflow middleware — the gate before the model", () => {
       workflowState: "work",
       status: "failed",
       raised,
-      // Even with a rejection or a turn budget in play: the raise settles the turn first.
+      // Even with a rejection in play: the raise settles the turn first.
       rejected: "an earlier sub-run failed",
-      stateTurns: { state: "work", count: 7 },
       messages: [userMessage("go"), agentToolCall(), toolResult()],
     });
     expect(gate).toEqual({ jumpTo: "end" });
@@ -3146,8 +3128,6 @@ describe("workflow middleware — automated states", () => {
       workflowState: "answer",
       variables: { order_id: { value: "1042", locked: false } },
       rejected: null,
-      // The agent's call about to be made is its state's first.
-      stateTurns: { state: "answer", count: 1 },
       jumpTo: "model",
     });
     expect(update.auditTrail).toMatchObject([{ to: "answer", kind: "code", reason: "the request names an order" }]);
@@ -3167,7 +3147,6 @@ describe("workflow middleware — automated states", () => {
       replyOnly: true,
       jumpTo: "model",
     });
-    expect(update.stateTurns).toBeNull();
     expect(events.find((e) => e.type === "parked")).toMatchObject({ state: "review", awaiting: "decision" });
   });
 
@@ -3222,15 +3201,6 @@ describe("workflow middleware — automated states", () => {
     expect(update.jumpTo).toBeUndefined();
     expect(update.messages).toEqual([expect.any(RemoveMessage)]);
     expect(events.at(-1)).toMatchObject({ type: "state-leave", state: "record", next: "record" });
-  });
-
-  it("counts no agent turn in an automated position", async () => {
-    const { mw } = await automatedRunner();
-    const messages = [new HumanMessage("go")];
-    expect(mw.beforeModel.hook({ workflowState: "screen", messages }, runtime)).toBeUndefined();
-    expect(mw.beforeModel.hook({ workflowState: "answer", messages }, runtime)).toEqual({
-      stateTurns: { state: "answer", count: 1 },
-    });
   });
 
   it("refuses to stand in for the model call when nothing is wired to run the state", async () => {

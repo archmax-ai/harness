@@ -9,6 +9,66 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 2.0.0
+
+A smaller schema and a smaller first example. Upgrading from 1.x means deleting `maxTurns`,
+describing the edges that need it and renaming two imports, in [three steps](#migrating-from-1x).
+
+### Breaking changes
+
+- **A state's `budget` no longer counts model calls.** `budget.maxTurns` is removed, with the
+  per-state count behind it. A turn is bounded by LangGraph's `recursionLimit`, 400 unless the config
+  you pass sets one, and reaching it ends the session `failed` with `recursion-limit`. A grader's
+  own run is bounded by the same limit and by its `budget.timeoutMs`. A state's `budget` keeps
+  `timeoutMs` and `maxParks`, and `maxTurns` is an unknown key. See
+  [`budget`](/reference/machine-spec/#budget).
+- **An edge is described wherever it is chosen.** The undescribed edge of 0.8.0, which routed on
+  its target's instructions, is gone. An edge may now go undescribed only as an agent state's
+  single transition into another agent state, out of a state with `instructions`: there is nothing
+  to choose, the agent takes it as soon as those instructions are done without asking anyone
+  whether to move on, and nothing of the target is shown. Every other edge needs a non-empty
+  `description`: one of several, any edge of a human, grader or code state (a code state's
+  included, which 0.8.0 exempted), an edge into one, and an edge back into its own state. Each
+  refusal names the edge and says why. See
+  [a lone edge between agent states](/reference/machine-spec/#a-lone-edge-between-agent-states).
+- **One tool table per state type.** `@archmax-ai/harness/spec` exports `STATE_TYPE_TOOLS`, each
+  state type's `controls` and `withheld` tools, and `TASK_TOOL`. `ALWAYS_ALLOWED_TOOLS` and
+  `UNGRANTABLE_TOOLS` are removed. What each state is offered is unchanged. See
+  [tool tables](/reference/public-api/#tool-tables).
+
+### Fixes
+
+- **A note reads as one sentence.** The note a grader or a code state leaves on a move added a full
+  stop after a reason that already ended in one.
+
+### Dependencies
+
+- **`just-bash` is no longer installed.** Nothing in the package imported it, so an install pulls
+  in 69 fewer packages.
+
+### Examples and documentation
+
+- **`examples/refund/`** is a refund desk in four states, run from a short Node program: an agent
+  decides with a host tool, a code state checks the decision, a grader checks the email, and the
+  agent sends it with a second host tool. The README and the
+  [quickstart](/getting-started/quickstart/) walk through it, and a test holds their code to the
+  example's files. `examples/customer-support/` stays the workspace for the CLI.
+- **The guides and reference pages are rewritten** around one example per idea, and the authoring
+  skill is a third of its former length: one reference per task, one code-state script and one
+  grader.
+
+### Migrating from 1.x
+
+1. **Delete every `budget.maxTurns`.** Where a turn legitimately needs more steps, pass a larger
+   `recursionLimit` in the config of `agent.workflow.send(sessionId, input, config)`.
+2. **Describe the edges that need it.** Run `archmax validate`: each undescribed edge it refuses
+   needs a `description` saying when to take it, such as "Refunds over $50", a code state's
+   transitions included. An agent state's single edge into another agent state may stay
+   undescribed.
+3. **Rename the tool sets.** Replace `ALWAYS_ALLOWED_TOOLS.has(name)` with
+   `STATE_TYPE_TOOLS.agent.controls.has(name)`, and `UNGRANTABLE_TOOLS.has(name)` with
+   `name === TASK_TOOL`.
+
 ## 1.1.0
 
 An additive release: a signature entry can say what its value must look like.

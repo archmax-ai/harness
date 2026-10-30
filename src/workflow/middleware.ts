@@ -37,7 +37,6 @@ import {
   readWorkflowState,
   WORKFLOW_STATUSES,
   workflowStateSchema,
-  type WorkflowStateFields,
   type WorkflowUpdate,
 } from "./state.js";
 import type { SubWorkflowDispatcher } from "./sub-workflow.js";
@@ -209,11 +208,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     configOf,
   };
   const failureCtx = { machine, emit, sessionIdOf };
-  /** The state's `budget.maxTurns`, and the model calls this visit has made against it. */
-  const turnBudget = (fields: WorkflowStateFields, workflowState: string) => ({
-    maxTurns: machine.spec.states[workflowState]?.budget?.maxTurns,
-    spent: fields.stateTurns?.state === workflowState ? fields.stateTurns.count : 0,
-  });
   const turnCtx = {
     machine,
     emit,
@@ -262,7 +256,6 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
       canJumpTo: ["end"],
       hook: (state: WorkflowRequestState, runtime: FrameworkRuntime) => {
         const fields = readWorkflowState(state);
-        const workflowState = currentWorkflowState(state, machine.entry);
 
         // The session raised in the step just serviced: it is over. Ended here,
         // before any model call, so nothing after the model runs either — no
@@ -281,26 +274,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
           return asHookResult(lastMessageIsHuman(state.messages ?? []) ? undefined : { jumpTo: "end" });
         }
 
-        // An automated state makes no call of the agent's model, so no agent turn
-        // budget applies there; a grader's own calls are bounded inside its run.
-        if (machine.isAutomatedState(workflowState)) return asHookResult(undefined);
-
-        // The exact per-state turn budget: this call would be one too many.
-        const { maxTurns, spent } = turnBudget(fields, workflowState);
-        if (maxTurns != null && spent + 1 > maxTurns) {
-          const routed = routeFailure(
-            failureCtx,
-            state,
-            runtime,
-            workflowState,
-            `state '${workflowState}' exhausted its turn budget (maxTurns: ${maxTurns})`,
-            "before-model",
-          );
-          // The error handler's first call is the one about to be made.
-          if (routed.workflowState) routed.stateTurns = { state: routed.workflowState, count: 1 };
-          return asHookResult(routed);
-        }
-        return asHookResult({ stateTurns: { state: workflowState, count: spent + 1 } });
+        return asHookResult(undefined);
       },
     },
 
@@ -475,10 +449,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
       ...moved,
       auditTrail: [...(committed.auditTrail ?? []), ...(moved.auditTrail ?? [])],
     };
-    if (park) return { ...landed, ...closingTurn(), jumpTo: "model" };
-    if (machine.isAutomatedState(result.to)) return { ...landed, jumpTo: "model" };
-    // The agent's call about to be made is its state's first.
-    return { ...landed, stateTurns: { state: result.to, count: 1 }, jumpTo: "model" };
+    return park ? { ...landed, ...closingTurn(), jumpTo: "model" } : { ...landed, jumpTo: "model" };
   }
 
   return {

@@ -712,18 +712,25 @@ describe("the park budget", () => {
 
 describe("an on_error target that is a human node", () => {
   it("parks the run there awaiting a decision", async () => {
+    // A code state whose script throws fails the state, routing through its `on_error`.
     const spec = {
       runtime: { engine: "archmax-harness", version: "3" },
       states: {
-        start: { triggers: { manual: null }, budget: { maxTurns: 1 }, on_error: "review", transitions: [{ to: "done", description: "Test edge to done." }] },
+        start: {
+          triggers: { manual: null },
+          type: "code",
+          script: "scripts/start.js",
+          on_error: "review",
+          transitions: [{ to: "done", description: "Test edge to done." }],
+        },
         review: { type: "human", transitions: [{ to: "done", type: "approve", description: "Test edge to done." }] },
         done: {},
       },
     };
-    const probe = { tool: "archmax_get_variables", args: {} };
-    const { agent, events, model } = await assemble(workspaceWith(spec), {
-      turns: [probe, probe, { reply: "a person has to look at this" }],
-    });
+    const { agent, events, model } = await assemble(
+      workspaceWith(spec, { "workflows/w/scripts/start.js": 'export default () => { throw new Error("the check broke"); };\n' }),
+      { turns: [{ reply: "a person has to look at this" }] },
+    );
     await turn(agent, "s1", "go");
     expect(eventsOf(events, "state-error-routed")).toMatchObject([{ state: "start", to: "review" }]);
     expect(eventsOf(events, "parked")).toMatchObject([{ state: "review", awaiting: "decision" }]);

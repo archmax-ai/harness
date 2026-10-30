@@ -78,9 +78,10 @@ A workflow is `workflows/<slug>/workflow.yaml` plus an optional `WORKFLOW.md` (p
 prose appended after the rendered graph section; frontmatter there is a `competing-machines` load
 error). The schema is **one strict zod schema**, `src/machine/spec-schema.ts`: every root and
 state key, enums, path grammars, and `refineSpec` for cross-references (targets exist, one
-`manual` start, trigger ownership, `${{…}}` guard references, an undescribed edge routing on its
-target's instructions: refused on a human state and into a grader or code state). Warnings live in
-`src/machine/lint-spec.ts`; both the loader and `validate` run both. An unknown key is a load
+`manual` start, trigger ownership, `${{…}}` guard references, a non-empty `description` on every
+transition except an agent state's lone edge into another agent state out of a state with
+`instructions`). Warnings live in `src/machine/lint-spec.ts`; both the
+loader and `validate` run both. An unknown key is a load
 error naming the key. The one loose spot is `triggers.<id>` (host-extensible). `WorkflowMachine`
 (`src/machine/machine.ts`) is the compiled object the runtime consults. `src/validate/` adds what
 needs more than the document: code-state scripts and their imports, the skill registry, sibling
@@ -96,10 +97,11 @@ Governance is middleware (`src/workflow/middleware.ts`): `beforeAgent` is the tu
 (trigger → start state or retained position; `disabled`/`requires` refusals; locked seeds; spec
 snapshot), `wrapModelCall` applies the per-state tool surface and prompt (or, in an automated
 state, runs the state in place of the model call), `wrapToolCall` services the control tools and
-applies the kernel verdict to every call, `afterModel` does state budgets, `on_error` and the
-commit of an automated state's outcome. The agent moves only by `archmax_advance({ to, reason })`:
-edge and `requires` validated, then the target's tools unlock (an automated target runs before any
-further model call). **Parks are LangGraph interrupts**
+applies the kernel verdict to every call, `afterModel` routes a call past its `budget.timeoutMs`
+and other state failures through `on_error` and commits an automated state's outcome. A state's
+`budget` holds only `timeoutMs` and `maxParks`; nothing counts a state's model calls. The agent
+moves only by `archmax_advance({ to, reason })`: edge and `requires` validated, then the target's
+tools unlock (an automated target runs before any further model call). **Parks are LangGraph interrupts**
 (`src/workflow/parks.ts`): a human state parks for a decision, `archmax_wait` for input. Every way
 back in is `agent.workflow.send(sessionId, input)` → one `Outcome` (`src/sessions/resume.ts`;
 `decide`/`reply`/`deliver` are conveniences). A park, a decision routed to another human
@@ -117,26 +119,28 @@ model. `wrapModelCall` runs it in place of the model call and returns a marker `
 carrying its serializable outcome; `afterModel` strips the marker, commits the outcome and jumps
 back to the model, so each automated state is its own checkpointed step and a chain of code states
 makes no model call (a runaway cycle ends at the recursion limit). It is offered exactly its
-state's surface (`disclosedTools`, which for an automated state holds no `write_todos`,
-`archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, even when `allow_always`
-lists them), each tool wrapped by the
-PTC gateway so the kernel decides every call against that state. Its controls
-(`machine.controlTools`, bound to one step recorder per run) are the same for both types:
-`archmax_advance` (edge and `requires` checked at the call; absent when terminal), `archmax_raise`,
-`archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`; never `archmax_wait` or
-`archmax_reset`, since an automated state cannot park. The first accepted advance or raise is the
+state's surface (`disclosedTools`), each tool wrapped by the PTC gateway so the kernel decides
+every call against that state. What each state type always has and never has is one table,
+`STATE_TYPE_TOOLS` (`src/machine/tool-names.ts`, exported on `@archmax-ai/harness/spec`): its
+`controls` (read through `machine.controlTools`) and its `withheld` tools, which no grant gives
+it. Agent and human states control with `archmax_advance`, `archmax_reset`, `archmax_wait`,
+`archmax_raise` and the two variable tools; grader and code states with `archmax_advance` (edge
+and `requires` checked at the call; absent when terminal), `archmax_raise`, the variable tools and
+`archmax_get_history`, bound to one step recorder per run, and they withhold `write_todos`,
+`archmax_eval`, `archmax_run`, `archmax_wait` and `archmax_reset`: an automated state cannot park.
+`TASK_TOOL` (`task`) is callable in no state. The first accepted advance or raise is the
 decision. A run settles as `advanced` (trail kind `grader`/`code`, a runtime note carrying the
 reason), `raised` (session `failed`), `completed` (a terminal state; `returns` checked) or
-`failed` (a throw, a timeout, a spent budget, a non-terminal state left undecided), which routes
-through `on_error`. A raise beats an error; an error discards a recorded advance; a session that
+`failed` (a throw, a timeout, a non-terminal state left undecided), which routes through
+`on_error`. A raise beats an error; an error discards a recorded advance; a session that
 completed in a terminal automated state opens its next turn at the trigger's entry; a control is
 never served from a case's mock. A **code state** runs `script: scripts/<file>.js` (confined to
 `workflows/<slug>/scripts/`) in a fresh `code` REPL; its default export receives
 `{ state, trigger?, variables, tools }` and its return value is not read. A **grader state** is an
 isolated langchain agent built per run: the compiled grader preamble plus the state's
 `instructions`, its transitions as the task, the `grader` model role, no checkpointer, tokens
-tagged `nostream`; `budget.maxTurns`/`timeoutMs` bound its own calls. Both read the session only
-through `archmax_get_history` (a script: `JSON.parse(await tools.archmax_get_history())`):
+tagged `nostream`; `budget.timeoutMs` and the recursion limit bound its own run. Both read the
+session only through `archmax_get_history` (a script: `JSON.parse(await tools.archmax_get_history())`):
 `{ messages, trail }`, the checkpointed session's whole transcript and trail, oldest first, a tool
 message carrying its result inline in `text` (`history.ts`). Events `code-start/output/result`,
 `grader-start/result`. Types: `@archmax-ai/harness/sandbox` (`defineCodeState`, `CodeStateInput`,
@@ -212,15 +216,19 @@ Agents' base prompt is dropped.
   `src/cli/` command, bootstrap, turn, state flow, banner, style · `src/core/` workspace,
   mounts, zones, session store/zone, events, messages, prompt,
   usage, match; `deepagents.ts` is the one framework seam · `src/public/` subpath barrels
-  (`sandbox`, `testing`, `cli`) · `src/runtime/` contract versioning · `src/behaviour/`
+  (`sandbox`, `testing`, `cli`, `spec`, `messages`) · `src/runtime/` contract versioning · `src/behaviour/`
   behaviour suite · `src/env.ts` · `src/index.ts` public barrel (tested against
   `docs/.../reference/public-api.md` both ways).
 - `src/core/platform-prompt.md` — the platform prompt (movement and tools). `npm run build`
   (or `npm run generate:prompt`) generates `platform-prompt.generated.ts` from it, so it ships
   in the code; a test fails while the two differ. A workspace may override it by serving
   `.platform/system/GRAPH_STATE.md`.
-- `examples/customer-support/` — reference workspace: `AGENTS.md`, `workflows/order-lookup/`
-  (code-state scripts under its `scripts/`), skill bundles under `skills/`.
+- `examples/customer-support/` — reference workspace for the CLI and the e2e suite: `AGENTS.md`,
+  `workflows/order-lookup/` (code-state scripts under its `scripts/`), skill bundles under
+  `skills/`.
+- `examples/refund/` — the minimal SDK example the README walks through: a four-state workflow
+  with two host tools, run by `index.js` with `createAgent` (the CLI cannot run it: it has no
+  host tools); `src/behaviour/refund-example.test.ts` runs it with a scripted model.
 - `skills/archmax-harness/` — the authoring skill (`SKILL.md` plus `references/*.md`) that teaches
   a coding agent to author a workspace, shipped as `dist/authoring-skill/archmax-harness`
   (`BUNDLED_AUTHORING_SKILL_DIR` resolves to the `dist/authoring-skill` parent).
