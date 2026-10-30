@@ -606,7 +606,8 @@ states:
         description: Enrich one order and say whether it is late.  # for callers only
         requires:                            # a firing must supply these to start
           - order_id                         # bare name = untyped
-          - { name: due, type: date, description: The day the order is due. }
+          - { name: due, type: date, minimum: today, description: The day the order is due. }
+          - { name: priority, type: string, enum: [low, normal, high] }   # a rule
         returns:                             # the run guarantees these when it completes
           - enrichment_file
           - { name: delayed, type: boolean }
@@ -635,10 +636,11 @@ states:
   state through a code state that checks the returns and sends the work back
   with what is missing. Each entry is a bare
   run-variable name (**untyped**: any value, `null` included) or a strict object
-  `{ name, type?, description? }` naming one; the spellings mix in one list and
+  `{ name, type?, description?, …rules }` naming one; the spellings mix in one list and
   names are distinct across both. What the agent must *do* to produce a
   variable still belongs in the `instructions` that set it. The names — with
-  type and description when declared, as `name (type) — description` — are
+  type, rules and description when declared, as
+  `name (type; rule; rule) — description` — are
   rendered into the prompt under the trigger's entry state, so the agent is told
   what to produce before it can be failed for omitting it. A trigger's
   `requires:` also **guarantees** the variable for `${{…}}` guards, so `validate`
@@ -654,9 +656,37 @@ states:
   refused before any model call), **at the write** (`archmax_set_variables` of a
   mistyped typed return of the current trigger is a correctable refusal,
   nothing written) and **at completion** (a mistyped typed return rejects the
-  run — in practice a code state's write). There are no enums, item or
-  property schemas, ranges or optional inputs. An unknown `type`, an unknown
-  entry key (`default:`) or an empty `description` fails load.
+  run — in practice a code state's write). There are no item or property
+  schemas and no optional inputs. An unknown `type`, an unknown entry key
+  (`default:`) or an empty `description` fails load.
+- **Rules** say what a typed value must look like beyond its type, spelled as
+  JSON Schema keywords, and are held wherever the type is (start, write,
+  completion, a delegation call and its settle):
+
+  | Rule | On | Value |
+  | --- | --- | --- |
+  | `format` | `string` | `email` (WHATWG grammar, a domain with a TLD), `url` (absolute `http(s)://`, no credentials), `phone` (E.164, `+4930123456`) |
+  | `pattern` | `string` | a regex found anywhere in the value (anchor with `^…$`), ≤ 1,000 characters |
+  | `minLength`, `maxLength` | `string` | non-negative integers, counted in code points |
+  | `enum` | `string` | a non-empty list of distinct strings, matched exactly |
+  | `content` | `string` | `text`, `markdown` or `html`: a **declaration** for the host, never checked or sanitised |
+  | `minimum`, `maximum` | `integer`, `number` | numbers, inclusive |
+  | `minimum`, `maximum` | `date` | `YYYY-MM-DD` or `today` (UTC), inclusive |
+  | `minimum`, `maximum` | `date-time` | an RFC 3339 instant or `now`, inclusive |
+  | `minItems`, `maxItems` | `array` | non-negative integers |
+  | `accept` | `file` | extensions like `.pdf`, matched on the last extension, case-insensitively |
+  | `maxSize` | `file` | bytes, or `<n>KB` / `<n>MB` (1,000-based); checked where the file crosses a boundary |
+
+  Nothing is coerced or trimmed; a mistyped value reports its type, not a rule;
+  each entry reports only the first rule it breaks (`'quantity' must be at most
+  100`). Load fails, naming the entry and key, for a rule on a type that does not
+  take it or on an untyped entry, `format` with `pattern`, a pattern that does not
+  compile or uses a lookaround or backreference, and inconsistent bounds (`min…`
+  above `max…`, an empty or repeated `enum`). A `pattern` runs in RE2 (linear
+  time, so no input can make it slow) and must also compile as an ECMA-262 `u`
+  regex, so RE2-only syntax like `(?i)` or `\pL` is refused. Add rules where a
+  caller outside the session supplies the value (a form, an MCP client), or where
+  the agent must produce a value of a set shape; the agent sees them in its prompt.
 - **A `file` value must name a readable file.** The pure rule checks only the
   path's shape (a host runs it in a browser). At the start, at the write, at
   completion and at a delegation call the runtime also requires a **file** (not a

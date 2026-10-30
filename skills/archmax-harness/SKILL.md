@@ -70,8 +70,11 @@ then verify. Do not write a file, validate, and discover the next file.
    `description` for the caller and a `requires`/`returns` signature, typing an
    entry (`{ name, type, description }`; `string` `integer` `number` `boolean`
    `date` `date-time` `object` `array` `file`) where the caller must build or read the
-   value. The runtime holds typed entries at start, at `archmax_set_variables`
-   and at completion ([`references/workflow-schema.md`](references/workflow-schema.md)).
+   value, and adding **rules** where the value has a shape the type does not say
+   (`format: email`, `pattern`, `maxLength`, `enum`, `minimum`/`maximum`,
+   `minItems`/`maxItems`, `accept`/`maxSize` on a file). The runtime holds typed
+   entries and their rules at start, at `archmax_set_variables` and at completion
+   ([`references/workflow-schema.md`](references/workflow-schema.md)).
    Decide how the work can **fail**, too: the agent ends a session it cannot
    complete with `archmax_raise({ code, reason })`, always on and only for
    failure (a session that never raises is a success). Where a host branches

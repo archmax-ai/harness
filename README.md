@@ -167,17 +167,22 @@ states:
         description: Refund one order and report what was refunded.   # for callers, not the agent
         requires:
           - order_id                                                   # a bare name is untyped
-          - { name: due, type: date, description: The day the refund is due. }
+          - { name: due, type: date, minimum: today, description: The day the refund is due. }
+          - { name: contact, type: string, format: email }               # a rule beside the type
         returns:
-          - { name: total, type: number, description: Refunded amount in EUR. }
+          - { name: total, type: number, minimum: 0, description: Refunded amount in EUR. }
 ```
 
-A start whose `due` is not a real `YYYY-MM-DD` day is refused before any model call, and a session
-that finishes with `total` not a number is rejected. One that finishes with `total` unset is
+A start whose `due` is not a real `YYYY-MM-DD` day, or is in the past, or whose `contact` is not an
+email address, is refused before any model call, and a session that finishes with `total` not a
+non-negative number is rejected. Rules (`format`, `pattern`, `minLength`/`maxLength`, `enum`,
+`minimum`/`maximum`, `minItems`/`maxItems`, `accept`, `maxSize`) are held wherever the type is, and a
+`pattern` runs in a linear-time RE2 engine, never a backtracking `RegExp`. One that finishes with `total` unset is
 rejected too, unless it runs as a sub-workflow: then its caller gets `total` empty (`null`), plus a
 `note` naming it. A return is owed only when the session finishes, and a seed of one lands unlocked. `signatureJsonSchema` on
-`@archmax-ai/harness/spec` turns the same signature into a JSON Schema. See
-[triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature).
+`@archmax-ai/harness/spec` turns the same signature, rules included, into a JSON Schema. See
+[triggers](https://harness.archmax.ai/guides/triggers/#typing-a-signature) and
+[rules](https://harness.archmax.ai/reference/machine-spec/#rules).
 
 An entry typed `file` takes a path from the workspace root. A host hands one in with
 `send(sessionId, { message, files: { invoice: { name, content } } })`, or the CLI with

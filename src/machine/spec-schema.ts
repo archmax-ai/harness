@@ -9,7 +9,20 @@
 import { z } from "zod";
 import { normalizeAllowEntry } from "./allow.js";
 import { isSlug } from "./slug.js";
-import { SIGNATURE_TYPES } from "./signature.js";
+import {
+  boundsInOrder,
+  isBound,
+  isCount,
+  parseSize,
+  RULE_TYPES,
+  SIGNATURE_CONTENTS,
+  SIGNATURE_FORMATS,
+  SIGNATURE_RULE_NAMES,
+  SIGNATURE_TYPES,
+  type SignatureRuleName,
+  type SignatureType,
+} from "./signature.js";
+import { compilePattern } from "./signature-pattern.js";
 import { MANUAL_TRIGGER, parseSessionPath, stateTriggerIds } from "./triggers.js";
 import {
   parseReferences,
@@ -365,17 +378,47 @@ export const stateTypeSchema = z.enum(["agent", "human", "grader", "code"], {
 // --- Triggers ------------------------------------------------------------------
 
 /** The keys a signature entry object may carry, as a refusal lists them. */
-const SIGNATURE_ENTRY_KEYS = "'name', 'type' and 'description'";
+const SIGNATURE_ENTRY_KEYS =
+  `'name', 'type', 'description' and the rules ` +
+  `${SIGNATURE_RULE_NAMES.slice(0, -1).map((rule) => `'${rule}'`).join(", ")} and '${SIGNATURE_RULE_NAMES.at(-1)}'`;
 
 /** The accepted type words, as a refusal lists them. */
 const SIGNATURE_TYPE_LIST = `${SIGNATURE_TYPES.slice(0, -1).join(", ")} or ${SIGNATURE_TYPES.at(-1)}`;
+
+/** What a `maxSize` must look like, as a refusal says it. */
+const SIZE_SHAPE = "a size in bytes: an integer, or '<n>KB' / '<n>MB' (e.g. 10MB)";
+
+/** One file extension as `accept` lists it: a dot and a name holding no further dot or separator. */
+const EXTENSION = /^\.[^./\\]+$/;
+
+/** A length or count rule's shape; that it is a non-negative integer is the refinement's. */
+function countRule(rule: SignatureRuleName) {
+  return z.number({ error: `'${rule}' must be a non-negative integer` }).optional();
+}
+
+/** A `minimum`/`maximum` rule's shape; which of the two kinds the entry's type takes is the refinement's. */
+function boundRule(rule: SignatureRuleName) {
+  return z
+    .union([z.number(), z.string()], {
+      error: `'${rule}' must be a number, a date (YYYY-MM-DD or 'today') or a date-time (RFC 3339 or 'now')`,
+    })
+    .optional();
+}
+
+/** A list rule's shape: strings, with emptiness and repeats left to the refinement. */
+function listRule(rule: SignatureRuleName) {
+  return z
+    .array(z.string({ error: `'${rule}' must list strings` }), { error: `'${rule}' must be a list of strings` })
+    .optional();
+}
 
 /**
  * @see SignatureEntryDeclaration
  *
  * The object spelling of a signature entry. Strict, unlike the loose declaration
  * around it: an unknown key here is most likely a misspelled `type` or
- * `description`, and read loosely it would silently mean "untyped".
+ * `description`, and read loosely it would silently mean "untyped". A rule key
+ * is shape-checked here and held to its entry's type by {@link refineRules}.
  */
 export const signatureEntryObjectSchema = z.strictObject(
   {
@@ -398,6 +441,26 @@ export const signatureEntryObjectSchema = z.strictObject(
       .string({ error: `'description' ${NON_EMPTY}` })
       .refine((value) => value.trim() !== "", `'description' ${NON_EMPTY}`)
       .optional(),
+    format: z
+      .enum(SIGNATURE_FORMATS, {
+        error: (issue) => `'format' must be one of email, url or phone; got ${JSON.stringify(issue.input)}`,
+      })
+      .optional(),
+    pattern: z.string({ error: "'pattern' must be a string (a regular expression)" }).optional(),
+    minLength: countRule("minLength"),
+    maxLength: countRule("maxLength"),
+    enum: listRule("enum"),
+    content: z
+      .enum(SIGNATURE_CONTENTS, {
+        error: (issue) => `'content' must be one of text, markdown or html; got ${JSON.stringify(issue.input)}`,
+      })
+      .optional(),
+    minimum: boundRule("minimum"),
+    maximum: boundRule("maximum"),
+    minItems: countRule("minItems"),
+    maxItems: countRule("maxItems"),
+    accept: listRule("accept"),
+    maxSize: z.union([z.number(), z.string()], { error: `'maxSize' must be ${SIZE_SHAPE}` }).optional(),
   },
   {
     error: (issue) =>
@@ -406,7 +469,102 @@ export const signatureEntryObjectSchema = z.strictObject(
           `signature entry does not take: it has ${SIGNATURE_ENTRY_KEYS} only.`
         : undefined,
   },
-);
+).superRefine(refineRules);
+
+/** `string`, `integer, number, date and date-time`. */
+function typeList(types: readonly SignatureType[]): string {
+  return types.length === 1 ? types[0]! : `${types.slice(0, -1).join(", ")} and ${types.at(-1)}`;
+}
+
+/**
+ * Hold an entry's rules to its type and to each other. Each issue sits at the
+ * rule's key and names the entry itself: the union around the entry hands a
+ * refinement's issues on unwrapped.
+ */
+function refineRules(entry: Record<string, unknown> & { type?: SignatureType }, ctx: z.RefinementCtx): void {
+  const declared = SIGNATURE_RULE_NAMES.filter((rule) => entry[rule] !== undefined);
+  if (declared.length === 0) return;
+  const label = entryLabel(entry);
+  const issue = (rule: SignatureRuleName, message: string) =>
+    ctx.addIssue({ code: "custom", path: [rule], message: `${label} ${message}` });
+  const { type } = entry;
+  const applicable: SignatureRuleName[] = [];
+  for (const rule of declared) {
+    const types = RULE_TYPES[rule];
+    if (!type) issue(rule, `declares '${rule}', but has no 'type': it applies to ${typeList(types)} entries only.`);
+    else if (!types.includes(type)) issue(rule, `declares '${rule}', which applies to ${typeList(types)} entries only.`);
+    else applicable.push(rule);
+  }
+  if (!type) return;
+  const has = (rule: SignatureRuleName) => applicable.includes(rule);
+
+  for (const rule of ["minLength", "maxLength", "minItems", "maxItems"] as const) {
+    if (has(rule) && !isCount(entry[rule])) {
+      issue(rule, `declares '${rule}' as ${String(entry[rule])}, which is not a non-negative integer.`);
+      applicable.splice(applicable.indexOf(rule), 1);
+    }
+  }
+
+  if (has("format") && has("pattern")) {
+    issue("pattern", `declares both 'format' and 'pattern': an entry declares one or the other.`);
+  }
+  if (has("pattern")) {
+    const compiled = compilePattern(entry.pattern as string);
+    if (!compiled.ok) issue("pattern", `declares a 'pattern' that cannot be used: ${compiled.error}.`);
+  }
+  for (const rule of ["minimum", "maximum"] as const) {
+    if (!has(rule) || isBound(type, entry[rule])) continue;
+    const shape =
+      type === "date"
+        ? "a date (YYYY-MM-DD, a real calendar day) or 'today'"
+        : type === "date-time"
+          ? "an RFC 3339 date-time with an offset (e.g. 2026-11-01T09:00:00Z) or 'now'"
+          : "a number";
+    issue(rule, `declares '${rule}' as ${JSON.stringify(entry[rule])}, but on a ${type} entry it must be ${shape}.`);
+  }
+  for (const [low, high] of [
+    ["minLength", "maxLength"],
+    ["minimum", "maximum"],
+    ["minItems", "maxItems"],
+  ] as const) {
+    if (!has(low) || !has(high)) continue;
+    const ordered =
+      low === "minimum"
+        ? boundsInOrder(type, entry[low], entry[high])
+        : (entry[low] as number) <= (entry[high] as number);
+    if (!ordered) {
+      issue(
+        low,
+        `declares '${low}' ${JSON.stringify(entry[low])} above '${high}' ${JSON.stringify(entry[high])}, ` +
+          `so no value could conform.`,
+      );
+    }
+  }
+  for (const rule of ["enum", "accept"] as const) {
+    if (!has(rule)) continue;
+    const list = entry[rule] as string[];
+    if (list.length === 0) {
+      issue(rule, `declares an empty '${rule}', so no value could conform.`);
+      continue;
+    }
+    const malformed = rule === "accept" ? list.find((extension) => !EXTENSION.test(extension)) : undefined;
+    if (malformed !== undefined) {
+      issue(
+        rule,
+        `lists ${JSON.stringify(malformed)} in 'accept', which is not a file extension: write a dot and ` +
+          `a name with no further dot, e.g. '.pdf'.`,
+      );
+      continue;
+    }
+    // Extensions compare case-insensitively, as `accept` is checked.
+    const keys = list.map((item) => (rule === "accept" ? item.toLowerCase() : item));
+    const repeated = list.find((_, index) => keys.indexOf(keys[index]!) !== index);
+    if (repeated !== undefined) issue(rule, `lists ${JSON.stringify(repeated)} more than once in '${rule}'.`);
+  }
+  if (has("maxSize") && parseSize(entry.maxSize) === undefined) {
+    issue("maxSize", `declares 'maxSize' as ${JSON.stringify(entry.maxSize)}, which is not ${SIZE_SHAPE}.`);
+  }
+}
 
 /** An entry as a message names it: by its `name` when it has a readable one. */
 function entryLabel(input: unknown): string {

@@ -82,7 +82,7 @@ From `@archmax-ai/harness` (`src/index.ts`):
 | `workflowStateSchema`, `workflowPaths`, `sessionPaths`, `runArtifactPaths` | schema/fn | State schema + path helpers |
 | `runTests`, `RunTestsOptions`, `CaseResult` | fn/type | Run a workflow's cases — [against your own agent](#cases-against-your-agent) |
 | `toolsFromMap`, `AgentToolDescriptor`, `ToolContext`, `ToolPaths`, `PathAccess`, `ToolPathsError` | fn/type/class | Host tools: a `name → descriptor` map, each descriptor's declared `paths` and a handler handed the turn's workspace — [host tools](#host-tools) |
-| `SIGNATURE_TYPES`, `normalizeSignature`, `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues` | const/fn | A trigger's typed signature as JSON Schema and its conformance rule — [exposing a workflow](#exposing-a-workflow-to-outside-callers); also on `@archmax-ai/harness/spec` |
+| `SIGNATURE_TYPES`, `SIGNATURE_FORMATS`, `SIGNATURE_CONTENTS`, `normalizeSignature`, `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues` | const/fn | A trigger's typed signature, rules included, as JSON Schema and its conformance rule — [exposing a workflow](#exposing-a-workflow-to-outside-callers); also on `@archmax-ai/harness/spec` |
 
 ## createAgent options
 
@@ -399,12 +399,22 @@ const outcome = await agent.workflow!.send(sessionId, { message: "Refund the ord
 - `signatureJsonSchema(entries)` → `{ type: "object", properties, required }`:
   one property per entry in declaration order, every name required,
   `date`/`date-time`/`file` as `{ type: "string", format }`, an untyped entry as `{}`,
-  an entry's `description` carried over. It adds no `additionalProperties`; set
-  it for your own ingress.
-- `signatureValueIssues(entries, values)` → one issue per missing name and per
-  non-conforming value; `[]` means the turn boundary will not refuse the map for
-  its signature. It **never coerces**: a form that collects text converts
-  `"4"` to `4` before it validates or seeds.
+  an entry's `description` carried over. Rules map to their JSON Schema keywords:
+  `format: email` → `format: "email"`, `format: url` → `format: "uri"` plus
+  `pattern: "^https?://"`, `format: phone` → the E.164 `pattern`; `pattern`,
+  `minLength`/`maxLength`, `enum`, numeric `minimum`/`maximum` and
+  `minItems`/`maxItems` as themselves; `content` → `contentMediaType`. Date
+  bounds, `accept` and `maxSize` are not mapped (the runtime still enforces
+  them). It adds no `additionalProperties`; set it for your own ingress.
+- `signatureValueIssues(entries, values, options?)` → one issue per missing name
+  and per non-conforming value; `[]` means the turn boundary will not refuse the
+  map for its signature. A value breaking a rule is an `invalid` issue carrying
+  `rule` (one per entry, the first rule broken), so code that filters
+  `kind === "invalid"` enforces rules unchanged. `options.now` pins the clock
+  for `today`/`now` (tests, a host's own clock). It is synchronous, pure and
+  browser-safe, and a `pattern` runs in RE2, so it is safe in a request path on
+  input from anyone. It **never coerces or trims**: a form that collects text
+  converts `"4"` to `4` before it validates or seeds.
 - A trigger's `description` is written for the caller. Use it as the MCP tool
   or operation description. The session's own model never sees it.
 - **A `file` entry** (`format: "file"` in the schema) takes a workspace path. To
@@ -417,13 +427,15 @@ const outcome = await agent.workflow!.send(sessionId, { message: "Refund the ord
   `InvalidTurnFileError`, before anything is written, for a bad variable or file
   name, a variable also given in `variables`, a session parked at a human state, or
   bytes the store cannot hold exactly (a non-text file needs a store with
-  `uploadFiles`). `signatureValueIssues` checks only a `file` value's shape, so a
-  start form validates the path the upload will produce, or skips the entry and
-  lets `files` supply it.
+  `uploadFiles`). `signatureValueIssues` checks only a `file` value's shape and its
+  `accept` extensions, so a start form validates the path the upload will
+  produce, or skips the entry and lets `files` supply it; `maxSize` is checked by
+  the runtime at the turn boundary, against the placed file.
 - A host that reads specs itself must read `requires`/`returns` through
-  `normalizeSignature` (both spellings → `{ name, type?, description? }[]`),
-  never as `string[]`: an entry may be an object. Hosts must be on the release
-  that introduced typed entries before any workspace they read uses them.
+  `normalizeSignature` (both spellings → `{ name, type?, description?, …rules }[]`,
+  `maxSize` in bytes, `today`/`now` kept symbolic), never as `string[]`: an entry
+  may be an object. Hosts must be on the release that introduced typed entries
+  (and, for rules, 1.1.0) before any workspace they read uses them.
 
 ## Lifecycle events
 

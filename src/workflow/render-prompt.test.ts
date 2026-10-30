@@ -424,6 +424,36 @@ describe("renderStateGraph — the volatile half", () => {
         );
       });
 
+      it("renders an entry's rules after its type, in the words a refusal uses", () => {
+        const text = graph(
+          {
+            states: {
+              a: {
+                triggers: {
+                  manual: {
+                    requires: [
+                      { name: "quantity", type: "integer", minimum: 1, maximum: 100 },
+                      { name: "due", type: "date", minimum: "today" },
+                    ],
+                    returns: [
+                      { name: "contact", type: "string", format: "email", maxLength: 80, description: "The contact address." },
+                      { name: "invoice", type: "file", accept: [".pdf"], maxSize: "10MB" },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          "a",
+          "manual",
+        );
+        expect(text).toContain("- quantity (integer; at least 1; at most 100)\n- due (date; not before today)");
+        expect(text).toContain(
+          "- contact (string; an email address; at most 80 characters) — The contact address.\n" +
+            "- invoice (file; a .pdf file; at most 10 MB)",
+        );
+      });
+
       it("never renders the declaration's description, which is for a caller", () => {
         expect(graph(typed, "refund", "manual")).not.toContain("Refund one order.");
       });
