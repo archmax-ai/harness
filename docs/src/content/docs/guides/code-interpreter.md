@@ -45,9 +45,12 @@ const orders = JSON.parse(await tools.readFile({ file_path: "skills/order-data/a
   no tool event is emitted, and the tool never runs. Test for a tool with
   `typeof tools.lookupOrder === "function"` before relying on it.
 - **Arguments and results.** A call with no argument is made with `{}`, so `tools.ls()` needs none.
-  A result arrives as text. For a binary file, `tools.readFile` resolves to the notice
+  A result arrives as text. `tools.readFile` resolves to the file's raw text, line numbers
+  stripped, but only its first 100 lines unless the call passes a larger `limit`, so `JSON.parse`
+  on a longer file fails without one. A missing file resolves to an `Error: …` string rather than
+  rejecting, and so does a binary one, with the notice
   `Error: '<path>' is a binary file (…) and was not read; …`, an image included even with the
-  `images` option on (see [text only](/guides/workflow-machine/#text-only)), so check before you
+  `images` option on (see [text only](/guides/workflow-machine/#text-only)). Check before you
   `JSON.parse` it.
 - **Moving files.** To duplicate, move or delete a file, call
   `tools.copyFile({ source, destination })`, `tools.moveFile(…)` or `tools.removeFile({ file_path })`
@@ -93,6 +96,10 @@ settings:
   timeoutMs: 15000
 ```
 
+`timeoutMs` (15,000 by default) bounds a whole evaluation, the time it spends awaiting `tools.*`
+calls included, so a script that calls `archmax_workflow_<slug>` has the child's whole session
+inside it. An evaluation past it fails with `Promise timed out — execution interrupted`.
+
 ### A script lives as long as its turn
 
 When a host cancels a turn by aborting the `signal` it passed to `send`, every script of that turn
@@ -131,8 +138,9 @@ states:
 ```
 
 **`archmax_run` executes only scripts inside a skill bundle.** A non-overridable kernel rule
-(`script.skill-only`) enforces that ahead of workflow `policy`, consumer rules and the per-state
-allow list, so a state's entry *narrows* within the bundles. Two consequences:
+(`script.skill-only`) enforces that ahead of the workflow's denials (`forbid_always` and the
+state's `forbid`), consumer rules and the per-state allow list, so a state's entry *narrows* within
+the bundles. Two consequences:
 
 - A script the agent writes into `scratchpad/` cannot be run.
 - A **code state's script** cannot be run by the agent either. It lives on the authoring plane
@@ -196,9 +204,15 @@ The contract and an example are in [the script contract](/guides/automated-state
 
 ## Typed sandbox imports
 
-A code state's script may import its authoring types from the SDK:
+A code state's script may import its authoring types from the SDK, after its
+[description block](#description-frontmatter):
 
 ```js
+/**
+ * Refund policy check
+ *
+ * …
+ */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 /** @typedef {import("@archmax-ai/harness/sandbox").CodeStateInput} CodeStateInput */
 ```
@@ -212,7 +226,8 @@ file, and inside the sandbox the names come from the prelude. The sandbox accept
 
 Every authored code file, a code state's script or an `archmax_run` script, opens with a plain
 leading JSDoc block (`/** ... */`): a **title** line, a blank line, then a **description** in prose.
-Admin UIs display it instead of the code, and it has no bearing on runtime behavior.
+Admin UIs display it instead of the code, and it has no bearing on runtime behavior. The block must
+be the very first content of the file, or it is not read: put `import` lines after it.
 
 Write the description deep enough to review on its own. Cover what the code does *and how*: the
 inputs it reads, the sequence of checks, and each outcome it can produce. For a code state, that

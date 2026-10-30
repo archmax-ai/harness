@@ -157,6 +157,34 @@ describe("sessions", () => {
   });
 });
 
+describe("the assembly's default trigger", () => {
+  // Two entries: `manual` opens `chat`, a host trigger opens `inbox`.
+  const spec: MachineSpec = {
+    runtime: { engine: "archmax-harness", version: "3" },
+    states: {
+      chat: { triggers: { manual: null } },
+      inbox: { triggers: { email_reply: null } },
+    },
+  } as unknown as MachineSpec;
+
+  it("opens every send that names no trigger, and resolveSession, at its entry", async () => {
+    const { agent } = await assemble(workspaceWith(spec), {
+      turns: [{ reply: "from the inbox" }, { reply: "from chat" }],
+      params: { trigger: { id: "email_reply" } },
+    });
+
+    await expect(agent.workflow.resolveSession({ sessionId: "s0" })).resolves.toMatchObject({
+      disposition: "turn",
+      startState: "inbox",
+    });
+    await expect(agent.workflow.send("s1", { message: "hi" })).resolves.toMatchObject({ state: "inbox" });
+    // A trigger the send names still wins.
+    await expect(
+      agent.workflow.send("s2", { message: "hi", trigger: { id: "manual" } }),
+    ).resolves.toMatchObject({ state: "chat" });
+  });
+});
+
 describe("usage", () => {
   it("emits model-usage per segment and accumulates the session's totals", async () => {
     const { agent, events } = await assemble(workspaceWith(linearSpec()), {

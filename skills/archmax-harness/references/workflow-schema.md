@@ -31,11 +31,11 @@ warning.
 
 ## The skeleton
 
-Every key, in a workflow that validates clean. Start a new workflow from it and delete
-what you do not need.
+Every key but `mounts` ([Mount governance](#mount-governance)), in a workflow that
+validates clean. Start a new workflow from it and delete what you do not need.
 
 ```yaml
-title: Refund desk                 # a label; the directory name is the workflow's slug
+title: Refund desk                 # a name in the prompt; the directory name is the slug
 instructions: |-                   # rules for the whole session (a warning when absent)
   Decide only from records you have read; never guess an order.
 
@@ -76,8 +76,8 @@ skills:
 
 states:
   decide:                          # the key is the state's slug
-    title: Decide the refund       # a label for people; no model reads it
-    summary: Record the decision and draft the email.   # a label for editors; no model reads it
+    title: Decide the refund       # a label; it never reaches a state that routes here
+    summary: Record the decision and draft the email.   # for editors; no model reads it
     triggers:
       manual:                      # the entry the CLI, a host and a calling workflow use
         description: Decide one refund request.   # for callers; never shown to this session
@@ -95,7 +95,7 @@ states:
       in scratchpad/email.md, then advance to check-decision. If a note sends
       you back, fix what it names and advance again.
     tools:
-      allow:                       # adds to allow_always; naming a granted tool narrows it here
+      allow:                       # adds to allow_always; naming a granted tool replaces its entry here
         - lookup_customer
         - { tool: write_file, paths: ["reports/${{order_id}}/*.md"] }
         - { tool: archmax_run, paths: ["skills/refund-policy/scripts/**"] }
@@ -168,10 +168,10 @@ states:
 
 | Key | What it does |
 | --- | --- |
-| `title` | A label for people. |
-| `instructions` | Rules for the whole session, rendered once at the top of the cacheable prompt prefix. Write a literal block (`\|-`): a folded block (`>-`) joins paragraphs. A warning when absent. |
+| `title` | The workflow's name, in the prompt and in a calling workflow's tool description. |
+| `instructions` | Rules for the whole session, rendered once in the cacheable prompt prefix. Write a literal block (`\|-`): a folded block (`>-`) joins paragraphs. A warning when absent. |
 | `runtime` | `{ engine: archmax-harness, version: "3" }`. `3` is the only contract and the default. `1` and `2` are refused. |
-| `disabled` | `true` starts no new turns: `archmax run`, a host's turn, a follow-up message and a calling workflow's `archmax_workflow_<slug>` call are refused. `decide`, `reply` and `deliver` still work, so parked sessions finish. `archmax test` skips the suite and exits 0. Any value but absent, `null` or `false` disables, and a non-boolean is a validate error. |
+| `disabled` | `true` starts no new turns: `archmax run`, a host's turn, a follow-up message and a calling workflow's `archmax_workflow_<slug>` call are refused. `decide`, `reply` and `deliver` still work, so parked sessions finish. `archmax test` skips the suite and exits 0. Any value but `true` or `false`, `null` included, is a load error. |
 | `settings.model` | The model id every state runs on, over the endpoint the host configured. It overrides `ARCHMAX_MODEL`. An id only: a mapping with `temperature` is a load error. |
 | `settings.timeoutMs` | Bounds one sandbox evaluation (default 15000): an `archmax_eval` or `archmax_run` call, or a code state's whole script. `memoryLimitBytes`, `maxPtcCalls` and `maxResultChars` bound it too. |
 | `settings.prompt_cache` | `{ enabled, ttl: 5m \| 1h }`: provider prompt caching, on by default. |
@@ -191,7 +191,7 @@ together with every reference to it.
 | Key | On | What it does |
 | --- | --- | --- |
 | `type` | — | `agent` (the default), `human`, `grader` or `code`. |
-| `title`, `summary` | all | Labels for people and editors. No model reads them, so they cannot carry routing. |
+| `title`, `summary` | all | Labels for people and editors. Neither reaches a state that routes here, so they cannot carry routing. |
 | `triggers` | all | Marks an entry state: [Triggers and signatures](#triggers-and-signatures). |
 | `instructions` | agent, human, grader | An agent state's behaviour, shown while it is active. Required on a human state (the decision to present) and on a grader (its criteria). |
 | `script` | code | Required on a code state and refused elsewhere: `scripts/<file>.js` or `.mjs`, no `..`, resolving to `workflows/<slug>/scripts/<file>`. |
@@ -246,9 +246,9 @@ the source state:
   never reach the state that routes into it.
 
 At a human state the description is also the button's label, and `type` (`approve`,
-`reject`, `refine`, `none`) labels the choice. Each labelled type maps to one target. A
-`refine` transition carries the person's comment back as a correction. On other states
-`type` is metadata the marker shows.
+`reject`, `refine`, `none`) labels the choice. Each labelled type maps to one target.
+Whatever the type, the person's comment rides to the target on the `[decision]` note.
+On other states `type` is metadata the marker shows.
 
 A session is in one state at a time: there is no fan-out. Sequence what would be
 branches; concurrency belongs to sub-workflow calls.
@@ -284,8 +284,10 @@ and both are enforced.
   (`"4"` is not an `integer`), and a typed entry never takes `null`. A typed entry is
   held at the start, at each `archmax_set_variables` of a typed return, and at
   completion.
-- A start that omits a `requires` name, or supplies a mistyped one, is refused before
-  any model call.
+- `requires` is checked on **every turn** the trigger opens, against that turn's own
+  seeds: a follow-up `send` (or `archmax run --session`) passes the same variables
+  again. A turn that omits a name, or supplies a mistyped one, is refused before any
+  model call.
 - `returns` is checked when the session completes. A top-level session with a return
   unset is rejected. A sub-workflow child completes anyway, and its caller gets the unset
   ones as `null` plus a `note`. A mistyped return is rejected either way. A parked session
@@ -304,18 +306,20 @@ and both are enforced.
 
 ## Variables
 
-A session has one flat store of variables, `name → value`, never declared. A variable
-exists once something sets it:
+A session has one flat store of variables, `name → value`, never declared. A name is
+lowercase snake_case (`order_id`; `orderId` in `requires`, `locks` or a signature fails
+to load). A variable exists once something sets it:
 
 - **The host** seeds it: `--variables`, `createAgent({ variables })`, a turn's
-  `variables`, a delivery. Every seed is **locked**, so `archmax_set_variables` refuses
-  to change it.
+  `variables`, a delivery. A seed is **locked**, so `archmax_set_variables` refuses
+  to change it, except a seed of one of the trigger's `returns`, which lands unlocked
+  and loses to a value the session already holds.
 - **The agent** sets it with `archmax_set_variables`; `lock: true` freezes it until
   `archmax_reset`. A misspelled name creates a new variable, and a state's `requires` is
   what surfaces the mistake.
 - **A state owns it** with `locks: [name]`: only that state writes it, so changing it
-  means going back there. Give the owner a transition back from the states that use it,
-  and pair `locks` with `requires`.
+  means going back there, and `lock: true` on it is refused. Give the owner a
+  transition back from the states that use it, and pair `locks` with `requires`.
 
 Two names are reserved. `trigger` holds the current trigger id and is always locked.
 `title` is the session's one-line task label: the agent sets it (a sub-workflow child is
@@ -327,7 +331,8 @@ places:
 - **In a `tools.allow` glob**, as a guard:
   `{ tool: gmail__send, args: { to: ["${{from_email}}"] } }`. Lock what a guard reads,
   and guarantee it: name it in an earlier state's or the trigger's `requires`, or seed
-  it. A guard that cannot resolve fails the session.
+  it. A guard that cannot resolve fails the state through its `on_error`; in a forbid
+  entry, it denies the call.
 - **Inside any text argument the model writes**, mid-string and as often as needed. The
   tool receives the value, while the transcript keeps the reference, so a stored value
   costs its tokens once. Tell a state that must emit a stored value to write the
@@ -353,7 +358,8 @@ exactly what it lists: it *replaces* the default tools. So a new workflow lists 
 twelve and drops only what it must not have.
 
 **A state's `tools.allow`** adds to that grant. An entry naming a tool the workflow-wide
-grant includes **narrows** it in that state; an entry naming a default tool that a
+grant includes **replaces** that grant's entry in this state: it decides the tool alone,
+so a bare name there lifts a workflow-wide guard. An entry naming a default tool that a
 declared `allow_always` leaves out grants it there. Every other tool, a host tool or a
 delegation tool, needs an entry.
 
@@ -392,7 +398,7 @@ block one. What a type withholds, no grant can give.
 - `*` never crosses `/`; `**` does. Globs match dot-files, so `secrets/**` covers
   `secrets/.env`. `""` matches only an empty value.
 - In an allow entry, `paths:` needs every path argument to match. In a forbid entry, one
-  match denies.
+  match denies. An entry with `args:` ignores its `paths:`.
 - `"*"` as the tool is legal only in a forbid list.
 - An entry may also carry `connection` (the connection a platform tool resolves through)
   and `source` (a host's label). The runtime matches by `tool` alone.
@@ -405,21 +411,24 @@ paths is refused when any one is, and an existing destination is refused without
 `overwrite: true`.
 
 **The scratchpad.** `scratchpad/` is open in every state to each default file tool the
-state is granted, whatever the granting entry narrows. So an allow entry inside
-`scratchpad/` narrows nothing, and validate warns. To govern *where* a result lands,
-allow a path outside the reserved zones, such as `reports/*.json`.
+state is granted, for reading, listing, writing and removing, whatever the granting
+entry narrows (searching and executing are not opened). So an allow entry inside
+`scratchpad/` narrows no read or write, and validate warns. To govern *where* a result
+lands, allow a path outside the reserved zones, such as `reports/*.json`.
 
 **The order of decision.** The first rule that applies wins:
 
-1. Skill and mount governance. A path in a skill bundle or a governed mount the state
-   does not have is refused first (`skill.not-allowed`, `mount.not-allowed`,
-   `mount.forbidden`, `mount.read-only`).
+1. Rules no spec lifts: an unreadable path argument, `workflows/**`, `archmax_run`
+   outside a skill bundle, any tool on a park's reply-only turn, `task`, writes into a
+   read-only or runtime zone. Then skill and mount governance (`skill.not-allowed`,
+   `mount.not-allowed`, `mount.forbidden`, `mount.read-only`).
 2. Declared denials: `forbid_always`, then the state's `forbid`.
-3. The state type's controls.
-4. The state's `tools.allow`. A narrowing entry wins over the broader grant.
-5. The workflow-wide grant, its guards included.
-6. The host's `essentialTools`, where no state entry narrows them.
-7. Everything else is refused.
+3. The host's `policyRules`, then the open `scratchpad/` and offload zones.
+4. The state type's controls.
+5. The state's `tools.allow`, which decides each tool it names alone.
+6. The workflow-wide grant, its guards included.
+7. The host's `essentialTools`, where no state entry names them.
+8. Everything else is refused.
 
 The model is shown only the active state's tools, by name. The kernel still checks every
 argument at call time.
@@ -445,7 +454,8 @@ states:
   its slug is not in the prompt, and a listing of `skills/` does not show it.
 - `allow` only adds, so `allow: []` denies nothing (a warning). `forbid` subtracts, the
   workflow-wide grant included. `forbid_always` puts a bundle out of reach everywhere.
-- A workspace that serves bundles warns once when a spec has no root `skills` block.
+- A slug no source provides is a validate error. A workspace that serves bundles warns
+  once when a spec has no root `skills` block.
   Write `skills: { allow_always: [] }` when every bundle is state-specific.
 - A `tools.allow` entry still narrows inside an enabled bundle:
   `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }` confines execution to that
@@ -483,35 +493,44 @@ host to mount it.
 
 ## Moving, parking and failing
 
-- **Advance.** The agent moves only with `archmax_advance({ to, reason, evidence? })`, one
-  per message. The transition and the state's `requires` are checked, and a refusal leaves
-  the agent in the state to try again. Then the target's tools unlock, or a grader or code
-  target runs at once. Human decisions, `on_error` routes and automated states' own
-  advances are the other ways a session moves.
+The agent's `archmax_advance`, `archmax_wait` and `archmax_raise` take an optional
+`message`: what the person reads as the agent moves on, waits or fails. It joins the
+turn's reply, and a refused call's message is never said. Write the call into the
+state's `instructions` with what its `message` says, as the bullets below do.
+
+- **Advance.** The agent moves only with `archmax_advance({ to, reason, message?,
+  evidence? })`, one per message. The transition and the state's `requires` are
+  checked, and a refusal leaves the agent in the state to try again. Then the target's
+  tools unlock, or a grader or code target runs at once. Human decisions, `on_error`
+  routes and automated states' own advances are the other ways a session moves.
 - **Reset.** `archmax_reset({ reason })` returns the session to the entry state it began
   in and releases the agent's locks. Forbid it with `forbid_always` when a session must
   never restart.
-- **Wait.** A state that needs an outside event calls `archmax_wait({ reason, until? })`
-  in the same message as its question. Any agent state may, terminal ones included.
+- **Wait.** A state that needs an outside event calls `archmax_wait({ reason,
+  message?, until? })`, with its question in `message`. Any agent state may, terminal
+  ones included.
   `until` (`30m`, `2h`, `1d` or an ISO instant) becomes a `resumeAt` for the host's
   scheduler; the runtime keeps no timer. Any delivered trigger continues the **same
   state**, with its payload as locked variables and an `[event]` runtime note, and the
   state then picks its own transition. Bound a polling loop with `budget.maxParks` and an
   `on_error`.
 - **Human states.** Entering one parks the session with a decision record: the state's
-  `instructions`, its `evidence` plus any paths the advancing agent attached with
-  `archmax_advance({ evidence })`, and its transitions. A person picks the transition,
+  transitions, and its `evidence` plus any paths the advancing agent attached with
+  `archmax_advance({ evidence })`. The host shows the state's `instructions` beside it
+  from the spec (the CLI does). A person picks the transition,
   and the target state reads the choice and the comment as a `[decision]` runtime note.
-  Entering the state spends one reply-only model call, so the park carries a handoff
-  message. Do not tell the agent to announce the handoff, or it says it twice. While the
-  session is parked, a `reply` is answered on a reply-only turn (every tool call is
-  refused) and the session stays parked. Use a human state when a person picks the
-  transition, and `archmax_wait` when an event or a time continues the work.
-- **Raise.** When the work cannot be completed, `archmax_raise({ code, reason })`, alone
-  in its message, ends the session `failed` at once: no `on_error` route, no `returns`
-  check. `code` is a free-form token of up to 64 characters, so name the codes a host
-  branches on in the state's `instructions`. Raise is for failure only: a session that
-  never raises succeeds. A child that raises fails its caller's call with kind `raised`.
+  The handoff the person reads is the advance's `message`. Without one (and after a
+  grader's or code state's move), the park spends one reply-only model call to write
+  it, so a handoff written as text beside the call is said twice. While the session is
+  parked, a `reply` is answered on a reply-only turn (every tool call is refused) and
+  the session stays parked. Use a human state when a person picks the transition, and
+  `archmax_wait` when an event or a time continues the work.
+- **Raise.** When the work cannot be completed,
+  `archmax_raise({ code, reason, message? })`, alone in its message, ends the session
+  `failed` at once: no `on_error` route, no `returns` check. Its `message` tells the
+  person; a reply alone ends the session as a success. `code` is a free-form token of
+  up to 64 characters, so name the codes a host branches on in the state's
+  `instructions`. A child that raises fails its caller's call with kind `raised`.
 - **The next turn.** A finished session given a new message takes its next turn in the
   state it ended in, not at the entry. A session that completed in a terminal automated
   state opens at its trigger's entry. Give a state transitions onward when a conversation
@@ -520,16 +539,17 @@ host to mount it.
 ## Budgets and `on_error`
 
 - `budget.timeoutMs` bounds each model call of an agent state, and a grader's whole run.
-  `budget.maxParks` bounds how often an agent state parks with `archmax_wait`. A code
+  `budget.maxParks` bounds how often an agent state parks with `archmax_wait` within
+  one turn (deliveries resume the same turn; a new message resets the count). A code
   state takes no `budget`: `settings.timeoutMs` bounds its script.
 - A **turn** is bounded by LangGraph's `recursionLimit`: 400 graph steps unless the
   host's invoke config sets one. Every model call, tool batch and automated state is a
   step. A turn that hits the limit, a cycle of automated states included, ends the
   session `failed` with `recursion-limit`. It does not route through `on_error`.
-- **Failures route to `on_error`**: an exceeded `timeoutMs` or `maxParks`, a failed
-  sub-workflow call nothing recovered, and a grader or code state that fails (it threw,
-  timed out, or finished without advancing or raising). The target state reads the
-  reason as an `[error]` runtime note. Without an `on_error`, the failure ends the
+- **Failures route to `on_error`**: an exceeded `timeoutMs` or `maxParks`, a guard that
+  cannot resolve, a failed sub-workflow call nothing recovered, and a grader or code
+  state that fails (it threw, timed out, or finished without advancing or raising). The
+  target state reads the reason as an `[error]` runtime note. Without an `on_error`, the failure ends the
   session rejected.
 - **Refusals leave the agent in place**: an undeclared transition, unmet `requires`, an
   ordinary governance refusal. A tool that throws is answered with its error, and the
@@ -585,33 +605,23 @@ enrich:
 
 ## Models
 
-- `settings.model` is the id every state runs on, and a state's `model` overrides it.
-  Each is an id over the endpoint the host configured. The order is the state's, then the
-  workflow's, then `ARCHMAX_MODEL`.
-- Name one only where the work differs in kind: a small model for classification and
-  extraction, the default for drafting, judgment, and states with many tools or
-  transitions. A small model that routes badly costs more in retries than it saves.
-- A grader state's model is resolved under the `grader` model role. A sub-workflow uses
-  its own spec's ids. A host that passes an explicit `model` instance to `createAgent`
-  outranks every declared id.
+A model id resolves from the state's `model`, then `settings.model`, then
+`ARCHMAX_MODEL`, over the endpoint the host configured. A grader state's id is resolved
+under the `grader` model role, and a sub-workflow uses its own spec's ids. A host that
+passes an explicit `model` instance to `createAgent` outranks every declared id.
 
 ## Prompt economy
 
-The static prompt and the tool schemas are sent on every model call, and the static part
-is cached. It carries the workflow's `title` and top-level `instructions`, and no state.
-A state's `instructions` and transitions are sent only while it is active.
-
-- Put rules that hold everywhere in the top-level `instructions`, once. Put everything
-  else in the state that needs it: splitting a broad state into narrow ones costs nothing
-  in the prefix.
-- `title` and `summary` cost nothing: no model reads them.
-- `WORKFLOW.md` carries only what the spec cannot say.
-- Every model call states the current date and time in UTC, rounded down to ten minutes,
-  so date arithmetic needs no authored "today".
+The cached prompt prefix carries the workflow's `title` and top-level `instructions`,
+and no state. A state's `instructions` and transitions are sent only while it is
+active, so splitting a broad state into narrow ones costs nothing in the prefix.
+`WORKFLOW.md` carries only what the spec cannot say. Every model call of the agent
+states the current date and time, rounded down to ten minutes, so date arithmetic needs
+no authored "today"; a grader is told no date.
 
 ## Removed keys
 
-Each key below is a load error that names it. The
+Each key below is a load error that names it, but `tests.config.js`, which is ignored. The
 [changelog](https://harness.archmax.ai/reference/changelog/) says what changed and when.
 
 | Key | Write instead |
@@ -632,12 +642,8 @@ Each key below is a load error that names it. The
 
 ## Paths and zones
 
-- The agent's workspace root is the session. `scratchpad/` is its working zone, writable
-  in every state that is granted a file tool. `large_tool_results/` and
-  `conversation_history/` are offload zones the agent only reads. `checkpoints/` and
-  `artifacts/` belong to the runtime.
-- Mounts are read-only unless the host serves them writable. A write into a read-only
-  mount is refused (`zone.read-only`).
-- `workflows/**` is served by the authoring backend: no state may read it, an allow entry
-  naming it is a validate error, and a host cannot mount it.
-- Write paths without a leading slash, and never author a `run/` prefix.
+The agent's workspace root is the session. Besides `scratchpad/`, it holds the offload
+zones `large_tool_results/` and `conversation_history/`, which the agent only reads, and
+`checkpoints/` and `artifacts/`, which belong to the runtime. `workflows/**` is served
+by the authoring backend: no state may read it, an allow entry naming it is a validate
+error, and a host cannot mount it.

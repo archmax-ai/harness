@@ -39,7 +39,7 @@ import {
   skillOfPattern,
   skillPrefixes,
 } from "../core/skills.js";
-import { DEFAULT_WORKFLOW, resolveCodeScript, workflowPaths } from "../workflow/paths.js";
+import { resolveCodeScript, workflowPaths } from "../workflow/paths.js";
 import { DEFAULT_SUB_WORKFLOW_DEPTH } from "../workflow/sub-workflow.js";
 import {
   resolveRuntimeContract,
@@ -69,8 +69,8 @@ export interface ValidationResult {
 export interface ValidateWorkflowOptions {
   /** Workspace root; defaults to the consumer's current working directory. */
   rootDir?: string;
-  /** Named workflow under `workflows/<name>/`; defaults to {@link DEFAULT_WORKFLOW}. */
-  workflow?: string;
+  /** The workflow under `workflows/<name>/` to validate. */
+  workflow: string;
   /**
    * Skill sources, matching the harness's `skills` option (default
    * `["skills/"]`). Validation resolves the registry from the same sources the
@@ -116,9 +116,9 @@ function finalize(
  * a run will succeed.
  */
 export async function validateWorkflow(
-  options: ValidateWorkflowOptions = {},
+  options: ValidateWorkflowOptions,
 ): Promise<ValidationResult> {
-  const workflowName = options.workflow ?? DEFAULT_WORKFLOW;
+  const workflowName = options.workflow;
   const paths = workflowPaths(workflowName);
   // Two planes, checked from the right side of each: authoring-plane content
   // (this workflow's spec, its siblings', its code-state scripts and its cases)

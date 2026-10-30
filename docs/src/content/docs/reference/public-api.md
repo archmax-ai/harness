@@ -59,7 +59,7 @@ Every resume reads a parked session through these three:
 
 ### Names a host must not hard-code
 
-`MANUAL_TRIGGER` `DEFAULT_WORKFLOW` `DEFAULT_TRIGGER_ID` `sessionIdForTrigger` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName`
+`MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `sessionIdForTrigger` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName`
 
 ### Trigger signatures
 
@@ -88,7 +88,7 @@ Every type the barrel exports. A type reachable from a public signature is itsel
 public, because an exported function is usable only when you can name what it
 returns.
 
-`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnFile` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
+`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `Trajectory` `TrajectoryItem` `TrajectorySegment` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnFile` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
 
 ## `@archmax-ai/harness/spec`
 
@@ -113,7 +113,7 @@ here for the weight of the import.
   from this table rather than a copy.
 - **The root namespace:** `SESSION_INTERNAL_DIRS` `SESSION_OFFLOAD_DIRS` `SESSION_OPEN_DIR` `SESSION_AGNOSTIC_PREFIX` `SESSION_AGNOSTIC_PREFIXES` `NO_MOUNTS` `sessionAreaNames` `classifyWorkspacePath` `isReservedRootName` `isSessionAgnosticPath` `AUTHORING_PREFIXES` `isAuthoringPrefix` `authoringPlanePrefix` `describeAuthoringPrefix` `MountPrefixes` `WorkspaceZone` `AuthoringPrefix`.
 - **Session ids:** `sessionIdRejection` `SessionStoreIdError` `DEFAULT_SESSIONS_DIR` `isChildSessionOf` `parentSessionIdOf` `childSessionId` `dispatchIdOf` `rootSessionIdOf`.
-- **Paths and scripts:** `DEFAULT_WORKFLOW` `SCRIPTS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveCodeScript` `parseCodeDescription` `CodeDescription`. `resolveCodeScript(workflow, path)` places a code state's declared script path under `workflows/<slug>/scripts/`, or refuses it with the reason, exactly as the runtime and `archmax validate` do.
+- **Paths and scripts:** `SCRIPTS_DIR` `PLATFORM_PROMPT_PATH` `workflowPaths` `sessionPaths` `resolveCodeScript` `parseCodeDescription` `CodeDescription`. `resolveCodeScript(workflow, path)` places a code state's declared script path under `workflows/<slug>/scripts/`, or refuses it with the reason, exactly as the runtime and `archmax validate` do.
 
 ### Using the spec subpath
 
@@ -129,9 +129,10 @@ are different bars, and this subpath is held to the second.
 So an editor can bundle it into a page. An API request path that has to parse or
 validate a spec imports it and leaves the runtime behind.
 
-**Parse with the schema and pass its output on.** `machineSpecSchema.parse(raw)`
-yields a `MachineSpec`, as does `parseMachineSpec(raw)`, which also runs the
-document-level cross-references.
+**Parse with the schema and pass its output on.** Both take the parsed YAML
+object, not its text. `machineSpecSchema.parse(raw)` yields a `MachineSpec`.
+`parseMachineSpec(raw)` also runs the document-level cross-references and never
+throws: it returns `{ ok: true, spec }` or `{ ok: false, issues }`.
 
 Keep SDK schemas out of your own compositions: no `.extend()`, no `.and()`, no
 SDK schema inside your `z.object`. The SDK's zod pin moves independently of
@@ -214,7 +215,7 @@ import {
   signatureValueIssues,
 } from "@archmax-ai/harness/spec";
 
-const parsed = parseMachineSpec(rawWorkflowYaml);
+const parsed = parseMachineSpec(workflowDocument); // the parsed YAML object
 if (!parsed.ok) throw new Error(parsed.issues.map((i) => i.message).join("\n"));
 const signature = signatureForTrigger(parsed.spec, "manual");
 if (!signature) throw new Error("the workflow declares no manual trigger");
@@ -230,6 +231,9 @@ const tool = {
 const issues = signatureValueIssues(signature.requires, requestBody);
 if (issues.length > 0) return badRequest(issues.map((issue) => issue.message));
 ```
+
+`signatureForTrigger` answers `undefined` for a trigger id no state declares,
+which is what the guard above catches.
 
 `signatureJsonSchema` yields `{ type: "object", properties, required }`: one property
 per entry in declaration order, every name required, `date`, `date-time` and `file`
@@ -256,7 +260,10 @@ imports nothing at all, so an API request path that renders or slices a
 transcript stays clear of LangGraph.
 
 - **`lastAgentText(messages)`** is the last thing the agent said to the person.
-  Tool results and the runtime's own notes are skipped.
+  Tool results and the runtime's own notes are skipped. The `message` an
+  `archmax_advance`, `archmax_wait` or `archmax_raise` call carried counts as
+  said, joined to its message's text by a blank line, unless the call was
+  refused.
 - **`messagesSince(messages, cursor)`** slices what one turn appended. Read
   `await agent.sessions.messageCount(sessionId)` before the turn and hand it back
   afterwards. Seeds, notes and all are counted for you.
@@ -334,23 +341,40 @@ if (agent.workflow) {
     message: "Reconcile this invoice",
     files: { invoice: { name: "invoice.pdf", content: bytes } },
   });
-  // …and the three resumes, as payloads of the same call or as their own verbs:
-  await agent.workflow.send(sessionId, { decision: { target: "approve" } });
+  // …and the three resumes, as payloads of the same call (an Outcome; config accepted)…
+  await agent.workflow.send(sessionId, { decision: { target: "approve" } }, { signal });
   await agent.workflow.send(sessionId, { delivery: { trigger: { id: "email_reply" }, variables } });
-  const resolved = agent.workflow.resolveTrigger({ id: "email_received" });
+  // …or as their own verbs (a DecideOutcome / ReplyOutcome / DeliverOutcome: no `kind`, no config):
   const decided = await agent.workflow.decide(sessionId, { target: "approve" });
   const answer = await agent.workflow.reply(sessionId, "Any news?"); // parked session, still parked
+  const resolved = agent.workflow.resolveTrigger({ id: "email_received" });
 }
 ```
 
+**`send` or a verb.** Only `send` returns an `Outcome`, with its `kind` and
+`disposition`, and only `send` takes the invoke config (`signal`,
+`recursionLimit`), for a turn and for a `{ decision }` or `{ delivery }` resume
+alike. `decide`, `reply` and `deliver` return a `DecideOutcome`, `ReplyOutcome` or
+`DeliverOutcome`: `status`, `workflowState`, `reparked`, `parkedChannel?`,
+`state?`, `delegation?`, `reply`, `rejected?`, `exit?`, `messages` and
+`auditTrail`, and `variables` on a delivery. They carry no `kind`, so read
+`status` and `reparked`, and they take no config, so a resume you may need to
+cancel goes through `send`.
+
 **What a turn said.** `reply`, on an `Outcome` and on what `decide`, `reply` and
 `deliver` return, is every text the agent wrote during this turn, in order, joined
-by a blank line. Text written next to an `archmax_advance`, `archmax_wait` or
-`archmax_raise` is part of it, because the agent is told to write what a person
-should read in that same message. A park's handoff message is part of it too, and
-so is a draft a grader or code state sent back, beside the corrected one. A turn
-that said nothing has `reply: ""`, not the previous turn's text. For the last
-thing the session ever said, read `lastAgentText(outcome.messages)`.
+by a blank line. `archmax_advance`, `archmax_wait` and `archmax_raise` take an
+optional `message`, what the person reads as the agent moves on, waits or fails,
+and the agent is told to put what it says at that moment there. Each such call's
+`message` is part of `reply`, joined to the text of the message that made the
+call by a blank line. A refused call's message is left out, because it was never
+said. A park's handoff message is part of it too: an `archmax_advance` into a
+human state that carries a `message` has that message as its handoff, and
+otherwise the park writes one. A draft a grader or code state sent back is part
+of it as well, beside the corrected one. A turn that said nothing has
+`reply: ""`, not the previous turn's text. For the last thing the session ever
+said, read `lastAgentText(outcome.messages)`, which reads a control call's
+`message` the same way.
 
 **Handing a turn files.** `TurnInput.files` maps a variable to a `TurnFile`,
 `{ name, content }`, where `content` is the file's exact bytes. Before the turn
@@ -368,11 +392,9 @@ when the session store cannot hold the bytes exactly (a non-text file in a store
 without `uploadFiles`). `sessions.seed` writes files without seeding anything;
 `files` is the path for a `file` input.
 
-**Ungoverned by declaration.** Omitting `workflow` still *looks for* the default
-workflow (`DEFAULT_WORKFLOW`) on the authoring backend, and governs the agent
-when it is found. Pass `workflow: false` for an agent that is ungoverned on
-purpose. That reads no spec, so a stray `workflows/` tree under the resolved root
-leaves the agent alone.
+**Ungoverned unless named.** Only a named `workflow` governs. Omitting it
+assembles a plain Deep Agent, exactly as `workflow: false` does: no spec is read,
+so a `workflows/` tree under the resolved root leaves the agent alone.
 
 A plain agent behaves like a governed one in most other respects. It honours
 `middleware`. Every `invoke`, `stream` and `streamEvents` on it is bound to the
@@ -392,13 +414,18 @@ way: `sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `toolMocks` and
 ### A turn that throws
 
 `send`, `decide`, `reply` and `deliver` reject with the original error when a turn
-throws: a model provider failing, a cancellation, the step limit. Before the error
-leaves, the runtime ends the session `failed` with an exit record, as
-`archmax_raise` would, unless the turn had already parked it. The code is
-`recursion-limit` for LangGraph's `GraphRecursionError`, `turn-cancelled` for an
-aborted turn, and `turn-error` for anything else, with the error's message as the
-reason. `sessions.get` reports it as `exit`, and the session's next message
-starts a fresh turn from where it stood.
+throws: a model provider failing, a cancellation, the step limit. There is no
+`Outcome` for that turn. Before the error leaves, the runtime ends the session
+`failed` with an exit record, as `archmax_raise` would, unless the turn had
+already parked it. The code is `recursion-limit` for LangGraph's
+`GraphRecursionError`, `turn-cancelled` for an aborted turn, and `turn-error` for
+anything else, with the error's message as the reason. `sessions.get` reports it
+as `exit`, and the session's next message starts a fresh turn from where it stood.
+
+A state's failure is not a thrown turn. A code state's script or a grader that
+throws, and a state that runs past its `budget.timeoutMs`, route through the
+state's `on_error`. With none, the session ends `rejected`, not `failed`, and
+`send` returns that as an `Outcome` whose `rejected` says why.
 
 The step limit is LangGraph's `recursionLimit`, which bounds a whole turn across
 states: 400 graph steps by default, or the `recursionLimit` the host passes in the
@@ -498,11 +525,15 @@ The trigger surface is five names: `TriggerInput`, `ResolvedTrigger`,
 `resolveTrigger`, `CreateAgentParams.trigger` and `UnknownTriggerError`.
 `resolveTrigger({ id })` maps the id to the state whose `triggers:` declares that
 id (see [triggers](/guides/triggers/)), and fails closed on an
-unknown one.
+unknown one. `CreateAgentParams.trigger` is the default for every `send` that
+names no trigger, a new turn and a delivery alike, and for `resolveSession`;
+without it, that default is `manual`.
 
 A trigger carries an id and nothing else, so a firing's input travels as
-`variables`. In the SDK a trigger is always a **manual invocation**: the caller
-supplies the id, and listening for external events is the host's job.
+`variables`. Its `requires` is checked on every turn against that turn's own
+`variables`, so a follow-up `send` to the same session passes them again. In the
+SDK a trigger is always a **manual invocation**: the caller supplies the id, and
+listening for external events is the host's job.
 
 > `createAgent` returns an agent wrapping the compiled graph. Narrow on
 > `agent.workflow` (`undefined` on an ungoverned assembly) before calling
@@ -518,14 +549,19 @@ session completes: one that finishes with a declared return unset is rejected,
 naming the state and the names, so a host sees the full set or a failure. A sub-workflow hands its returns back on the
 tool result instead.
 
-Every ingress enters through `MANUAL_TRIGGER`: a delegation, the CLI's `run`, a
-trigger-less invoke. `DEFAULT_TRIGGER_ID` is the same value, and delegation
-reuses it rather than carrying a sub-workflow trigger id of its own.
+A firing that names no trigger enters through `CreateAgentParams.trigger` when
+the agent was assembled with one, and through `MANUAL_TRIGGER` otherwise: a
+trigger-less `send` or invoke, the CLI's `run` without `--trigger`. A delegation
+always enters through `MANUAL_TRIGGER`. `DEFAULT_TRIGGER_ID` is the same value,
+and delegation reuses it rather than carrying a sub-workflow trigger id of its
+own.
 
 ### Session artifacts: what a finished session leaves behind
 
 `emitRunArtifacts(sessionId, trajectory)` writes a session's observability files under
-`sessions/<sessionId>/artifacts/`:
+`<sessionId>/artifacts/` in the session store (`sessions/<sessionId>/artifacts/` on
+the filesystem default). Nothing else writes them: a session leaves no artifacts
+unless the host makes this call, and the CLI makes none.
 
 | File | Contents |
 | --- | --- |
@@ -534,6 +570,17 @@ reuses it rather than carrying a sub-workflow trigger id of its own.
 | `trail.json` | the audit trail: committed transitions, edge kinds, rationale |
 | `variables.json` | the session's variables as `name → { value, locked }` |
 | `metadata.json` | runtime contract, package version, `specHash`, `usage` |
+
+`trail.json` and `variables.json` are written only for a governed agent whose
+checkpoint for the session could be read.
+
+The `trajectory` is the host's own record, typed `Trajectory`:
+`{ sessionId?, workflow, prompt?, finalAnswer, segments }`. Each
+`TrajectorySegment` is one state's stretch,
+`{ state, enteredState?, exitedState?, items }`, and each `TrajectoryItem` is a
+`{ kind: "message", role, content }` or a
+`{ kind: "tool_call", name, args, result }`, `result` being `null` when it was
+not observed.
 
 A session's variables are also on its **summary**. `sessions.list()` and
 `sessions.get(sessionId)` carry `variables` as `name → { value, locked }`, read
@@ -699,8 +746,8 @@ const agent = await createAgent({
 `createWorkspaceContext` is synchronous. It exposes the resolved `mountPrefixes`
 (`dirs`, `files`, `writable`, `governed`), which
 `isReservedRootName(name, mountPrefixes)` takes. Pass the same table to
-`validateWorkflow({ mounts })` so `archmax validate` checks a spec's `mounts` names
-against the wiring. Omit it and every mounts diagnostic stays silent, for want of
+`validateWorkflow({ workflow, mounts })` (`workflow` is required) so
+`archmax validate` checks a spec's `mounts` names against the wiring. Omit it and every mounts diagnostic stays silent, for want of
 anything to check against.
 
 A path under a mount the active state cannot reach is refused by the kernel,
@@ -730,9 +777,11 @@ const agent = await createAgent({
   authoring: myGovernanceBackend,
   // specs (graders' criteria included), code-state scripts, test cases
   backend: myContentBackend,
-  // what the agent may read
-  mounts: { "/skills/": mountSubtree(myContentBackend, "skills") },
-  workspace: { sessionStore: createBackendSessionStore({ backend: myRunStore }) },
+  workspace: {
+    // what the agent may read
+    mounts: { "/skills/": mountSubtree(myContentBackend, "skills") },
+    sessionStore: createBackendSessionStore({ backend: myRunStore }),
+  },
 });
 ```
 
@@ -785,8 +834,10 @@ Three factories ship from the package root:
   assembly (default filesystem authored backend, no `sessionStore`) defaults
   to `<root>/sessions`.
 - **`createBackendSessionStore({ backend, prefix?, deleteSession?, list? })`** takes any
-  `BackendProtocolV2`, with an optional tenancy `prefix` and optional
-  delete/list capabilities.
+  `BackendProtocolV2`, with an optional tenancy `prefix`. The backend protocol
+  models no delete, so `sessions.delete` works only when you pass
+  `deleteSession`, and throws `SessionStoreCapabilityError` without it. Pass
+  `list: false` for a backend whose `ls` cannot enumerate session folders.
 - **`createMemorySessionStore()`** is ephemeral, for tests.
 
 The `SessionStore` type is exported alongside them. Storage is always declared:
@@ -889,8 +940,9 @@ host with its own checkpointer frees a session's memory through
 
 The agent exposes session handles over the same store:
 
-- `sessions.list()` returns `SessionSummary[]`, or `[]` on configurations that
-  cannot list. 
+- `sessions.list()` returns `SessionSummary[]`. It returns `[]` with a
+  caller-provided `checkpointer` (listing walks the records of the default
+  `BackendCheckpointSaver`) and with a store built with `list: false`.
 - `sessions.get(sessionId)` returns one session's summary.
 - `sessions.messageCount(sessionId)` gives how many messages the transcript holds,
   from the latest checkpoint (`0` for a session that has not run). It is a cursor.
@@ -932,6 +984,7 @@ const getMarkdown: AgentToolDescriptor = {
 };
 
 const agent = await createAgent({
+  workflow: "order-lookup",
   tools: toolsFromMap({ get_markdown: getMarkdown }),
   essentialTools: ["get_markdown"],
 });
@@ -975,7 +1028,7 @@ const agent = await createAgent({
   `context.sessionId` throws, saying why. Both properties are non-enumerable
   there, so a deep-equality check or a logger walking the context skips them.
 
-The governed and the plain (`workflow: false`) agent hand the same context.
+The governed and the plain (no `workflow`) agent hand the same context.
 `copy_file`, `move_file` and `remove_file` are the runtime's own tools in every
 agent, so a host tool may not take one of those names (`ReservedToolNameError`).
 
@@ -985,7 +1038,7 @@ Reads are text only, so by default `read_file` answers an image with the binary
 notice. A host whose model has vision turns the images back on:
 
 ```ts
-const agent = await createAgent({ images: true });            // or { maxBytes, keep }
+const agent = await createAgent({ workflow: "order-lookup", images: true }); // or { maxBytes, keep }
 ```
 
 - The model's `read_file` of a PNG, JPEG, GIF or WebP answers with one line,
@@ -1013,7 +1066,7 @@ or an evaluation whose data carries dates (an order placed on `2026-03-15`, a
 ticket due in 30 days) needs the same "now" on every run, so a host can pin it:
 
 ```ts
-const agent = await createAgent({ clock: "2026-03-20" });   // or "2026-03-20T14:30:00Z", "…T16:30+02:00"
+const agent = await createAgent({ workflow: "order-lookup", clock: "2026-03-20" }); // or "2026-03-20T14:30:00Z", "…T16:30+02:00"
 ```
 
 - **Accepted forms:** an ISO 8601 date, read as midnight UTC, or a date-time
@@ -1198,6 +1251,10 @@ covered below, exist for hosts that assemble their own agent.
 `sandboxRuntime` reaches the **agent under test** alone, for its code states'
 scripts and `archmax_run` sources. Case documents are YAML interpreted on the host, so running
 a suite creates no sandbox of its own.
+
+`modelFactory` builds the judge's model for `grade` steps (the `judge` role), and
+the default target's models. Without it the judge runs on the `ARCHMAX_*`
+environment, even when `createTarget` supplies an agent built on other models.
 
 ### `authoring`: where the suite is read from
 
@@ -1561,14 +1618,16 @@ Where the id comes from is, most specific first:
 `resolveSession` classifies the firing and invokes nothing, leaving the caller to
 invoke the graph or deliver. It needs **no assembly-time option**: the session
 path is declared in the workflow, and the id it resolves to *is* the id the
-runtime addresses, so there is no mapping to maintain.
+runtime addresses, so there is no mapping to maintain. A firing that names no
+trigger resolves with `createAgent({ trigger })` when one was given, else with
+`manual`.
 
 Resolving a firing and delivering it fail with typed errors. `resolveSession`
-raises the first; the delivery raises the other three:
+and `send` raise the first; the delivery raises the other three:
 
 | Error | Raised for |
 | --- | --- |
-| `SessionNotResumableError` | a mid-turn session; a session has one writer |
+| `SessionNotResumableError` | a session still `running`: a concurrent turn, or a worker that died mid-turn; a session has one writer |
 | `SessionNotAwaitingInputError` | a delivery to a session holding no input park |
 | `MissingDeliveryTriggerError` | a delivery with no trigger |
 | `InvalidVariableNameError` | a delivered variable whose name is an illegal identifier |
@@ -1587,7 +1646,7 @@ The status a session settles to tells a host who ended it:
 | Status | Means | Read |
 | --- | --- | --- |
 | `completed` | the session finished its work | `Outcome.exit` is `{ success: true }` |
-| `failed` | `archmax_raise` ended it (the agent's, a grader's or a code state's), or a turn threw | `Outcome.exit` is `{ success: false, code, reason }` |
+| `failed` | `archmax_raise` ended it (the agent's, a grader's or a code state's), or a turn threw | `Outcome.exit` is `{ success: false, code, reason }`; a turn that threw returns no `Outcome`, so read `SessionSummary.exit` |
 | `rejected` | governance or the runtime ended it: a refused start, an unmet `returns`, a failed state with no `on_error` | `Outcome.rejected` says why; there is no `exit` |
 
 Treat only `completed` as success.
@@ -1614,7 +1673,7 @@ has (`RUNTIME_FILE_TOOLS` on the spec subpath). For delegation tools, `WORKFLOW_
 name in both directions. A host declaring a mock or a governance entry derives
 the spelling from those.
 
-`archmax_advance` takes `{ to, reason, evidence? }`. `evidence` is a list of
+`archmax_advance` takes `{ to, reason, message?, evidence? }`. `evidence` is a list of
 workspace-relative paths the agent attaches for the person deciding next, and it
 is accepted **only** when `to` is a `type: human` state. The paths are merged
 after that state's declared `evidence`, in the `PendingDecision` record a host
@@ -1624,6 +1683,19 @@ Three things are refused back to the agent, the transition left untaken:
 `evidence` toward a state that is not a human state, a path the agent cannot
 read, and more than 20 paths. See
 [human-in-the-loop states](/guides/workflow-machine/#evidence-declared-plus-whatever-the-session-attached).
+
+`message` is what the person reads as the agent moves on, and `archmax_wait` and
+`archmax_raise` take one too: what they read as it waits or fails. It is shown as
+the agent's reply (see [what a turn said](#agent-in-detail)), and a refused call's
+message is never said. A failure is explained to the person in `archmax_raise`'s
+`message`: a session that ends with a reply alone is a success.
+
+A park otherwise spends one reply-only model call on its handoff message. An
+advance into a human state that carries a `message` spends none, because the
+message is the handoff, and neither does an `archmax_wait` when the agent has
+said something since the person's last message. A grader's or a code state's
+controls take no `message`, having no person to tell, so their move into a
+human state spends that call.
 
 ## Typed sandbox entry point
 
@@ -1643,9 +1715,11 @@ member is `defineCodeState`; the rest are types:
 | `TrailStep` | one trail step, `{ to, kind, reason?, workflow?, status?, ts }` |
 
 ```js
+/**
+ * Refund check — sends a refund the policy forbids back to the agent.
+ */
 import { defineCodeState } from "@archmax-ai/harness/sandbox";
 
-/** Sends a refund the policy forbids back to the agent. */
 export default defineCodeState(async ({ variables, tools }) => {
   const { trail } = JSON.parse(await tools.archmax_get_history());
   // …
@@ -1675,7 +1749,8 @@ Every delivered event carries, besides its payload and severity `level`:
 | --- | --- |
 | `ts` | Epoch milliseconds at emission |
 | `seq` | Strictly increasing across all events delivered to the same handler (one assembled agent). Order across *different* agents by `ts`. |
-| `sessionId` | The session the event belongs to; present on run-scoped events, absent on assembly-time events (`graph-topology`, `skills-loaded`, …) |
+| `sessionId` | The session the event belongs to; present on run-scoped events, absent on assembly-time events (`graph-topology`, `skills-loaded`, …). A sub-workflow child's events carry the child's own id. |
+| `subWorkflowDispatchId` | On an event emitted inside a sub-workflow's child session: the dispatch it belongs to, so a child's `state-enter` does not read as its caller moving |
 
 One handler observing concurrent sessions can demultiplex them by `sessionId`.
 
@@ -1700,6 +1775,11 @@ with `reason` saying why. A move then emits `advance`, `state-leave` and
 `state-enter`, a raise `raised` and `state-leave`. These are operator-facing and
 reach no prompt. See [grader and code states](/guides/automated-states/#events).
 
+`park-message { state, sessionId, direction, text }` is the conversation on a
+session parked at a human state: `direction: "inbound"` for what the person said,
+`"outbound"` for the session's answer. Neither moves the session or changes its
+park record.
+
 These events are telemetry aimed at GUIs and monitors. The default console
 subscriber and the CLI pass over them silently:
 
@@ -1707,7 +1787,7 @@ subscriber and the CLI pass over them silently:
 | --- | --- |
 | `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint, and `origin: "script"` for a programmatic call (an agent's script or a code state's); absent for a model's call, the session's agent's or a grader's. Emitted for **every** governed call, including the control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`. |
 | `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason`. A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
-| `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
+| `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn. A message whose `archmax_advance`, `archmax_wait` or `archmax_raise` landed with a `message` is announced again under the same `messageId`, its text and the call's `message` joined by a blank line, so the same id may arrive twice: replace by `messageId`, never append |
 | `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. A grader's tokens never stream as the session's text. A sub-workflow child's chunks are the child's own: they carry the child's `sessionId` and the dispatch's `subWorkflowDispatchId`, and never reach the caller as its text, so concurrent children cannot interleave into the caller's reply. |
 | `model-usage` | Per-turn tokens from the provider's own usage metadata, a grader's model calls included, under its grader state: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model`, and `costUsd` when pricing is configured (the whole event is omitted when the endpoint reports no usage) |
 | `prompt-shaping` | Assembly-time summary of the model-facing payload: resolved prompt `profile`, the resolved prompt-cache mechanism, and any built-in tools `withheld` |
@@ -1758,9 +1838,9 @@ approval, $0.08 so far".
 ### From the event stream, or in process
 
 `createUsageTracker()` folds the stream for in-process consumers, and
-`model-usage` carries each turn's tokens for a host that projects events. The
-session's total is also written to `sessions/<sessionId>/artifacts/metadata.json` as
-`usage`. All three agree.
+`model-usage` carries each turn's tokens for a host that projects events. When the
+host calls `emitRunArtifacts`, the session's total is also written to its
+`artifacts/metadata.json` as `usage`. All three agree.
 
 ## Measuring anything else: fold the event stream
 
@@ -1822,7 +1902,8 @@ Frontends render a live transcript from three event families:
 
 - Accumulate `agent-text-delta` chunks into an assistant bubble keyed by
   `messageId`.
-- Replace that bubble with the final `agent-text` carrying the same `messageId`.
+- Replace that bubble with the final `agent-text` carrying the same `messageId`,
+  and replace it again if a second one arrives under that id.
 - Interleave tool activity from the `tool-called`/`tool-result` pair correlated
   by `callId`, with `seq` giving the exact ordering.
 
@@ -1848,7 +1929,7 @@ call produced can be grouped from ids alone:
 
 | Event | Carries `callId` | Absent when |
 | --- | --- | --- |
-| `advance` | the `archmax_advance` call that drove the transition | the turn's opening arrival at its state (`from` is the session origin), which no call causes |
+| `advance` | the `archmax_advance` call that drove the transition | the turn's opening arrival at its state (`from` is `"__start__"`, and `reason` is absent too), which every turn emits and no call causes |
 | `parked` | the `archmax_wait` call that asked to wait | a human-state park (the session routed there) |
 | `raised` | the `archmax_raise` call that ended the session as failed | never: only a call raises |
 | `variables-set` | the `archmax_set_variables` call that wrote | session-start seeding and trigger delivery |
@@ -1895,6 +1976,7 @@ session-summary lookup answers for the SDK's own alone:
 
 ```ts
 createAgent({
+  workflow: "order-lookup",
   onEvent: (event) => {
     if (event.type === "title-set") void indexTitle(event.sessionId, event.title);
   },

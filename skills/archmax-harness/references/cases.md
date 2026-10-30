@@ -3,23 +3,16 @@
 Load this when you write or fix a case. A case is one YAML document at
 `workflows/<slug>/tests/<case>.test.yaml`, run by `archmax test`: one conversation on
 one session. The harness reads it on the host, and no sandbox runs it. The case id is the
-path under `tests/` without the extension, and `archmax test <workflow> <filter>` matches
-a substring of it.
+path under `tests/` without the extension; `archmax test <workflow> <filter>` matches a
+substring of the case file's path.
 
 ## Decide what to mock first
 
 An unmocked tool call in a case is a real call, on every run of the suite: a real email
-sent, a real card charged. Before you write the file, ask the workflow's owner how much
-to mock, naming the tools the workflow calls:
-
-- **Mock** anything that sends, pays, posts, deletes or writes outside the session, and
-  anything whose result drifts between runs.
-- **Keep real** reads of fixtures committed to the workspace, the workflow's own scripts
-  and code states, and writes under `scratchpad/`.
-- **Ask** about reads of a live system: stable enough to keep, or slow, rate-limited or
-  credential-bound enough to mock?
-
-Record the answer in a YAML comment above the case.
+sent, a real card charged. Mocks ride only `send` steps, so every call in a turn that a
+`decide` or `deliver` drives is real. Before you write the file, name the tools the
+workflow calls and ask the workflow's owner which to mock. Record the answer in a YAML
+comment above the case.
 
 ## Keys
 
@@ -31,8 +24,8 @@ Record the answer in a YAML comment above the case.
 | `trigger` | `{ id }`. Every turn of the case runs under it (default `manual`), and an unknown id fails the case. A case that exercises a host trigger must declare it. |
 | `variables` | `{ name: value }`, seeded and **locked** on every turn: the trigger's payload. Never seed what the agent must establish; assert it instead. |
 | `workspace` | `{ <path>: content }`, written before the first step. A string is written verbatim, other YAML as JSON, and `{ from: <path under tests/> }` copies a fixture file. Only session paths: a root file such as `trigger.json`, or `scratchpad/…`. |
-| `mocks` | `[{ tool, whenInput?, result }]`. A call whose input matches `whenInput` (partially) returns `result`. It intercepts the agent's calls and its scripts', code states' and graders' calls alike. A control tool is never mocked. |
-| `clock` | An ISO date, or a date-time with an offset: the "now" every model call states. Pin it whenever fixtures or prompts carry dates. Scripts and recorded timestamps keep the real time. |
+| `mocks` | `[{ tool, whenInput?, result }]`. In a `send` step's turn, a call whose input matches `whenInput` (partially) returns `result`: the agent's calls and its scripts', code states' and graders' alike. A control tool is never mocked. |
+| `clock` | An ISO date, or a date-time with an offset: the "now" the agent's model calls state. Pin it whenever fixtures or prompts carry dates. Scripts and recorded timestamps keep the real time. |
 | `steps` | One flat list of actions and assertions. |
 
 Unknown keys are errors everywhere. `archmax validate` checks every case: the schema,
@@ -58,14 +51,14 @@ Structural assertions are marked ˢ.
 | `parked: true \| decision \| input \| { channel?, state? }`ˢ | The session is parked. |
 | `raised: true \| <code> \| { code?, reason? }`ˢ | The turn ended with `archmax_raise`. `code` is exact; `reason` is exact or a `"/regex/flags"` string. |
 | `reachedState: <slug>`ˢ | A committed trail step entered the state. The trigger's arrival does not count. |
-| `trail: { to?, kind?, reason?, count }`ˢ | Exactly `count` trail steps match every given field. `count: 0` means the state was never entered. |
+| `trail: { to?, kind?, reason?, count }`ˢ | Exactly `count` trail steps match every given field (`reason` exactly, no regex). `count: 0` means the state was never entered, so a misspelled `to` or `kind` passes it. |
 | `noTraversal: true`ˢ | Nothing moved the session: the trail holds only trigger arrivals. |
 | `triggerArrival: <id>`ˢ | The session arrived on that trigger. |
-| `reply: { includes?, excludes? }` | Each token or `"/regex/flags"` string, one or a list, matches (or, for `excludes`, matches none of) every assistant message of the session so far. |
-| `calledTool` / `notCalledTool` / `blockedTool: { name, input? }` | The agent called the tool (`input` matches partially), never called it, or called it and governance refused it. `blockedTool` is how you test a guard. |
-| `ranWorkflow: { workflow, status?, count? }` | A sub-workflow ran, whoever called it, a script included. |
-| `usedNoTools: true` | The agent called no tool in the whole conversation. |
-| `variables: { expect, path?, locked? }` | Each named variable equals its expected value (deep equality). `path` steps into a value; `locked` checks the lock. |
+| `variables: { expect, path?, locked? }`ˢ | Each named variable equals its expected value (deep equality). `path` and `locked` are maps by name: `path: { order: items.0.sku }` steps into a value, `locked: { order: true }` checks the lock. |
+| `reply: { includes?, excludes? }` | Each token or `"/regex/flags"` string, one or a list, is found in (or, for `excludes`, absent from) the session's assistant messages so far, taken together. A control call's `message` counts as said. |
+| `calledTool` / `notCalledTool` / `blockedTool: { name, input? }` | The agent called the tool (`input` matches partially), never called it, or called it and governance refused it. A refused call counts as called. `blockedTool` is how you test a guard. |
+| `ranWorkflow: { workflow, status?, count? }` | A sub-workflow ran, whoever called it, a script included. `status` defaults to `ok`: match a failed run with `status: error`. |
+| `usedNoTools: true` | The agent called no tool in the whole conversation, control tools included: an agent that advanced fails it. |
 | `grade: { closedQA, atLeast }` | The judge scores the action's turn against the criterion, and a score below `atLeast` fails the case. Needs `tests.judge`. |
 
 - **A missed structural assertion halts the case**, and later steps are reported

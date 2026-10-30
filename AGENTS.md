@@ -99,12 +99,15 @@ state, runs the state in place of the model call), `wrapToolCall` services the c
 applies the kernel verdict to every call, `afterModel` routes a call past its `budget.timeoutMs`
 and other state failures through `on_error` and commits an automated state's outcome. A state's
 `budget` holds only `timeoutMs` and `maxParks`; nothing counts a state's model calls. The agent
-moves only by `archmax_advance({ to, reason })`: edge and `requires` validated, then the target's
+moves only by `archmax_advance({ to, reason, message? })`: edge and `requires` validated, then the target's
 tools unlock (an automated target runs before any further model call). **Parks are LangGraph interrupts**
 (`src/workflow/parks.ts`): a human state parks for a decision, `archmax_wait` for input. Every way
 back in is `agent.workflow.send(sessionId, input)` → one `Outcome` (`src/sessions/resume.ts`;
-`decide`/`reply`/`deliver` are conveniences). A park, a decision routed to another human
-state, or a reply to a parked session spends one reply-only model call — the handoff message.
+`decide`/`reply`/`deliver` are conveniences). What the agent tells the person as it advances,
+waits or raises is that control call's `message`, part of the turn's reply. A park, a decision
+routed to another human state, or a reply to a parked session spends one reply-only model call —
+the handoff message — unless the agent already spoke: an advance into a human state that carried
+a `message`, or a wait after text since the person's last message, owes none.
 A turn is bounded by LangGraph's `recursionLimit`: `DEFAULT_RECURSION_LIMIT` (400) unless the
 caller's config sets one; hitting it ends the session `failed` (`recursion-limit`).
 Assembly **fails closed**: `WorkflowLoadError`, `SessionStoreRequiredError`,

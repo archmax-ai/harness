@@ -90,11 +90,17 @@ Design the whole file set first, write each file once, then verify.
    can, then `archmax test <slug>`. A workflow is not done without a clean
    `validate`.
 
-Two rules authors get wrong:
+Three rules authors get wrong:
 
 - **Never describe another state.** The agent sees the active state and its
   transitions, nothing else of the graph. A routing condition written into the
   target's `instructions` or `summary` never reaches the state that routes on it.
+- **What the person reads travels in the call.** `archmax_advance`, `archmax_wait`
+  and `archmax_raise` take an optional `message`, shown to the person as the reply.
+  Where a state tells the person something as it moves on, waits or fails, write
+  the call into its `instructions` (`call archmax_wait with your question in its
+  message`), never "tell them, then wait": a reply without a call ends the turn
+  where the agent is.
 - **Shapes come from tools, not guesses.** Before naming a field of a tool's result
   or a trigger's payload (in `instructions`, a `${{…}}` guard or a script), ask the
   host for it: a platform embedding the harness typically offers describe tools and a
@@ -183,21 +189,23 @@ This is the whole layout. Nothing else is read.
 - **Every `.js` file opens with a JSDoc block**: a title line, a blank line, then what
   it reads, what it checks or computes, and each outcome (for a code state, every
   `archmax_advance` target and why, and every raise). Admin UIs show this block
-  instead of the code.
+  instead of the code, up to its first `@tag`. Validate does not check it.
 
 ## Commands
 
 ```bash
 archmax validate [workflow] [--json]            # offline; run after every structural edit
-archmax test [workflow] [filter] [--json]       # cases; filter = case-id substring
-archmax run <workflow> "<prompt>" [--session <id>] [--trigger <id>] [--variables '<json>'] [--file <var>=<path>]...
+archmax test [workflow] [filter] [--json]       # cases; filter = substring of the case file's path
+archmax run <workflow> "<prompt>" [--session <id>] [--session-path <path>] [--trigger <id>] [--variables '<json>'] [--file <var>=<path>]...
 archmax sessions [session] [--json]             # list sessions, or one session's variables
 archmax decide <session> --to <state> [--comment "…"]   # decide a human state
 archmax reply <session> "<message>"             # message a parked session; it stays parked
 archmax deliver <session> --trigger <id> [--variables '<json>']   # deliver to an archmax_wait park
 ```
 
-`<workflow>` may be omitted when the workspace has one. `--root <dir>` sets the
+`<workflow>` may be omitted when the workspace has one; `sessions`, `decide`, `reply`
+and `deliver` take it as `--workflow <slug>`. A follow-up `run --session` passes the
+trigger's `requires` in `--variables` again. `--root <dir>` sets the
 workspace (default: the current directory; `.env` loads from it), and `--verbose`
 prints raw events. Results go to stdout and narration to stderr. Exit codes: 0 done
 or parked, 1 failure (a raise prints `✖ failed` with its code), 2 usage error. The CLI

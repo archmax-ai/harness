@@ -36,7 +36,7 @@ smaller prefix, a cached prefix, and reporting so you can see both.
 
 These numbers are upstream-sensitive. A Deep Agents or LangChain release that
 rewords a built-in's schema moves them. Real numbers come from `model-usage`
-events on an actual run, which report the provider's exact token counts.
+events of an actual session, which report the provider's exact token counts.
 
 ## What the model reads, in order
 
@@ -70,10 +70,11 @@ looks the profile up from the client's provider and its `model_name` or `modelNa
 `ConfigurableModel` (`initChatModel`) is matched, but a `ChatOpenAI` instance sets only `model`,
 so the env-configured model never is.
 
-**The clock lives in layer 8, and is rounded.** Every model call opens with
-`Current date and time: 2026-09-10 14:30 UTC (Thursday), rounded down to the
-nearest 10 minutes — it can be that much behind.`. The host's IANA zone and its
-local time follow when that zone is not UTC. Two things there are deliberate:
+**The clock lives in layer 8, and is rounded.** Every model call of the
+session's agent opens with `Current date and time: 2026-09-10 14:30 UTC
+(Thursday), rounded down to the nearest 10 minutes — it can be that much
+behind.`. The host's IANA zone and its local time follow when that zone is not
+UTC. A grader's model calls carry no date. Two things there are deliberate:
 
 - **Layer 8 carries it.** A timestamp in the cacheable prefix would differ
   on every call and cost the cache of every layer behind it.
@@ -90,8 +91,8 @@ local time follow when that zone is not UTC. Two things there are deliberate:
   time to ten minutes are what date arithmetic runs on. A state that needs the
   exact instant can read it in the sandbox.
 
-A parked run reads the clock too. The handoff message is written now, and "now"
-may be days after the run started.
+A parked session reads the clock too. A reply-only call, a handoff or an answer
+while parked, is written now, and "now" may be days after the session started.
 
 A pinned clock (the [`clock` option](/reference/public-api/#clock-pinning-the-date)
 or a case's `clock:` key) replaces the instant and leaves out the local time. Its
@@ -152,8 +153,10 @@ stay out of the static section.
   state. It is all the agent knows about where an edge leads, and it is sent on
   every call in that state. Say *when* to take the edge ("Refunds over $50") in
   one line.
-- A state's `summary` and `title` stay out of every model call and cost nothing.
-  They are labels for people and hosts, so write them for whoever opens the spec.
+- A state's `summary` stays out of every model call, and its `title` reaches only
+  the reply-only call of a park at that state, so neither adds to the prefix or
+  to a state's block. They are labels for people and hosts, so write them for
+  whoever opens the spec.
 - Splitting one broad state into several narrow ones does not widen the prefix.
   The cost is what each state's own block carries while that state is active.
 - Keep prose non-derivable. Anything the spec already says is re-sent on every
@@ -174,7 +177,7 @@ model call of that turn.
 
 ### Measuring what you spend
 
-Read the `model-usage` events on a real run. They carry the provider's own exact
+Read the `model-usage` events of a real session. They carry the provider's own exact
 token counts, per turn, with `costUsd` when pricing is configured. See
 [reading tokens and cost](#reading-tokens-and-cost).
 

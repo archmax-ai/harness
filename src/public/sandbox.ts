@@ -6,8 +6,11 @@
  * nothing at runtime.
  *
  * ```js
+ * /**
+ *  * Refund check — sends a refund the policy forbids back to the agent.
+ *  *\/
  * import { defineCodeState } from "@archmax-ai/harness/sandbox";
- * /** Sends a refund the policy forbids back to the agent. *\/
+ *
  * export default defineCodeState(async ({ variables, tools }) => {
  *   const refund = JSON.parse(await tools.read_file({ file_path: "scratchpad/refund.json" }));
  *   if (refund.decision === "denied") {
@@ -17,6 +20,9 @@
  *   }
  * });
  * ```
+ *
+ * The JSDoc block comes first, before any import: admin UIs read it with
+ * `parseCodeDescription`, which only sees a block that opens the file.
  *
  * A code state moves the session itself: `tools.archmax_advance({ to, reason })`
  * along one of its transitions, or `tools.archmax_raise({ code, reason })` to end

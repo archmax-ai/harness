@@ -111,6 +111,10 @@ and `archmax_get_history`.
   A refusal SHALL reject the call with its reason, leaving the state free to try again.
 - The first accepted `archmax_advance` or `archmax_raise` SHALL be the state's decision. Every
   later one SHALL be refused.
+- `archmax_advance` (`{ to, reason, evidence? }`) and `archmax_raise` (`{ code, reason }`) SHALL
+  declare no `message`, unlike the agent's (see the `runtime` capability): an automated state has no
+  person to tell, so what it decides reaches no outcome's `reply`, and its move into a human state
+  always owes the park's reply-only handoff call.
 - The variable tools SHALL behave as the agent's own (locks, `title`, typed and `file` returns).
   A write SHALL be visible to the state's later calls.
 - `archmax_get_history` SHALL answer with the session's history (see "The session's history").
@@ -122,6 +126,12 @@ and `archmax_get_history`.
 - **THEN** each is offered `archmax_advance`, `archmax_raise`, `archmax_get_variables`,
   `archmax_set_variables` and `archmax_get_history`, and neither is offered `archmax_wait` or
   `archmax_reset`
+
+#### Scenario: An automated state's controls take no message
+
+- **WHEN** a grader and a code state are offered their controls
+- **THEN** the `archmax_advance` and `archmax_raise` schemas they see declare no `message`
+  argument, while the agent's own `archmax_advance`, `archmax_wait` and `archmax_raise` declare one
 
 #### Scenario: An invalid edge is refused and can be retried
 

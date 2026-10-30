@@ -279,7 +279,6 @@ export {
 // --- Paths -------------------------------------------------------------------------------
 
 export {
-  DEFAULT_WORKFLOW,
   /** Where a code state's script lives, relative to its workflow directory. */
   SCRIPTS_DIR,
   /** Where a workspace may override the bundled platform prompt (`.platform/system/GRAPH_STATE.md`). */

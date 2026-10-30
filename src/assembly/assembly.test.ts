@@ -143,12 +143,10 @@ describe("createAgent workflow load enforcement", () => {
 
   it("throws WorkflowLoadError when workflow.yaml exists but has no valid machine spec", async () => {
     const root = makeWorkspace({
-      "workflows/order-lookup/workflow.yaml": "- not a mapping\n",
+      "workflows/p/workflow.yaml": "- not a mapping\n",
     });
 
-    // Even the unrequested default fails closed when a definition exists but
-    // cannot be parsed into a machine spec.
-    const error = await createAgent({ workspace: { rootDir: root } }).then(
+    const error = await createAgent({ workflow: "p", workspace: { rootDir: root } }).then(
       () => null,
       (err) => err,
     );
@@ -1456,35 +1454,38 @@ describe("workflow.send", () => {
   });
 });
 
-describe("createAgent ungoverned by declaration (workflow: false)", () => {
-  const rootWithDefaultWorkflow = () =>
+describe("createAgent ungoverned (workflow omitted or false)", () => {
+  // A workspace holding workflows, the reference workspace's slug among them:
+  // only a workflow the host names governs, so neither is picked up.
+  const rootWithWorkflows = () =>
     makeWorkspace({
       "AGENTS.md": "# Agent\n",
       "workflows/order-lookup/workflow.yaml": ["states:", "  start: { triggers: { manual: } }"].join("\n"),
+      "workflows/broken/workflow.yaml": "- not a mapping\n",
     });
 
-  it("would be governed by the default workflow when one is found under the root", async () => {
-    const agent = await createAgent({ model: stubModel, workspace: { rootDir: rootWithDefaultWorkflow() } });
-    expect(agent.workflow?.name).toBe("order-lookup");
-  });
-
-  it("reads no spec and stays plain when the host says so", async () => {
-    const reads: string[] = [];
-    const authoring = {
-      async readRaw(path: string) {
-        reads.push(path);
-        return { error: "missing" };
-      },
-    } as unknown as BackendProtocolV2;
-    const agent = await createAgent({
-      workflow: false,
-      model: stubModel,
-      authoring,
-      workspace: { rootDir: rootWithDefaultWorkflow() },
+  for (const [label, workflow] of [
+    ["omitted", undefined],
+    ["false", false],
+  ] as const) {
+    it(`reads no spec and stays plain when the workflow is ${label}`, async () => {
+      const reads: string[] = [];
+      const authoring = {
+        async readRaw(path: string) {
+          reads.push(path);
+          return { error: "missing" };
+        },
+      } as unknown as BackendProtocolV2;
+      const agent = await createAgent({
+        ...(workflow === undefined ? {} : { workflow }),
+        model: stubModel,
+        authoring,
+        workspace: { rootDir: rootWithWorkflows() },
+      });
+      expect(agent.workflow).toBeUndefined();
+      expect(reads.filter((p) => p.includes("workflows/"))).toEqual([]);
     });
-    expect(agent.workflow).toBeUndefined();
-    expect(reads.filter((p) => p.includes("workflows/"))).toEqual([]);
-  });
+  }
 
   it("honours the host's middleware on the plain path", async () => {
     const agent = await createAgent({

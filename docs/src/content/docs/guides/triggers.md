@@ -7,7 +7,7 @@ sidebar:
 
 A workflow may declare multiple **start states**, and one state may be the entry
 for several triggers. A firing can also *resume* a live session; see
-[sessions and parked runs](/guides/sessions/).
+[sessions and parked sessions](/guides/sessions/).
 
 `manual` designates the CLI/Deep-Agent entry, and the user's prompt travels
 beside it as the turn's message. Any other value names a tool or event whose
@@ -128,16 +128,19 @@ states:
   intake:
     triggers:
       chat:
-        requires: [customer_id]        # a firing must supply this to start
+        requires: [customer_id]        # every turn it opens must supply this
         returns: [ticket_ref]          # the session guarantees this when it completes
 ```
 
 The SDK **acts** on both, where the host keys above are inert.
 
-`requires` is checked at the boundary. A firing that leaves one of its names
-unsupplied is refused before the session starts, and the refusal names the
-trigger and the missing variables. The old failure mode started the session and
-died later at an unresolvable guard.
+`requires` is checked at the boundary, on **every** turn the trigger opens,
+against the variables that turn itself seeds. A value the session already holds
+does not count, so a follow-up turn passes the same variables again. A turn that
+leaves one of the names unsupplied, or supplies a mistyped value, is refused
+before any model call, and the refusal names the trigger and the missing
+variables. The old failure mode started the session and died later at an
+unresolvable guard.
 
 `returns` is checked once, where a session completes, and nothing is handed
 back:
@@ -174,9 +177,11 @@ A return is the session's **result**, so nothing asks for it earlier:
   of it leaves a value the session already holds in place, as a seeded `title`
   does.
 
-Both are lists of run-variable names. The names ride in the prompt's
-current-state block, so the agent is told in every state what it must produce,
-and what finishing without them does, before it can be failed for omitting it.
+Both are lists of variable names, each lowercase snake_case
+(`^[a-z][a-z0-9_]*$`): `orderId` fails the spec's load. The names ride in the
+prompt's current-state block, so the agent is told in every state what it must
+produce, and what finishing without them does, before it can be failed for
+omitting it.
 The same block tells it to set each return once its final value is known, and to
 lock one only when it is final.
 
@@ -319,7 +324,7 @@ caller delegates to it. A caller that needs the child to know passes an ordinary
 variable.
 
 `session:` and `message:` are ordinary host-facing keys on `manual`, and a
-delegation ignores both. A delegated run is a separate session whose id derives
+delegation ignores both. A delegated call runs a separate session whose id derives
 from the caller's (`<caller>~<n>`, `n` the dispatch's number in the caller), with its own `scratchpad/`,
 and it carries no message.
 
@@ -329,7 +334,7 @@ no `manual` entry has no state for a delegating caller to start in. The missing
 entry shows up in the *calling* workflow's `archmax validate`.
 :::
 
-## An event that must not start a run
+## An event that must not start a session
 
 Every declared trigger is a **start** trigger: it sits on a state, and that
 state is where its firings open a session.
@@ -419,10 +424,12 @@ const agent = await createAgent({
 });
 ```
 
-Every seed except `title` is **locked**: a host-supplied fact stays as the host
-set it, which is what makes a guard bound to one trustworthy. A value the agent
-should be able to change is left unseeded, and the agent sets it with
-`archmax_set_variables`.
+Every seed is **locked**: a host-supplied fact stays as the host set it, which
+is what makes a guard bound to one trustworthy. Two land unlocked: a `title`,
+and a seed of one of the current trigger's `returns` (see
+[a return is owed when the session finishes](#a-return-is-owed-when-the-session-finishes)).
+A value the agent should be able to change is left unseeded, and the agent sets
+it with `archmax_set_variables`.
 
 The id itself follows four rules:
 

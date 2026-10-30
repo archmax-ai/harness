@@ -434,7 +434,10 @@ caller that passes `title` as an argument seeds it unlocked, as before.
 ### Requirement: The call answers with the child's returns and the closing message
 
 A completed child SHALL answer its tool call with `{ message, returns }` when the target declares
-`returns`, and with the closing message alone otherwise. `returns` SHALL carry every declared return,
+`returns`, and with the closing message alone otherwise. The closing message SHALL be what the
+child's agent last said (`lastAgentText`): what the last assistant message that says anything says —
+its text, then the `message` of each control call it made that was not refused (see the `runtime`
+capability). `returns` SHALL carry every declared return,
 each the child set conforming to its declared type. A child that finished with some declared returns
 unset SHALL still complete the call — it is not handed back for another attempt — and `returns` SHALL
 carry each unset name empty, as `null` (never left out, never `undefined`), and also `note`, reading

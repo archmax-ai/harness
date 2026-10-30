@@ -5,9 +5,6 @@ import {
   SESSION_AGNOSTIC_PREFIX,
 } from "../core/zones.js";
 
-/** Default workflow slug when none is supplied. */
-export const DEFAULT_WORKFLOW = "order-lookup";
-
 /**
  * Where a workspace may override the platform system prompt. Nothing needs to be
  * served there: the runtime ships the default prompt in its code.

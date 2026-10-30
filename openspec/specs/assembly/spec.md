@@ -48,13 +48,13 @@ Deep Agent is.
 
 ### Requirement: Governance is opt-in and fails closed
 
-Omitting `workflow` SHALL yield a plain Deep Agent — no machine, no control tools, no per-state tool gating — over the same workspace, session store, event stream and skills, with `agent.workflow` undefined. Naming a `workflow` whose `workflow.yaml` is missing or has no valid machine spec SHALL throw `WorkflowLoadError` naming the workflow and the problem rather than returning an ungoverned agent. A YAML frontmatter block in `WORKFLOW.md` beside `workflow.yaml` SHALL be a `competing-machines` load error. The plain agent SHALL be returned only when no workflow was requested and the default workflow's spec file does not exist, or when `workflow: false` declares the agent ungoverned — in which case no spec SHALL be read; an existing but invalid default spec fails when `workflow` is merely omitted.
+Only a named `workflow` (a slug under `workflows/`) SHALL govern an agent. Omitting `workflow`, or passing `workflow: false`, SHALL yield a plain Deep Agent — no machine, no control tools, no per-state tool gating — over the same workspace, session store, event stream and skills, with `agent.workflow` undefined; the two SHALL be the same assembly. No spec SHALL be read then: there is no default workflow, so no `workflows/` tree under the resolved root, a `workflows/order-lookup/` included, can govern an agent that names none, and the package SHALL export no default-workflow constant (`DEFAULT_WORKFLOW`). Naming a `workflow` whose `workflow.yaml` is missing or has no valid machine spec SHALL throw `WorkflowLoadError` naming the workflow and the problem rather than returning an ungoverned agent. A YAML frontmatter block in `WORKFLOW.md` beside `workflow.yaml` SHALL be a `competing-machines` load error.
 
 The plain agent SHALL be a first-class host path: its `invoke`, `stream` and `streamEvents` SHALL be bound to the session named by `configurable.thread_id` — the session zone's id-free view and the event context — exactly as a governed turn is, so the agent's `scratchpad/…` and offload paths land under `<sessionId>/` in the session store, and a reserved or escaping id SHALL be refused with `SessionStoreIdError` as a rejection before anything is written.
 
 #### Scenario: Ungoverned assembly
 
-- **WHEN** `createAgent({ model })` is called with no `workflow` and no `workflows/order-lookup/workflow.yaml` exists
+- **WHEN** `createAgent({ model })` is called with no `workflow`
 - **THEN** a plain agent is returned whose tool surface is its bound tools, and `agent.workflow` is `undefined`
 
 #### Scenario: Missing named workflow
@@ -62,10 +62,12 @@ The plain agent SHALL be a first-class host path: its `invoke`, `stream` and `st
 - **WHEN** `workflow: "nope"` names a workflow with no `workflow.yaml`
 - **THEN** assembly throws `WorkflowLoadError`
 
-#### Scenario: Invalid default workflow
+#### Scenario: An omitted workflow reads no spec
 
-- **WHEN** no `workflow` is given but the default workflow's `workflow.yaml` exists and fails the schema
-- **THEN** assembly throws `WorkflowLoadError` instead of falling back to a plain agent
+- **WHEN** `createAgent({ model })` is called with no `workflow` over a root that holds a
+  `workflows/order-lookup/workflow.yaml`, whether it is valid or fails the schema
+- **THEN** a plain agent is returned, `agent.workflow` is `undefined`, nothing is thrown, and no
+  `workflows/**` path was read from the authoring backend
 
 #### Scenario: Ungoverned by declaration
 
@@ -103,7 +105,7 @@ Assembly SHALL refuse, before any model call, each of: a host tool in `tools` wh
 
 ### Requirement: The return value is a wrapper over the compiled graph
 
-`createAgent` SHALL return a `ArchmaxAgent`: a delegating wrapper over the compiled Deep Agent graph, not the graph itself. It SHALL expose `invoke(input, config?)`, `stream(input, options?)` and `streamEvents(...)`; `graph` (the compiled `CompiledStateGraph`, a real Pregel); the checkpoint surface `getState`, `getStateHistory`, `updateState`, `getSubgraphs`, `getSubgraphsAsync`, `getGraphAsync`, delegated to the graph; and `checkpointer` and `store` accessors. `withConfig(config)` SHALL return a new `ArchmaxAgent` carrying the merged config, so `.workflow` and the session-level members survive reconfiguration. Every method SHALL be bound so the agent survives destructuring. The wrapper SHALL carry a default config of integration metadata (`ls_integration: "archmax-harness"`) and the recursion limit a turn runs under, `DEFAULT_RECURSION_LIMIT` (400), which a caller's config overrides; an assembly SHALL derive no other step limit (see the `runtime` capability). A governed agent's `invoke` and `stream` SHALL go through the turn runner, which binds the session and event context around the turn; a plain agent drives its graph directly. `{ messages }` alone SHALL start a governed session, with the `manual` trigger applied when none is given.
+`createAgent` SHALL return a `ArchmaxAgent`: a delegating wrapper over the compiled Deep Agent graph, not the graph itself. It SHALL expose `invoke(input, config?)`, `stream(input, options?)` and `streamEvents(...)`; `graph` (the compiled `CompiledStateGraph`, a real Pregel); the checkpoint surface `getState`, `getStateHistory`, `updateState`, `getSubgraphs`, `getSubgraphsAsync`, `getGraphAsync`, delegated to the graph; and `checkpointer` and `store` accessors. `withConfig(config)` SHALL return a new `ArchmaxAgent` carrying the merged config, so `.workflow` and the session-level members survive reconfiguration. Every method SHALL be bound so the agent survives destructuring. The wrapper SHALL carry a default config of integration metadata (`ls_integration: "archmax-harness"`) and the recursion limit a turn runs under, `DEFAULT_RECURSION_LIMIT` (400), which a caller's config overrides; an assembly SHALL derive no other step limit (see the `runtime` capability). A governed agent's `invoke` and `stream` SHALL go through the turn runner, which binds the session and event context around the turn; a plain agent drives its graph directly. `{ messages }` alone SHALL start a governed session, with the assembly's `trigger` applied when none is given, else `manual`.
 
 #### Scenario: Reconfiguration preserves governance
 
@@ -136,12 +138,20 @@ Every `ArchmaxAgent`, governed or plain, SHALL carry `sessions` (`SessionOperati
 
 ### Requirement: `send` is the one entry into a session
 
-`agent.workflow.send(sessionId, input, config?)` SHALL accept a turn (`{ message, trigger?, variables?, sessionPath? }`) or a resume payload (`{ decision }` or `{ delivery }`) and settle to one `Outcome` whose `disposition` is `turn`, `decide`, `reply` or `deliver`. A turn SHALL be resolved through `resolveSession` first: a new or finished session takes it as its next turn; a session parked at a human state has it answered as a reply (`reply`); a session parked with `archmax_wait` has its trigger, variables **and message** delivered (`deliver`) — the message travels with the firing rather than being dropped. A session that ends rejected SHALL settle an `Outcome` of kind `rejected` carrying `rejected`, the reason the runtime committed, and every resume outcome (`DecideOutcome`) SHALL carry it the same way. A session that ends with `archmax_raise` SHALL settle an `Outcome` of kind `failed`. Every finished `Outcome` and `DecideOutcome` that the agent ended SHALL carry `exit` (`SessionExit`): `{ success: true }` for kind `completed`, and `{ success: false, code, reason }` for kind `failed`. A parked or rejected outcome SHALL carry no `exit`. When a parked session's pending decision belongs to a delegated child, the `Outcome` SHALL carry `delegation` (`DelegatedPark`: `workflow`, the child's `sessionId`, `identity`, `dispatchId`, `toolCallId`, calling `state`). A fresh turn on a workflow declaring `disabled: true` SHALL throw `WorkflowDisabledError`; an empty message SHALL throw `EmptyMessageError`. `config` SHALL merge into the invoke config.
+`agent.workflow.send(sessionId, input, config?)` SHALL accept a turn (`{ message, trigger?, variables?, sessionPath? }`) or a resume payload (`{ decision }` or `{ delivery }`) and settle to one `Outcome` whose `disposition` is `turn`, `decide`, `reply` or `deliver`. A turn SHALL be resolved through `resolveSession` first: a new or finished session takes it as its next turn; a session parked at a human state has it answered as a reply (`reply`); a session parked with `archmax_wait` has its trigger, variables **and message** delivered (`deliver`) — the message travels with the firing rather than being dropped. A turn or a delivery whose input names no `trigger` SHALL fire the assembly's `trigger` (`createAgent({ trigger })`), else `manual`, and a trigger the input names SHALL win; `resolveSession` SHALL default the same way (see `workspace-and-sessions`). A session that ends rejected SHALL settle an `Outcome` of kind `rejected` carrying `rejected`, the reason the runtime committed, and every resume outcome (`DecideOutcome`) SHALL carry it the same way. A session that ends with `archmax_raise` SHALL settle an `Outcome` of kind `failed`. Every finished `Outcome` and `DecideOutcome` that the agent ended SHALL carry `exit` (`SessionExit`): `{ success: true }` for kind `completed`, and `{ success: false, code, reason }` for kind `failed`. A parked or rejected outcome SHALL carry no `exit`. When a parked session's pending decision belongs to a delegated child, the `Outcome` SHALL carry `delegation` (`DelegatedPark`: `workflow`, the child's `sessionId`, `identity`, `dispatchId`, `toolCallId`, calling `state`). A fresh turn on a workflow declaring `disabled: true` SHALL throw `WorkflowDisabledError`; an empty message SHALL throw `EmptyMessageError`. `config` SHALL merge into the invoke config.
 
 #### Scenario: A turn on a new session
 
 - **WHEN** `send("s1", { message: "Which orders are delayed?" })` is called on a fresh session id
 - **THEN** one turn runs under `thread_id: "s1"` and one `Outcome` with `disposition: "turn"` is returned
+
+#### Scenario: The assembly's trigger opens a send that names none
+
+- **WHEN** a workflow's `manual` trigger enters `chat` and its `email_reply` trigger enters `inbox`,
+  the agent is assembled with `trigger: { id: "email_reply" }`, and `send("s1", { message: "hi" })`
+  names no trigger
+- **THEN** the turn opens at `inbox`, while `send("s2", { message: "hi", trigger: { id: "manual" } })`
+  opens at `chat`
 
 #### Scenario: A decision for a session nobody holds
 
@@ -167,7 +177,7 @@ Every `ArchmaxAgent`, governed or plain, SHALL carry `sessions` (`SessionOperati
 
 ### Requirement: An outcome's reply is what the agent said this turn
 
-Every outcome `send` settles (`Outcome`, and the `DecideOutcome` and `ReplyOutcome` that `decide`, `reply` and `deliver` return) SHALL carry `reply`: the text of every assistant message the turn added to the session's transcript, in order, each trimmed, empty ones skipped, joined by a blank line (`\n\n`). Runtime notes SHALL never contribute text, and no note SHALL discard text said before it: a `grader` or `code` note (an automated state having moved the session) leaves every assistant text of the turn in `reply`. A turn that added no assistant text SHALL have `reply: ""`, whatever earlier turns said. A turn's messages are those after the transcript's length as it stood before the turn began; messages the runtime rewrites ahead of that point SHALL NOT bring earlier assistant text into `reply`.
+Every outcome `send` settles (`Outcome`, and the `DecideOutcome` and `ReplyOutcome` that `decide`, `reply` and `deliver` return) SHALL carry `reply`: what every assistant message the turn added to the session's transcript says, in order — its text, then the `message` of each `archmax_advance`, `archmax_wait` or `archmax_raise` call it made that was not refused (see the `runtime` capability) — each trimmed, empty ones skipped, joined by a blank line (`\n\n`). A refused control call's `message` SHALL never reach `reply`. Runtime notes SHALL never contribute text, and no note SHALL discard text said before it: a `grader` or `code` note (an automated state having moved the session) leaves everything the agent said in the turn in `reply`. A turn whose assistant messages said nothing SHALL have `reply: ""`, whatever earlier turns said. A turn's messages are those after the transcript's length as it stood before the turn began; messages the runtime rewrites ahead of that point SHALL NOT bring earlier assistant text into `reply`.
 
 #### Scenario: Text next to an advance reaches the person
 
@@ -186,8 +196,18 @@ Every outcome `send` settles (`Outcome`, and the `DecideOutcome` and `ReplyOutco
 
 #### Scenario: A park's handoff is part of the turn
 
-- **WHEN** the agent writes "Your refund is eligible" next to an advance into a human state, and the reply-only handoff call writes "A reviewer will confirm it"
+- **WHEN** the agent writes "Your refund is eligible" next to an advance into a human state that carries no `message`, and the reply-only handoff call writes "A reviewer will confirm it"
 - **THEN** the parked outcome's `reply` is "Your refund is eligible\n\nA reviewer will confirm it"
+
+#### Scenario: An advance's message is the park's reply
+
+- **WHEN** the agent's only model call of the turn calls `archmax_advance({ to: "review", reason: "decided", message: "Your refund for ORD-1001 is with a reviewer." })` into a human state
+- **THEN** the parked outcome's `reply` is "Your refund for ORD-1001 is with a reviewer.", and the turn made that one model call and no reply-only handoff call
+
+#### Scenario: A control call's message joins the text around it
+
+- **WHEN** in one turn the agent calls `archmax_advance` from `a` to `b` with `message: "Looking into it."`, and then writes "All done." in `b`
+- **THEN** the outcome's `reply` is "Looking into it.\n\nAll done."
 
 #### Scenario: A decision that ends the session without the agent speaking
 
@@ -693,9 +713,19 @@ All typing of Deep Agents' middleware request and handler shapes (`ModelRequest`
 
 ### Requirement: An enumerated public surface, tested against its documentation
 
-The root barrel (`src/index.ts`) SHALL export a small, enumerated API — `createAgent`, `ArchmaxAgent`, the option and outcome types, the error classes, workspace composition (`defaultMounts`, `mountSubtree`, the three session-store factories, `isReservedRootName`, `sessionIdRejection`, `isChildSessionOf`, `createWorkspaceContext`, `PLATFORM_PROMPT_PATH`), the park readers (`readParkedSession`, `pendingParkOf`, `parkedStateOf`), prompt and message plumbing (`lastAgentText` included), `loadMachineSpec`, `WorkflowMachine`, `validateWorkflow`, the delegation bounds, the trigger and tool-name constants (`sessionIdForTrigger` included), the event types, usage helpers, `createChatModel`, `BUNDLED_AUTHORING_SKILL_DIR`, `PACKAGE_VERSION` and the runtime-contract types — every export carrying a docstring. A unit test SHALL pin an upper bound on the barrel's runtime export count, keep the heavy subpaths disjoint from the root, check that `package.json` declares every subpath's built module, and compare the barrel (type exports included) with the export list in `docs/src/content/docs/reference/public-api.md` in both directions.
+The root barrel (`src/index.ts`) SHALL export a small, enumerated API — `createAgent`, `ArchmaxAgent`, the option and outcome types, the types of `emitRunArtifacts`' trajectory argument (`Trajectory`, `TrajectorySegment`, `TrajectoryItem`), the error classes, workspace composition (`defaultMounts`, `mountSubtree`, the three session-store factories, `isReservedRootName`, `sessionIdRejection`, `isChildSessionOf`, `createWorkspaceContext`, `PLATFORM_PROMPT_PATH`), the park readers (`readParkedSession`, `pendingParkOf`, `parkedStateOf`), prompt and message plumbing (`lastAgentText` included), `loadMachineSpec`, `WorkflowMachine`, `validateWorkflow`, the delegation bounds, the trigger and tool-name constants (`sessionIdForTrigger` included), the event types, usage helpers, `createChatModel`, `BUNDLED_AUTHORING_SKILL_DIR`, `PACKAGE_VERSION` and the runtime-contract types — every export carrying a docstring. A unit test SHALL pin an upper bound on the barrel's runtime export count, keep the heavy subpaths disjoint from the root, check that `package.json` declares every subpath's built module, and compare the barrel (type exports included) with the export list in `docs/src/content/docs/reference/public-api.md` in both directions.
 
-The barrel SHALL export no grader loader, inspector, merge helper, registry projection or definition type: a grader state is spec content, so nothing outside the runtime assembles a grader. It SHALL export none of the removed hook vocabulary either: no `normalizeHooks`, `HookExecutor` or `RubricDeclaration`.
+The barrel SHALL export no grader loader, inspector, merge helper, registry projection or definition type: a grader state is spec content, so nothing outside the runtime assembles a grader. It SHALL export none of the removed hook vocabulary either: no `normalizeHooks`, `HookExecutor` or `RubricDeclaration`. Neither the root nor any subpath SHALL export a default workflow (`DEFAULT_WORKFLOW`): only a workflow the host names governs (see "Governance is opt-in and fails closed").
+
+#### Scenario: A host types the trajectory it records
+
+- **WHEN** a host imports `Trajectory`, `TrajectorySegment` and `TrajectoryItem` from `@archmax-ai/harness` to build the argument of `agent.emitRunArtifacts(sessionId, trajectory)`
+- **THEN** the imports type-check, and the public API page lists all three
+
+#### Scenario: There is no default workflow to import
+
+- **WHEN** a consumer imports `DEFAULT_WORKFLOW` from `@archmax-ai/harness` or `@archmax-ai/harness/spec`
+- **THEN** the import fails at type-check and is absent at runtime
 
 #### Scenario: Documented list matches the barrel
 

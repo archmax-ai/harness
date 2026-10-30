@@ -215,7 +215,7 @@ The engine SHALL interpret a case on the host: it opens one session for the case
 #### Scenario: A park's handoff message is the reply
 
 - **WHEN** a `send` ends in a park and the next step declares `reply: { includes: "under review" }`
-- **THEN** the assertion evaluates against the handoff message the runtime produced for the park
+- **THEN** the assertion evaluates against the park's handoff: the text of the reply-only call the runtime spent on the park, or the `message` of the agent's advance into the human state when it carried one
 
 ### Requirement: Structural assertions read the session's trail and park
 
@@ -291,7 +291,7 @@ These assertions SHALL read an automated state's outcome as they read the agent'
 
 ### Requirement: Content assertions read the transcript and tool calls
 
-The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each a token or list of tokens; a plain token is a substring, a `/pattern/flags` token a regex) against the whole assistant transcript of the turn — every completed assistant message joined, not only the final reply — producing one `reply.includes` / `reply.excludes` record per token; `calledTool: { name, input? }` (some recorded call has that name and its arguments partially match `input`); `notCalledTool` (no such call); `blockedTool` (a matching call was made and governance rejected it — distinct from a call that never happened and from a tool that ran and errored); `usedNoTools: true` (the turn recorded no tool calls); and `ranWorkflow: { workflow, status?, count? }` (the trail's `sub-workflow` steps for that slug with `status`, default `ok`: at least one, or exactly `count`, whoever dispatched — the agent, a script, a code state or a grader). Tool-call matching compares the arguments as the transcript records them — a `${{name}}` reference in reference form, not its resolved value.
+The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each a token or list of tokens; a plain token is a substring, a `/pattern/flags` token a regex) against the whole assistant transcript of the session so far, as the action's view carries it — what every assistant message says, joined, not only the final reply — producing one `reply.includes` / `reply.excludes` record per token. What an assistant message says SHALL be read as the runtime reads it (see the `runtime` capability): its text, then the `message` of each `archmax_advance`, `archmax_wait` or `archmax_raise` call it made that was not refused, so a control call's `message` counts as said and a refused call's never does. The engine SHALL also evaluate `calledTool: { name, input? }` (some recorded call has that name and its arguments partially match `input`); `notCalledTool` (no such call); `blockedTool` (a matching call was made and governance rejected it — distinct from a call that never happened and from a tool that ran and errored); `usedNoTools: true` (the turn recorded no tool calls); and `ranWorkflow: { workflow, status?, count? }` (the trail's `sub-workflow` steps for that slug with `status`, default `ok`: at least one, or exactly `count`, whoever dispatched — the agent, a script, a code state or a grader). Tool-call matching compares the arguments as the transcript records them — a `${{name}}` reference in reference form, not its resolved value.
 
 `reply` and the tool-call assertions (`calledTool`, `notCalledTool`, `blockedTool`, `usedNoTools`) SHALL read the session's transcript and nothing else, so they see the session's agent's own messages and tool calls. An automated state's calls are not in the transcript (see `automated-states`): a code state's script calls its tools through `tools.*`, as an agent's script does, and a grader's messages and calls stay in its isolated context. These assertions SHALL NOT count them, so a turn whose only tool calls were an automated state's passes `usedNoTools: true`. A runtime note, the `grader` and `code` kinds included, is neither a tool call nor part of the reply. What an automated state did SHALL be asserted from what it committed: its move and its reason in the trail (`reachedState`, `trail`), its raise (`raised`), the variables it set (`variables`) and its dispatches (`ranWorkflow`).
 
@@ -299,6 +299,11 @@ The engine SHALL evaluate `reply: { includes?, excludes? }` (at least one, each 
 
 - **WHEN** a turn says "Looking into it", calls a tool, then parks with "This is with a reviewer"
 - **THEN** `reply: { includes: ["Looking", "/reviewer/i"], excludes: ["ORD-2001"] }` produces three records, all passing
+
+#### Scenario: A control call's message counts as said
+
+- **WHEN** the agent writes no text and advances into a human state with `message: "This is with a reviewer"`, after an advance on an undeclared target, refused, whose `message` was "Moving on"
+- **THEN** `reply: { includes: "/reviewer/i", excludes: "Moving on" }` passes both records
 
 #### Scenario: Blocked is not merely uncalled
 

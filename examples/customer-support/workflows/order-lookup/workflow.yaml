@@ -240,8 +240,8 @@ states:
   refund-review:
     title: Review refund decision
     summary: A person approves the recorded refund decision or sends it back.
-    # Human state: the session parks with a decision record built from these
-    # instructions, the evidence paths and the transition types; a person picks the edge.
+    # Human state: the session parks with a decision record of its transitions and
+    # evidence paths; a host shows these instructions beside it. A person picks the edge.
     type: human
     approvers:
       - finance@acmecorp.com

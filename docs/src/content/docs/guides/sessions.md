@@ -15,16 +15,17 @@ webhook round-trip a single governed session.
 ## Parking a session: `archmax_wait`
 
 The agent discovers a wait *inside* a state, so waiting is a tool rather than a state type. The
-state that cannot finish without an answer asks for it, then calls `archmax_wait({ reason })`:
+state that cannot finish without an answer asks for it in the call that waits,
+`archmax_wait({ reason, message })`, with the question in `message`:
 
 ```yaml
 states:
   clarify:
     instructions: >-
       Ask exactly one clarifying question - the smallest thing you need to
-      identify the order - and send it in a message that also calls
-      archmax_wait, with a reason naming what you are waiting for. The call is
-      what waits: a question with no archmax_wait call ends the conversation.
+      identify the order - by calling archmax_wait with the question in its
+      `message` and a reason naming what you are waiting for. The call is
+      what waits: without it the customer's answer never reaches you.
       When the reply arrives you continue here: read it, and if it identifies
       the order, advance to answer.
     transitions:
@@ -48,15 +49,20 @@ ways back in. The difference is where the session continues:
 | a human state | a person picks one of the state's declared edges, and the session advances along it |
 | `archmax_wait` | a delivered event **resumes the state that stopped**, which chooses its own transition from what arrived |
 
-A park owes the person a **handoff message**, one model call with no tools that says what
-happened and what the session now waits for. A park at a human state always spends it, and so does
-a decision that routes straight into another human state. An `archmax_wait` park spends it only
-when the agent has said nothing since the person's last message; where the agent's question
-already is the message, the session suspends straight away.
+A park owes the person a **handoff message** that says what happened and what the session now
+waits for. Where the move that parks already said it, the session suspends straight away: an
+agent's `archmax_advance` into a human state that carries a `message` has made the handoff, and an
+`archmax_wait` park needs none once the agent has said anything since the person's last message,
+the call's own `message` included. Otherwise the park spends one model call with no tools to write
+it: an advance into a human state with no `message`, a grader's or code state's move into one, a
+decision that routes straight into another human state, a wait the agent made in silence.
 
 The handoff is the model's own text, so it surfaces as an ordinary `agent-text` event and lands in
-the checkpointed transcript. A message a person sends *to* a parked session, and the answer it
-gets, are `park-message` events (`inbound` and `outbound`), and they move the session nowhere.
+the checkpointed transcript. A control call's `message` surfaces the same way, unless the call was
+refused, whose message is never said. So `agent-text` can arrive twice for one `messageId`, first
+with the assistant message's own text and then with the call's `message` appended, and a
+subscriber replaces by id. A message a person sends *to* a parked session, and the answer it gets,
+are `park-message` events (`inbound` and `outbound`), and they move the session nowhere.
 
 `archmax_wait` is available in every agent and human state, terminal ones included. A session that
 has answered and now awaits a reply parks where it answered, and stays open.
@@ -82,8 +88,8 @@ archmax deliver th_01HZ… --trigger email_reply --variables '{"reply_body":"It'
 A delivery carries the same two things a session *starts* with: a trigger id, and variables
 carrying what the event brought. The id becomes the session's current trigger, read by a code
 state's script as `trigger` and by guards as `${{trigger}}`. The delivered values are seeded as
-**locked** session variables, `title` excepted, exactly like a host's `variables`, so a downstream
-`tools.allow` guard can bind to them.
+**locked** session variables, exactly like a host's `variables`, so a downstream `tools.allow`
+guard can bind to them. `title` and any of the delivered trigger's `returns` land unlocked.
 
 A park selects no edge, so **any** trigger id resumes it: what a host delivers into a conversation
 is the host's decision, and the resumed state reads what arrived. The id is still required, because
@@ -153,6 +159,9 @@ for (const t of await agent.sessions.list()) {
 }
 ```
 
+The query needs a listing. `agent.sessions.list()` answers `[]` under a custom checkpointer, or
+over a session store built with `list: false`, so a host with either keeps the parked ids itself.
+
 Two things follow from the design:
 
 - **A double-fired timer is safe.** `deliver` refuses a session that is not parked, so the second
@@ -178,10 +187,12 @@ check-bank:
     - { to: reconcile, description: The transaction was found. }
 ```
 
-The runtime counts parks per state, checkpointed, so the count survives restarts. It refuses the
-park that would exceed `maxParks` as a **turn failure**, routed by `on_error`. So the sixth failed
-check lands in `escalate` deterministically, whether or not the agent notices its own loop. A state
-that declares no `maxParks` may park any number of times.
+The runtime counts parks per state, checkpointed, so the count survives restarts. It counts within
+one turn: a delivery resumes the turn that parked, so the loop's parks add up, and a new turn
+starts every count at zero. It refuses the park that would exceed `maxParks` as a **turn
+failure**, routed by `on_error`. So the sixth failed check lands in `escalate` deterministically,
+whether or not the agent notices its own loop. A state that declares no `maxParks` may park any
+number of times.
 
 ## Which session an event belongs to
 
@@ -275,7 +286,10 @@ const outcome = await agent.workflow.send(sessionId, { message: text, trigger, v
 | finished | a `turn`: continues in the state it is in, on the same id |
 | parked awaiting an event | a `deliver`: the trigger and variables are delivered into it, whatever the trigger id |
 | parked at a human state | a `reply`: the session answers the message and stays parked; only a decision routes |
-| mid-turn | `SessionNotResumableError`: one writer per session; retry after it parks |
+| still `running` | `SessionNotResumableError`: one writer per session. A concurrent turn holds it, or a worker died mid-turn and left it `running` |
+
+A `send` that names no trigger takes the one the agent was assembled with,
+`createAgent({ trigger })`, which is `manual` by default; so does `resolveSession`.
 
 `resolveSession` is the same rule without the invoke, for a host that wants to look before it acts.
 It answers `turn`, `resume` or `reply` for the session the firing resolves to:
@@ -298,6 +312,10 @@ if (resolved.disposition === "resume") {
 }
 ```
 
+`decide`, `reply` and `deliver` are conveniences. Each returns a smaller record of its own, with no
+`kind`, and takes no invoke config. `send(sessionId, { decision }, config)` and
+`send(sessionId, { delivery }, config)` resume the same way and return a full `Outcome`.
+
 `archmax run` composes both steps. Give it `--session <id>`, or a trigger that declares a session
 path, and one command starts *or* continues the right conversation.
 
@@ -311,7 +329,8 @@ The session id *is* the address, so a firing is one direct lookup of the session
   chat-42/checkpoints/…              # the conversation's durable state
   chat-42/artifacts/…                # per-session observability: graph, trajectory,
                                      # trail, variables (name → { value, locked }),
-                                     # metadata
+                                     # metadata; written only when the host calls
+                                     # emitRunArtifacts (the CLI never does)
   chat-42/scratchpad/…               # what its turns wrote
 ```
 
@@ -381,10 +400,10 @@ not route through `on_error`, runs no further state and is not held to the trigg
 The session's summary (`agent.sessions.get`) carries the same `exit` while the session is `failed`.
 A parked outcome has no `exit`: the session has not ended.
 
-A turn that throws, such as one that hits the recursion limit, rejects the `send` with the original
-error. The session still ends `failed`, with a code of its own such as `recursion-limit`, so its
-next message starts a fresh turn (see
-[a turn that throws](/reference/public-api/#a-turn-that-throws)).
+A turn that throws rejects the `send` with the original error, and no `Outcome` comes back. The
+session still ends `failed`, with a code of its own: `recursion-limit` when it hit the recursion
+limit, `turn-cancelled` when it was aborted, `turn-error` otherwise. So its next message starts a
+fresh turn (see [a turn that throws](/reference/public-api/#a-turn-that-throws)).
 
 ## Waiting is not finishing
 
@@ -424,6 +443,11 @@ raised, and the per-state park counts. So `budget.maxParks` bounds parks *within
 conversation starts each turn with a fresh count. Everything belonging to the conversation carries
 forward: position, variables (the agent's as well as the host's seeds), transcript, trail, metrics
 and the session's files.
+
+A carried-forward variable does not satisfy the trigger's `requires`, though. They are checked on
+every turn against that turn's own seeds, so a follow-up `send` or `archmax run --session` passes
+the same variables again; seeds given to `createAgent({ variables })` are applied on every turn. A
+seed of one of the trigger's `returns` lands unlocked.
 
 Parking remains the way to continue **mid-state**. A parked session resumes *inside* the state that
 stopped, with the arrival in its transcript, where a fresh turn would begin at the top of that
