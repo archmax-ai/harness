@@ -1484,10 +1484,13 @@ tool over it without running a suite:
   heads the rendered workflow header. A top-level `name` key is a load error
   under the strict schema. See the
   [changelog](/reference/changelog/).
-- **`MachineTransition.description` is required**, a non-empty string on every
-  edge: it is all the agent is told about the edge, and at a human state the
-  decision's button label. Loading refuses a missing or blank one. See
-  [`transitions`](/reference/machine-spec/#transitions-the-only-part-of-the-graph-the-agent-sees).
+- **`MachineTransition.description` is optional in the type, required by the
+  load** wherever an edge is chosen: it is all the agent is told about the edge,
+  and at a human state the decision's button label. Only an agent state's single
+  edge into another agent state, out of a state with `instructions`, may leave it
+  out; loading refuses a missing or blank one anywhere else. A host that renders
+  edges reads an absent description as "the only way on". See
+  [a lone edge between agent states](/reference/machine-spec/#a-lone-edge-between-agent-states).
 - **`resolveSystemPrompt(workspace, options)`** assembles the layered system
   prompt. `options.platformBackendPath` is where a workspace may override the
   platform prompt (normally `PLATFORM_PROMPT_PATH`); the prompt that ships in

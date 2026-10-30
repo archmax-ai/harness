@@ -202,7 +202,7 @@ together with every reference to it.
 | `model` | agent, human, grader | This state's model id; it beats `settings.model`. Naming the workflow's own id is a warning. |
 | `budget` | agent, grader | `timeoutMs` and `maxParks`: [Budgets and `on_error`](#budgets-and-on_error). |
 | `on_error` | all | The state a failure of this state routes to. |
-| `transitions` | all | `[{ to, description, type? }]`. A state with none is terminal. |
+| `transitions` | all | `[{ to, description?, type? }]`. A state with none is terminal. `description` may be left out only on an agent state's lone edge into another agent state. |
 | `evidence`, `approvers` | human | Paths always shown in the decision record; who decides (informational). |
 | `metadata` | all | Host data, never read. |
 
@@ -237,14 +237,29 @@ code state runs at once and may send the session straight back, or the session e
 transition's `type`, other than `none`, is shown too. Nothing else of the target is
 disclosed: not its title, summary, instructions, script or transitions.
 
-So every transition needs a `description`, a non-empty string, whatever the state's
-type. It is all the agent learns about the transition. Write it for a reader standing in
-the source state:
+So a transition needs a `description`, a non-empty string. It is all the agent learns
+about the transition. Write it for a reader standing in the source state:
 
 - Say **when** to take it: `The refund is over $50, or the customer has asked twice.`
 - Never say **where** it goes: `Go to refund-review.` tells this reader nothing.
 - Keep routing conditions out of the target. A target's `summary` and `instructions`
   never reach the state that routes into it.
+
+**A lone edge between agent states may go undescribed.** When an agent state with
+`instructions` has a single transition, into another agent state, write `- to: send` and
+no description, never a filler like `Proceed`. The agent is told to take it as soon as
+the state's instructions are done, without asking anyone whether to move on:
+
+```
+Transition — the only one out of this state, with no condition of its own: take it with `archmax_advance` as soon as this state's instructions are done, without asking anyone whether to move on.
+- to `send` (terminal)
+```
+
+So the instructions are the whole condition. When moving on waits for something they do
+not say (a reply, an approval), describe the edge. The description stays required on one
+of several edges, on every edge of a human, grader or code state, on an edge into one of
+those (say what must be ready), on an edge back into its own state, and out of a state
+with no `instructions`.
 
 At a human state the description is also the button's label, and `type` (`approve`,
 `reject`, `refine`, `none`) labels the choice. Each labelled type maps to one target. A

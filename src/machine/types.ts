@@ -44,8 +44,11 @@ export type TransitionType = z.infer<typeof transitionTypeSchema>;
  * One outgoing edge of a state. The agent is disclosed the active state's edges
  * and nothing else of the graph, so `description` is what it routes on — write it
  * for a reader standing in the source state, which knows nothing of the target
- * ("Refunds over $50", never "go to refund-review"). Every edge carries one; at
- * a human state it is also the decision's button label.
+ * ("Refunds over $50", never "go to refund-review"). At a human state it is also
+ * the decision's button label. Only an agent state's single edge into another
+ * agent state may go **undescribed** (absent or blank), and only when the state
+ * has `instructions`: there is nothing to choose, and the agent takes the edge
+ * as soon as those instructions are done.
  */
 export type MachineTransition = z.infer<typeof machineTransitionSchema>;
 

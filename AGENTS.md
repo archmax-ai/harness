@@ -77,9 +77,10 @@ the workspace root, process env wins. Keys: `ARCHMAX_API_BASE_URL`, `ARCHMAX_API
 A workflow is `workflows/<slug>/workflow.yaml` plus an optional `WORKFLOW.md` (plain Markdown
 prose appended after the rendered graph section; frontmatter there is a `competing-machines` load
 error). The schema is **one strict zod schema**, `src/machine/spec-schema.ts`: every root and
-state key, enums, path grammars, a non-empty `description` on every transition of every state
-type, and `refineSpec` for cross-references (targets exist, one `manual` start, trigger
-ownership, `${{…}}` guard references). Warnings live in `src/machine/lint-spec.ts`; both the
+state key, enums, path grammars, and `refineSpec` for cross-references (targets exist, one
+`manual` start, trigger ownership, `${{…}}` guard references, a non-empty `description` on every
+transition except an agent state's lone edge into another agent state out of a state with
+`instructions`). Warnings live in `src/machine/lint-spec.ts`; both the
 loader and `validate` run both. An unknown key is a load
 error naming the key. The one loose spot is `triggers.<id>` (host-extensible). `WorkflowMachine`
 (`src/machine/machine.ts`) is the compiled object the runtime consults. `src/validate/` adds what

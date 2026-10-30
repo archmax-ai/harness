@@ -272,8 +272,8 @@ users, the packaged copy as the version-matched path, and a checkout as the deve
 The skill SHALL teach, from the current code: the two-file workflow (`workflow.yaml` as the strict,
 authoritative machine; `WORKFLOW.md` as prose with no frontmatter) and the spec-rendered graph
 section; every root and state key of the schema, slugs versus titles, `disabled`, state budgets
-(`timeoutMs` and `maxParks`), `on_error`, transitions with the `description` every edge carries
-and their types, the four state types (`agent`, `human`, `grader`,
+(`timeoutMs` and `maxParks`), `on_error`, transitions with their `description` (left out only on
+an agent state's lone edge into another agent state) and their types, the four state types (`agent`, `human`, `grader`,
 `code`) and the keys each reads, human states, terminal states; the `metadata` slot at the
 root and on a state (free-form host data the runtime never reads); triggers (`manual`, several
 per state, the state's `triggers` mapping keyed by trigger id with `session`, `message`,
@@ -309,9 +309,11 @@ the session with `archmax_raise`; that it has no iteration budget, so instructio
 send-backs count them from the history's trail; that a grader belongs on work the agent hands on
 (a report, a recorded decision), not on a live answer, since everything the agent says in a turn
 is that turn's reply, a draft sent back included; that approving into a terminal code state ends
-the session with no further model call; and that no sandbox context has `task()`); that every
-transition, whatever its state's type, carries a non-empty `description` saying when to take it,
-the only thing the agent is told about the edge; that a chain of code states makes no model call;
+the session with no further model call; and that no sandbox context has `task()`); that a
+transition carries a non-empty `description` saying when to take it, the only thing the agent is
+told about the edge, except an agent state's single edge into another agent state out of a state
+with `instructions`, which needs none (never a filler like "Proceed") because the agent takes it
+as soon as those instructions are done; that a chain of code states makes no model call;
 that a turn, a runaway cycle of automated states included, is bounded by LangGraph's recursion
 limit (`DEFAULT_RECURSION_LIMIT`, 400, unless the caller sets one), a grader's run by the same
 limit and its `budget.timeoutMs`, and that neither a state nor the workflow declares a count of

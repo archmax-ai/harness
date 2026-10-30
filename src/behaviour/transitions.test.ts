@@ -111,6 +111,38 @@ describe("archmax_advance", () => {
   });
 });
 
+describe("a lone undescribed edge", () => {
+  // `draft` leaves its one edge into `send` undescribed: nothing to choose, and
+  // no condition but its own instructions.
+  const spec = {
+    runtime: { engine: "archmax-harness", version: "3" },
+    states: {
+      draft: { triggers: { manual: null }, instructions: "Draft the reply.", transitions: [{ to: "send" }] },
+      send: { title: "Send it", instructions: "Send the reply with send_email." },
+    },
+  };
+
+  it("tells the agent to take it once the state's instructions are done, and it can be taken", async () => {
+    const { agent, events, model } = await assemble(workspaceWith(spec), {
+      turns: [advanceTo("send"), { reply: "sent" }],
+    });
+    await turn(agent, "s1", "go");
+
+    const system = (model.calls[0]?.parts.find((message) => message.type === "system")?.parts ?? [])
+      .map((part) => String(part.text))
+      .join("\n");
+    expect(system).toContain(
+      "Transition — the only one out of this state, with no condition of its own: take it with " +
+        "`archmax_advance` as soon as this state's instructions are done, without asking anyone " +
+        "whether to move on.\n- to `send` (terminal)",
+    );
+    // Nothing of the target: its title and instructions stay out.
+    expect(system).not.toContain("Send it");
+    expect(system).not.toContain("send_email");
+    expect(advances(events)).toEqual([{ from: "draft", to: "send", reason: "moving to send" }]);
+  });
+});
+
 describe("terminal states", () => {
   it("ends the run when the agent finishes in a state with no transitions", async () => {
     const { agent, events } = await assemble(workspaceWith(linearSpec()), {

@@ -11,8 +11,8 @@ as it is today; the guides themselves describe only the present. Every release a
 
 ## 2.0.0
 
-A smaller schema and a smaller first example. Upgrading from 1.0.0 means deleting `maxTurns`,
-describing every edge and renaming two imports, in [three steps](#migrating-from-10).
+A smaller schema and a smaller first example. Upgrading from 1.x means deleting `maxTurns`,
+describing the edges that need it and renaming two imports, in [three steps](#migrating-from-1x).
 
 ### Breaking changes
 
@@ -22,10 +22,15 @@ describing every edge and renaming two imports, in [three steps](#migrating-from
   own run is bounded by the same limit and by its `budget.timeoutMs`. A state's `budget` keeps
   `timeoutMs` and `maxParks`, and `maxTurns` is an unknown key. See
   [`budget`](/reference/machine-spec/#budget).
-- **Every edge has a description.** `transitions[].description` is a required, non-empty string on
-  every state, whatever its type, as it was before 0.8.0. The undescribed edge, which routed on its
-  target's instructions, is gone, and so are the special rules it needed for human, grader and code
-  states. See [`transitions`](/reference/machine-spec/#transitions-the-only-part-of-the-graph-the-agent-sees).
+- **An edge is described wherever it is chosen.** The undescribed edge of 0.8.0, which routed on
+  its target's instructions, is gone. An edge may now go undescribed only as an agent state's
+  single transition into another agent state, out of a state with `instructions`: there is nothing
+  to choose, the agent takes it as soon as those instructions are done without asking anyone
+  whether to move on, and nothing of the target is shown. Every other edge needs a non-empty
+  `description`: one of several, any edge of a human, grader or code state (a code state's
+  included, which 0.8.0 exempted), an edge into one, and an edge back into its own state. Each
+  refusal names the edge and says why. See
+  [a lone edge between agent states](/reference/machine-spec/#a-lone-edge-between-agent-states).
 - **One tool table per state type.** `@archmax-ai/harness/spec` exports `STATE_TYPE_TOOLS`, each
   state type's `controls` and `withheld` tools, and `TASK_TOOL`. `ALWAYS_ALLOWED_TOOLS` and
   `UNGRANTABLE_TOOLS` are removed. What each state is offered is unchanged. See
@@ -35,6 +40,11 @@ describing every edge and renaming two imports, in [three steps](#migrating-from
 
 - **A note reads as one sentence.** The note a grader or a code state leaves on a move added a full
   stop after a reason that already ended in one.
+
+### Dependencies
+
+- **`just-bash` is no longer installed.** Nothing in the package imported it, so an install pulls
+  in 69 fewer packages.
 
 ### Examples and documentation
 
@@ -47,12 +57,14 @@ describing every edge and renaming two imports, in [three steps](#migrating-from
   skill is a third of its former length: one reference per task, one code-state script and one
   grader.
 
-### Migrating from 1.0
+### Migrating from 1.x
 
 1. **Delete every `budget.maxTurns`.** Where a turn legitimately needs more steps, pass a larger
    `recursionLimit` in the config of `agent.workflow.send(sessionId, input, config)`.
-2. **Describe every edge.** Give each transition without a `description` one that says when to take
-   it, such as "Refunds over $50", including a code state's transitions.
+2. **Describe the edges that need it.** Run `archmax validate`: each undescribed edge it refuses
+   needs a `description` saying when to take it, such as "Refunds over $50", a code state's
+   transitions included. An agent state's single edge into another agent state may stay
+   undescribed.
 3. **Rename the tool sets.** Replace `ALWAYS_ALLOWED_TOOLS.has(name)` with
    `STATE_TYPE_TOOLS.agent.controls.has(name)`, and `UNGRANTABLE_TOOLS.has(name)` with
    `name === TASK_TOOL`.

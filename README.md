@@ -126,8 +126,8 @@ states:
 ```
 
 Each state is one step of the process, and the agent only ever sees the step it is in: that
-state's instructions, its tools and the transitions out of it, each with a description to choose
-by. It moves on by calling `archmax_advance`, and the runtime refuses any edge the state does not
+state's instructions, its tools and the transitions out of it, each described so it can choose
+between them. It moves on by calling `archmax_advance`, and the runtime refuses any edge the state does not
 declare. A state with no transitions, like `send`, is where the session ends.
 
 Two of the states run without the agent. **`check-decision` is a code state**: the runtime runs

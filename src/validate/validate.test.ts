@@ -1480,7 +1480,28 @@ describe("validateWorkflow", () => {
   // Root `instructions` are standing prose for every turn; they cannot say when
   // one edge is the right one. The description is the only per-edge routing text
   // the agent gets, so the schema requires it however well the root is written.
-  it("requires a description on every edge, whatever the target or the root instructions say", async () => {
+  it("lets an agent state's lone edge into another agent state go undescribed", async () => {
+    const root = makeWorkspace({
+      "workflows/p/workflow.yaml": workflowFile(
+        [
+          "instructions: Cite an order id in every answer.",
+          "states:",
+          "  start:",
+          "    triggers: { manual: }",
+          "    instructions: Find the order the customer means.",
+          "    transitions:",
+          "      - to: done",
+          "  done:",
+          "    instructions: Say goodbye.",
+        ].join("\n"),
+      ),
+    });
+    const result = await validateWorkflow({ rootDir: root, workflow: "p" });
+    expect(result.diagnostics.filter((d) => d.field?.includes("transitions"))).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it("requires a description on a lone edge out of a state with no instructions, whatever the root instructions say", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
@@ -1501,7 +1522,7 @@ describe("validateWorkflow", () => {
       (d) => d.field === "states.start.transitions.0.description",
     );
     expect(diagnostic?.severity).toBe("error");
-    expect(diagnostic?.message).toContain("must be a non-empty string");
+    expect(diagnostic?.message).toContain("'start' declares no instructions");
   });
 
   it("fails when the workflow slug is not kebab-case", async () => {

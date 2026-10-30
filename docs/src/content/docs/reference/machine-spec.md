@@ -150,12 +150,12 @@ written with no value (`done:`) is a terminal state with no keys.
 
 ### `transitions`: the only part of the graph the agent sees
 
-Each entry is `{ to, description, type? }`:
+Each entry is `{ to, description?, type? }`:
 
 | Key | Value |
 | --- | --- |
 | `to` | a declared state's slug |
-| `description` | **required**, a non-empty string: when to take this edge. At a human state it is also the label of the decision's button. |
+| `description` | a non-empty string: when to take this edge. At a human state it is also the label of the decision's button. Required on every edge but [a lone one between agent states](#a-lone-edge-between-agent-states). |
 | `type` | optional: `approve`, `reject`, `refine` or `none` |
 
 The agent is told the active state's outgoing edges and nothing else of the
@@ -170,11 +170,11 @@ transitions:
     description: Go to the orders-question state.                           # avoid: where
 ```
 
-Every edge carries a description, whatever its state's type. A missing, empty or
-blank one is a load error naming the edge:
+An edge needs a description wherever someone chooses by it. A missing, empty or
+blank one there is a load error naming the edge and saying why:
 
 ```
-states.triage.transitions.0.description: must be a non-empty string: it is the only thing the agent is told about this edge — no attribute of the target state is disclosed to it — so an undescribed edge cannot be chosen. Say when to take it (e.g. 'Refunds over $50'), not where it goes.
+states.triage.transitions.1.description: must be a non-empty string here: 'triage' has 2 transitions, and the agent chooses between them by their descriptions; only a state's single transition may go without one. Say when to take it (e.g. 'The customer confirmed the address').
 ```
 
 Each edge renders as one line of the active state's prompt: the target's slug,
@@ -200,6 +200,47 @@ Nothing else of the target reaches the agent: not its `title`, `summary`,
 `instructions`, `script`, `model`, `budget` or transitions, and no state that no
 edge from here reaches. See
 [what the agent sees of the graph](/guides/workflow-machine/#what-the-agent-sees-of-the-graph).
+
+#### A lone edge between agent states
+
+When an agent state has `instructions` and a single transition, into another agent
+state, the agent has nothing to choose: it moves on once the state's work is done.
+Leave that edge undescribed instead of writing "Proceed":
+
+```yaml
+states:
+  draft:
+    instructions: Draft the reply to the customer in scratchpad/reply.md.
+    transitions:
+      - to: send                 # the only way on: no description needed
+  send:
+    tools: { allow: [send_email] }
+    instructions: Send scratchpad/reply.md to the customer with send_email.
+```
+
+The agent is told it may move on without anyone's go-ahead, and nothing of the
+target:
+
+```
+Transition — the only one out of this state, with no condition of its own: take it with `archmax_advance` as soon as this state's instructions are done, without asking anyone whether to move on.
+- to `send` (terminal)
+```
+
+So the state's instructions are the whole condition. Where moving on waits for
+something they do not say, such as a person's reply or approval, describe the edge
+("The customer confirmed the address"), or route through a human state.
+
+The description stays required wherever someone chooses by it:
+
+| The edge | Why it needs a description |
+| --- | --- |
+| one of a state's two or more transitions | the agent chooses between them by their descriptions |
+| out of a human state | it is the label of the person's button |
+| out of a grader state | the grader chooses its edge by the descriptions |
+| out of a code state | its script routes, and the description is what a reader of the spec and the trail goes by |
+| into a human, grader or code state | it hands the session to a person or a check: say what must be ready for it |
+| back into its own state | it would loop with no condition |
+| out of a state with no `instructions` | the edge is taken once the instructions are done, and there are none |
 
 ### `triggers`
 

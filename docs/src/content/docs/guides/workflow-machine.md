@@ -62,12 +62,27 @@ Transitions — choose one with `archmax_advance` when this state's work is done
 - to `orders-question` — The customer is asking about order status, shipping or tracking.
 ```
 
-So **every transition carries a `description`**, and it is all the agent learns about the edge.
+So **a transition carries a `description`**, and it is all the agent learns about the edge.
 Write it for a reader standing in the *source* state, who cannot see the target, and say *when* to
 take the edge: "The refund is over $50" routes, where "go to refund-review" leaves the agent
 guessing. A condition the target's own instructions state belongs in the description too, because
 the agent reads those instructions only once it is there. An edge without a description, or with a
-blank one, fails to load.
+blank one, fails to load, with one exception.
+
+**A lone edge between agent states may go undescribed.** When an agent state with `instructions`
+has a single transition, into another agent state, there is nothing to choose and no condition to
+state: leave the description out rather than writing "Proceed". The agent is told to take the edge
+as soon as the state's instructions are done, without asking anyone whether to move on:
+
+```text
+Transition — the only one out of this state, with no condition of its own: take it with `archmax_advance` as soon as this state's instructions are done, without asking anyone whether to move on.
+- to `send` (terminal)
+```
+
+Describe it anyway when moving on waits for something the instructions do not say, such as a
+person's reply. Everywhere else the description stays required: between several edges, on a
+human, grader or code state's edges, and on an edge into one. See
+[a lone edge between agent states](/reference/machine-spec/#a-lone-edge-between-agent-states).
 
 An edge's line marks a target that is a human decision node, a grader, a code state or terminal,
 because each changes the call or what follows it. `evidence` may be attached only when advancing

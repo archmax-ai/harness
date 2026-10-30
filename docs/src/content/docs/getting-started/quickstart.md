@@ -96,8 +96,10 @@ states:
 
 Each state is one step of the process. The agent sees only the step it is in: that state's
 instructions, its tools and the transitions out of it. It moves on by calling `archmax_advance`,
-and the runtime refuses any edge the state does not declare. Every transition carries a
-`description`, because that sentence is all the agent learns about the edge.
+and the runtime refuses any edge the state does not declare. Each transition carries a
+`description`, because that sentence is all the agent learns about the edge. The one exception is
+an agent state's only edge into another agent state, which may go without one: the agent then
+moves on as soon as the state's instructions are done.
 
 A few lines carry most of the governance:
 

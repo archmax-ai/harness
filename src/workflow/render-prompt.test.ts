@@ -202,6 +202,48 @@ describe("renderStateGraph — the volatile half", () => {
     }
   });
 
+  /**
+   * A lone undescribed edge has nothing to choose and no condition of its own:
+   * the agent is told to take it once the state's instructions are done, and
+   * not to wait for a go-ahead, and still nothing of the target is disclosed.
+   */
+  it("introduces a lone undescribed edge as the way on once the state's instructions are done", () => {
+    const spec: MachineSpec = {
+      states: {
+        draft: { triggers: { manual: null }, instructions: "Draft the reply.", transitions: [{ to: "send" }] },
+        send: { title: "Send it", instructions: "Send the reply with send_email." },
+      },
+    };
+    expect(graph(spec, "draft")).toBe(
+      [
+        "Transition — the only one out of this state, with no condition of its own: take it with " +
+          "`archmax_advance` as soon as this state's instructions are done, without asking anyone " +
+          "whether to move on.",
+        "- to `send` (terminal)",
+      ].join("\n"),
+    );
+    expect(renderTransitions(WorkflowMachine.fromSpec(spec), "draft")).toEqual(["- to `send` (terminal)"]);
+  });
+
+  it("introduces a lone described edge like any other", () => {
+    const spec: MachineSpec = {
+      states: {
+        draft: {
+          triggers: { manual: null },
+          instructions: "Draft the reply.",
+          transitions: [{ to: "send", description: "The customer approved the draft." }],
+        },
+        send: { instructions: "Send the reply." },
+      },
+    };
+    expect(graph(spec, "draft")).toBe(
+      [
+        "Transitions — choose one with `archmax_advance` when this state's work is done:",
+        "- to `send` (terminal) — The customer approved the draft.",
+      ].join("\n"),
+    );
+  });
+
   it("marks a terminal target so the work is finished before the call", () => {
     expect(graph(SPEC, "identify-case")).toContain("(terminal) — Order questions.");
   });

@@ -263,17 +263,22 @@ second reference to the former slug is left behind.
 
 ### Requirement: Transitions, terminal states and error routes
 
-A state's `transitions` SHALL be a list of `{ to, description, type? }` where `to` names a
-declared state, `description` is a non-empty string, and `type` is one of `approve`, `reject`,
-`refine`, `none`. Every edge SHALL carry a `description`, whatever the type of the state it leaves
-(agent, human, grader or code) and of the state it enters: the description is the only thing the
-agent is told about the edge (see the `governance` capability), and at a human state it is also
-the decision's button label. An absent, empty, whitespace-only or non-string `description` SHALL
-be a load error addressed to `states.<slug>.transitions.<index>.description`, which names the
-edge. The error SHALL say that the description is the only thing the agent is told about the
-edge, that no attribute of the target state is disclosed to it, and what to write instead: when to
-take the edge (e.g. 'Refunds over $50'), not where it goes. A target's `instructions` SHALL never
-stand in for a description. A state with no transitions SHALL be terminal: the
+A state's `transitions` SHALL be a list of `{ to, description?, type? }` where `to` names a
+declared state, `description` is a string, and `type` is one of `approve`, `reject`, `refine`,
+`none`. The description is the only thing the agent is told about the edge (see the `governance`
+capability), and at a human state it is also the decision's button label. A non-string
+`description` SHALL be a load error. An absent, empty or whitespace-only one makes the edge
+**undescribed**, which SHALL load only where nothing is chosen by it: the edge is the **single**
+transition of an **agent** state that declares non-blank `instructions`, and it leads into
+**another agent** state. Every other undescribed edge SHALL be a load error addressed to
+`states.<slug>.transitions.<index>.description`, which names the edge, saying why this edge needs
+one and what to write: the state has several transitions, and the agent chooses between them by
+their descriptions; the state is a human state (the description is the person's button label), a
+grader state (the grader chooses by the descriptions) or a code state (the description is what a
+reader of the spec and the trail goes by); the target is a human, grader or code state, to which
+the edge hands the session; the edge leads back into its own state; or the state declares no
+`instructions`, which are the undescribed edge's whole condition. A target's `instructions`
+SHALL never stand in for a description. A state with no transitions SHALL be terminal: the
 session completes when the state's work finishes there — the agent's last turn in an agent state,
 the script's return in a code state — and `archmax_advance` is not disclosed or offered in it.
 `on_error`, when declared, SHALL name a declared state; a state's failure (an exhausted budget, or
@@ -281,12 +286,26 @@ an automated state that errors, times out or finishes without deciding) routes t
 without one ends the session rejected. Transitions carry no preconditions of their own: an edge is
 decided only by its existence and the state's `requires`, whoever takes it.
 
-#### Scenario: Missing description rejected
+#### Scenario: A lone edge between agent states may go undescribed
 
-- **WHEN** a state declares `transitions: [{ to: review }]`, or a `description` that is empty,
-  whitespace-only or not a string, whatever `review` declares (non-blank `instructions` included)
+- **WHEN** an agent state with `instructions` declares `transitions: [{ to: send }]`, or a
+  `description` that is empty or whitespace-only, and `send` is an agent state
+- **THEN** the spec loads, and the agent is told to take the edge as soon as the state's
+  instructions are done, without asking anyone whether to move on
+
+#### Scenario: Missing description rejected where an edge is chosen
+
+- **WHEN** an undescribed edge is one of its state's two or more transitions, leaves a human,
+  grader or code state, enters a human, grader or code state, leads back into its own state, or
+  leaves a state with no `instructions`
 - **THEN** loading fails with one error addressed to that transition's `description` field, saying
-  that it is the only thing the agent is told about the edge and what to write instead
+  why this edge needs a description and what to write instead
+
+#### Scenario: A non-string description rejected
+
+- **WHEN** a transition's `description` is a number or a list
+- **THEN** loading fails with an error addressed to that transition's `description` field, on
+  whichever edge it is
 
 #### Scenario: Dangling targets rejected
 
@@ -326,8 +345,8 @@ A `type: human` state parks the session for a person's decision, so it SHALL dec
 labeled `type` (`approve`/`reject`/`refine`), and no transition to itself. These SHALL be
 **lint errors**: the runtime tolerates them and the spec still loads, while `archmax validate`
 fails on them. The shape rules a human state shares with every state — the `type` enum, the
-transition `type` enum, an existing `to`, a non-empty `description` on every transition — remain
-schema errors. On a human state the description is the decision's button label for a person, so a
+transition `type` enum, an existing `to`, a non-empty `description` on every transition of a
+state that is not an agent state — remain schema errors. On a human state the description is the decision's button label for a person, so a
 human state's decision button labels are guaranteed by the schema rather than by lint. The
 decision record SHALL be built from the state's `title`, `instructions`, declared `evidence`
 (leading, deduplicated with any evidence the advancing call attached) and its transitions'
@@ -336,8 +355,9 @@ decision record SHALL be built from the state's `title`, `instructions`, declare
 #### Scenario: Human state without a button label
 
 - **WHEN** a `type: human` state declares a transition without a `description`
-- **THEN** loading fails under the strict schema with the error every edge without one draws,
-  addressed to that transition's `description`, even though the target declares `instructions`
+- **THEN** loading fails under the strict schema, addressed to that transition's `description`
+  and naming it the label of the person's button, even when it is the state's only transition
+  and the target is an agent state that declares `instructions`
 
 #### Scenario: A leftover hook key on a human state
 

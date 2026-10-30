@@ -213,26 +213,29 @@ export const transitionTypeSchema = z.enum(["approve", "reject", "refine", "none
  * The agent is disclosed the active state's edges and nothing else of the graph,
  * so an edge's `description` is the only thing it is told about the edge — no
  * attribute of the target state is disclosed — and at a human state it is also
- * the decision's button label. So every edge carries one, whatever the state's
- * type: an edge without one cannot be chosen, and a reader of the spec or the
- * trail has nothing to go on either. The issue path
+ * the decision's button label. A non-string is a typo and refused here; an
+ * absent or blank one is an **undescribed** edge, which {@link refineSpec}
+ * accepts only where there is nothing to choose and no condition to say (see
+ * {@link undescribedEdgeIssue}). The issue path
  * (`states.<slug>.transitions.<index>.description`) names the edge.
  */
 const TRANSITION_DESCRIPTION =
-  `must be a non-empty string: it is the only thing the agent is told about this edge — no ` +
-  `attribute of the target state is disclosed to it — so an undescribed edge cannot be chosen. ` +
-  `Say when to take it (e.g. 'Refunds over $50'), not where it goes.`;
+  `must be a string: it is the only thing the agent is told about this edge, so say when to ` +
+  `take it (e.g. 'Refunds over $50'), not where it goes.`;
 
 /** @see MachineTransition */
 export const machineTransitionSchema = z
   .object({
     to: nonEmptyString,
-    description: z
-      .string({ error: TRANSITION_DESCRIPTION })
-      .refine((value) => value.trim() !== "", TRANSITION_DESCRIPTION),
+    description: z.string({ error: TRANSITION_DESCRIPTION }).optional(),
     type: transitionTypeSchema.optional(),
   })
   .strict();
+
+/** Whether an edge carries no description: absent, empty or blank. */
+export function isUndescribed(transition: { description?: string }): boolean {
+  return !transition.description?.trim();
+}
 
 /** @see StateBudget */
 export const stateBudgetSchema = z
@@ -896,6 +899,72 @@ function lockIssues(states: Spec["states"]): SpecSchemaIssue[] {
   return issues;
 }
 
+type StateTypeName = z.infer<typeof stateTypeSchema>;
+
+/** The type a state declares, `agent` when it declares none. */
+function stateTypeOf(state: { type?: StateTypeName } | undefined): StateTypeName {
+  return state?.type ?? "agent";
+}
+
+/** Why an edge of a state that is not an agent state needs a description, and what to write. */
+const NON_AGENT_EDGE: Record<Exclude<StateTypeName, "agent">, (slug: string) => string> = {
+  human: (slug) =>
+    `'${slug}' is a human state, where an edge's description is the label of the person's ` +
+    `button. Say what choosing it means (e.g. 'Approve the refund').`,
+  grader: (slug) =>
+    `'${slug}' is a grader state, which chooses its edge by the descriptions. Say when to take ` +
+    `it (e.g. 'The email is ready to send').`,
+  code: (slug) =>
+    `'${slug}' is a code state: its script routes, and the description is what a reader of the ` +
+    `spec and the trail goes by. Say when the script takes it (e.g. 'The decision matches the policy').`,
+};
+
+/** What an edge into a state that is not an agent state hands the session to. */
+const HANDED_TO: Record<Exclude<StateTypeName, "agent">, string> = {
+  human: "a person's decision",
+  grader: "a grader's check",
+  code: "a code state's check",
+};
+
+/**
+ * Why `slug`'s undescribed edge at `index` is refused, or `undefined` when it
+ * stands. An edge may go undescribed only where the agent has nothing to choose
+ * and nothing to wait for beyond the state's own work: it is the **only** edge
+ * of an **agent** state that has `instructions`, and it leads into **another
+ * agent** state. The agent takes it as soon as those instructions are done, and
+ * is told so in the edge's place. Every refusal says what to write instead.
+ */
+function undescribedEdgeIssue(states: Spec["states"], slug: string, index: number): string | undefined {
+  const state = states[slug]!;
+  const transitions = state.transitions ?? [];
+  const to = transitions[index]!.to;
+  const type = stateTypeOf(state);
+  const target = stateTypeOf(states[to]);
+  const refuse = (why: string) => `must be a non-empty string here: ${why}`;
+  const say = `Say when to take it (e.g. 'The customer confirmed the address').`;
+  if (type !== "agent") return refuse(NON_AGENT_EDGE[type](slug));
+  if (transitions.length > 1) {
+    return refuse(
+      `'${slug}' has ${transitions.length} transitions, and the agent chooses between them by their ` +
+        `descriptions; only a state's single transition may go without one. ${say}`,
+    );
+  }
+  if (to === slug) return refuse(`this edge leads back into '${slug}' itself, so it needs a condition. ${say}`);
+  if (target !== "agent") {
+    return refuse(
+      `'${to}' is a ${target} state, so this edge hands the session to ${HANDED_TO[target]}. Say ` +
+        `what must be ready for it (e.g. 'The reply is drafted').`,
+    );
+  }
+  if (!state.instructions?.trim()) {
+    return refuse(
+      `'${slug}' declares no instructions, and an undescribed edge is taken once they are done. ` +
+        `Give '${slug}' instructions, or say when to take this edge.`,
+    );
+  }
+  return undefined;
+}
+
 export function refineSpec(spec: Spec): SpecSchemaIssue[] {
   const issues: SpecSchemaIssue[] = [];
   const issue = (path: string, message: string) => issues.push({ path, message });
@@ -916,7 +985,11 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
           `${at}.transitions.${index}.to`,
           `State '${slug}' transitions to undefined state '${transition.to}'`,
         );
+        return;
       }
+      if (!isUndescribed(transition)) return;
+      const refusal = undescribedEdgeIssue(states, slug, index);
+      if (refusal) issue(`${at}.transitions.${index}.description`, refusal);
     });
     if (state.on_error !== undefined && !(state.on_error in states)) {
       issue(`${at}.on_error`, `State '${slug}' on_error routes to undefined state '${state.on_error}'`);

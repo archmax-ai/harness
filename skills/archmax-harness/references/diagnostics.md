@@ -13,7 +13,8 @@ every warning you can.
 | `Unrecognized key: "budget"` at the root | Delete it: the `recursionLimit` bounds a turn. |
 | `Unrecognized key: "before"` or `"after"` on a state, `"extensions"` at the root | Rewrite each check as a state: a `before` check as a code state in front of the state, an `after` check as a code state behind it, a rubric as a grader state behind it. Count rounds on the trail instead of `max_iterations`. Move `hooks/*.js` to `scripts/` and rewrite them to the code-state contract. |
 | `Unrecognized key` for root `name`, `description`, `policy` | `title`, `instructions`, `tools.forbid_always`. A root `skills.allow` becomes `skills.allow_always` plus the state lists. |
-| `transitions.<i>.description`: must be a non-empty string: it is the only thing the agent is told about this edge … | Add the condition under which the transition is taken. Say *when* (`The refund is over $50`), not *where*. Every transition needs one, whatever the state's type. |
+| `transitions.<i>.description`: must be a non-empty string here: … | Add the condition under which the transition is taken. Say *when* (`The refund is over $50`), not *where*. The message says why this edge needs one: it is one of several, it leaves a human, grader or code state, it hands the session to one, it loops back, or its state has no `instructions`. Only an agent state's lone edge into another agent state may go without. |
+| `transitions.<i>.description`: must be a string | A number or a list where the description goes: quote it, or remove it from a lone edge between agent states. |
 | workflow slug or state key not kebab-case, or empty | Rename it, and update every `to`, `on_error` and `reachedState`. |
 | transitions to, or `on_error` routes to, an undefined state | Fix the slug, or add the state. |
 | no start state, or several states declare one trigger | Exactly one state declares each trigger id under `triggers:`. |

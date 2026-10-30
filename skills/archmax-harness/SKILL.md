@@ -56,9 +56,11 @@ Design the whole file set first, write each file once, then verify.
 1. **Sketch the graph.** Name the states (kebab-case slugs). Give the entry state
    `triggers: { manual: }`, plus any host trigger that enters there. A state with
    no transitions is terminal. For every transition, write the condition under which
-   it is taken: that is its `description`, which every transition must have. It is
-   all the agent learns about the transition, so say *when* to take it, never *where*
-   it goes.
+   it is taken: that is its `description`. It is all the agent learns about the
+   transition, so say *when* to take it, never *where* it goes. The one exception: an
+   agent state's single edge into another agent state needs none, since the agent
+   takes it once the state's instructions are done. Leave it out; never write
+   "Proceed".
 2. **Put each check on the graph.** A deterministic check is a code state; a
    judgment (tone, completeness) is a grader state. Give each one a transition
    onward, one back to the work it checks, and an `on_error`. The patterns are in

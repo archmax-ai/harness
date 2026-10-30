@@ -1148,9 +1148,13 @@ read. Every call SHALL still be decided by the kernel whether or not the mount w
 The graph SHALL be disclosed the way the tool surface is: only from where the agent stands. On
 every model call of the session's agent the runtime SHALL disclose the active state's **outgoing
 transitions and nothing else of the graph** — one line per edge carrying the target's slug, its
-declared `type` when not `none`, and its `description`, which every edge carries (see the
-`workflow-spec` capability). Beyond the target's slug and the markers below, the description
-SHALL be the only thing the agent is told about an edge. No other state's `title`, `summary`,
+declared `type` when not `none`, and its `description` (see the `workflow-spec` capability).
+Beyond the target's slug and the markers below, the description SHALL be the only thing the agent
+is told about an edge. A state's lone **undescribed** edge, which the schema admits only as an
+agent state's single edge into another agent state, SHALL be introduced instead as the only way
+out of the state, with no condition of its own: to be taken with `archmax_advance` as soon as the
+state's instructions are done, without asking anyone whether to move on. Its line SHALL carry the
+target's slug and markers and nothing else. No other state's `title`, `summary`,
 `instructions`, `model`, `script`, `triggers`, `budget`, `requires` or transitions SHALL reach any
 model call of the session's agent, no state the active state has no edge to SHALL be named, and
 neither SHALL a count of the states. So a state the agent cannot advance to is a state it cannot
@@ -1184,6 +1188,14 @@ A reply-only turn SHALL be disclosed no transitions at all, because it cannot mo
 - **WHEN** the active state declares `- to: refund-review, description: "Refunds over $50."`
 - **THEN** the disclosed line carries that description verbatim, and carries nothing of
   `refund-review`'s own `title`, `summary` or `instructions`
+
+#### Scenario: A lone undescribed edge is taken once the state's work is done
+
+- **WHEN** the active state `draft` declares `instructions` and its single transition
+  `- to: send` with no description, and `send` is an agent state with a `title` and `instructions`
+- **THEN** the disclosed block says the edge has no condition of its own and is to be taken as soon
+  as the state's instructions are done, without asking anyone whether to move on, the edge's line
+  is ``- to `send` `` with its markers, and nothing of `send`'s `title` or `instructions` appears
 
 #### Scenario: A human target is marked, and only that
 
