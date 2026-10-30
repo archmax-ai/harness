@@ -63,9 +63,9 @@ Every resume reads a parked session through these three:
 
 ### Trigger signatures
 
-`SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues`
+`SIGNATURE_TYPES` `SIGNATURE_FORMATS` `SIGNATURE_CONTENTS` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues`
 
-The mapping and the conformance rule every runtime check decides by. They are also
+The mapping and the conformance rule every runtime check decides by, rules included. They are also
 on `@archmax-ai/harness/spec`, as the same bindings, where the section below shows
 a host building a schema from a signature.
 
@@ -88,7 +88,7 @@ Every type the barrel exports. A type reachable from a public signature is itsel
 public, because an exported function is usable only when you can name what it
 returns.
 
-`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureEntry` `SignatureType` `SignatureValueIssue` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnFile` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
+`Agent` `AgentWorkspaceParams` `CreateAgentParams` `DecideOutcome` `DecisionResolution` `DelegatedPark` `DeliverOutcome` `Diagnostic` `GovernanceRule` `IntrospectableStateGraph` `MachineSpec` `MachineState` `MountPrefixes` `MountSpec` `Outcome` `PendingDecision` `PendingInput` `PricingTable` `ReplyOutcome` `ResolvedRuntimeContract` `ResolvedSession` `ResolvedTrigger` `ResolveSessionInput` `ResumePayload` `RuntimeContract` `SendInput` `SessionExit` `SessionOperations` `SessionStore` `SessionSummary` `SignatureContent` `SignatureEntry` `SignatureFormat` `SignatureRuleName` `SignatureRules` `SignatureType` `SignatureValueIssue` `SignatureValueOptions` `TriggerDelivery` `TriggerInput` `TriggerSignature` `TurnFile` `TurnInput` `UsageSummary` `ValidationResult` `WorkflowEventHandler` `WorkflowLifecycleEvent` `WorkflowSurface` `WorkspaceContext`
 
 ## `@archmax-ai/harness/spec`
 
@@ -104,7 +104,7 @@ here for the weight of the import.
 - **Validation:** `validateSpec` `lintSpec` `schemaIssueDiagnostic` `SpecValidation` `Diagnostic` `DiagnosticSeverity`.
 - **Mount grants:** `normalizeMountGrants` `NormalizedMountGrant` `mountNameOf` `mountNameOfPattern`.
 - **Slugs, triggers and variables:** `SLUG_PATTERN` `isSlug` `MANUAL_TRIGGER` `DEFAULT_TRIGGER_ID` `parseSessionPath` `resolveSessionId` `sessionIdForTrigger` `triggerBindings` `stateTriggerIds` `declaredVariableNames` `SessionPath` `SessionPathParse` `TriggerBinding` `TriggerInput` `ResolvedTrigger` `VARIABLE_NAME_PATTERN` `TRIGGER_VARIABLE` `TITLE_VARIABLE` `TITLE_MAX_LENGTH` `hasVariableReference` `parseReferences` `referenceError` `resolvePath` `resolveText` `VariableReference` `VariableStore` `VariableEntry`.
-- **Trigger signatures:** `SIGNATURE_TYPES` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `TriggerSignature` `SignatureValueIssue`.
+- **Trigger signatures:** `SIGNATURE_TYPES` `SIGNATURE_FORMATS` `SIGNATURE_CONTENTS` `normalizeSignature` `signatureForTrigger` `signatureJsonSchema` `signatureValueIssues` `SignatureEntry` `SignatureType` `SignatureRules` `SignatureRuleName` `SignatureFormat` `SignatureContent` `TriggerSignature` `SignatureValueIssue` `SignatureValueOptions`.
 - **Tool names and delegation bounds:** `ARCHMAX_TOOL_PREFIX` `ADVANCE_TOOL` `RESET_TOOL` `WAIT_TOOL` `RAISE_TOOL` `EVAL_TOOL` `RUN_TOOL` `GET_VARIABLES_TOOL` `SET_VARIABLES_TOOL` `NOTE_TOOL` `WORKFLOW_TOOL_PREFIX` `workflowToolName` `workflowSlugFromToolName` `isWorkflowToolName` `isReservedToolName` `HARNESS_CONTROL_TOOLS` `ALWAYS_ALLOWED_TOOLS` `DEFAULT_TOOLS` `UNGRANTABLE_TOOLS` `ReservedToolNameError` `COPY_FILE_TOOL` `MOVE_FILE_TOOL` `REMOVE_FILE_TOOL` `RUNTIME_FILE_TOOLS` `DEFAULT_SUB_WORKFLOW_DEPTH` `DEFAULT_SUB_WORKFLOW_CONCURRENCY`.
 - **Tool paths:** `BUILT_IN_TOOL_PATHS` `PATH_ACCESSES` `ToolPaths` `PathAccess`.
 - **Binary types:** `BINARY_MIME_TYPES` `binaryMimeTypeOf`, Deep Agents' table of the
@@ -208,11 +208,33 @@ if (issues.length > 0) return badRequest(issues.map((issue) => issue.message));
 
 `signatureJsonSchema` yields `{ type: "object", properties, required }`: one property
 per entry in declaration order, every name required, `date`, `date-time` and `file`
-as a string with that `format`, and an untyped entry as `{}`. `signatureValueIssues`
-returns one issue per missing name (`kind: "missing"`) and per value that does not
-conform (`kind: "invalid"`, with the declared `type` and the JSON kind `found`). It
-never coerces, so convert form text before you validate it: the string `"4"` is not
-an `integer`. A map it passes is not refused at the turn boundary for its signature.
+as a string with that `format`, and an untyped entry as `{}`. An entry's
+[rules](/reference/machine-spec/#rules) map to the JSON Schema keywords that express
+them:
+
+| Rule | Property schema |
+| --- | --- |
+| `format: email` | `format: "email"` |
+| `format: url` | `format: "uri"`, `pattern: "^https?://"` |
+| `format: phone` | `pattern: "^\\+[1-9][0-9]{1,14}$"` |
+| `pattern`, `minLength`, `maxLength`, `enum` | the same keywords |
+| `minimum`, `maximum` on `integer` and `number` | the same keywords |
+| `minItems`, `maxItems` | the same keywords |
+| `content` | `contentMediaType`: `text/plain`, `text/markdown` or `text/html` |
+| date bounds, `accept`, `maxSize` | not mapped; the runtime still enforces them |
+
+`signatureValueIssues(entries, values, options?)` returns one issue per missing name
+(`kind: "missing"`) and one per value that does not conform (`kind: "invalid"`, with
+the declared `type` and the JSON kind `found`). A value of the right type that breaks
+a rule is an `invalid` issue too, carrying `rule` (a `SignatureRuleName`): one issue
+per entry, for the first rule broken. `options.now` pins the clock `today` and `now`
+are read against; it defaults to the current time. The function is synchronous, pure
+and browser-safe, and every check is linear in the value's length: a `pattern` runs in
+RE2, never in a backtracking `RegExp`. It never coerces or trims, so convert form text
+before you validate it: the string `"4"` is not an `integer`, and `" a@b.co"` is not
+an email address. A map it passes is not refused at the turn boundary for its
+signature, unless a `file` value names no file the session may read or one over its
+`maxSize`.
 
 ## `@archmax-ai/harness/messages`
 

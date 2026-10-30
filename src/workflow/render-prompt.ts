@@ -22,7 +22,7 @@
  */
 
 import type { WorkflowMachine } from "../machine/machine.js";
-import type { SignatureEntry } from "../machine/signature.js";
+import { signatureRulePhrases, type SignatureEntry } from "../machine/signature.js";
 import { ADVANCE_TOOL, SET_VARIABLES_TOOL } from "../machine/tool-names.js";
 import type { MachineTransition } from "../machine/types.js";
 
@@ -129,9 +129,13 @@ function names(entries: SignatureEntry[]): string {
   return entries.map((entry) => entry.name).join(", ");
 }
 
-/** One entry on its own line: `name (type) — description`, each part only when declared. */
+/**
+ * One entry on its own line: `name (type; rule; rule) — description`, each part
+ * only when declared, the rules in the words a refusal of each would use, so
+ * the agent is told what a value must look like before a write is refused.
+ */
 function renderEntry(entry: SignatureEntry): string {
-  const type = entry.type ? ` (${entry.type})` : "";
+  const type = entry.type ? ` (${[entry.type, ...signatureRulePhrases(entry)].join("; ")})` : "";
   const description = entry.description ? ` — ${entry.description}` : "";
   return `- ${entry.name}${type}${description}`;
 }

@@ -59,9 +59,12 @@ states:
         requires:                #   variables a firing must supply (a caller's required params):
           - order_id             #     a bare name is untyped (any value, null included)
           - { name: due, type: date, description: The day it is due. }  # typed: held at the boundary
+          - { name: contact, type: string, format: email }  # a rule beside the type: held wherever the type is
         returns: [result_file]   #   variables the run guarantees on completion (a caller's result);
                                  #   short of them: a child returns what it set + a `note`; a top-level run is rejected
                                  #   entry types: string integer number boolean date date-time object array file
+                                 #   rules: format pattern minLength maxLength enum content (string); minimum maximum
+                                 #   (integer number date date-time); minItems maxItems (array); accept maxSize (file)
     instructions: >-
       Record the decision in scratchpad/refund.json, then archmax_advance to
       check-policy; never close the case yourself. If a note sends the case

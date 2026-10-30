@@ -108,6 +108,8 @@ describe("createSessionFiles", () => {
       expect(readFileSync(join(root, "sessions", child, "scratchpad", "attachments", "invoice.pdf"))).toEqual(PDF);
       expect(await workspaceEntryKind(backend, "scratchpad/attachments/invoice.pdf")).toBe("missing");
       expect(await files.kind(child, "scratchpad/attachments/invoice.pdf")).toBe("file");
+      expect(await files.size(child, "scratchpad/attachments/invoice.pdf")).toBe(PDF.byteLength);
+      expect(await files.size(child, "scratchpad/attachments/missing.pdf")).toBeUndefined();
       const read = await files.read(child, "scratchpad/attachments/invoice.pdf");
       expect("bytes" in read && Buffer.from(read.bytes)).toEqual(PDF);
       expect(sessionZone.boundSessionId()).toBe("s1");

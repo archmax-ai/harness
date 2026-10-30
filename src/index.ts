@@ -290,6 +290,10 @@ export {
 export {
   /** The types a signature entry may declare. */
   SIGNATURE_TYPES,
+  /** The formats a `string` entry's `format` rule names. */
+  SIGNATURE_FORMATS,
+  /** The kinds of text a `string` entry's `content` rule declares. */
+  SIGNATURE_CONTENTS,
   /** A `requires`/`returns` list as `{ name, type?, description? }` entries. */
   normalizeSignature,
   /** A trigger's normalized signature, read from a spec. */
@@ -302,8 +306,13 @@ export {
 export type {
   SignatureEntry,
   SignatureType,
+  SignatureRules,
+  SignatureRuleName,
+  SignatureFormat,
+  SignatureContent,
   TriggerSignature,
   SignatureValueIssue,
+  SignatureValueOptions,
 } from "./machine/signature.js";
 /** Default workflow slug when none is named. */
 export { DEFAULT_WORKFLOW } from "./workflow/paths.js";

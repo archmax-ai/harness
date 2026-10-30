@@ -236,8 +236,37 @@ seed naming a file that is not there is refused before any model call, and `arch
 host hands a session a file with [`TurnInput.files`](/guides/sessions/#files-handed-to-a-session),
 which places it and seeds the path for you.
 
-The agent sees each typed entry with its type and description beside its name,
-as `total (number) — Refunded amount in EUR.`. The declaration's own
+### Rules on a typed entry
+
+A typed entry may also say what its value must look like, with **rules** spelled
+as JSON Schema's own keywords:
+
+```yaml
+requires:
+  - { name: customer_email, type: string, format: email }
+  - { name: order_id, type: string, pattern: "^A-[0-9]+$", maxLength: 24 }
+  - { name: priority, type: string, enum: [low, normal, high] }
+  - { name: quantity, type: integer, minimum: 1, maximum: 100 }
+  - { name: due, type: date, minimum: today }
+  - { name: invoice, type: file, accept: [.pdf], maxSize: 10MB }
+returns:
+  - { name: contact, type: string, format: email }
+```
+
+Rules are held exactly where types are: `quantity: 101` is refused at the
+boundary as `'quantity' must be at most 100`, the agent's write of
+`contact: "nobody"` is refused as `'contact' must be an email address`, and a
+delegation argument or a child's return that breaks a rule fails the call. Each
+entry reports the first rule it breaks. A `pattern` runs in a linear-time engine,
+so no input can make the check slow. The
+[reference](/reference/machine-spec/#rules) lists every rule, the types it applies
+to, and the declarations that fail to load. `content: markdown` (or `text`,
+`html`) only declares what kind of text a value holds, for a host to act on: the
+runtime checks and sanitises nothing for it.
+
+The agent sees each typed entry with its type, rules and description beside its
+name, as `total (number) — Refunded amount in EUR.` or
+`contact (string; an email address) — …`. The declaration's own
 `description` it never sees: that sentence is for a **caller** (a delegating
 workflow, an MCP client, the reader of a start form), and the session's brief is
 its `instructions`.

@@ -121,6 +121,8 @@ export interface WorkflowMiddlewareOptions {
    * shape alone.
    */
   entryKind?: (path: string) => Promise<"file" | "directory" | "missing">;
+  /** How many bytes the file at a path in the bound session's workspace holds: what a `maxSize` is held to. */
+  entrySize?: (path: string) => Promise<number | undefined>;
 }
 
 /**
@@ -172,6 +174,7 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
         mountPrefixes: opts.mountPrefixes ?? NO_MOUNTS,
         skills: skillPrefixes(opts.skills ?? new Map()),
         kind: opts.entryKind,
+        ...(opts.entrySize ? { size: opts.entrySize } : {}),
       })
     : undefined;
   const files = fileGov
