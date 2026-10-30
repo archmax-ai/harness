@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compilePattern, PATTERN_MAX_LENGTH } from "./signature-pattern.js";
+import { compilePattern, jsonSchemaPatternError, PATTERN_MAX_LENGTH } from "./signature-pattern.js";
 
 function errorOf(pattern: string): string {
   const compiled = compilePattern(pattern);
@@ -31,9 +31,9 @@ describe("compilePattern", () => {
     expect(errorOf("[a-")).toMatch(/error parsing regexp/);
   });
 
-  it("refuses RE2-only syntax a JSON Schema validator cannot read", () => {
+  it("compiles RE2-only syntax for matching, leaving its portability to the parse", () => {
     for (const pattern of ["(?i)abc", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\z"]) {
-      expect(errorOf(pattern), pattern).toContain("a JSON Schema validator cannot read it");
+      expect(compilePattern(pattern).ok, pattern).toBe(true);
     }
   });
 
@@ -55,5 +55,19 @@ describe("compilePattern", () => {
     expect(compiled.test(`${"a".repeat(8000)}!`)).toBe(false);
     expect(compiled.test("a".repeat(8000))).toBe(true);
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("jsonSchemaPatternError", () => {
+  it("refuses RE2-only syntax a JSON Schema validator cannot read", () => {
+    for (const pattern of ["(?i)abc", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\z"]) {
+      expect(jsonSchemaPatternError(pattern), pattern).toContain("a JSON Schema validator cannot read it");
+    }
+  });
+
+  it("takes a pattern both engines read", () => {
+    for (const pattern of ["^A-[0-9]+$", "\\p{L}+", "^[a-z]{2,3}$"]) {
+      expect(jsonSchemaPatternError(pattern), pattern).toBeUndefined();
+    }
   });
 });

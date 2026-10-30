@@ -7,10 +7,12 @@
  * `RegExp`: it is matched by RE2 (`re2js`, pure JavaScript, so the spec subpath
  * stays browser-safe), which is linear in the input whatever the pattern.
  *
- * A pattern must also compile as an ECMA-262 regular expression with the `u`
- * flag — compiled and discarded, never executed — because RE2 accepts syntax
- * (`(?i)`, `\pL`, `\z`, POSIX classes) that a JSON Schema validator reading the
- * same `pattern` would refuse or read differently.
+ * Loading a spec also holds a pattern to ECMA-262 syntax
+ * ({@link jsonSchemaPatternError}), because RE2 accepts syntax (`(?i)`, `\pL`,
+ * `\z`, POSIX classes) that a JSON Schema validator reading the same `pattern`
+ * would refuse or read differently. That is an authoring check, made once at
+ * load, and it stays out of the matching path: no value check ever constructs
+ * a `RegExp` from a pattern.
  */
 import { RE2JS } from "re2js";
 
@@ -25,10 +27,9 @@ const cache = new Map<string, CompiledPattern>();
 const CACHE_LIMIT = 1000;
 
 /**
- * A pattern compiled once and cached: RE2 for matching, ECMA-262 (`u`) as a
- * syntax check only. A failure quotes the engine that refused it. `test` is
- * true when the pattern is found anywhere in the value — JSON Schema's
- * semantics, so an author anchors with `^…$`.
+ * A pattern compiled by RE2 once and cached. A failure quotes the engine's
+ * error. `test` is true when the pattern is found anywhere in the value — JSON
+ * Schema's semantics, so an author anchors with `^…$`.
  */
 export function compilePattern(pattern: string): CompiledPattern {
   const cached = cache.get(pattern);
@@ -49,11 +50,21 @@ function compile(pattern: string): CompiledPattern {
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
-  try {
-    // Compiled for its syntax only; the result is never executed.
-    new RegExp(pattern, "u");
-  } catch (err) {
-    return { ok: false, error: `a JSON Schema validator cannot read it: ${(err as Error).message}` };
-  }
   return { ok: true, test: (value) => re2.test(value) };
+}
+
+/**
+ * Why a JSON Schema validator could not read `pattern` — it does not compile
+ * as an ECMA-262 regular expression with the `u` flag, the way such validators
+ * read one — or `undefined` when it can. The parse's check, made once per
+ * declared pattern: the expression is compiled for its syntax and discarded,
+ * never executed, and nothing that checks a value calls this.
+ */
+export function jsonSchemaPatternError(pattern: string): string | undefined {
+  try {
+    new RegExp(pattern, "u");
+    return undefined;
+  } catch (err) {
+    return `a JSON Schema validator cannot read it: ${(err as Error).message}`;
+  }
 }

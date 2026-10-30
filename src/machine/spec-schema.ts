@@ -22,7 +22,7 @@ import {
   type SignatureRuleName,
   type SignatureType,
 } from "./signature.js";
-import { compilePattern } from "./signature-pattern.js";
+import { compilePattern, jsonSchemaPatternError } from "./signature-pattern.js";
 import { MANUAL_TRIGGER, parseSessionPath, stateTriggerIds } from "./triggers.js";
 import {
   parseReferences,
@@ -509,8 +509,10 @@ function refineRules(entry: Record<string, unknown> & { type?: SignatureType }, 
     issue("pattern", `declares both 'format' and 'pattern': an entry declares one or the other.`);
   }
   if (has("pattern")) {
-    const compiled = compilePattern(entry.pattern as string);
-    if (!compiled.ok) issue("pattern", `declares a 'pattern' that cannot be used: ${compiled.error}.`);
+    const pattern = entry.pattern as string;
+    const compiled = compilePattern(pattern);
+    const error = compiled.ok ? jsonSchemaPatternError(pattern) : compiled.error;
+    if (error) issue("pattern", `declares a 'pattern' that cannot be used: ${error}.`);
   }
   for (const rule of ["minimum", "maximum"] as const) {
     if (!has(rule) || isBound(type, entry[rule])) continue;
