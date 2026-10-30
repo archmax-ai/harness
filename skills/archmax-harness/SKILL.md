@@ -70,7 +70,8 @@ Design the whole file set first, write each file once, then verify.
 4. **Sign the entry if something calls it.** When another workflow, an MCP tool or a
    form starts the workflow, give its trigger a `description` for the caller and a
    `requires`/`returns` signature. Type an entry where the caller must build or read
-   the value.
+   the value, and add rules (`format: email`, `pattern`, `maxLength`, `enum`,
+   `minimum`/`maximum`) where the value has a shape its type does not say.
 5. **Decide the file set.** Always `workflow.yaml`. One `scripts/<check>.js` per code
    state (a grader needs no file: its criteria are its `instructions`). Cases: one
    per branch, one per path a check declines or sends back, one `decide:` per human

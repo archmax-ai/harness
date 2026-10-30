@@ -253,7 +253,7 @@ The refund example needs your two tools, so it runs from your code. See the
 
 - [Grader and code states](https://harness.archmax.ai/guides/automated-states/): checks on the graph
 - [Human states](https://harness.archmax.ai/guides/workflow-machine/#human-in-the-loop-states): a person picks the edge
-- [Triggers](https://harness.archmax.ai/guides/triggers/): typed inputs and returns, files
+- [Triggers](https://harness.archmax.ai/guides/triggers/): typed inputs and returns, rules on their values, files
 - [Testing](https://harness.archmax.ai/guides/testing/): cases for `archmax test`
 - [Public API](https://harness.archmax.ai/reference/public-api/): `createAgent`, outcomes, events
 

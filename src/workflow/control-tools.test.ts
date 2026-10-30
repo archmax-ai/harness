@@ -765,6 +765,22 @@ describe("handleSetVariables — typed returns", () => {
     expect(set({ approved: "yes" }, "other").delta).toEqual({ approved: { value: "yes", locked: false } });
   });
 
+  it("refuses a return breaking its rule with the rule's message, and writes one meeting it", () => {
+    const ruled = WorkflowMachine.fromSpec({
+      states: { work: { triggers: { manual: { returns: [{ name: "contact", type: "string", format: "email" }] } } } },
+    } as MachineSpec);
+    const write = (contact: unknown) =>
+      handleSetVariables({ toolCallId: "c1", args: { variables: { contact } }, state: state() }, ruled);
+    const refused = write("nobody");
+    expect(refused.delta).toBeUndefined();
+    expect(refused.message.status).toBe("error");
+    const text = String(refused.message.content);
+    expect(text).toContain("trigger 'manual'");
+    expect(text).toContain("'contact' must be an email address");
+    expect(text).toContain("Write a value of the declared type that meets its rules.");
+    expect(write("ann@example.co").delta).toEqual({ contact: { value: "ann@example.co", locked: false } });
+  });
+
   it("checks nothing without the machine", () => {
     const outcome = handleSetVariables({ toolCallId: "c1", args: { variables: { approved: "yes" } }, state: state() });
     expect(outcome.delta).toBeDefined();

@@ -149,6 +149,10 @@ export type {
 export {
   /** The types a signature entry may declare: JSON Schema's words, plus `date` and `date-time`. */
   SIGNATURE_TYPES,
+  /** The formats a `string` entry's `format` rule names: `email`, `url`, `phone`. */
+  SIGNATURE_FORMATS,
+  /** The kinds of text a `string` entry's `content` rule declares: `text`, `markdown`, `html`. */
+  SIGNATURE_CONTENTS,
   /** A `requires`/`returns` list as `{ name, type?, description? }` entries, either spelling. */
   normalizeSignature,
   /** A trigger's normalized signature — `description`, `requires`, `returns` — read from a spec. */
@@ -161,8 +165,13 @@ export {
 export type {
   SignatureEntry,
   SignatureType,
+  SignatureRules,
+  SignatureRuleName,
+  SignatureFormat,
+  SignatureContent,
   TriggerSignature,
   SignatureValueIssue,
+  SignatureValueOptions,
 } from "../machine/signature.js";
 
 export {

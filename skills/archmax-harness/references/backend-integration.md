@@ -243,9 +243,13 @@ the helpers (they are also on the root):
 - `parseMachineSpec(raw)` parses a spec; `signatureForTrigger(spec, "manual")` returns
   `{ description?, requires, returns }`.
 - `signatureJsonSchema(entries)` returns a JSON Schema object with every name required,
-  and `date`, `date-time` and `file` as formatted strings.
-- `signatureValueIssues(entries, values)` returns one issue per missing or
-  non-conforming value. It never coerces, so convert form text first.
+  `date`, `date-time` and `file` as formatted strings, and each rule JSON Schema can
+  express as its keyword (date bounds, `accept` and `maxSize` are left out; the runtime
+  still enforces them).
+- `signatureValueIssues(entries, values, options?)` returns one issue per missing or
+  non-conforming value, a broken rule as an `invalid` issue carrying `rule`. A
+  `pattern` runs in RE2, so it is safe on anyone's input. It never coerces, so convert
+  form text first.
 - Use the trigger's `description` as the tool's description: the session never sees it.
   Read `requires` and `returns` through `normalizeSignature`, never as `string[]`.
 

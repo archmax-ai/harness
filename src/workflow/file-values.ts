@@ -24,6 +24,8 @@ export interface FileGovernance {
   skills: SkillPrefixes;
   /** What a path names in the workspace of the session the check runs for. */
   kind(path: string): Promise<"file" | "directory" | "missing">;
+  /** How many bytes a file there holds; without it, a `maxSize` cannot be met. */
+  size?(path: string): Promise<number | undefined>;
 }
 
 /**
@@ -37,6 +39,7 @@ export function fileGovernance(opts: {
   mountPrefixes: MountPrefixes;
   skills: SkillPrefixes;
   kind: FileGovernance["kind"];
+  size?: FileGovernance["size"];
 }): FileGovernance {
   return {
     machine: opts.machine,
@@ -44,12 +47,13 @@ export function fileGovernance(opts: {
     mountPrefixes: opts.mountPrefixes,
     skills: opts.skills,
     kind: opts.kind,
+    ...(opts.size ? { size: opts.size } : {}),
   };
 }
 
 /** Why `state` may not read `path` on runtime authority, or `undefined` when it may. */
 export function runtimeReadDenial(
-  gov: Omit<FileGovernance, "kind">,
+  gov: Omit<FileGovernance, "kind" | "size">,
   state: string,
   path: string,
   variables: VariableStore,
@@ -69,6 +73,7 @@ export function runtimeReadDenial(
 export function fileValueCheck(gov: FileGovernance, state: string, variables: VariableStore): FileValueCheck {
   return {
     kind: (path) => gov.kind(path),
+    size: (path) => (gov.size ? gov.size(path) : Promise.resolve(undefined)),
     denied: (path) => runtimeReadDenial(gov, state, path, variables),
   };
 }

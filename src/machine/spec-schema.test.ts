@@ -646,7 +646,8 @@ describe("typed trigger signatures", () => {
     expect(rest).toEqual([]);
     expect(issue?.path).toBe("states.a.triggers.manual.returns.0");
     expect(issue?.message).toContain("Entry 'amount' declares 'default'");
-    expect(issue?.message).toContain("'name', 'type' and 'description' only");
+    expect(issue?.message).toContain("'name', 'type', 'description' and the rules 'format', 'pattern'");
+    expect(issue?.message).toContain("'accept' and 'maxSize' only");
   });
 
   it("refuses an entry naming no variable", () => {
@@ -707,6 +708,145 @@ describe("typed trigger signatures", () => {
     ]) {
       const expected = declarationIssues(decl);
       expect(validateSpec(withTrigger(decl)).schema.map((d) => ({ path: d.field, message: d.message }))).toEqual(
+        expected,
+      );
+    }
+  });
+});
+
+describe("rules on signature entries", () => {
+  const withEntry = (entry: unknown) => ({ states: { a: { triggers: { manual: { requires: [entry] } } } } });
+  const entryIssues = (entry: unknown) => issuesFor(withEntry(entry));
+  const AT = "states.a.triggers.manual.requires.0";
+
+  it("loads every rule on every type that takes it", () => {
+    const entries = [
+      { name: "customer_email", type: "string", format: "email" },
+      { name: "website", type: "string", format: "url" },
+      { name: "phone", type: "string", format: "phone" },
+      { name: "order_id", type: "string", pattern: "^A-[0-9]+$", minLength: 3, maxLength: 24 },
+      { name: "priority", type: "string", enum: ["low", "normal", "high"] },
+      { name: "note", type: "string", maxLength: 2000, content: "markdown" },
+      { name: "quantity", type: "integer", minimum: 1, maximum: 100 },
+      { name: "ratio", type: "number", minimum: 0.5, maximum: 1.5 },
+      { name: "due", type: "date", minimum: "today", maximum: "2027-12-31" },
+      { name: "starts_at", type: "date-time", minimum: "now", maximum: "2027-01-01T00:00:00Z" },
+      { name: "tags", type: "array", minItems: 1, maxItems: 10 },
+      { name: "invoice", type: "file", accept: [".pdf", ".png"], maxSize: "10MB" },
+    ];
+    const result = parseMachineSpec({
+      states: { a: { triggers: { manual: { requires: entries, returns: [{ name: "contact", type: "string", format: "email" }] } } } },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses a rule on a type that does not take it, naming the entry and the key", () => {
+    for (const [entry, rule, types] of [
+      [{ name: "quantity", type: "integer", format: "email" }, "format", "string"],
+      [{ name: "flag", type: "boolean", minimum: 1 }, "minimum", "integer, number, date and date-time"],
+      [{ name: "note", type: "string", minItems: 1 }, "minItems", "array"],
+      [{ name: "tags", type: "array", maxLength: 3 }, "maxLength", "string"],
+      [{ name: "path", type: "string", accept: [".pdf"] }, "accept", "file"],
+      [{ name: "doc", type: "object", maxSize: 10 }, "maxSize", "file"],
+    ] as const) {
+      const [issue, ...rest] = entryIssues(entry);
+      expect(rest, rule).toEqual([]);
+      expect(issue?.path).toBe(`${AT}.${rule}`);
+      expect(issue?.message).toBe(`Entry '${entry.name}' declares '${rule}', which applies to ${types} entries only.`);
+    }
+  });
+
+  it("refuses a rule on an untyped entry", () => {
+    const [issue] = entryIssues({ name: "note", maxLength: 10 });
+    expect(issue?.path).toBe(`${AT}.maxLength`);
+    expect(issue?.message).toContain("Entry 'note' declares 'maxLength', but has no 'type'");
+  });
+
+  it("refuses format together with pattern", () => {
+    const [issue, ...rest] = entryIssues({ name: "contact", type: "string", format: "email", pattern: "@acme\\." });
+    expect(rest).toEqual([]);
+    expect(issue?.path).toBe(`${AT}.pattern`);
+    expect(issue?.message).toContain("Entry 'contact' declares both 'format' and 'pattern'");
+  });
+
+  it("refuses a pattern that does not compile, is not linear or is too long, quoting the engine", () => {
+    const cases: [string, string][] = [
+      ["[a-", "missing closing ]"],
+      ["(?=a)b", "(?="],
+      ["(?<!a)b", "error parsing regexp"],
+      ["(a)\\1", "\\1"],
+      ["(?i)abc", "a JSON Schema validator cannot read it"],
+      ["a".repeat(1001), "over the limit of 1000"],
+    ];
+    for (const [pattern, quoted] of cases) {
+      const [issue, ...rest] = entryIssues({ name: "order_id", type: "string", pattern });
+      expect(rest, pattern).toEqual([]);
+      expect(issue?.path).toBe(`${AT}.pattern`);
+      expect(issue?.message).toContain("Entry 'order_id' declares a 'pattern' that cannot be used");
+      expect(issue?.message).toContain(quoted);
+    }
+  });
+
+  it("refuses inconsistent bounds, naming the entry and the key", () => {
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ type: "string", minLength: 5, maxLength: 3 }, "minLength", "above 'maxLength' 3"],
+      [{ type: "integer", minimum: 10, maximum: 1 }, "minimum", "above 'maximum' 1"],
+      [{ type: "date", minimum: "2026-12-01", maximum: "2026-11-01" }, "minimum", "above 'maximum'"],
+      [
+        { type: "date-time", minimum: "2026-11-01T12:00:00+02:00", maximum: "2026-11-01T09:00:00Z" },
+        "minimum",
+        "above 'maximum'",
+      ],
+      [{ type: "array", minItems: 3, maxItems: 2 }, "minItems", "above 'maxItems' 2"],
+      [{ type: "array", minItems: -1 }, "minItems", "not a non-negative integer"],
+      [{ type: "string", maxLength: 2.5 }, "maxLength", "not a non-negative integer"],
+      [{ type: "string", enum: [] }, "enum", "an empty 'enum'"],
+      [{ type: "string", enum: ["a", "a"] }, "enum", `lists "a" more than once`],
+      [{ type: "file", accept: [] }, "accept", "an empty 'accept'"],
+      [{ type: "file", accept: [".pdf", ".PDF"] }, "accept", `lists ".PDF" more than once`],
+      [{ type: "file", accept: ["pdf"] }, "accept", "not a file extension"],
+      [{ type: "file", accept: [".tar.gz"] }, "accept", "not a file extension"],
+      [{ type: "file", maxSize: "10 MB" }, "maxSize", "not a size in bytes"],
+      [{ type: "file", maxSize: -1 }, "maxSize", "not a size in bytes"],
+      [{ type: "date", minimum: "tomorrow" }, "minimum", "must be a date (YYYY-MM-DD"],
+      [{ type: "date", maximum: "2026-02-30" }, "maximum", "must be a date (YYYY-MM-DD"],
+      [{ type: "date-time", minimum: "2026-11-01T09:00:00" }, "minimum", "an RFC 3339 date-time"],
+      [{ type: "integer", minimum: "1" }, "minimum", "must be a number"],
+    ];
+    for (const [rules, key, says] of cases) {
+      const [issue, ...rest] = entryIssues({ name: "v", ...rules });
+      expect(rest, JSON.stringify(rules)).toEqual([]);
+      expect(issue?.path, JSON.stringify(rules)).toBe(`${AT}.${key}`);
+      expect(issue?.message, JSON.stringify(rules)).toContain("Entry 'v'");
+      expect(issue?.message, JSON.stringify(rules)).toContain(says);
+    }
+  });
+
+  it("allows a symbolic bound beside a literal one in any order", () => {
+    expect(entryIssues({ name: "due", type: "date", minimum: "2030-01-01", maximum: "today" })).toEqual([]);
+  });
+
+  it("refuses an unknown format or content, naming the entry", () => {
+    const [format] = entryIssues({ name: "x", type: "string", format: "fax" });
+    expect(format?.message).toContain("Entry 'x'");
+    expect(format?.message).toContain("'format' must be one of email, url or phone");
+    const [content] = entryIssues({ name: "x", type: "string", content: "rtf" });
+    expect(content?.message).toContain("'content' must be one of text, markdown or html");
+  });
+
+  it("caps no length: platform policy is not the SDK's", () => {
+    expect(entryIssues({ name: "body", type: "string", maxLength: 1_000_000 })).toEqual([]);
+  });
+
+  it("reports the identical messages through validateSpec, as archmax validate does", async () => {
+    const { validateSpec } = await import("./validate-spec.js");
+    for (const entry of [
+      { name: "quantity", type: "integer", format: "email" },
+      { name: "x", type: "string", pattern: "(?=a)b" },
+      { name: "x", type: "string", minLength: 5, maxLength: 3 },
+    ]) {
+      const expected = entryIssues(entry);
+      expect(validateSpec(withEntry(entry)).schema.map((d) => ({ path: d.field, message: d.message }))).toEqual(
         expected,
       );
     }

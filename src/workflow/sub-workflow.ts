@@ -455,6 +455,7 @@ export function createSubWorkflowDispatcher(
     const callerId = sessionScopeFrom(input.config).sessionId;
     return {
       kind: (path) => (opts.files ? opts.files.kind(callerId, path) : Promise.resolve("missing")),
+      size: (path) => (opts.files ? opts.files.size(callerId, path) : Promise.resolve(undefined)),
       denied: (path) => opts.readDenial?.(input.state, path, input.variables),
     };
   }
@@ -564,11 +565,13 @@ export function createSubWorkflowDispatcher(
     }
     const invalid = invalidOf(signatureValueIssues(requires, params));
     if (invalid.length > 0) {
+      const ruled = invalid.some((issue) => issue.rule);
       throw new SubWorkflowError(
         "invalid-param",
         workflow,
         `Refusing to run sub-workflow '${workflow}': ${invalid.map((issue) => issue.message).join("; ")}. ` +
-          `Call it again with ${invalid.length === 1 ? "a value" : "values"} of the declared type.`,
+          `Call it again with ${invalid.length === 1 ? "a value" : "values"} of the declared type` +
+          `${ruled ? ", meeting its rules" : ""}.`,
       );
     }
     // A `file` argument must name a file the caller holds and may read: it is

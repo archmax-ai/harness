@@ -868,9 +868,11 @@ function mistypedReturns(
   );
   const invalid = signatureValueIssues(typed, variables).filter((issue) => issue.kind === "invalid");
   if (invalid.length === 0) return undefined;
+  const ruled = invalid.some((issue) => issue.kind === "invalid" && issue.rule);
   return (
     `trigger '${trigger}' declares ${invalid.length === 1 ? "this return" : "these returns"} typed: ` +
-    `${invalid.map((issue) => issue.message).join("; ")}. Write a value of the declared type.`
+    `${invalid.map((issue) => issue.message).join("; ")}. Write a value of the declared type` +
+    `${ruled ? " that meets its rules" : ""}.`
   );
 }
 

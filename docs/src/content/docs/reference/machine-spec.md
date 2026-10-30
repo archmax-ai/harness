@@ -1052,13 +1052,14 @@ replaces an earlier one, until the agent locks it. A seed of one (a name in both
 lists) lands **unlocked**, so the session can still write its result. See
 [a return is owed when the session finishes](/guides/triggers/#a-return-is-owed-when-the-session-finishes).
 
-Each entry is a bare variable name, or an object `{ name, type?, description? }`
+Each entry is a bare variable name, or an object `{ name, type?, description?, …rules }`
 naming one. The two spellings mix freely in one list. A bare name and an object
 with only `name` are the same **untyped** entry, which takes any value, `null`
 included. Names are distinct across both spellings, so
 `[total, { name: total, type: number }]` is a duplicate. The object is strict: any
 other key (a misspelled `type`, say) is a load error naming the entry and the key,
-rather than a silent "untyped".
+rather than a silent "untyped". The keys it takes are `name`, `type`,
+`description` and the [rules](#rules).
 
 `type` is one of nine words. Six are JSON Schema's own types; `date`,
 `date-time` and `file` are string formats, promoted because a host renders and
@@ -1078,8 +1079,81 @@ check, and nothing is coerced:
 | `file` | a string naming a path from the workspace root (`scratchpad/attachments/invoice.pdf`, `skills/billing/assets/template.pdf`): at most one leading `/`, no empty, `.` or `..` segment, no backslash and no trailing `/` | `{ type: string, format: file }` |
 
 A typed entry never takes `null`, because the JSON Schema a host publishes from it
-would refuse `null` too. Typing stops at this level: there are no item schemas, no
-property schemas, no enums and no ranges.
+would refuse `null` too. There are no item schemas and no property schemas: what a
+value of a type must also look like is said by its rules.
+
+#### Rules
+
+A typed entry may declare **rules** beside its `type`: what its value must look like
+beyond its type. Each is spelled as the JSON Schema keyword it maps to, wherever one
+exists:
+
+```yaml
+requires:
+  - { name: customer_email, type: string, format: email }
+  - { name: website, type: string, format: url }
+  - { name: phone, type: string, format: phone }
+  - { name: order_id, type: string, pattern: "^A-[0-9]+$", maxLength: 24 }
+  - { name: priority, type: string, enum: [low, normal, high] }
+  - { name: note, type: string, maxLength: 2000, content: markdown }
+  - { name: quantity, type: integer, minimum: 1, maximum: 100 }
+  - { name: due, type: date, minimum: today }
+  - { name: tags, type: array, minItems: 1, maxItems: 10 }
+  - { name: invoice, type: file, accept: [.pdf], maxSize: 10MB }
+returns:
+  - { name: contact, type: string, format: email }
+```
+
+| Rule | On | Value | Holds when the value |
+| --- | --- | --- | --- |
+| `format` | `string` | `email`, `url` or `phone` | is an email address (the WHATWG grammar `<input type=email>` uses, with a domain of at least two labels: `ann@localhost` and a quoted local part are refused), an absolute `http://` or `https://` URL with no credentials and no space or control character, or an E.164 phone number (`+4930123456`) |
+| `pattern` | `string` | a regular expression, at most 1,000 characters | contains a match: anchor with `^…$` to match the whole value |
+| `minLength`, `maxLength` | `string` | a non-negative integer | has at least / at most that many characters, counted in code points |
+| `enum` | `string` | a non-empty list of distinct strings | is one of them, exactly and case-sensitively |
+| `content` | `string` | `text`, `markdown` or `html` | (a declaration only, see below) |
+| `minimum`, `maximum` | `integer`, `number` | a number | is at least / at most it |
+| `minimum`, `maximum` | `date` | `YYYY-MM-DD`, or `today` | is not before / not after it; `today` is the current UTC date |
+| `minimum`, `maximum` | `date-time` | an RFC 3339 date-time, or `now` | is not before / not after it, offsets applied |
+| `minItems`, `maxItems` | `array` | a non-negative integer | holds at least / at most that many entries |
+| `accept` | `file` | a non-empty list of extensions, each a dot and a name (`.pdf`) | names a file whose last extension is one of them, case-insensitively |
+| `maxSize` | `file` | bytes: an integer, or `<n>KB` / `<n>MB` (1,000-based) | names a file no larger; checked where the value crosses a boundary |
+
+Every bound is inclusive. Nothing is coerced or trimmed: `" a@b.co"` is not an email
+address. A rule is checked only on a value of the right type, so a mistyped value
+reports its type and no rule. Each entry reports one problem at most: the first rule
+its value breaks, in the order `format`/`pattern`, `enum`, `minLength`/`maxLength`,
+`minimum`/`maximum`, `minItems`/`maxItems`, `accept`, then `maxSize`. Each refusal
+says what the value must do, naming the variable: `'quantity' must be at most 100`,
+`'order_id' must match ^A-[0-9]+$`, `'due' must not be before today`.
+
+A rule is held wherever the type is: at the start, at the write, at completion, and at
+a delegation call and its settle. A rule declaration that cannot hold is a load error
+naming the trigger, the entry and the key, and `validate` reports the same:
+
+- a rule on a type that does not take it, or on an entry with no `type`;
+- `format` together with `pattern`: an entry declares one or the other;
+- a `pattern` that does not compile, uses a lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`)
+  or a backreference (`\1`), or is over 1,000 characters;
+- a `min…` above its `max…`, an empty or repeated `enum` or `accept`, a negative or
+  fractional length or count, and a malformed bound, extension or size.
+
+The SDK caps no length: a host's own limits on text from outside callers are the
+host's policy.
+
+**The regular expression engine.** An author writes a `pattern`, but it runs against
+text anyone may send, and a backtracking engine such as JavaScript's `RegExp` takes
+exponential time on `(a+)+$` against a long run of `a`s ended by `!`. So a pattern is
+never run through `RegExp`: it is matched by RE2, which takes time linear in the value
+whatever the pattern. RE2 syntax is ECMA-262's without lookarounds and backreferences.
+A pattern must also compile as an ECMA-262 regular expression with the `u` flag, the
+way JSON Schema validators read it, so RE2-only syntax such as `(?i)`, `\pL` or
+`[[:alpha:]]` is refused too. Where the two engines still read a pattern differently
+(`\s` is ASCII whitespace in RE2, and `.` does not match `\n`), RE2's reading decides.
+
+**`content` is a declaration.** It says what kind of text the value holds, and is
+carried into the JSON Schema as `contentMediaType`. The runtime never checks or
+alters a value for it, and sanitises nothing: what `markdown` or `html` permits is
+the host's decision.
 
 Where the types are held:
 
@@ -1087,8 +1161,8 @@ Where the types are held:
   conform is refused like one that misses a name, before any model call, naming
   the trigger, the variable, the type and what arrived.
 - **At the write.** An `archmax_set_variables` call writing a typed return of the
-  current turn's trigger with a non-conforming value is refused, atomically, as a
-  correctable tool refusal. The agent writes a conforming value and the session
+  current turn's trigger with a non-conforming value (of another type, or breaking
+  a rule) is refused, atomically, as a correctable tool refusal. The agent writes a conforming value and the session
   goes on. Undeclared and untyped names are written as before.
 - **At completion.** A session whose typed return holds a non-conforming value is
   rejected like one that left it unset. The write check covers every
@@ -1111,7 +1185,9 @@ grants do not bind it. What does bind it:
 - consumer rules and every safety rule.
 
 A value naming a path with nothing there, a folder, or a path those rules deny is
-refused like a non-conforming one, naming the variable and the cause.
+refused like a non-conforming one, naming the variable and the cause. So is a file
+larger than the entry's `maxSize`, or one whose size the store cannot tell:
+`'invoice' must be at most 10 MB`.
 
 An entry's `description` says what the variable holds, for whoever supplies or
 reads it. What the agent should *do* to produce a return still belongs in the
@@ -1133,7 +1209,9 @@ Load fails, and `validate` reports the same in the same words. See
 The names are rendered into the system prompt under the trigger's entry state,
 so the agent is told what it must produce before it is failed for omitting it.
 A typed or described entry is rendered on its own line as
-`name (type) — description`, and an untyped signature as one sentence of names.
+`name (type) — description`, with its rules after the type in the words a refusal
+uses (`contact (string; an email address; at most 80 characters) — …`), and an
+untyped signature reads as it always has.
 
 On the `manual` trigger, this signature is also the workflow's **call
 signature**. `requires:` becomes the typed parameters of the
@@ -1173,7 +1251,8 @@ is an error that fails load:
 - a trigger declared by two states;
 - a malformed `session` or `message` path;
 - a `connection` or `description` that is not a non-empty string;
-- a signature entry with an unknown `type`, an unknown key, or a name listed twice;
+- a signature entry with an unknown `type`, an unknown key, a name listed twice, or
+  a rule that cannot hold;
 - an `entry:` or `name:` key.
 
 An event that should always continue an existing session is declared nowhere

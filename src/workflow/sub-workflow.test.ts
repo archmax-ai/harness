@@ -644,6 +644,30 @@ describe("the target's declared signature", () => {
     expect(registry.composed()).toBe(0);
   });
 
+  it("refuses an argument breaking its rule as invalid-param, naming the rule", async () => {
+    const registry = signedRegistry({
+      requires: [{ name: "priority", type: "string", enum: ["low", "high"] }],
+    }) as SubWorkflowRegistry & { composed: () => number };
+    const err = (await dispatch(dispatcherFor(registry), { params: { priority: "urgent" } }).catch(
+      (e: unknown) => e,
+    )) as SubWorkflowError;
+    expect(err.kind).toBe("invalid-param");
+    expect(err.message).toContain("'priority' must be one of low, high");
+    expect(err.message).toContain("of the declared type, meeting its rules.");
+    expect(registry.composed()).toBe(0);
+  });
+
+  it("settles a child whose return breaks its rule as invalid-return", async () => {
+    const registry = signedRegistry(
+      { returns: [{ name: "contact", type: "string", format: "email" }] },
+      settledWith({ contact: "nobody" }),
+    );
+    await expect(dispatch(dispatcherFor(registry))).rejects.toMatchObject({
+      kind: "invalid-return",
+      message: expect.stringContaining("'contact' must be an email address"),
+    });
+  });
+
   it("lets missing-param win over invalid-param for an absent name", async () => {
     const registry = signedRegistry({ requires: [{ name: "quantity", type: "integer" }, "note"] });
     await expect(dispatch(dispatcherFor(registry), { params: { quantity: "three" } })).rejects.toMatchObject({
@@ -999,6 +1023,17 @@ describe("a mock stands in for the sub-run, not for its contract", () => {
     await expect(
       mocked({ message: "Enriched.", returns: { delayed: false } }, { returns: [{ name: "delayed", type: "boolean" }] }),
     ).resolves.toMatchObject({ returns: { delayed: false } });
+  });
+
+  it("holds a mock's returns to their rules", async () => {
+    const quantity = { returns: [{ name: "quantity", type: "integer" as const, maximum: 100 }] };
+    await expect(mocked({ message: "Done.", returns: { quantity: 101 } }, quantity)).rejects.toMatchObject({
+      kind: "invalid-return",
+      message: expect.stringContaining("'quantity' must be at most 100"),
+    });
+    await expect(mocked({ message: "Done.", returns: { quantity: 100 } }, quantity)).resolves.toMatchObject({
+      returns: { quantity: 100 },
+    });
   });
 
   it("treats a bare-string mock for a signed target as a run that set none of its returns", async () => {

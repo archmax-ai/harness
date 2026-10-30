@@ -57,6 +57,44 @@ describing every edge and renaming two imports, in [three steps](#migrating-from
    `STATE_TYPE_TOOLS.agent.controls.has(name)`, and `UNGRANTABLE_TOOLS.has(name)` with
    `name === TASK_TOOL`.
 
+## 1.1.0
+
+An additive release: a signature entry can say what its value must look like.
+
+- **Rules on signature entries.** A typed `requires`/`returns` entry may declare
+  rules beside its `type`, spelled as JSON Schema's keywords: `format` (`email`,
+  `url`, `phone`), `pattern`, `minLength`/`maxLength`, `enum` and `content` on
+  `string`; `minimum`/`maximum` on `integer` and `number`, on `date` (a date or
+  `today`) and on `date-time` (an instant or `now`); `minItems`/`maxItems` on
+  `array`; `accept` and `maxSize` on `file`. A rule is held wherever the type is:
+  at the start, at the write, at completion, and at a delegation call and its
+  settle, each refusal naming the variable and what it must be
+  (`'quantity' must be at most 100`). Each entry reports the first rule it breaks.
+  A rule on a type that does not take it, `format` with `pattern`, a pattern that
+  does not compile, and inconsistent bounds are load errors. See
+  [rules](/reference/machine-spec/#rules).
+- **A linear-time pattern engine.** A `pattern` is matched by RE2 (`re2js`, pure
+  JavaScript), never by a backtracking `RegExp`, so no input can make a check
+  take exponential time. A pattern must also compile as an ECMA-262 `u`
+  expression, so a JSON Schema validator reads it the same way.
+- **`content` is a declaration.** It is carried and mapped to `contentMediaType`;
+  the runtime checks and sanitises nothing for it.
+- **The prompt names the rules.** The agent sees an entry's rules after its type:
+  `contact (string; an email address; at most 80 characters) — …`. An entry
+  without rules renders as before.
+- **Public API.** `signatureValueIssues(entries, values, options?)` takes an
+  optional `options.now` for `today` and `now`. Its `invalid` issue carries an
+  optional `rule`, so every site that filters `kind === "invalid"` enforces rules
+  unchanged. `signatureJsonSchema` maps each rule JSON Schema can express (date
+  bounds, `accept` and `maxSize` are left out). New on the root and on
+  `@archmax-ai/harness/spec`: `SIGNATURE_FORMATS`, `SIGNATURE_CONTENTS`, and the
+  types `SignatureRules`, `SignatureRuleName`, `SignatureFormat`,
+  `SignatureContent` and `SignatureValueOptions`. See
+  [building a host schema from a signature](/reference/public-api/#building-a-host-schema-from-a-signature).
+- **Compatibility.** An entry without rules parses, maps and checks exactly as in
+  1.0.0, with the same messages. An older SDK refuses the rule keys, so a
+  workflow that declares a rule cannot be loaded by 1.0.x.
+
 ## 1.0.0
 
 A breaking release: checking a state's work moves out of hooks and onto the graph.

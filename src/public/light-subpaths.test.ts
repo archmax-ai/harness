@@ -11,7 +11,7 @@ import * as messages from "./messages.js";
  * and a runtime-free request path can import the vocabulary without LangGraph,
  * Deep Agents, the sandbox or `node:*`. That is a property of each barrel's
  * **transitive import graph**, so it is pinned here by walking the graph rather
- * than by trusting a comment: a runtime import of anything but the two pure
+ * than by trusting a comment: a runtime import of anything but the three pure
  * libraries the schema needs fails this test, naming the file and the specifier.
  *
  * The graph does not stop at the package boundary. An allowed library is only
@@ -24,8 +24,12 @@ import * as messages from "./messages.js";
  */
 const SRC = resolve(import.meta.dirname, "..");
 
-/** The bare specifiers a light subpath may reach at runtime. Everything else is refused. */
-const ALLOWED_BARE_SPECIFIERS = new Set(["zod", "picomatch"]);
+/**
+ * The bare specifiers a light subpath may reach at runtime. Everything else is
+ * refused. `re2js` is the linear-time engine a signature entry's `pattern` rule
+ * is matched by, so a start form checks a pattern exactly as the runtime does.
+ */
+const ALLOWED_BARE_SPECIFIERS = new Set(["zod", "picomatch", "re2js"]);
 
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -138,9 +142,28 @@ function packageSpecifiers(source: string): string[] {
   return out;
 }
 
+/**
+ * A package's `package.json`. A package whose `exports` map does not expose it
+ * (`re2js`) is found by walking up from the entry `require` resolves.
+ */
+function packageJsonPath(fromFile: string, specifier: string): string {
+  const require = createRequire(fromFile);
+  try {
+    return require.resolve(`${specifier}/package.json`);
+  } catch {
+    let dir = dirname(require.resolve(specifier));
+    while (dir !== dirname(dir)) {
+      const candidate = join(dir, "package.json");
+      if (existsSync(candidate) && JSON.parse(readFileSync(candidate, "utf8")).name === specifier) return candidate;
+      dir = dirname(dir);
+    }
+    throw new Error(`no package.json found for ${specifier}`);
+  }
+}
+
 /** The entry a bundler would take for a package, preferring the browser and ESM fields. */
 function packageEntry(fromFile: string, specifier: string): string {
-  const pkgPath = createRequire(fromFile).resolve(`${specifier}/package.json`);
+  const pkgPath = packageJsonPath(fromFile, specifier);
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as Record<string, unknown>;
   const pick = (value: unknown): string | undefined => {
     if (typeof value === "string") return value;

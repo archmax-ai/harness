@@ -84,6 +84,7 @@ states:
         requires:                  # what a start must supply
           - email                  #   a bare name takes any value
           - { name: order_id, type: string, description: The order to refund. }
+          - { name: contact, type: string, format: email }   # a rule beside the type
         returns: [decision]        # what the session guarantees when it completes
       email_reply:                 # a host trigger; its payload arrives as locked variables
         session: conversation_id   #   a dotted path over the variables: the session it joins
@@ -278,12 +279,30 @@ belongs to one state.
 and both are enforced.
 
 - An entry is a bare variable name, which takes any value (`null` included), or
-  `{ name, type?, description? }`. The two forms mix in one list.
+  `{ name, type?, description?, …rules }`. The two forms mix in one list.
 - `type` is one of `string`, `integer`, `number`, `boolean`, `date` (`YYYY-MM-DD`),
   `date-time` (RFC 3339 with an offset), `object`, `array` or `file`. Nothing is coerced
   (`"4"` is not an `integer`), and a typed entry never takes `null`. A typed entry is
   held at the start, at each `archmax_set_variables` of a typed return, and at
   completion.
+- **Rules** say what a typed value must look like beyond its type, as JSON Schema
+  keywords, and are held wherever the type is. Each entry reports the first rule it
+  breaks (`'quantity' must be at most 100`).
+
+  | Rule | On | Value |
+  | --- | --- | --- |
+  | `format` | `string` | `email`, `url` (absolute `http(s)://`) or `phone` (E.164) |
+  | `pattern` | `string` | a regex found anywhere in the value (anchor it with `^…$`) |
+  | `minLength`, `maxLength` | `string` | counts of code points |
+  | `enum` | `string` | a list of distinct strings, matched exactly |
+  | `content` | `string` | `text`, `markdown` or `html`: for the host, never checked |
+  | `minimum`, `maximum` | `integer`, `number`, `date`, `date-time` | inclusive; `today` and `now` for the dates |
+  | `minItems`, `maxItems` | `array` | counts of items |
+  | `accept`, `maxSize` | `file` | extensions like `.pdf`; bytes, or `<n>KB` / `<n>MB` |
+
+  A rule on a type that does not take it or on an untyped entry, `format` with
+  `pattern`, a pattern with a lookaround or a backreference, and inconsistent bounds are
+  load errors. A `pattern` runs in RE2, so no input can make it slow.
 - A start that omits a `requires` name, or supplies a mistyped one, is refused before
   any model call.
 - `returns` is checked when the session completes. A top-level session with a return

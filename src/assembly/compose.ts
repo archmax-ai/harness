@@ -21,7 +21,7 @@ import {
   READ_FILE_TEXT_ONLY_LINE,
   textOnlyReadFileDescription,
 } from "../core/binary-read.js";
-import { createFileOperationTools, workspaceEntryKind } from "../core/file-operations.js";
+import { createFileOperationTools, workspaceEntryKind, workspaceEntrySize } from "../core/file-operations.js";
 import { createSessionFiles } from "../core/attachments.js";
 import { fileGovernance, runtimeReadDenial } from "../workflow/file-values.js";
 import { runWithToolContext } from "../core/tool-context.js";
@@ -522,6 +522,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     mountPrefixes: ctx.mountPrefixes,
     skills: ctx.skillTable,
     kind: (path) => workspaceEntryKind(ctx.backend, path),
+    size: (path) => workspaceEntrySize(ctx.backend, path),
   });
   const dispatcher = createSubWorkflowDispatcher({
     registry: input.registry,
@@ -576,6 +577,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     ...(input.child ? { child: true } : {}),
     // Through the workspace, bound to the turn's session: what a `file` value names.
     entryKind: (path) => workspaceEntryKind(ctx.backend, path),
+    entrySize: (path) => workspaceEntrySize(ctx.backend, path),
   });
 
   // Native Anthropic/Bedrock caching is LangChain's own middleware; the
