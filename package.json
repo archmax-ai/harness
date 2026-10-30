@@ -99,7 +99,6 @@
     "deepagents": "^1.13.4",
     "dotenv": "^18.0.5",
     "gray-matter": "^4.0.3",
-    "just-bash": "^3.4.2",
     "langchain": "^1.5.4",
     "picomatch": "^4.0.7",
     "re2js": "~2.9.1",
