@@ -416,7 +416,10 @@ binds the next call. Only the reference span SHALL be replaced and the substitut
 glob-escaped, so a value such as `*`, `**` or `{a,b}` matches only itself. A reference that cannot be
 resolved — unset variable, missing path, non-own property, index out of range, or a non-scalar value —
 SHALL make the entry match nothing, and the verdict SHALL be a terminal block
-(`tool.unresolved-variable`): the turn ends rejected, routed through the state's `on_error` when one is
+(`tool.unresolved-variable`). In a path guard, a reference filling whole segments (`${{dir}}/**`,
+`out/${{dir}}`) whose value canonicalizes to the root (`""`, `.`, `/`, `//`) SHALL be unresolvable
+the same way, so it never widens the guard to every path, and `archmax_set_variables` SHALL refuse
+such a value for a variable a path guard substitutes whole: the turn ends rejected, routed through the state's `on_error` when one is
 declared, and the model is not invited to retry. A call decided without a variables snapshot SHALL fail
 the same way.
 
@@ -424,6 +427,12 @@ the same way.
 
 - **WHEN** `folder_id` is set to `F-123` and the model then calls a tool guarded by `["${{folder_id}}"]`
 - **THEN** `F-123` is permitted and `F-999` is blocked
+
+#### Scenario: A path guard variable naming no path
+
+- **WHEN** a state allows `{ tool: write_file, paths: ["${{dir}}/**"] }` and `dir` is `""`
+- **THEN** a write to any path is a terminal block with `tool.unresolved-variable`, and the agent's
+  `archmax_set_variables` of `dir: ""` is refused with nothing written
 
 #### Scenario: Unresolvable reference is terminal
 

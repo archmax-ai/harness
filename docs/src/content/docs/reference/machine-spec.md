@@ -420,6 +420,9 @@ incomplete.
 An `args`/`paths` glob may reference a **variable** (`${{name}}` or
 `${{name.dotted.path}}`). It is resolved against the session's variables at call
 time and matched literally, so a value can never widen the guard it lands in.
+In a path guard, a reference standing for whole segments (`${{dir}}/**`) must
+name a path: an empty value, `.` or `/` leaves the guard unresolvable, and
+`archmax_set_variables` refuses to set such a value.
 
 The **agent** may write the same references into the arguments of its *own*
 calls, embedded anywhere in a string and repeated. The runtime substitutes them

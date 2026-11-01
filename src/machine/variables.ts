@@ -10,7 +10,9 @@
  * `constructor` never resolve.
  */
 
+import { canonicalizeRelPath } from "../core/workspace.js";
 import { guardReferences } from "./allow.js";
+import { pathArgNamesOf } from "./tool-paths.js";
 import type { WorkflowMachine } from "./machine.js";
 import { SET_VARIABLES_TOOL } from "./tool-names.js";
 import { declaredVariableNames } from "./triggers.js";
@@ -173,7 +175,8 @@ export type UnresolvedReason =
   | "invalid-name"
   | "unset"
   | "path-missing"
-  | "non-scalar";
+  | "non-scalar"
+  | "root-path";
 
 export interface ResolvedGlob {
   ok: true;
@@ -337,7 +340,19 @@ function explain(reason: UnresolvedReason, ref: VariableReference): string {
       return `${target} does not resolve — the value has no such path`;
     case "non-scalar":
       return `${target} resolves to a non-scalar value; only strings, numbers and booleans can be substituted into a guard`;
+    case "root-path":
+      return `${target} resolves to an empty path or the workspace root, which would widen the path guard to every path`;
   }
+}
+
+/**
+ * Whether a value substituted as whole path segments names no path at all:
+ * `""`, `.`, `/`, `//` or `./`. Placed as a segment of a path guard
+ * (`${{dir}}/**`), such a value drops out and the guard covers the workspace
+ * root, so a path guard refuses to resolve it.
+ */
+export function isRootPathValue(value: unknown): boolean {
+  return typeof value === "string" && canonicalizeRelPath(value).path === "";
 }
 
 /**
@@ -346,8 +361,12 @@ function explain(reason: UnresolvedReason, ref: VariableReference): string {
  * unresolved reference matches nothing at all, so the caller must not fall back
  * to the original text.
  */
-export function resolveGlob(glob: string, variables: VariableStore): GlobResolution {
-  return substitute(glob, variables, escapeGlobLiteral);
+export function resolveGlob(
+  glob: string,
+  variables: VariableStore,
+  options: { path?: boolean } = {},
+): GlobResolution {
+  return substitute(glob, variables, escapeGlobLiteral, options.path === true);
 }
 
 /**
@@ -360,6 +379,7 @@ function substitute(
   glob: string,
   variables: VariableStore,
   render: (value: string) => string,
+  path = false,
 ): GlobResolution {
   const refs = scan(glob);
   if (refs.length === 0) return { ok: true, pattern: glob };
@@ -395,10 +415,22 @@ function substitute(
         detail: explain("non-scalar", ref),
       };
     }
+    // In a path guard, a reference standing for whole segments must name a
+    // path: an empty value would turn `${{dir}}/**` into `**`.
+    if (path && wholeSegments(glob, ref) && isRootPathValue(String(resolved))) {
+      return { ok: false, reason: "root-path", reference: ref.raw, detail: explain("root-path", ref) };
+    }
     out += glob.slice(cursor, ref.index) + render(String(resolved));
     cursor = ref.index + ref.raw.length;
   }
   return { ok: true, pattern: out + glob.slice(cursor) };
+}
+
+/** Whether a reference fills whole path segments of a glob: bounded by `/` or the glob's ends. */
+function wholeSegments(glob: string, ref: VariableReference): boolean {
+  const before = glob[ref.index - 1];
+  const after = glob[ref.index + ref.raw.length];
+  return (before === undefined || before === "/") && (after === undefined || after === "/");
 }
 
 /**
@@ -517,4 +549,24 @@ export function unguaranteedReferenceWarnings(
     );
   }
   return messages;
+}
+
+/**
+ * The variables a path guard substitutes whole (`${{dir}}/**`, `${{dir}}`), by
+ * name: those `archmax_set_variables` refuses to set to a value naming no path
+ * (`isRootPathValue`), which would leave the guard unable to resolve. A
+ * reference into a variable (`${{cfg.dir}}`) is not listed; the guard itself
+ * still fails closed on it.
+ */
+export function pathGuardVariables(machine: Pick<WorkflowMachine, "spec" | "toolPaths">): Set<string> {
+  const names = new Set<string>();
+  for (const ref of guardReferences(machine.spec)) {
+    const { reference } = ref;
+    if (reference.path.length > 0 || !wholeSegments(ref.glob, reference)) continue;
+    const pathArg =
+      ref.fromPaths ||
+      (ref.tool !== undefined && pathArgNamesOf(ref.tool, machine.toolPaths(ref.tool)).includes(ref.arg));
+    if (pathArg) names.add(reference.name);
+  }
+  return names;
 }

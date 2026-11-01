@@ -261,3 +261,83 @@ describe("a resolved agent argument enters matching as a literal", () => {
     expect(call("a+tag@b.co", "${{v}}", { v: "a+tag@b.co" }).decision).toBe("allow");
   });
 });
+
+/**
+ * A variable substituted as whole segments of a path guard must name a path.
+ * An empty value turned `${{dir}}/**` into `**`, and `.`, `/` and `//` did the
+ * same after canonicalization, so the guard admitted every path.
+ */
+describe("guard substitution: a path guard on a value naming no path", () => {
+  const pathGuarded = (glob: string, side: "allow" | "forbid" = "allow") =>
+    machineWith({
+      states: {
+        work: {
+          triggers: { manual: null },
+          transitions: [{ to: "done", description: "Test edge to done." }],
+          tools:
+            side === "allow"
+              ? { allow: [{ tool: "write_file", paths: [glob] }, { tool: "copy_file", paths: [glob] }] }
+              : { allow: ["write_file"], forbid: [{ tool: "write_file", paths: [glob] }] },
+        },
+        done: {},
+      },
+    });
+  const write = (machine: WorkflowMachine, file_path: string, variables: VariableStore) =>
+    decide(machine, { kind: "tool-call", state: "work", tool: "write_file", args: { file_path, content: "x" } }, [], undefined, variables);
+  const copy = (machine: WorkflowMachine, source: string, variables: VariableStore) =>
+    decide(
+      machine,
+      { kind: "tool-call", state: "work", tool: "copy_file", args: { source, destination: "reports/out.md" } },
+      [],
+      undefined,
+      variables,
+    );
+
+  it("grants nothing, locked or not, and stops the run with the reason", () => {
+    const machine = pathGuarded("${{dir}}/**");
+    for (const value of ["", "/", ".", "//", "./"]) {
+      for (const locked of [false, true]) {
+        const vars = { dir: entry(value, locked) };
+        for (const path of ["other/secret.md", "reports/a.md"]) {
+          const v = write(machine, path, vars);
+          expect(v.decision, `${JSON.stringify(value)} ${path}`).toBe("block");
+          expect(v.ruleId).toBe("tool.unresolved-variable");
+          expect(copy(machine, path, vars).decision, `copy ${JSON.stringify(value)} ${path}`).toBe("block");
+        }
+        expect(write(machine, "other/secret.md", vars).reason).toMatch(/empty path or the workspace root/);
+      }
+    }
+  });
+
+  it("still admits a real directory and only that", () => {
+    const machine = pathGuarded("${{dir}}/**");
+    const vars = { dir: entry("reports") };
+    expect(write(machine, "reports/a.md", vars).decision).toBe("allow");
+    expect(write(machine, "other/secret.md", vars).decision).toBe("block");
+    expect(copy(machine, "reports/a.md", vars).decision).toBe("allow");
+    expect(copy(machine, "other/secret.md", vars).decision).toBe("block");
+  });
+
+  it("covers a reference in the middle of the guard and one into a structured value", () => {
+    expect(write(pathGuarded("out/${{dir}}/**"), "out/x/a.md", { dir: entry("") }).ruleId).toBe("tool.unresolved-variable");
+    expect(write(pathGuarded("${{cfg.dir}}/**"), "other/a.md", { cfg: entry({ dir: "." }) }).ruleId).toBe(
+      "tool.unresolved-variable",
+    );
+  });
+
+  it("leaves a reference inside a segment alone: an empty name there widens nothing", () => {
+    const v = write(pathGuarded("reports/${{name}}.md"), "reports/a.md", { name: entry("") });
+    expect(v.ruleId).toBe("tool.not-allowed");
+    expect(v.terminal).toBeFalsy();
+  });
+
+  it("makes a denial match, so it fails closed", () => {
+    const machine = pathGuarded("${{dir}}/**", "forbid");
+    expect(write(machine, "anything/a.md", { dir: entry("") }).ruleId).toBe("tool.forbidden-here");
+    expect(write(machine, "anything/a.md", { dir: entry("secret") }).decision).toBe("allow");
+  });
+
+  it("does not touch a text guard, where an empty value is an ordinary value", () => {
+    expect(call(guarded("${{from_email}}"), { to: "" }, { from_email: entry("") }).decision).toBe("allow");
+  });
+});
