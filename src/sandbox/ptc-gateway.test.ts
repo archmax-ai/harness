@@ -426,3 +426,56 @@ describe("the surface a script lists", () => {
     }
   });
 });
+
+/**
+ * A script's `tools.grep` reaches the same tool as the model's `grep`, so its
+ * listing is filtered the same way: a governed mount the state does not have is
+ * dropped, as is a disabled skill bundle. The gateway used to filter skills only.
+ */
+describe("listings a script asks for", () => {
+  const LISTING = "/secret/payroll.csv:\n  1: alice,salary,250000\n/scratchpad/n.txt:\n  1: salary note";
+  const spec: MachineSpec = {
+    states: {
+      work: { triggers: { manual: null }, transitions: [{ to: "other", description: "Test edge to other." }] },
+      other: { mounts: { allow: ["secret"] } },
+    },
+  };
+  const mountPrefixes = { dirs: ["secret"], files: [], writable: [], governed: ["secret"], unsearchable: [] };
+
+  function wrapped(state: string) {
+    const gateway = createPtcToolGateway({ machine: WorkflowMachine.fromSpec(spec), mountPrefixes, emit: () => {} });
+    gateway.refresh("t1", { state, config: { configurable: { thread_id: "t1" } } });
+    return gateway.wrap(
+      ["grep", "glob", "ls"].map((name) => fakeTool(name, () => LISTING)),
+      { origin: "script", sessionId: "t1" },
+    );
+  }
+
+  it("drops a governed mount the state does not have from a path-less grep, glob and ls", async () => {
+    for (const tool of wrapped("work")) {
+      const args = tool.name === "ls" ? {} : { pattern: tool.name === "grep" ? "salary" : "**/*" };
+      expect(await tool.invoke(args as never), tool.name).toBe("/scratchpad/n.txt:\n  1: salary note");
+    }
+  });
+
+  it("keeps the mount where the state has it", async () => {
+    const [grep] = wrapped("other");
+    expect(await grep!.invoke({ pattern: "salary" } as never)).toBe(LISTING);
+  });
+
+  it("still refuses a search addressed at the hidden mount", async () => {
+    const [grep] = wrapped("work");
+    await expect(grep!.invoke({ pattern: "salary", path: "secret" } as never)).rejects.toMatchObject({
+      ruleId: "mount.not-allowed",
+    });
+  });
+
+  it("refuses a path naming the session's own store folder", async () => {
+    const gateway = createPtcToolGateway({ machine: WorkflowMachine.fromSpec(spec), mountPrefixes, emit: () => {} });
+    gateway.refresh("t1", { state: "work", config: { configurable: { thread_id: "t1" } } });
+    const [write] = gateway.wrap([fakeTool("write_file")], { origin: "script", sessionId: "t1" });
+    await expect(write!.invoke({ file_path: "t1/checkpoints/x.json", content: "{}" } as never)).rejects.toMatchObject({
+      ruleId: "zone.session-folder",
+    });
+  });
+});

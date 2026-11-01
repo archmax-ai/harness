@@ -36,8 +36,8 @@ import type { MountPrefixes } from "../core/mounts.js";
 import { skillPrefixes, type SkillRegistry } from "../core/skills.js";
 import { renderSkillsSection } from "../core/skill-prompt.js";
 import { renderMountsSection } from "../core/mount-prompt.js";
-import { REDACTED_TOOLS, redactDisabledSkills } from "../core/skill-redact.js";
-import { redactHiddenMounts } from "../core/mount-redact.js";
+import { REDACTED_TOOLS } from "../core/skill-redact.js";
+import { redactStateListing } from "../core/state-listing.js";
 import {
   asModelCallResult,
   asStructuredTools,
@@ -325,9 +325,6 @@ export function createGovernance(ctx: GovernanceContext): Governance {
   const skillSlugs = [...skills.keys()];
   const enabledSkillsIn = (state: string) => machine.enabledSkills(state, skillSlugs);
   const enabledMountsIn = (state: string) => machine.enabledMounts(state, mountPrefixes.governed);
-  /** Whether any mount of the table can be hidden at all — cheap early exit. */
-  const tableGoverns =
-    mountPrefixes.governed.length > 0 || machine.workflowForbiddenMounts().length > 0;
   const cacheStrategy: PromptCacheStrategy = ctx.shaping.cacheStrategy ?? "off";
   const cacheTtl: CacheTtl = ctx.shaping.cacheTtl ?? DEFAULT_CACHE_TTL;
 
@@ -367,24 +364,13 @@ export function createGovernance(ctx: GovernanceContext): Governance {
    * agent would then be refused, which reads as a broken workspace rather than
    * as a capability it was not given.
    *
-   * Skills first, then mounts, then one rebuilt message: the two filters are
-   * independent (a bundle lives inside the `skills/` mount) and both are
-   * identity when they hide nothing.
+   * The filter is shared with the PTC gateway (`redactStateListing`), and the
+   * message is rebuilt only when it hid something.
    */
   function redactListings<T>(result: T, state: string, toolName: string): T {
     if (!REDACTED_TOOLS.has(toolName)) return result;
     if (!(result instanceof ToolMessage) || typeof result.content !== "string") return result;
-    let text = result.content;
-    if (skillTable.length > 0) {
-      text = redactDisabledSkills(text, enabledSkillsIn(state), skillTable);
-    }
-    if (tableGoverns) {
-      text = redactHiddenMounts(
-        text,
-        { enabled: enabledMountsIn(state), forbidden: machine.forbiddenMounts(state) },
-        mountPrefixes,
-      );
-    }
+    const text = redactStateListing(result.content, state, machine, skillTable, mountPrefixes);
     if (text === result.content) return result;
     return new ToolMessage({
       ...(result.status ? { status: result.status } : {}),

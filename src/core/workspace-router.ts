@@ -33,7 +33,8 @@ import type { MountPrefixes } from "./mounts.js";
  *  3. **Agent-visible root shaping.** While a session is bound, a listing of `/`
  *     shows exactly the namespace the agent may address: authored mounts and
  *     authored root files plus the agent-addressable run areas, with the
- *     runtime-internal areas omitted. Listings outside a bound session (e.g.
+ *     runtime-internal areas omitted, and a search's results omit them too.
+ *     Listings outside a bound session (e.g.
  *     enumerating session folders for `runs.list()`) are returned untouched.
  *  4. **Search posture.** A root-wide `grep`/`glob` fans out to every route and
  *     one route's `{ error }` is fatal to it, and the composite hands a route
@@ -202,6 +203,21 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     return visible.sort((a, b) => a.path.localeCompare(b.path));
   };
 
+  /**
+   * Whether a search result names a runtime-internal area of the bound session
+   * (`checkpoints/`, `artifacts/`). The kernel refuses a search addressed at
+   * one, and a root listing omits them, so a root-wide search drops them too.
+   */
+  const isInternal = (path: string) => boundSessionId() !== undefined && INTERNAL_DIR_SET.has(entryName(path));
+
+  const withoutInternalMatches = <T extends { matches?: { path: string }[] }>(res: T): T =>
+    res.matches?.some((m) => isInternal(m.path))
+      ? { ...res, matches: res.matches.filter((m) => !isInternal(m.path)) }
+      : res;
+
+  const withoutInternalFiles = <T extends { files?: FileInfo[] }>(res: T): T =>
+    res.files?.some((f) => isInternal(f.path)) ? { ...res, files: res.files.filter((f) => !isInternal(f.path)) } : res;
+
   const router: BackendProtocolV2 & { routePrefixes: string[] } = {
     // Preserve the CompositeBackend duck-type (`routePrefixes`) so Deep Agents
     // components that detect mount-routing backends still recognize this one.
@@ -233,10 +249,10 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     },
 
     async grep(pattern: string, path?: string | null, glob?: string | null, maxCount?: number | null) {
-      if (path == null) return searchComposite.grep(pattern, path, glob, maxCount);
+      if (path == null) return withoutInternalMatches(await searchComposite.grep(pattern, path, glob, maxCount));
       const target = canonical(path);
       const direct = addressedUnsearchable(target);
-      if (!direct) return searchComposite.grep(pattern, target, glob, maxCount);
+      if (!direct) return withoutInternalMatches(await searchComposite.grep(pattern, target, glob, maxCount));
       const res = await direct.backend.grep(pattern, direct.routePath, glob, maxCount);
       if (res.error) return res;
       // Re-apply the route prefix as the composite does for its own routes, and
@@ -251,10 +267,10 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): BackendP
     },
 
     async glob(pattern: string, path?: string) {
-      if (path === undefined) return searchComposite.glob(pattern, path);
+      if (path === undefined) return withoutInternalFiles(await searchComposite.glob(pattern, path));
       const target = canonical(path);
       const direct = addressedUnsearchable(target);
-      if (!direct) return searchComposite.glob(pattern, target);
+      if (!direct) return withoutInternalFiles(await searchComposite.glob(pattern, target));
       const res = await direct.backend.glob(pattern, direct.routePath);
       if (res.error) return res;
       return {

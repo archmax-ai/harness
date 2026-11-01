@@ -10,7 +10,8 @@ import type { WorkflowMachine } from "../machine/machine.js";
 import type { VariableStore } from "../machine/variables.js";
 import { NO_MOUNTS, type MountPrefixes } from "../core/mounts.js";
 import { NO_SKILLS, type SkillPrefixes } from "../core/skills.js";
-import { REDACTED_TOOLS, redactDisabledSkills } from "../core/skill-redact.js";
+import { REDACTED_TOOLS } from "../core/skill-redact.js";
+import { redactStateListing } from "../core/state-listing.js";
 
 /**
  * Governance and telemetry for tool calls made outside the agent's tool node:
@@ -127,20 +128,22 @@ export interface PtcToolGatewayOptions {
 }
 
 /**
- * Filter a listing a script or a grader asked for to the state's enabled skills —
- * the gateway's half of the invisibility rule the governance middleware applies
- * to the model's own calls, since `tools.ls` inside `archmax_eval` reaches the
- * same tool by another door.
+ * Filter a listing a script or a grader asked for to what the state can reach,
+ * its enabled skills and the mounts it can see: the gateway's half of the
+ * invisibility rule the governance middleware applies to the model's own
+ * calls, since `tools.grep` inside `archmax_eval` reaches the same tool by
+ * another door. The same filter serves both (`redactStateListing`).
  */
 function redactPtcListing(
   result: unknown,
-  enabled: readonly string[],
-  skills: SkillPrefixes,
+  state: string,
   tool: string,
+  machine: WorkflowMachine,
+  skills: SkillPrefixes,
+  mounts: MountPrefixes,
 ): unknown {
-  if (skills.length === 0 || !REDACTED_TOOLS.has(tool)) return result;
-  if (typeof result !== "string") return result;
-  return redactDisabledSkills(result, enabled, skills);
+  if (!REDACTED_TOOLS.has(tool) || typeof result !== "string") return result;
+  return redactStateListing(result, state, machine, skills, mounts);
 }
 
 /** Normalize whatever the sandbox passed as tool input to a governable args object. */
@@ -156,9 +159,6 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
   // The machine is fixed for the gateway's life, so a state's surface is too.
   const surfaces = new Map<string, readonly string[]>();
   let callSeq = 0;
-  const skillSlugs = skills.map((skill) => skill.slug);
-  const redactSkills = (result: unknown, state: string, tool: string) =>
-    redactPtcListing(result, machine.enabledSkills(state, skillSlugs), skills, tool);
 
   /** The session's stable context ref, created on first use. */
   function contextFor(sessionId: string): PtcCallContext {
@@ -246,7 +246,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
             // the session id, signal and store an agent call would have had, and
             // `toolCallId` lets a delegation's telemetry trace back to this call.
             await inner.invoke(args as never, { ...(config ?? contextConfig), toolCallId: callId });
-        const served = redactSkills(result, state, tool);
+        const served = redactPtcListing(result, state, tool, machine, skills, mountPrefixes);
         settle("ok", served);
         return served;
       } catch (err) {

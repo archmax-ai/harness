@@ -161,6 +161,38 @@ describe("workspace router path spellings", () => {
 });
 
 /**
+ * A root-wide search names everything under the bound session's folder,
+ * including the runtime-internal areas a root listing hides and the kernel
+ * refuses by name. Its results omit them the same way.
+ */
+describe("workspace router search results", () => {
+  it("omits checkpoints and artifacts from a root-wide grep and glob, path-less or at '/'", () =>
+    withWorkspace(async (root) => {
+      const session = join(root, "sessions", "s1");
+      for (const dir of ["checkpoints", "artifacts", "scratchpad"]) mkdirSync(join(session, dir), { recursive: true });
+      writeFileSync(join(session, "checkpoints", "cp-1.json"), '{"salary":"locked seed"}\n');
+      writeFileSync(join(session, "artifacts", "a.json"), '{"salary":1}\n');
+      writeFileSync(join(session, "scratchpad", "n.txt"), "salary note\n");
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        for (const path of [undefined, "/"]) {
+          const grep = await ctx.backend.grep("salary", path);
+          expect(grep.matches?.map((m) => m.path), `grep ${String(path)}`).toEqual(["/scratchpad/n.txt"]);
+          const glob = await ctx.backend.glob("**/*", path);
+          const files = glob.files?.map((f) => f.path) ?? [];
+          expect(files, `glob ${String(path)}`).toContain("/scratchpad/n.txt");
+          expect(files.filter((f) => /checkpoints|artifacts/.test(f)), `glob ${String(path)}`).toEqual([]);
+        }
+      });
+      // The runtime's own, already-qualified search still reaches them.
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        const own = await ctx.backend.grep("salary", "/s1/checkpoints");
+        expect(own.matches?.map((m) => m.path)).toEqual(["/s1/checkpoints/cp-1.json"]);
+      });
+    }));
+});
+
+/**
  * A mount declared `searchable: false` stands for a backend a search would be
  * expensive or impossible against (a remote folder served live). The composite's
  * fan-out cannot tell an addressed search from a root-wide one — it hands the

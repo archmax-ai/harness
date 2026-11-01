@@ -254,7 +254,7 @@ A session's folder SHALL contain exactly these runtime-owned areas, addressed by
 
 - `scratchpad/` — the one working area; read and write with a default file tool (the file tools, the file operations) that the active state is granted, or with one of the host's `essentialTools`, SHALL be permitted in every state by kernel rule `tool.scratchpad`, whatever the granting entry narrows; a file tool the state is not granted, and any other tool, SHALL need its state's grant there;
 - `large_tool_results/`, `conversation_history/` — offload areas; reads and listings with a tool the scratchpad admits SHALL be permitted in every state by rule `tool.offload-read`, and agent writes or edits SHALL be blocked by rule `zone.runtime-managed` with a message naming `scratchpad/`;
-- `checkpoints/`, `artifacts/`, `_specs/` — runtime-internal areas; any agent tool access SHALL be blocked by rule `zone.runtime-internal`, and they SHALL be omitted from a root listing performed while a session is bound.
+- `checkpoints/`, `artifacts/`, `_specs/` — runtime-internal areas; any agent tool access SHALL be blocked by rule `zone.runtime-internal`, and they SHALL be omitted from a root listing and from the results of a `grep` or `glob` performed while a session is bound.
 
 Any other path in the session folder SHALL be governed by the active state's `tools.allow`. A root listing while a session is bound SHALL show the declared mounts (file mounts surfaced even when the session folder holds no such entry) and the agent-addressable areas, and no `workflows` entry, since that prefix is never mounted; a listing outside a bound session SHALL be returned unshaped.
 
