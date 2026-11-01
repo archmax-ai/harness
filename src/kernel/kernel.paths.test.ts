@@ -378,3 +378,62 @@ describe("resolveToolPaths", () => {
     expect(() => resolveToolPaths({ fetch: {} })).toThrow(/no path argument/);
   });
 });
+
+/**
+ * A path the kernel classifies one way and a host normalizer resolves another
+ * way is refused outright: a backslash, a control or format character, or
+ * whitespace at a segment's edge. Without this, `finance\q3.xlsx` classified
+ * as a run path with no mount, so the mount and skill rules abstained, while a
+ * host folding `\` to `/` read the governed mount.
+ */
+describe("plain path spellings", () => {
+  const mounts: MountPrefixes = { dirs: ["finance", "skills"], files: [], writable: [], governed: ["finance"], unsearchable: [] };
+  const skills = [{ slug: "payroll", prefix: "skills/payroll" }];
+  const spec: MachineSpec = {
+    states: {
+      work: { transitions: edge("pay") },
+      pay: { mounts: { allow: ["finance"] }, skills: { allow: ["payroll"] } },
+    },
+  };
+  const machine = WorkflowMachine.fromSpec(spec, ["get_markdown"], resolveToolPaths({ get_markdown: { path: "read" } }));
+  const decideOn = (tool: string, args: Record<string, unknown>, origin?: "script") =>
+    decide(machine, { kind: "tool-call", state: "work", tool, args, ...(origin ? { origin } : {}) }, [], mounts, {}, skills);
+
+  it("refuses every spelling a lenient normalizer would rewrite, on a host tool and a built-in", () => {
+    for (const p of [
+      "finance\\q3.xlsx",
+      " finance/q3.xlsx",
+      "\tfinance/q3.xlsx",
+      "\nfinance/q3.xlsx",
+      " finance/q3.xlsx",
+      "﻿finance/q3.xlsx",
+      "finance /q3.xlsx",
+      " skills/payroll/SKILL.md",
+      "skills\\payroll\\SKILL.md",
+    ]) {
+      for (const [tool, args] of [
+        ["get_markdown", { path: p }],
+        ["read_file", { file_path: p }],
+        ["read_file", { path: p }],
+      ] as const) {
+        const v = decideOn(tool, args);
+        expect(v.ruleId, `${tool} ${JSON.stringify(p)}`).toBe("tool.path-form");
+        expect(v.decision).toBe("block");
+      }
+      expect(decideOn("read_file", { file_path: p }, "script").ruleId).toBe("tool.path-form");
+    }
+  });
+
+  it("names the path visibly and says what is wrong with it", () => {
+    const v = decideOn("read_file", { file_path: " finance/q3.xlsx" });
+    expect(v.reason).toContain(JSON.stringify(" finance/q3.xlsx"));
+    expect(v.reason).toContain("starts or ends with whitespace");
+  });
+
+  it("still governs the plain spellings by mount and skill, and allows a space inside a name", () => {
+    expect(decideOn("get_markdown", { path: "finance/q3.xlsx" }).ruleId).toBe("mount.not-allowed");
+    expect(decideOn("read_file", { file_path: "finance/q3.xlsx" }).ruleId).toBe("mount.not-allowed");
+    expect(decideOn("read_file", { file_path: "skills/payroll/SKILL.md" }).ruleId).toBe("skill.not-allowed");
+    expect(decideOn("read_file", { file_path: "scratchpad/my notes.md" }).decision).toBe("allow");
+  });
+});

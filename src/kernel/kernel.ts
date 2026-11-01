@@ -29,7 +29,7 @@ import {
   type ToolPaths,
 } from "../machine/tool-paths.js";
 import type { VariableStore } from "../machine/variables.js";
-import { canonicalizeRelPath } from "../core/workspace.js";
+import { canonicalizeRelPath, pathFormProblem } from "../core/workspace.js";
 import {
   classifyWorkspacePath,
   mountNameOf,
@@ -805,6 +805,33 @@ const pathArgumentRule: GovernanceRule = (action, api) => {
 };
 
 /**
+ * Safety rule: a declared path is spelled plainly. A backslash, a control or
+ * format character, or whitespace at a segment's edge is refused
+ * (`core/workspace.ts`, `pathFormProblem`). The kernel classifies
+ * `finance\q3.xlsx` as a run path, while a host that folds `\` to `/` or trims
+ * the path would read the `finance` mount, so such a path is refused rather
+ * than normalized. The router refuses the same characters.
+ */
+const pathFormRule: GovernanceRule = (action, api) => {
+  if (action.kind !== "tool-call") return null;
+  for (const path of pathsOf(action, api)) {
+    const problem = pathFormProblem(path.path);
+    if (!problem) continue;
+    const several = Object.keys(toolPathsOf(action.tool, api) ?? {}).length > 1;
+    return {
+      decision: "block",
+      ruleId: "tool.path-form",
+      reason:
+        `[workflow] BLOCKED: '${action.tool}' on ${JSON.stringify(path.path)}${several ? ` (${path.arg})` : ""} ` +
+        `is not a plain workspace path: ${problem}. Separate segments with '/' and leave no ` +
+        `spaces or invisible characters at either end of a name, e.g. '${SESSION_OPEN_DIR}/notes.md'.`,
+      warn: true,
+    };
+  }
+  return null;
+};
+
+/**
  * Safety rule: the authoring plane is not addressable. Every
  * {@link AUTHORING_PREFIXES} prefix (`workflows/**`) has no route
  * in the agent's workspace composite, so an agent read finds nothing; a
@@ -845,6 +872,7 @@ const governancePlaneRule: GovernanceRule = (action, api) => {
 const SAFETY_RULES: readonly GovernanceRule[] = [
   // First: every path rule below reads the declared paths, which this vouches for.
   pathArgumentRule,
+  pathFormRule,
   governancePlaneRule,
   scriptSkillOnlyRule,
   replyOnlyRule,

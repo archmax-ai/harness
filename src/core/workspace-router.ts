@@ -9,7 +9,7 @@ import {
 } from "deepagents";
 import { asTextRead, binaryReadError } from "./binary-read.js";
 import { downloadViaReadRaw } from "./raw-download.js";
-import { canonicalizeRelPath } from "./workspace.js";
+import { canonicalizeRelPath, pathFormProblem } from "./workspace.js";
 import { SESSION_INTERNAL_DIRS, classifyWorkspacePath, mountNameOf } from "./zones.js";
 import type { MountPrefixes } from "./mounts.js";
 
@@ -24,6 +24,8 @@ import type { MountPrefixes } from "./mounts.js";
  *     uses relative and dot-prefixed paths. Without canonicalizing first,
  *     `./skills/x` misses the `/skills/` mount and silently falls through to
  *     the run root: reads report the file missing and writes land in run state.
+ *     A path a lenient normalizer would rewrite (a backslash, whitespace at a
+ *     segment's edge) is refused instead, as the kernel refuses it.
  *  2. **File mounts.** A mount key without a trailing slash (`/AGENTS.md`) names
  *     one file, which a route prefix cannot express: prefix matching is
  *     `startsWith`, so `/AGENTS.md` would also capture `/AGENTS.md.bak`, and the
@@ -99,10 +101,29 @@ export class WorkspacePathEscapeError extends Error {
   }
 }
 
+/**
+ * Thrown for a workspace path a lenient normalizer would rewrite (a backslash,
+ * a control character, whitespace at a segment's edge; see `pathFormProblem`).
+ */
+export class WorkspacePathFormError extends Error {
+  constructor(
+    readonly path: string,
+    readonly problem: string,
+  ) {
+    super(
+      `Path ${JSON.stringify(path)} is not a plain workspace path: ${problem}. ` +
+        `Separate segments with '/' and leave no spaces at either end of a name.`,
+    );
+    this.name = "WorkspacePathFormError";
+  }
+}
+
 const INTERNAL_DIR_SET: ReadonlySet<string> = new Set(SESSION_INTERNAL_DIRS);
 
-/** Canonical, leading-slash form of a workspace path. Throws on escapes. */
+/** Canonical, leading-slash form of a workspace path. Throws on escapes and ambiguous spellings. */
 function canonical(path: string): string {
+  const problem = pathFormProblem(String(path));
+  if (problem) throw new WorkspacePathFormError(path, problem);
   const { path: rel, escapes } = canonicalizeRelPath(path);
   if (escapes) throw new WorkspacePathEscapeError(path);
   return `/${rel}`;

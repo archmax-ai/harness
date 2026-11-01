@@ -485,6 +485,18 @@ as authored, and with no table nothing SHALL. A path argument declared `write` o
 mount and directing the model to `scratchpad/`; mounts SHALL also refuse writes, uploads and
 deletes themselves, so the kernel rule is the diagnostic layer rather than the only enforcement.
 
+Before any zone is decided, a declared path holding a backslash, a control or format character
+(NUL, tab, newline, BOM, zero-width space), or whitespace at either end of a segment (NBSP included)
+SHALL be blocked with `tool.path-form`, naming the path quoted. Such a path classifies by the
+characters it holds, while a host that folds `\` or trims would act on another path, so it is
+refused outright.
+
+#### Scenario: A backslash or edge whitespace cannot dodge a mount
+
+- **WHEN** the model calls `read_file` on `finance\q3.xlsx` or ` finance/q3.xlsx` in a state without
+  the governed mount `finance`
+- **THEN** both calls are blocked with `tool.path-form`, and `finance/q3.xlsx` with `mount.not-allowed`
+
 #### Scenario: Skill file cannot be tampered with
 
 - **WHEN** the model calls `write_file` or `edit_file` on `skills/data/SKILL.md`

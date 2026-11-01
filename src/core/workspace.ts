@@ -183,6 +183,35 @@ export function canonicalizeRelPath(p: string): CanonicalRelPath {
   return { path: out.join("/"), escapes };
 }
 
+/** A control (`Cc`) or format (`Cf`) character: NUL, tab, newline, BOM, zero-width space. */
+const CONTROL_OR_FORMAT = /[\p{Cc}\p{Cf}]/u;
+
+/** Whitespace at either end of a segment, NBSP and the other Unicode spaces included. */
+const EDGE_WHITESPACE = /^[\s\p{Z}]|[\s\p{Z}]$/u;
+
+/**
+ * Why `p` is not a plain spelling of a workspace path, or `null` when it is.
+ *
+ * {@link canonicalizeRelPath} splits on `/` and keeps every other character,
+ * so a backslash, a control or format character, or whitespace at the edge of
+ * a segment stays part of the name it governs. A host that folds `\` to `/` or
+ * trims each path would then act on a different path from the one governance
+ * classified (`finance\q3.xlsx`, ` finance/q3.xlsx`). Such a path is refused
+ * outright, so governance and every store agree on what it names.
+ *
+ * `.`, `..` and empty segments are left to {@link canonicalizeRelPath}: the
+ * kernel and the router collapse them the same way a filesystem does, and the
+ * runtime's own discovery addresses `./skills/`.
+ */
+export function pathFormProblem(p: string): string | null {
+  if (p.includes("\\")) return "it contains a backslash";
+  if (CONTROL_OR_FORMAT.test(p)) return "it contains a control or invisible formatting character";
+  if (normalizeRelPath(p).split("/").some((segment) => EDGE_WHITESPACE.test(segment))) {
+    return "a segment starts or ends with whitespace";
+  }
+  return null;
+}
+
 /** Convert a relative or virtual path to the leading-slash form backends expect. */
 export function toBackendPath(p: string): string {
   return `/${normalizeRelPath(p)}`;

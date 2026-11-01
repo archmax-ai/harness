@@ -7,7 +7,7 @@ import { FilesystemBackend, type BackendProtocolV2 } from "deepagents";
 import { defaultMounts } from "./mounts.js";
 import { createBackendSessionStore, createMemorySessionStore } from "./session-store.js";
 import { createWorkspaceContext } from "./workspace-context.js";
-import { WorkspacePathEscapeError, withoutDeletion } from "./workspace-router.js";
+import { WorkspacePathEscapeError, WorkspacePathFormError, withoutDeletion } from "./workspace-router.js";
 
 /**
  * The workspace router's contract is spelling-independence: `CompositeBackend`
@@ -142,6 +142,20 @@ describe("workspace router path spellings", () => {
         expect(() => ctx.backend.write("data/../../escape.txt", "x")).toThrow(
           /resolves outside the workspace root/,
         );
+      });
+    }));
+
+  it("refuses a path a lenient normalizer would rewrite", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        for (const spelling of ["skills\\orders.json", " skills/orders.json", "\tskills/orders.json", " skills/orders.json", "﻿skills/orders.json", "skills /orders.json"]) {
+          expect(() => ctx.backend.read(spelling), JSON.stringify(spelling)).toThrow(WorkspacePathFormError);
+          expect(() => ctx.backend.write(spelling, "x"), JSON.stringify(spelling)).toThrow(WorkspacePathFormError);
+        }
+        await expect(ctx.backend.ls(" skills")).rejects.toThrow(/segment starts or ends with whitespace/);
+        // A space inside a name is an ordinary file name.
+        expect((await ctx.backend.write("scratchpad/my notes.md", "x")).error).toBeUndefined();
       });
     }));
 });

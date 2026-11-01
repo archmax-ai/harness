@@ -40,7 +40,7 @@ each other's file, and a session's folder SHALL be stable across its turns.
 
 ### Requirement: Paths are canonicalized before routing
 
-The workspace router SHALL canonicalize every path before routing it: a leading slash added, `.` and empty (`//`) segments dropped, `..` applied against the accumulated path. Equivalent spellings (`./skills/x`, `//skills/x`, `skills/./x`) SHALL route to one mount. A path that resolves above the workspace root SHALL be refused with `WorkspacePathEscapeError` before any backend is consulted.
+The workspace router SHALL canonicalize every path before routing it: a leading slash added, `.` and empty (`//`) segments dropped, `..` applied against the accumulated path. Equivalent spellings (`./skills/x`, `//skills/x`, `skills/./x`) SHALL route to one mount. A path that resolves above the workspace root SHALL be refused with `WorkspacePathEscapeError` before any backend is consulted. A path holding a backslash, a control or format character, or whitespace at either end of a segment SHALL be refused with `WorkspacePathFormError`, the same spellings the kernel refuses as `tool.path-form`.
 
 #### Scenario: Dot-prefixed authored path routes to its mount
 
