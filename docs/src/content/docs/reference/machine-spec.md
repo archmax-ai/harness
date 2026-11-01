@@ -401,7 +401,8 @@ argument the tool declares as a **path** (`file_path`, `path`, `source`,
 `file_path`) is canonicalized before it is matched: a leading `/`, `./`, `//` and
 `..` are resolved, so a different spelling cannot dodge a guard. A path with a
 backslash, a control or invisible character, or a space at either end of a
-segment is refused (`tool.path-form`). Every **other**
+segment is refused (`tool.path-form`), as is one whose first segment is the
+session's own id (`zone.session-folder`). Every **other**
 argument is matched **as written**: a grant on
 `url: ["https://api.example.com/**"]` admits that API's URLs, and a stored value
 matches itself exactly. A denial on such an argument also catches its path form,

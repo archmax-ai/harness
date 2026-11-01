@@ -63,3 +63,30 @@ describe("archmax_run under skills.allow", () => {
     expect(eventsOf(events, "tool-blocked")[0]?.reason).toMatch(/skill 'orders'/);
   });
 });
+
+/**
+ * The session zone forwards a path that starts with the bound session id
+ * unchanged, for the runtime's own checkpoint writes. A model's write spelled
+ * that way would land in the real checkpoint folder and be replayed on the
+ * next cold load, so the kernel refuses the session's own folder by name.
+ */
+describe("the session's own store folder", () => {
+  it("refuses a model's write into '<session>/checkpoints/' and leaves the checkpoints alone", async () => {
+    const spec = { runtime: RUNTIME, states: { start: { triggers: { manual: null } } } };
+    const { agent, events, store } = await assemble(workspaceWith(spec), {
+      turns: [
+        { tool: "write_file", args: { file_path: "run-3/checkpoints/x.json", content: "{}" } },
+        { tool: "write_file", args: { file_path: "/run-3//checkpoints/y.json", content: "{}" } },
+        { reply: "ok" },
+      ],
+    });
+    await turn(agent, "run-3", "go");
+
+    expect(blockedTools(events)).toEqual(["write_file", "write_file"]);
+    expect(eventsOf(events, "tool-blocked")[0]?.reason).toMatch(/this session's own store folder/);
+    for (const name of ["x.json", "y.json"]) {
+      const res = await store.backend.readRaw(`/run-3/checkpoints/${name}`);
+      expect(res.data, name).toBeUndefined();
+    }
+  });
+});

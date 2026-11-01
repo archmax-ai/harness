@@ -99,6 +99,12 @@ export type ProposedAction =
        * turn it is in; absent means an ordinary turn.
        */
       replyOnly?: boolean;
+      /**
+       * The session the call runs in, whose store folder is the workspace root.
+       * Supplied by the caller that knows it; a tool path naming it as its
+       * first segment is then refused ({@link sessionFolderRule}).
+       */
+      sessionId?: string;
     }
   | {
       kind: "transition";
@@ -832,6 +838,31 @@ const pathFormRule: GovernanceRule = (action, api) => {
 };
 
 /**
+ * Safety rule: the session's own store folder is not addressable by name. The
+ * session zone passes a path that starts with the bound session id through
+ * unprefixed, so the runtime can address `<session>/checkpoints/` itself. A
+ * tool path spelled that way (`s1/checkpoints/x.json`, `s1/./checkpoints/x.json`)
+ * would reach the real checkpoint folder while classifying as a run path. Only
+ * fires when the caller supplies the session id; the runtime's own writers do
+ * not go through the kernel.
+ */
+const sessionFolderRule: GovernanceRule = (action, api) => {
+  if (action.kind !== "tool-call" || !action.sessionId) return null;
+  const { sessionId } = action;
+  const path = pathsOf(action, api).find((p) => canonicalizeRelPath(p.path).path.split("/")[0] === sessionId);
+  if (!path) return null;
+  return {
+    decision: "block",
+    ruleId: "zone.session-folder",
+    reason:
+      `[workflow] BLOCKED: ${subject(action, path, api)} names this session's own store folder ` +
+      `('${sessionId}/'). Workspace paths already start in this session: write ` +
+      `'${SESSION_OPEN_DIR}/notes.md' for a file of your own.`,
+    warn: true,
+  };
+};
+
+/**
  * Safety rule: the authoring plane is not addressable. Every
  * {@link AUTHORING_PREFIXES} prefix (`workflows/**`) has no route
  * in the agent's workspace composite, so an agent read finds nothing; a
@@ -873,6 +904,7 @@ const SAFETY_RULES: readonly GovernanceRule[] = [
   // First: every path rule below reads the declared paths, which this vouches for.
   pathArgumentRule,
   pathFormRule,
+  sessionFolderRule,
   governancePlaneRule,
   scriptSkillOnlyRule,
   replyOnlyRule,

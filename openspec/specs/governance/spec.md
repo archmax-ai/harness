@@ -489,13 +489,21 @@ Before any zone is decided, a declared path holding a backslash, a control or fo
 (NUL, tab, newline, BOM, zero-width space), or whitespace at either end of a segment (NBSP included)
 SHALL be blocked with `tool.path-form`, naming the path quoted. Such a path classifies by the
 characters it holds, while a host that folds `\` or trims would act on another path, so it is
-refused outright.
+refused outright. When the caller names the session the call runs in, a declared path
+whose canonical first segment is that session's id SHALL be blocked with `zone.session-folder`: the
+session zone forwards such a path unprefixed, into the session's own store folder.
 
 #### Scenario: A backslash or edge whitespace cannot dodge a mount
 
 - **WHEN** the model calls `read_file` on `finance\q3.xlsx` or ` finance/q3.xlsx` in a state without
   the governed mount `finance`
 - **THEN** both calls are blocked with `tool.path-form`, and `finance/q3.xlsx` with `mount.not-allowed`
+
+#### Scenario: The session's own folder is not addressable
+
+- **WHEN** the model in session `s1` writes `s1/checkpoints/x.json`, `s1/./checkpoints/x.json` or
+  `/s1//checkpoints/x.json`
+- **THEN** each call is blocked with `zone.session-folder`, and nothing is written to the checkpoints
 
 #### Scenario: Skill file cannot be tampered with
 

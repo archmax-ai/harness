@@ -172,7 +172,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
 
   function governedInvoke(
     inner: StructuredTool,
-    origin: PtcWrapOptions["origin"],
+    { origin, sessionId }: PtcWrapOptions,
     context: PtcCallContext,
   ): (input: unknown, config?: RunnableConfig) => Promise<unknown> {
     return async (input: unknown, config?: RunnableConfig) => {
@@ -187,7 +187,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
 
       const verdict = decide(
         machine,
-        { kind: "tool-call", state, tool, args, origin, ...(replyOnly ? { replyOnly } : {}) },
+        { kind: "tool-call", state, tool, args, origin, sessionId, ...(replyOnly ? { replyOnly } : {}) },
         policyRules,
         mountPrefixes,
         variables,
@@ -277,7 +277,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
     wrap(tools, { origin, sessionId }) {
       const context = contextFor(sessionId);
       return tools.map((inner) => {
-        const invoke = governedInvoke(inner, origin, context);
+        const invoke = governedInvoke(inner, { origin, sessionId }, context);
         // A Proxy rather than a rebuilt tool: `name`, `description` and schema
         // stay the originals. Non-intercepted members are bound to the target so
         // the real tool's internals never see the proxy as `this`.

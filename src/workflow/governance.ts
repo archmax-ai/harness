@@ -677,6 +677,8 @@ export function createGovernance(ctx: GovernanceContext): Governance {
         state: workflowState,
         tool: toolName,
         args,
+        // The bound session's own folder is not addressable by name.
+        sessionId,
         // A reply-only turn may only speak: the kernel refuses any call it makes, ahead of every grant.
         ...(isReplyOnly(request.state) ? { replyOnly: true } : {}),
       },

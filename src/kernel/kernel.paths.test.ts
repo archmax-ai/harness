@@ -437,3 +437,47 @@ describe("plain path spellings", () => {
     expect(decideOn("read_file", { file_path: "scratchpad/my notes.md" }).decision).toBe("allow");
   });
 });
+
+/**
+ * The session zone passes a path that starts with the bound session id through
+ * unprefixed, for the runtime's own `<session>/checkpoints/` writes. A tool
+ * path spelled that way reached the real checkpoint folder while classifying as
+ * an ordinary run path, and the checkpoint was replayed on the next cold load.
+ */
+describe("the session's own store folder", () => {
+  const machine = WorkflowMachine.fromSpec({ states: { work: {} } });
+  const decideOn = (tool: string, args: Record<string, unknown>, sessionId?: string) =>
+    decide(machine, { kind: "tool-call", state: "work", tool, args, ...(sessionId ? { sessionId } : {}) });
+
+  it("is refused under every spelling that canonicalizes to it", () => {
+    for (const p of [
+      "s1/checkpoints/x.json",
+      "s1/./checkpoints/x.json",
+      "s1//checkpoints/x.json",
+      "/s1/checkpoints/x.json",
+      "./s1/checkpoints/x.json",
+      "scratchpad/../s1/checkpoints/x.json",
+      "s1/scratchpad/n.txt",
+      "s1",
+    ]) {
+      const v = decideOn("write_file", { file_path: p, content: "{}" }, "s1");
+      expect(v.ruleId, p).toBe("zone.session-folder");
+      expect(v.decision, p).toBe("block");
+    }
+    expect(decideOn("read_file", { path: "s1/checkpoints/cp-1.json" }, "s1").ruleId).toBe("zone.session-folder");
+    expect(decideOn("grep", { pattern: "x", path: "s1" }, "s1").ruleId).toBe("zone.session-folder");
+    expect(decideOn("copy_file", { source: "scratchpad/a", destination: "s1/checkpoints/a" }, "s1").ruleId).toBe(
+      "zone.session-folder",
+    );
+  });
+
+  it("leaves the id-free spellings to the zone rules, and another name alone", () => {
+    expect(decideOn("write_file", { file_path: "checkpoints/x.json" }, "s1").ruleId).toBe("zone.runtime-internal");
+    expect(decideOn("write_file", { file_path: "scratchpad/s1/x.json" }, "s1").ruleId).toBe("tool.scratchpad");
+    expect(decideOn("write_file", { file_path: "s1x/a.md" }, "s1").ruleId).not.toBe("zone.session-folder");
+  });
+
+  it("is checked only when the caller names the session", () => {
+    expect(decideOn("write_file", { file_path: "s1/checkpoints/x.json" }).ruleId).not.toBe("zone.session-folder");
+  });
+});
