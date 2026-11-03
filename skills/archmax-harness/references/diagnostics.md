@@ -30,7 +30,7 @@ every warning you can.
 | `'*'` is not a tool name a grant may use | Move the wildcard into `forbid` or `forbid_always`. |
 | allows `task` | Delete the entry: grade with a grader state, delegate with `archmax_workflow_<slug>`. |
 | allows `archmax_run` on `skills/<x>/…`, which the state does not enable | Add `x` to the state's `skills.allow` (or `allow_always`), or drop the entry. |
-| `tools.forbid_always` denies `archmax_advance` | Remove it: no state could move. |
+| `'archmax_advance' cannot be denied` | Remove the entry. Restrict movement with `transitions` and `requires`; a state without transitions is terminal. |
 | not a skill slug (a path or a glob) | Use the bundle's directory name; narrow paths with a `tools.allow` entry. |
 | `${{…}}` is not a valid variable reference | Write `${{name}}` or `${{name.path}}`. |
 | guards on `${{x}}`, but nothing guarantees it (warning) | Add `x` to an earlier state's or the trigger's `requires`, or seed it. |

@@ -23,7 +23,7 @@ The disclosure side also disagrees with the kernel. A bare `*` withdraws only th
   whose message points to `transitions`. This is not breaking in practice. A bare denial could
   only strand a state, and `validate` already rejected it at the root. The one form that did
   something, `{ tool: archmax_advance, args: { to: [x] } }`, only repeated what the graph says:
-  drop the edge, or gate it with `when`/`requires`.
+  drop the edge, or gate leaving with `requires`.
 - The `validate` error for `forbid_always: [archmax_advance]` is removed. The load error
   replaces it.
 - A bare `*` withdraws every disclosed tool except `archmax_advance`. A non-terminal state is then

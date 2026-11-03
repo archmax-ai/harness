@@ -201,7 +201,7 @@ Denial sits in the same two positions, with the same entries. `tools.forbid_alwa
 denies in every state. `tools.forbid` on a state denies while it is active, subtracting from the
 workflow-wide grant, the state's own `allow` and the host's `essentialTools` alike. One rule covers
 both: **deny beats allow, and no narrower level widens a denial.** A forbid entry may name the tool
-`*`, meaning every tool, which is how a path is denied across the board; `*` in an `allow` list is
+`*`, meaning every tool except `archmax_advance`, which is how a path is denied across the board; `*` in an `allow` list is
 a load error. See
 [`tools.forbid_always` / `tools.forbid`](/reference/machine-spec/#toolsforbid_always--toolsforbid-denial).
 

@@ -23,6 +23,7 @@ import {
   type SignatureType,
 } from "./signature.js";
 import { compilePattern, jsonSchemaPatternError } from "./signature-pattern.js";
+import { ADVANCE_TOOL } from "./tool-names.js";
 import { MANUAL_TRIGGER, parseSessionPath, stateTriggerIds } from "./triggers.js";
 import {
   parseReferences,
@@ -1022,6 +1023,7 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
       for (const message of guardReferenceIssues(`State '${slug}'`, entry)) {
         issue(`${at}.tools.forbid.${index}`, message);
       }
+      if (advanceTool(entry)) issue(`${at}.tools.forbid.${index}`, ADVANCE_DENIAL_MESSAGE);
     }
   }
 
@@ -1038,6 +1040,7 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
     for (const message of guardReferenceIssues("tools.forbid_always", entry)) {
       issue(`tools.forbid_always.${index}`, message);
     }
+    if (advanceTool(entry)) issue(`tools.forbid_always.${index}`, ADVANCE_DENIAL_MESSAGE);
   }
 
   // Start wiring: at least one start state, and no trigger claimed by two
@@ -1082,6 +1085,20 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
 function wildcardTool(entry: z.infer<typeof allowEntrySchema>): boolean {
   return typeof entry === "string" ? entry === FORBID_ANY_TOOL : entry?.tool === FORBID_ANY_TOOL;
 }
+
+/** Whether an entry names `archmax_advance`, which no denial may. */
+function advanceTool(entry: z.infer<typeof allowEntrySchema>): boolean {
+  return typeof entry === "string" ? entry === ADVANCE_TOOL : entry?.tool === ADVANCE_TOOL;
+}
+
+/**
+ * Movement is the graph's to declare: `transitions` say where a state may go,
+ * and a state without them is terminal, so a denial of the advance has nothing
+ * to add and could only strand a state.
+ */
+const ADVANCE_DENIAL_MESSAGE =
+  `'${ADVANCE_TOOL}' cannot be denied: a state's 'transitions' decide where it may move, its ` +
+  `'requires' when it may leave, and a state without transitions is terminal.`;
 
 /**
  * The one wording for a wildcard where a grant belongs. Governance is

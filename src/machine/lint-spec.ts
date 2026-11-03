@@ -166,22 +166,6 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
     );
   }
 
-  // The workflow-wide tool denial that strands every run: no state could leave
-  // itself, so nothing reaches a terminal state.
-  const hasNonTerminal = Object.values(spec.states).some(
-    (state) => (state.transitions ?? []).length > 0,
-  );
-  for (const entry of spec.tools?.forbid_always ?? []) {
-    const { tool } = normalizeAllowEntry(entry);
-    if (tool !== ADVANCE_TOOL || !hasNonTerminal) continue;
-    error(
-      "tools.forbid_always",
-      `'tools.forbid_always' denies '${ADVANCE_TOOL}', the only way a state moves, in a workflow ` +
-        `that has outgoing transitions — so no run could ever leave its start state. Deny a tool ` +
-        `the graph does not need, or remove the entry.`,
-    );
-  }
-
   for (const [slug, state] of Object.entries(spec.states)) {
     const at = `states.${slug}`;
     const transitions = state.transitions ?? [];
