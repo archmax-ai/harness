@@ -300,6 +300,18 @@ describe("WorkflowMachine graph queries", () => {
     expect(m.disclosedTools("s").has("archmax_eval")).toBe(false);
   });
 
+  it("leaves only archmax_advance disclosed under a bare '*', and nothing in a terminal state", () => {
+    const m = WorkflowMachine.fromSpec({
+      tools: { forbid_always: ["*"] },
+      states: {
+        s: { triggers: { manual: null } as const, transitions: [{ to: "done", description: "d" }] },
+        done: {},
+      },
+    });
+    expect([...m.disclosedTools("s")]).toEqual(["archmax_advance"]);
+    expect([...m.disclosedTools("done")]).toEqual([]);
+  });
+
   it("grants write_todos as a default tool in every state and profile", () => {
     const states = {
       s: { tools: { allow: ["read_file"] }, transitions: [{ to: "done", description: "Test edge to done." }] },

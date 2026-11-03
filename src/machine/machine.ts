@@ -21,6 +21,7 @@ import {
   type TriggerBinding,
 } from "./triggers.js";
 import { ADVANCE_TOOL, DEFAULT_TOOLS, STATE_TYPE_TOOLS, TASK_TOOL, workflowSlugFromToolName } from "./tool-names.js";
+import { FORBID_ANY_TOOL } from "./spec-schema.js";
 import {
   BUILT_IN_TOOL_PATH_TABLE,
   pathArgsOf,
@@ -694,7 +695,9 @@ export class WorkflowMachine {
     // rule the grant side follows for a guarded allow entry.
     for (const entry of this.forbidEntries(state)) {
       const { tool, argMatchers } = normalizeAllowEntry(entry);
-      if (tool && !argMatchers) disclosed.delete(tool);
+      if (argMatchers || !tool) continue;
+      if (tool !== FORBID_ANY_TOOL) disclosed.delete(tool);
+      else for (const name of disclosed) if (name !== ADVANCE_TOOL) disclosed.delete(name);
     }
     return disclosed;
   }

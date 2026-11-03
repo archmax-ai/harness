@@ -195,8 +195,8 @@ so a host reasons about a surface with the same data:
 | `grader`, `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
 
 The machine's tool surface, the kernel's grant and `archmax validate` all read
-this one table. A `forbid` still blocks a control, and `archmax_advance` is left
-out of a terminal state's surface. See
+this one table. A `forbid` still blocks a control. `archmax_advance` is blocked only by
+a guarded entry naming it, never by `*`, and is left out of a terminal state's surface. See
 [`tools.allow`](/reference/machine-spec/#toolsallow-closed-by-default-governance).
 
 ### Building a host schema from a signature
