@@ -9,9 +9,11 @@ root, and an entry's mapping form is
 allowed) to a glob or list of globs — the entry's **argument guards** — and `paths` is
 shorthand for `args: { file_path: … }`. `connection` and `source` are free-form strings the
 runtime preserves and does not read. In a **forbid** entry only, the tool MAY be `*`, meaning every
-tool except the active state type's control tools (see the `governance` capability, "Workflow and
-state denials"): `{ tool: "*", paths: [logs/**] }` denies every such tool on those globs, a control
-is denied only by an entry naming it, and `*` in an `allow`
+tool except `archmax_advance` (see the `governance` capability, "Workflow and state denials"):
+`{ tool: "*", paths: [logs/**] }` denies every other tool on those globs. A forbid or
+`forbid_always` entry naming `archmax_advance`, bare or guarded, SHALL be a document-level error
+whose message points to `transitions` (and to a state without them, which is terminal) as the
+way to restrict movement. `*` in an `allow`
 entry SHALL be a document-level error, since a wildcard grant is not a thing this governance has.
 
 `tools.allow_always` SHALL be the workflow-wide grant when it is declared, an empty list included:
@@ -96,3 +98,37 @@ capability for enforcement.
 - **THEN** the lint warns once at `tools.allow_always`, naming the default tools and saying that a
   declared list replaces them — and it does not warn once any state's `tools.allow` or the root list
   names one of them
+
+#### Scenario: A forbid entry naming the advance fails loading
+
+- **WHEN** a state declares `tools: { forbid: [archmax_advance] }`, or the root declares
+  `tools: { forbid_always: [{ tool: archmax_advance, args: { to: [review] } }] }`
+- **THEN** loading fails naming the entry, and the message says that `transitions` decide where a
+  state may move and that a state without them is terminal
+
+### Requirement: Governance diagnostics for denial
+
+`archmax validate` SHALL report, from the same kernel the runtime uses:
+
+- a state that both grants and denies the same tool or skill — a **warning**, because the denial
+  wins and the grant governs nothing;
+- a `forbid` or `forbid_always` entry for a tool or slug that nothing would have granted where it
+  applies — a **warning**, because the entry governs nothing.
+
+A denial of `archmax_advance` needs no diagnostic here: it is a load error (see "Allow entries and
+the tools blocks"), and no `*` entry reaches it.
+
+#### Scenario: A grant the state's own denial cancels
+
+- **WHEN** state `draft` declares `tools: { allow: [write_file], forbid: [write_file] }`
+- **THEN** `validate` warns that the allow entry governs nothing, and the runtime blocks the call
+
+#### Scenario: A denial with nothing to deny
+
+- **WHEN** a state declares `skills: { forbid: [refund-policy] }` and nothing grants that slug there
+- **THEN** `validate` warns that the entry governs nothing
+
+#### Scenario: A wildcard denial cannot strand the graph
+
+- **WHEN** a workflow with two states declares `tools: { forbid_always: ["*"] }`
+- **THEN** `validate` reports no stranding error, and each non-terminal state can still advance

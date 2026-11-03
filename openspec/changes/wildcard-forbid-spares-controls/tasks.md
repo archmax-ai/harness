@@ -1,29 +1,38 @@
-## 1. Kernel and disclosure
+## 1. Schema and lint
 
-- [ ] 1.1 In `compileForbidRules` (`src/kernel/kernel.ts`), have a `*` entry abstain when
-  `api.machine.controlTools(action.state)` has the tool. Verify with new `kernel.pipeline.test.ts`
-  cases: a bare `*` in `forbid` and in `forbid_always` allows `archmax_advance`, `archmax_raise` and
-  `archmax_set_variables` and blocks `read_file`/`archmax_eval`; a guarded `*` with `args.to` does
-  not block an advance; `forbid: ["*", archmax_reset]` blocks `archmax_reset`.
-- [ ] 1.2 In `WorkflowMachine.disclosedTools` (`src/machine/machine.ts`), make a bare `*` delete
-  every disclosed tool outside `controlTools(state)`. Verify with a machine test: an agent state
-  with a transition and `forbid: ["*"]` discloses exactly its six controls, and a code state keeps
-  `archmax_get_history`.
-- [ ] 1.3 Cover inheritance: in a sub-workflow test, an ancestor's `forbid_always: ["*"]` leaves the
-  child's controls callable. Verify `npm test` passes.
+- [ ] 1.1 In `refineSpec` (`src/machine/spec-schema.ts`), reject any `tools.forbid` or
+  `tools.forbid_always` entry naming `archmax_advance`, bare or guarded, with a message that points
+  to `transitions` and terminal states. Verify with `spec-schema.test.ts` cases for both
+  positions and both forms.
+- [ ] 1.2 Remove the `forbid_always: [archmax_advance]` check from `lintSpec`
+  (`src/machine/lint-spec.ts`), and replace the two `validate.test.ts` cases (around line 2346) with
+  a load-error case. Verify `npx vitest run src/validate src/machine` passes.
 
-## 2. Docs, skill, changelog
+## 2. Kernel and disclosure
 
-- [ ] 2.1 Update `docs/src/content/docs/reference/machine-spec.md` (the `*` paragraph) and
-  `docs/src/content/docs/guides/workflow-machine.md` to say that `*` excepts the state type's
-  controls and that a control is denied by name. Verify `npm run docs:build` succeeds.
-- [ ] 2.2 Add a **breaking** entry to `docs/src/content/docs/reference/changelog.md` with the
-  migration (name `archmax_advance` instead of guarding `*`).
-- [ ] 2.3 Update `skills/archmax-harness/references/workflow-schema.md` (the `"*" = every tool`
-  comment and the forbid-entry example) to match. Verify by grep that no `every tool` wording is
-  left without the exception.
+- [ ] 2.1 In `compileForbidRules` (`src/kernel/kernel.ts`), have a `*` entry abstain when the tool is
+  `archmax_advance`. Verify with `kernel.pipeline.test.ts` cases: a bare `*` in `forbid` and in
+  `forbid_always` allows `archmax_advance` and blocks `read_file`, `archmax_eval`, `archmax_raise`,
+  `archmax_reset` and `archmax_set_variables`; a guarded `*` with `args.to` does not block an
+  advance; a code state's `archmax_get_history` is blocked by `*`.
+- [ ] 2.2 In `WorkflowMachine.disclosedTools` (`src/machine/machine.ts`), make a bare `*` delete every
+  disclosed tool except `archmax_advance`. Verify with a machine test: a non-terminal state with
+  `forbid: ["*"]` discloses exactly `archmax_advance`, and a terminal one discloses nothing.
+- [ ] 2.3 Cover inheritance: in a sub-workflow test, an ancestor's `forbid_always: ["*"]` leaves the
+  child's `archmax_advance` callable. Verify `npm test` passes.
 
-## 3. Specs
+## 3. Docs, skill, changelog
 
-- [ ] 3.1 Run `npx openspec validate wildcard-forbid-spares-controls --strict` and
+- [ ] 3.1 Update `docs/src/content/docs/reference/machine-spec.md` (the `*` paragraph, and the
+  `validate` sentence about denying `archmax_advance`), `reference/public-api.md` ("A `forbid`
+  still blocks a control") and `guides/workflow-machine.md`. Verify `npm run docs:build` succeeds.
+- [ ] 3.2 Add a **breaking** entry to `docs/src/content/docs/reference/changelog.md` with the
+  migration: drop the edge or gate it with `requires`/`when` instead of denying `archmax_advance`.
+- [ ] 3.3 Update `skills/archmax-harness/references/workflow-schema.md` (the `"*" = every tool`
+  comment) and `references/diagnostics.md` (the advance row becomes the load error). Verify by grep
+  that no forbid wording in `docs/` or `skills/` still implies the advance can be denied.
+
+## 4. Specs
+
+- [ ] 4.1 Run `npx openspec validate wildcard-forbid-spares-controls --strict` and
   `npm run typecheck` and confirm both pass.

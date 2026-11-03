@@ -7,17 +7,18 @@ A workflow SHALL declare denial in the same two positions it declares a grant:
 `allow` counterparts. There SHALL be no `policy` block: a root `policy:` key is an
 unrecognized-key load error.
 
-`tools.forbid_always` SHALL block each entry in every state — the always-on tools and the control
-tools included — and a state's `tools.forbid` SHALL block each entry while that state is active,
+`tools.forbid_always` SHALL block each entry in every state — the always-on tools and every control
+tool other than `archmax_advance` included — and a state's `tools.forbid` SHALL block each entry while that state is active,
 subtracting from the workflow's `allow_always`, the state's own `allow` and the always-on surface
 alike. Both SHALL bind every caller in the state they apply to: the session's agent, the agent's
 scripts, and an automated state's grader or script, the automated state's control tools included.
-A forbid entry MAY name the tool `*`, meaning every tool **except the control tools of the active
-state's type** (`STATE_TYPE_TOOLS[type].controls` and `archmax_advance`, see "Per-state tool
-disclosure"), which is how a path is denied across the board. This exception SHALL hold in
-`forbid_always` and `forbid` alike, for a bare `*` and a guarded one, and for an inherited denial.
-`archmax_eval` and `archmax_run` are not controls of any type, so `*` SHALL cover them. A control
-tool SHALL be denied only by an entry naming it. An entry's argument guards narrow what it denies:
+A forbid entry MAY name the tool `*`, meaning every tool **except `archmax_advance`**, which is how
+a path is denied across the board. No forbid entry SHALL ever block `archmax_advance`: not `*`,
+bare or guarded, in `forbid_always` or `forbid`, inherited or not, and not an entry naming it,
+which is a load error (see the `workflow-spec` capability, "Allow entries and the tools blocks").
+Where a state may move is declared by its `transitions` and gated by `requires`, and a state with no
+transitions is terminal, so a denial has nothing to add there. An entry's argument guards narrow
+what it denies:
 `{ tool: write_file, paths: [logs/**] }` denies that tool on those globs and nothing else.
 
 A sub-workflow SHALL inherit every ancestor's workflow-wide denials — `tools.forbid_always` and
@@ -37,31 +38,30 @@ denial bypassable and an allowance incomplete.
   and the model calls `write_file` on `secrets/.env`
 - **THEN** the call is blocked with `tool.forbidden`
 
-#### Scenario: A bare wildcard spares the state's controls
+#### Scenario: A bare wildcard spares only the advance
 
 - **WHEN** agent state `work` declares `tools: { forbid: ["*"] }` and has a transition to `done`
-- **THEN** `read_file`, `archmax_eval` and every host tool are blocked in `work` with
-  `tool.forbidden-here`, while `archmax_advance({ to: done })`, `archmax_raise` and
-  `archmax_set_variables` are accepted
+- **THEN** `archmax_advance({ to: done })` is accepted, while `read_file`, `archmax_eval`,
+  `archmax_raise`, `archmax_reset`, `archmax_wait`, the variable tools and every host tool are
+  blocked in `work` with `tool.forbidden-here`
 
-#### Scenario: A workflow-wide wildcard spares every state's controls
+#### Scenario: A workflow-wide wildcard spares the advance in every state type
 
 - **WHEN** the root declares `tools: { forbid_always: ["*"] }`
-- **THEN** in an agent state `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise` and
-  the variable tools pass the denial, in a code state `tools.archmax_get_history` passes it, and
-  every other tool is blocked with `tool.forbidden`
+- **THEN** in an agent state and in a code state alike `archmax_advance` passes the denial, and
+  every other tool, `archmax_get_history` included, is blocked with `tool.forbidden`
 
-#### Scenario: A guarded wildcard does not reach a control
+#### Scenario: A guarded wildcard does not reach the advance
 
 - **WHEN** a state declares `tools: { forbid: [{ tool: "*", args: { to: [review] } }] }` and the
   agent calls `archmax_advance({ to: review })` along an edge it has
 - **THEN** the denial does not apply, and the advance is decided by the edge and `requires` alone
 
-#### Scenario: A control named by its own entry is still denied
+#### Scenario: An inherited wildcard spares the child's advance
 
-- **WHEN** a state declares `tools: { forbid: ["*", archmax_reset] }`
-- **THEN** `archmax_reset` is blocked there with `tool.forbidden-here` and is not disclosed, while
-  `archmax_advance` is accepted
+- **WHEN** the root declares `tools: { forbid_always: ["*"] }` and delegates to a sub-workflow
+- **THEN** the child's states can still call `archmax_advance`, and every other child call is
+  blocked naming the root workflow
 
 #### Scenario: A forbidden always-on tool
 
@@ -85,11 +85,9 @@ denial bypassable and an allowance incomplete.
 
 #### Scenario: A state's denial binds an automated state's control
 
-- **WHEN** code state `check-refund` declares
-  `tools: { forbid: [{ tool: archmax_advance, args: { to: [refund-review] } }] }` and its script
-  calls `tools.archmax_advance({ to: "refund-review", reason })`
-- **THEN** the call is refused with `tool.forbidden-here` and no decision is recorded, while an
-  advance to `refund-request` is accepted
+- **WHEN** code state `check-refund` declares `tools: { forbid: [archmax_raise] }`
+- **THEN** `tools.archmax_raise` is `undefined` in its script, `decide` blocks the tool in
+  `check-refund` with `tool.forbidden-here`, and `tools.archmax_advance` is still offered
 
 #### Scenario: A workflow-wide denial withholds a control from automated states
 
@@ -125,8 +123,8 @@ list, a code state's script as its `tools` (see the `automated-states` capabilit
 disclosed tools SHALL be every tool an effective entry names, plus the control tools of its type
 other than `archmax_advance`, plus `archmax_advance` except in a terminal state, minus the tools a
 `forbid_always` or `forbid` entry names by name. A bare `*` entry SHALL withdraw every disclosed
-tool except the state type's controls, so the state is offered only those; a guarded `*` withdraws
-nothing, and the kernel refuses each call its guards match. The control tools other than `archmax_advance` are,
+tool except `archmax_advance`, so a non-terminal state is offered only that and a terminal state
+nothing; a guarded `*` withdraws nothing, and the kernel refuses each call its guards match. The control tools other than `archmax_advance` are,
 by type (`STATE_TYPE_TOOLS[type].controls`, see "The tool surface is allow-only and closed by
 default"):
 
@@ -171,11 +169,11 @@ whether or not the tool was disclosed.
 - **THEN** no model call in any state offers `archmax_raise`, and no grader or code state's script
   is offered it
 
-#### Scenario: A bare wildcard leaves only the controls offered
+#### Scenario: A bare wildcard leaves only the advance offered
 
 - **WHEN** agent state `work`, which has a transition, declares `tools: { forbid: ["*"] }`
-- **THEN** the model call in `work` offers exactly `archmax_advance`, `archmax_reset`,
-  `archmax_wait`, `archmax_raise`, `archmax_get_variables` and `archmax_set_variables`
+- **THEN** the model call in `work` offers exactly `archmax_advance`, and in a terminal state with
+  the same denial it offers no tool
 
 #### Scenario: task is never offered
 
