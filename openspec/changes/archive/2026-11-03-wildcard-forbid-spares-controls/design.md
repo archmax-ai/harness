@@ -17,7 +17,8 @@ all 18 tools. `lintSpec` reports nothing. The same happens with `tools.forbid_al
 
 ## Goals / Non-Goals
 
-**Goals:** No forbid entry ever blocks `archmax_advance`. A bare `*` and disclosure agree.
+**Goals:** No `*` entry and no bare entry blocks `archmax_advance`; a guarded advance denial still
+works. A bare `*` and disclosure agree.
 
 **Non-Goals:**
 
@@ -28,35 +29,31 @@ all 18 tools. `lintSpec` reports nothing. The same happens with `tools.forbid_al
 
 ## Decisions
 
-**Naming `archmax_advance` in a forbid list is a load error, not a silent no-op.** An entry the
-runtime ignores would still read to an author as a working denial. That is exactly the kind of
-document the schema already rejects, as with `*` in an `allow` list. The check goes in `refineSpec`
-next to the wildcard-grant message. The message tells the author to restrict movement with
-`transitions` and to leave a dead end with no transitions. Alternatives considered:
+**A bare entry naming `archmax_advance` is a load error; a guarded one is kept.** A bare
+denial can only strand a state, which is what a state without transitions already declares.
+A guarded denial (`{ tool: archmax_advance, args: { to: ["${{blocked_route}}"] } }`) blocks one
+edge depending on a variable, which neither `transitions` nor the per-state `requires` can say,
+so it stays. The check goes in `refineSpec` next to the wildcard-grant message, and the message
+points to `transitions`. Alternatives considered:
 
-- A `validate` warning. Rejected: the runtime would still load a document that says something it
-  will not do.
-- Keep the current lint error for `forbid_always` only. Rejected: it misses a state's `forbid`
-  and the guarded form.
+- Reject the guarded form too. Rejected: it removes the only per-edge, variable-dependent gate.
+- A `validate` warning for the bare form. Rejected: the runtime would still load a document that
+  can only strand its state.
 
 **The `*` rule abstains for `ADVANCE_TOOL`.** That is one comparison in the `*` branch of
-`compileForbidRules`. A named entry can no longer reach the kernel because loading rejects it,
-so the kernel needs no other change. Inherited `forbid_always` rules go through the same
-function, so a child's advance is spared too.
+`compileForbidRules`. A guarded entry naming the advance goes through the named-tool branch as
+before. Inherited `forbid_always` rules use the same function, so a child's advance is spared too.
 
 **A bare `*` in disclosure deletes every disclosed tool except `ADVANCE_TOOL`.** This follows the
 existing rule that a bare denial withdraws its tool and a guarded one does not. Terminal states
 already omit the advance, so they end up offered nothing.
 
-**The advance-stranding lint goes.** With both fixes in place, no forbid entry can strand a
-graph, so the check could never fire.
+**The advance-stranding lint goes.** The bare form it caught is now a load error.
 
 ## Risks / Trade-offs
 
-- [A workflow uses `{ tool: archmax_advance, args: { to: [x] } }` to block an edge, e.g. in a code
-  state] → It now fails loading with a message pointing to `transitions`. The changelog
-  notes to drop the edge or gate leaving with `requires`. No example in the repo does
-  this. Only `validate.test.ts` names the advance in a denial.
+- [A guarded advance denial whose glob matches every target, `args: { to: ["*"] }`, still
+  strands the state] → Not checked. It is an explicit, unusual choice, unlike `forbid: ["*"]`.
 - [A bare `*` now also blocks `archmax_raise`, so a state denied everything cannot fail itself]
   → This is intended: the author asked for nothing but movement. `budget.timeoutMs` and
   `on_error` still bound the state.

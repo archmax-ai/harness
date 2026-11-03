@@ -1410,9 +1410,11 @@ subtracts from the workflow-wide grant, the state's own `allow`, and the host's
 `essentialTools` alike, which is how a state opts out of a capability the workflow gives
 everywhere. An empty `allow` list leaves the grant standing.
 
-A forbid entry may name the tool `*`, meaning **every** tool except `archmax_advance`. No denial
-reaches the advance: `transitions` say where a state may move, `requires` when it may leave, and
-a state without transitions is terminal, so an entry naming `archmax_advance` is a load error.
+A forbid entry may name the tool `*`, meaning **every** tool except `archmax_advance`. The advance
+is denied only by a guarded entry naming it, such as
+`{ tool: archmax_advance, args: { to: [review] } }`, which blocks the advances it matches. A bare
+`archmax_advance` entry is a load error: `transitions` say where a state may move, `requires` when
+it may leave, and a state without transitions is terminal, so the bare denial could only strand it.
 The wildcard is vocabulary the deny side alone has, since a wildcard there can only close the
 surface further, and `*` in an `allow` list is a load error.
 

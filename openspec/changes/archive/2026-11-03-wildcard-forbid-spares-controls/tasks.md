@@ -1,7 +1,7 @@
 ## 1. Schema and lint
 
 - [x] 1.1 In `refineSpec` (`src/machine/spec-schema.ts`), reject any `tools.forbid` or
-  `tools.forbid_always` entry naming `archmax_advance`, bare or guarded, with a message that points
+  `tools.forbid_always` entry naming `archmax_advance` without argument guards, with a message that points
   to `transitions` and terminal states. Verify with `spec-schema.test.ts` cases for both
   positions and both forms.
 - [x] 1.2 Remove the `forbid_always: [archmax_advance]` check from `lintSpec`
@@ -27,7 +27,7 @@
   `validate` sentence about denying `archmax_advance`), `reference/public-api.md` ("A `forbid`
   still blocks a control") and `guides/workflow-machine.md`. Verify `npm run docs:build` succeeds.
 - [x] 3.2 Add a fix entry to `docs/src/content/docs/reference/changelog.md` with a one-line note
-  for a guarded `archmax_advance` denial: drop the edge or gate leaving with `requires`.
+  that a bare `archmax_advance` denial is now a load error and a guarded one still works.
 - [x] 3.3 Update `skills/archmax-harness/references/workflow-schema.md` (the `"*" = every tool`
   comment) and `references/diagnostics.md` (the advance row becomes the load error). Verify by grep
   that no forbid wording in `docs/` or `skills/` still implies the advance can be denied.

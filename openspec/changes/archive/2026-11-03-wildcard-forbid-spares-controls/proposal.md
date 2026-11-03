@@ -5,9 +5,11 @@ across the board", but the kernel matches it against every call name, `archmax_a
 So `tools: { forbid: ["*"] }`, the obvious way to say "this state may call nothing", also removes
 the state's only way to leave. The session strands until the recursion limit.
 
-The same is true of naming `archmax_advance` directly. Denying the advance is never needed:
-`transitions` already say where a state may move, `requires` gates when it may, and a state with no
-transitions is the declared dead end. Every other control tool (`archmax_raise`, `archmax_reset`,
+The same is true of naming `archmax_advance` bare. That denial is never needed: `transitions`
+already say where a state may move, `requires` gates when it may leave, and a state with no
+transitions is the declared dead end. A guarded denial
+(`{ tool: archmax_advance, args: { to: ["${{blocked_route}}"] } }`) does something neither can,
+blocking one edge depending on a variable, so it stays. Every other control tool (`archmax_raise`, `archmax_reset`,
 `archmax_wait`, the variable tools, `archmax_get_history`) has legitimate reasons to be denied and
 stays deniable.
 
@@ -16,14 +18,13 @@ The disclosure side also disagrees with the kernel. A bare `*` withdraws only th
 
 ## What Changes
 
-- No forbid entry blocks `archmax_advance`. `*` means every tool except `archmax_advance`, in
+- No `*` entry blocks `archmax_advance`. `*` means every tool except `archmax_advance`, in
   `tools.forbid` and `tools.forbid_always`, bare or guarded, own or inherited by a sub-workflow.
   Every other `archmax_*` tool stays covered by `*` and stays deniable by name.
-- A `forbid` or `forbid_always` entry naming `archmax_advance`, bare or guarded, is a load error
-  whose message points to `transitions`. This is not breaking in practice. A bare denial could
-  only strand a state, and `validate` already rejected it at the root. The one form that did
-  something, `{ tool: archmax_advance, args: { to: [x] } }`, only repeated what the graph says:
-  drop the edge, or gate leaving with `requires`.
+- A `forbid` or `forbid_always` entry naming `archmax_advance` without argument guards is a load
+  error whose message points to `transitions`. This is not breaking in practice: such a denial
+  could only strand a state, and `validate` already rejected it at the root. A guarded advance
+  denial keeps working.
 - The `validate` error for `forbid_always: [archmax_advance]` is removed. The load error
   replaces it.
 - A bare `*` withdraws every disclosed tool except `archmax_advance`. A non-terminal state is then

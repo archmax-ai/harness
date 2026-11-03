@@ -13,12 +13,12 @@ as it is today; the guides themselves describe only the present. Every release a
 
 A fix: a wildcard denial no longer strands a state.
 
-- **No denial reaches `archmax_advance`.** `tools: { forbid: ["*"] }` used to refuse the advance
-  too, so the state could never leave. `*` now means every tool except `archmax_advance`, bare or
-  guarded, in either position, inherited or not, and a bare `*` leaves only the advance offered.
-  An entry naming `archmax_advance` is a load error. If you used
-  `{ tool: archmax_advance, args: { to: [x] } }` to block an edge, drop the edge instead. The
-  `validate` error for `forbid_always: [archmax_advance]` is gone with it. See
+- **A wildcard no longer reaches `archmax_advance`.** `tools: { forbid: ["*"] }` used to refuse
+  the advance too, so the state could never leave. `*` now means every tool except
+  `archmax_advance`, bare or guarded, in either position, inherited or not, and a bare `*` leaves
+  only the advance offered. A bare `archmax_advance` entry is a load error, replacing the
+  `validate` error for `forbid_always: [archmax_advance]`. A guarded one,
+  `{ tool: archmax_advance, args: { to: [x] } }`, still blocks the advances it matches. See
   [denial](/reference/machine-spec/#toolsforbid_always--toolsforbid-denial).
 
 ## 2.0.0

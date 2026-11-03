@@ -131,6 +131,26 @@ describe("compileForbidRules", () => {
     expect(decide(child, { ...advance, tool: "read_file" }, inherited).reason).toContain("inherited from workflow 'root'");
   });
 
+  it("lets a guarded entry naming archmax_advance block the advances it matches", () => {
+    const machine = machineOf({
+      states: {
+        work: {
+          tools: { forbid: [{ tool: "archmax_advance", args: { to: ["review"] } }] },
+          transitions: [
+            { to: "review", description: "Large refund." },
+            { to: "done", description: "Small refund." },
+          ],
+        },
+        review: {},
+        done: {},
+      },
+    });
+    const advance = (to: string) =>
+      decide(machine, { kind: "tool-call", state: "work", tool: "archmax_advance", args: { to, reason: "r" } });
+    expect(advance("review").ruleId).toBe("tool.forbidden-here");
+    expect(advance("done").decision).toBe("allow");
+  });
+
   it("scopes a state's forbid to that state, beating its own allow", () => {
     const machine = machineOf({
       tools: { allow_always: [{ tool: "write_file" }] },

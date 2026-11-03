@@ -13,12 +13,13 @@ subtracting from the workflow's `allow_always`, the state's own `allow` and the 
 alike. Both SHALL bind every caller in the state they apply to: the session's agent, the agent's
 scripts, and an automated state's grader or script, the automated state's control tools included.
 A forbid entry MAY name the tool `*`, meaning every tool **except `archmax_advance`**, which is how
-a path is denied across the board. No forbid entry SHALL ever block `archmax_advance`: not `*`,
-bare or guarded, in `forbid_always` or `forbid`, inherited or not, and not an entry naming it,
-which is a load error (see the `workflow-spec` capability, "Allow entries and the tools blocks").
-Where a state may move is declared by its `transitions` and gated by `requires`, and a state with no
-transitions is terminal, so a denial has nothing to add there. An entry's argument guards narrow
-what it denies:
+a path is denied across the board. No `*` entry SHALL block `archmax_advance`, bare or guarded,
+in `forbid_always` or `forbid`, inherited or not. `archmax_advance` SHALL be denied only by an
+entry that names it **and** guards its arguments, such as
+`{ tool: archmax_advance, args: { to: [review] } }`, which blocks the advances it matches. A bare
+entry naming it is a load error (see the `workflow-spec` capability, "Allow entries and the tools
+blocks"): it could only strand the state, and a state with no transitions is already terminal.
+An entry's argument guards narrow what it denies:
 `{ tool: write_file, paths: [logs/**] }` denies that tool on those globs and nothing else.
 
 A sub-workflow SHALL inherit every ancestor's workflow-wide denials — `tools.forbid_always` and
@@ -85,9 +86,11 @@ denial bypassable and an allowance incomplete.
 
 #### Scenario: A state's denial binds an automated state's control
 
-- **WHEN** code state `check-refund` declares `tools: { forbid: [archmax_raise] }`
-- **THEN** `tools.archmax_raise` is `undefined` in its script, `decide` blocks the tool in
-  `check-refund` with `tool.forbidden-here`, and `tools.archmax_advance` is still offered
+- **WHEN** code state `check-refund` declares
+  `tools: { forbid: [{ tool: archmax_advance, args: { to: [refund-review] } }] }` and its script
+  calls `tools.archmax_advance({ to: "refund-review", reason })`
+- **THEN** the call is refused with `tool.forbidden-here` and no decision is recorded, while an
+  advance to `refund-request` is accepted
 
 #### Scenario: A workflow-wide denial withholds a control from automated states
 
