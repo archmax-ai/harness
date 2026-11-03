@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { runtimeNote } from "./core/messages.js";
 import {
   BUNDLED_AUTHORING_SKILL_DIR,
   createChatModel,
@@ -34,7 +36,9 @@ describe("BUNDLED_AUTHORING_SKILL_DIR", () => {
   it("resolves to an existing directory containing the archmax-harness authoring skill", () => {
     expect(existsSync(BUNDLED_AUTHORING_SKILL_DIR)).toBe(true);
     expect(existsSync(join(BUNDLED_AUTHORING_SKILL_DIR, "archmax-harness", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(BUNDLED_AUTHORING_SKILL_DIR, "archmax-harness", "references"))).toBe(true);
+    expect(existsSync(join(BUNDLED_AUTHORING_SKILL_DIR, "archmax-harness", "references"))).toBe(
+      true,
+    );
   });
 });
 
@@ -237,6 +241,78 @@ describe("createChatModel role normalization", () => {
       undefined,
     );
     expect(chunk.type).toBe("ai");
+  });
+});
+
+describe("createChatModel reasoning passback", () => {
+  const env: AgentEnv = {
+    apiBaseUrl: "https://example.test/v1",
+    apiKey: "key",
+    model: "model-x",
+  };
+
+  /** Run one model call against a stubbed endpoint and return the request's messages. */
+  async function sentMessages(
+    messages: BaseMessage[],
+    streaming: boolean,
+  ): Promise<Array<Record<string, unknown>>> {
+    let body: { messages: Array<Record<string, unknown>> } | undefined;
+    const fetchStub = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (!String(url).startsWith(env.apiBaseUrl)) throw new Error(`offline: ${String(url)}`);
+      body = JSON.parse(String(init?.body));
+      if (streaming) {
+        const sse = `data: ${JSON.stringify({ ...RAW_CHUNK, choices: [{ index: 0, delta: { role: "assistant", content: "ok" } }] })}\n\ndata: [DONE]\n\n`;
+        return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+      }
+      return Response.json({
+        ...RAW_RESPONSE,
+        choices: [
+          { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+        ],
+      });
+    });
+    try {
+      const model = createChatModel({ ...env, streaming });
+      // A streamed call estimates its tokens, which would fetch a tokenizer (and
+      // retry with backoff) through the stub.
+      vi.spyOn(
+        (model as unknown as { completions: { getNumTokens(text: unknown): Promise<number> } })
+          .completions,
+        "getNumTokens",
+      ).mockResolvedValue(1);
+      await model.invoke(messages);
+    } finally {
+      fetchStub.mockRestore();
+    }
+    return body!.messages;
+  }
+
+  const thinkingTurn = (): BaseMessage[] => [
+    new HumanMessage("refund order 7"),
+    new AIMessage({
+      content: "",
+      tool_calls: [{ id: "call_1", name: "fetch", args: {} }],
+      additional_kwargs: { reasoning_content: "look the order up first" },
+    }),
+    new ToolMessage({ content: "order 7", tool_call_id: "call_1" }),
+    ...runtimeNote("decision", "[decision] fetch -> check-fetch"),
+  ];
+
+  for (const streaming of [false, true]) {
+    it(`sends reasoning back, and an empty one on runtime notes (streaming: ${streaming})`, async () => {
+      const assistant = (await sentMessages(thinkingTurn(), streaming)).filter(
+        (m) => m.role === "assistant",
+      );
+      expect(assistant.map((m) => m.reasoning_content)).toEqual(["look the order up first", ""]);
+    });
+  }
+
+  it("leaves a request with no reasoning anywhere untouched", async () => {
+    const sent = await sentMessages(
+      [new HumanMessage("hi"), new AIMessage("hello"), new HumanMessage("again")],
+      false,
+    );
+    expect(sent.some((m) => "reasoning_content" in m)).toBe(false);
   });
 });
 
