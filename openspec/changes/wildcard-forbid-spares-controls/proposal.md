@@ -19,10 +19,11 @@ The disclosure side also disagrees with the kernel. A bare `*` withdraws only th
 - No forbid entry blocks `archmax_advance`. `*` means every tool except `archmax_advance`, in
   `tools.forbid` and `tools.forbid_always`, bare or guarded, own or inherited by a sub-workflow.
   Every other `archmax_*` tool stays covered by `*` and stays deniable by name.
-- **BREAKING**: a `forbid` or `forbid_always` entry naming `archmax_advance`, bare or guarded, is a
-  load error whose message points to `transitions`. A guarded advance denial such as
-  `{ tool: archmax_advance, args: { to: [x] } }` moves to the graph: drop the edge, or gate it
-  with `requires`/`when`.
+- A `forbid` or `forbid_always` entry naming `archmax_advance`, bare or guarded, is a load error
+  whose message points to `transitions`. This is not breaking in practice. A bare denial could
+  only strand a state, and `validate` already rejected it at the root. The one form that did
+  something, `{ tool: archmax_advance, args: { to: [x] } }`, only repeated what the graph says:
+  drop the edge, or gate it with `when`/`requires`.
 - The `validate` error for `forbid_always: [archmax_advance]` is removed. The load error
   replaces it.
 - A bare `*` withdraws every disclosed tool except `archmax_advance`. A non-terminal state is then
@@ -49,7 +50,7 @@ None.
   `src/validate/validate.test.ts` that cover it.
 - `docs/`: `reference/machine-spec.md` (the `*` paragraph and the `validate` sentence about a
   denial of `archmax_advance`), `reference/public-api.md` ("A `forbid` still blocks a control"),
-  `guides/workflow-machine.md` where it describes `*`, and a breaking `reference/changelog.md`
+  `guides/workflow-machine.md` where it describes `*`, and a `reference/changelog.md`
   entry.
 - `skills/archmax-harness/`: `references/workflow-schema.md` (`"*" = every tool` comment) and
   `references/diagnostics.md` (the `forbid_always denies archmax_advance` row becomes the load

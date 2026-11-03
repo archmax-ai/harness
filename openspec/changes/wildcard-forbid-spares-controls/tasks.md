@@ -26,8 +26,8 @@
 - [ ] 3.1 Update `docs/src/content/docs/reference/machine-spec.md` (the `*` paragraph, and the
   `validate` sentence about denying `archmax_advance`), `reference/public-api.md` ("A `forbid`
   still blocks a control") and `guides/workflow-machine.md`. Verify `npm run docs:build` succeeds.
-- [ ] 3.2 Add a **breaking** entry to `docs/src/content/docs/reference/changelog.md` with the
-  migration: drop the edge or gate it with `requires`/`when` instead of denying `archmax_advance`.
+- [ ] 3.2 Add a fix entry to `docs/src/content/docs/reference/changelog.md` with a one-line note
+  for a guarded `archmax_advance` denial: drop the edge or gate it with `when`/`requires`.
 - [ ] 3.3 Update `skills/archmax-harness/references/workflow-schema.md` (the `"*" = every tool`
   comment) and `references/diagnostics.md` (the advance row becomes the load error). Verify by grep
   that no forbid wording in `docs/` or `skills/` still implies the advance can be denied.

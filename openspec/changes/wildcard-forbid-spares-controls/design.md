@@ -54,8 +54,8 @@ graph, so the check could never fire.
 ## Risks / Trade-offs
 
 - [A workflow uses `{ tool: archmax_advance, args: { to: [x] } }` to block an edge, e.g. in a code
-  state] → It now fails loading with a message pointing to `transitions`. The changelog's
-  migration says to drop the edge or gate it with `requires`/`when`. No example in the repo does
+  state] → It now fails loading with a message pointing to `transitions`. The changelog
+  notes to drop the edge or gate it with `requires`/`when`. No example in the repo does
   this. Only `validate.test.ts` names the advance in a denial.
 - [A bare `*` now also blocks `archmax_raise`, so a state denied everything cannot fail itself]
   → This is intended: the author asked for nothing but movement. `budget.timeoutMs` and
