@@ -69,7 +69,7 @@ tools:
     - write_todos
     - archmax_eval
     - archmax_run
-  forbid_always: [archmax_reset]   # denied in every state, whatever grants it; "*" = every tool
+  forbid_always: [archmax_reset]   # denied in every state, whatever grants it; "*" = every tool but archmax_advance
 skills:
   allow_always: [order-data]       # skill bundles enabled in every state, by slug
   forbid_always: []                # skill bundles no state may reach
@@ -418,7 +418,7 @@ block one. What a type withholds, no grant can give.
 - read_file                                                     # a bare name: any arguments
 - { tool: write_file, args: { file_path: ["reports/*.json"] } } # matches when any glob matches
 - { tool: copy_file, paths: ["skills/**", "reports/**"] }       # every path argument must match
-- { tool: "*", paths: ["secrets/**"] }                          # forbid lists only: every tool
+- { tool: "*", paths: ["secrets/**"] }                          # forbid lists only: every tool but archmax_advance
 ```
 
 - A path argument (a tool's declared paths, else `file_path`) is canonicalized before it

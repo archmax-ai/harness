@@ -9,6 +9,18 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 2.0.1
+
+A fix: a wildcard denial no longer strands a state.
+
+- **A wildcard no longer reaches `archmax_advance`.** `tools: { forbid: ["*"] }` used to refuse
+  the advance too, so the state could never leave. `*` now means every tool except
+  `archmax_advance`, bare or guarded, in either position, inherited or not, and a bare `*` leaves
+  only the advance offered. A bare `archmax_advance` entry is a load error, replacing the
+  `validate` error for `forbid_always: [archmax_advance]`. A guarded one,
+  `{ tool: archmax_advance, args: { to: [x] } }`, still blocks the advances it matches. See
+  [denial](/reference/machine-spec/#toolsforbid_always--toolsforbid-denial).
+
 ## 2.0.0
 
 A smaller schema and a smaller first example. Upgrading from 1.x means deleting `maxTurns`,
