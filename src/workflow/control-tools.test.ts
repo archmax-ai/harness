@@ -787,6 +787,43 @@ describe("handleSetVariables — typed returns", () => {
   });
 });
 
+describe("handleSetVariables: a variable a path guard substitutes", () => {
+  const machine = WorkflowMachine.fromSpec({
+    tools: { forbid_always: [{ tool: "grep", paths: ["${{secret_dir}}"] }] },
+    states: {
+      work: {
+        tools: {
+          allow: [
+            { tool: "write_file", paths: ["${{dir}}/**"] },
+            { tool: "read_file", args: { file_path: "${{inbox}}/**" } },
+            { tool: "send_reply", args: { to: "${{email}}" } },
+            { tool: "write_file", paths: ["reports/${{name}}.md"] },
+          ],
+        },
+      },
+    },
+  } as MachineSpec);
+  const set = (variables: Record<string, unknown>) =>
+    handleSetVariables({ toolCallId: "c1", args: { variables }, state: { variables: {} } }, machine);
+
+  it("refuses a value naming no path, atomically, for every path guard form", () => {
+    for (const name of ["dir", "inbox", "secret_dir"]) {
+      for (const value of ["", ".", "/", "//", "./"]) {
+        const outcome = set({ [name]: value, other: "x" });
+        expect(outcome.delta, `${name}=${JSON.stringify(value)}`).toBeUndefined();
+        expect(outcome.message.status).toBe("error");
+        expect(String(outcome.message.content)).toContain(`'${name}' is used in a path guard`);
+      }
+    }
+  });
+
+  it("takes a real directory, and an empty value where no path guard substitutes it whole", () => {
+    expect(set({ dir: "reports" }).delta).toEqual({ dir: { value: "reports", locked: false } });
+    expect(set({ email: "" }).delta).toEqual({ email: { value: "", locked: false } });
+    expect(set({ name: "" }).delta).toEqual({ name: { value: "", locked: false } });
+  });
+});
+
 describe("handleSetVariables — a return's lock is the agent's call", () => {
   const machine = WorkflowMachine.fromSpec({
     states: {

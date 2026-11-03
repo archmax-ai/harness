@@ -6,6 +6,7 @@ import {
   dirName,
   fileDataToText,
   normalizeRelPath,
+  pathFormProblem,
   toBackendPath,
 } from "./workspace.js";
 
@@ -68,6 +69,24 @@ describe("canonicalizeRelPath", () => {
     expect(canonicalizeRelPath("../victim")).toEqual({ path: "../victim", escapes: true });
     expect(canonicalizeRelPath("a/../../b")).toEqual({ path: "../b", escapes: true });
     expect(canonicalizeRelPath("a/../b").escapes).toBe(false);
+  });
+});
+
+describe("pathFormProblem", () => {
+  it("refuses what a lenient normalizer would fold or trim", () => {
+    expect(pathFormProblem("finance\\q3.xlsx")).toMatch(/backslash/);
+    for (const p of [" finance/q3.xlsx", "finance/q3.xlsx ", "finance /q3.xlsx", "/ finance/q3.xlsx", "\u00a0finance/q3.xlsx", "\u2003finance/q3.xlsx"]) {
+      expect(pathFormProblem(p), JSON.stringify(p)).toMatch(/whitespace/);
+    }
+    for (const p of ["\tfinance/q3.xlsx", "\nfinance/q3.xlsx", "\ufefffinance/q3.xlsx", "fin\u200bance/q3.xlsx", "finance/q3\0.xlsx"]) {
+      expect(pathFormProblem(p), JSON.stringify(p)).toMatch(/control or invisible/);
+    }
+  });
+
+  it("accepts plain spellings, a space inside a name, and the dot forms canonicalization collapses", () => {
+    for (const p of ["finance/q3.xlsx", "/finance/q3.xlsx", "scratchpad/my notes.md", "skills/", "/", "", ".", "./skills/", "a//b", "a/../b"]) {
+      expect(pathFormProblem(p), JSON.stringify(p)).toBeNull();
+    }
   });
 });
 

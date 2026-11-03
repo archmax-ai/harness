@@ -378,3 +378,106 @@ describe("resolveToolPaths", () => {
     expect(() => resolveToolPaths({ fetch: {} })).toThrow(/no path argument/);
   });
 });
+
+/**
+ * A path the kernel classifies one way and a host normalizer resolves another
+ * way is refused outright: a backslash, a control or format character, or
+ * whitespace at a segment's edge. Without this, `finance\q3.xlsx` classified
+ * as a run path with no mount, so the mount and skill rules abstained, while a
+ * host folding `\` to `/` read the governed mount.
+ */
+describe("plain path spellings", () => {
+  const mounts: MountPrefixes = { dirs: ["finance", "skills"], files: [], writable: [], governed: ["finance"], unsearchable: [] };
+  const skills = [{ slug: "payroll", prefix: "skills/payroll" }];
+  const spec: MachineSpec = {
+    states: {
+      work: { transitions: edge("pay") },
+      pay: { mounts: { allow: ["finance"] }, skills: { allow: ["payroll"] } },
+    },
+  };
+  const machine = WorkflowMachine.fromSpec(spec, ["get_markdown"], resolveToolPaths({ get_markdown: { path: "read" } }));
+  const decideOn = (tool: string, args: Record<string, unknown>, origin?: "script") =>
+    decide(machine, { kind: "tool-call", state: "work", tool, args, ...(origin ? { origin } : {}) }, [], mounts, {}, skills);
+
+  it("refuses every spelling a lenient normalizer would rewrite, on a host tool and a built-in", () => {
+    for (const p of [
+      "finance\\q3.xlsx",
+      " finance/q3.xlsx",
+      "\tfinance/q3.xlsx",
+      "\nfinance/q3.xlsx",
+      " finance/q3.xlsx",
+      "﻿finance/q3.xlsx",
+      "finance /q3.xlsx",
+      " skills/payroll/SKILL.md",
+      "skills\\payroll\\SKILL.md",
+    ]) {
+      for (const [tool, args] of [
+        ["get_markdown", { path: p }],
+        ["read_file", { file_path: p }],
+        ["read_file", { path: p }],
+      ] as const) {
+        const v = decideOn(tool, args);
+        expect(v.ruleId, `${tool} ${JSON.stringify(p)}`).toBe("tool.path-form");
+        expect(v.decision).toBe("block");
+      }
+      expect(decideOn("read_file", { file_path: p }, "script").ruleId).toBe("tool.path-form");
+    }
+  });
+
+  it("names the path visibly and says what is wrong with it", () => {
+    const v = decideOn("read_file", { file_path: " finance/q3.xlsx" });
+    expect(v.reason).toContain(JSON.stringify(" finance/q3.xlsx"));
+    expect(v.reason).toContain("starts or ends with whitespace");
+  });
+
+  it("still governs the plain spellings by mount and skill, and allows a space inside a name", () => {
+    expect(decideOn("get_markdown", { path: "finance/q3.xlsx" }).ruleId).toBe("mount.not-allowed");
+    expect(decideOn("read_file", { file_path: "finance/q3.xlsx" }).ruleId).toBe("mount.not-allowed");
+    expect(decideOn("read_file", { file_path: "skills/payroll/SKILL.md" }).ruleId).toBe("skill.not-allowed");
+    expect(decideOn("read_file", { file_path: "scratchpad/my notes.md" }).decision).toBe("allow");
+  });
+});
+
+/**
+ * The session zone passes a path that starts with the bound session id through
+ * unprefixed, for the runtime's own `<session>/checkpoints/` writes. A tool
+ * path spelled that way reached the real checkpoint folder while classifying as
+ * an ordinary run path, and the checkpoint was replayed on the next cold load.
+ */
+describe("the session's own store folder", () => {
+  const machine = WorkflowMachine.fromSpec({ states: { work: {} } });
+  const decideOn = (tool: string, args: Record<string, unknown>, sessionId?: string) =>
+    decide(machine, { kind: "tool-call", state: "work", tool, args, ...(sessionId ? { sessionId } : {}) });
+
+  it("is refused under every spelling that canonicalizes to it", () => {
+    for (const p of [
+      "s1/checkpoints/x.json",
+      "s1/./checkpoints/x.json",
+      "s1//checkpoints/x.json",
+      "/s1/checkpoints/x.json",
+      "./s1/checkpoints/x.json",
+      "scratchpad/../s1/checkpoints/x.json",
+      "s1/scratchpad/n.txt",
+      "s1",
+    ]) {
+      const v = decideOn("write_file", { file_path: p, content: "{}" }, "s1");
+      expect(v.ruleId, p).toBe("zone.session-folder");
+      expect(v.decision, p).toBe("block");
+    }
+    expect(decideOn("read_file", { path: "s1/checkpoints/cp-1.json" }, "s1").ruleId).toBe("zone.session-folder");
+    expect(decideOn("grep", { pattern: "x", path: "s1" }, "s1").ruleId).toBe("zone.session-folder");
+    expect(decideOn("copy_file", { source: "scratchpad/a", destination: "s1/checkpoints/a" }, "s1").ruleId).toBe(
+      "zone.session-folder",
+    );
+  });
+
+  it("leaves the id-free spellings to the zone rules, and another name alone", () => {
+    expect(decideOn("write_file", { file_path: "checkpoints/x.json" }, "s1").ruleId).toBe("zone.runtime-internal");
+    expect(decideOn("write_file", { file_path: "scratchpad/s1/x.json" }, "s1").ruleId).toBe("tool.scratchpad");
+    expect(decideOn("write_file", { file_path: "s1x/a.md" }, "s1").ruleId).not.toBe("zone.session-folder");
+  });
+
+  it("is checked only when the caller names the session", () => {
+    expect(decideOn("write_file", { file_path: "s1/checkpoints/x.json" }).ruleId).not.toBe("zone.session-folder");
+  });
+});

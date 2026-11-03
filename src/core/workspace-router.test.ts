@@ -7,7 +7,7 @@ import { FilesystemBackend, type BackendProtocolV2 } from "deepagents";
 import { defaultMounts } from "./mounts.js";
 import { createBackendSessionStore, createMemorySessionStore } from "./session-store.js";
 import { createWorkspaceContext } from "./workspace-context.js";
-import { WorkspacePathEscapeError, withoutDeletion } from "./workspace-router.js";
+import { WorkspacePathEscapeError, WorkspacePathFormError, withoutDeletion } from "./workspace-router.js";
 
 /**
  * The workspace router's contract is spelling-independence: `CompositeBackend`
@@ -142,6 +142,52 @@ describe("workspace router path spellings", () => {
         expect(() => ctx.backend.write("data/../../escape.txt", "x")).toThrow(
           /resolves outside the workspace root/,
         );
+      });
+    }));
+
+  it("refuses a path a lenient normalizer would rewrite", () =>
+    withWorkspace(async (root) => {
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        for (const spelling of ["skills\\orders.json", " skills/orders.json", "\tskills/orders.json", " skills/orders.json", "﻿skills/orders.json", "skills /orders.json"]) {
+          expect(() => ctx.backend.read(spelling), JSON.stringify(spelling)).toThrow(WorkspacePathFormError);
+          expect(() => ctx.backend.write(spelling, "x"), JSON.stringify(spelling)).toThrow(WorkspacePathFormError);
+        }
+        await expect(ctx.backend.ls(" skills")).rejects.toThrow(/segment starts or ends with whitespace/);
+        // A space inside a name is an ordinary file name.
+        expect((await ctx.backend.write("scratchpad/my notes.md", "x")).error).toBeUndefined();
+      });
+    }));
+});
+
+/**
+ * A root-wide search names everything under the bound session's folder,
+ * including the runtime-internal areas a root listing hides and the kernel
+ * refuses by name. Its results omit them the same way.
+ */
+describe("workspace router search results", () => {
+  it("omits checkpoints and artifacts from a root-wide grep and glob, path-less or at '/'", () =>
+    withWorkspace(async (root) => {
+      const session = join(root, "sessions", "s1");
+      for (const dir of ["checkpoints", "artifacts", "scratchpad"]) mkdirSync(join(session, dir), { recursive: true });
+      writeFileSync(join(session, "checkpoints", "cp-1.json"), '{"salary":"locked seed"}\n');
+      writeFileSync(join(session, "artifacts", "a.json"), '{"salary":1}\n');
+      writeFileSync(join(session, "scratchpad", "n.txt"), "salary note\n");
+      const ctx = createWorkspaceContext({ rootDir: root });
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        for (const path of [undefined, "/"]) {
+          const grep = await ctx.backend.grep("salary", path);
+          expect(grep.matches?.map((m) => m.path), `grep ${String(path)}`).toEqual(["/scratchpad/n.txt"]);
+          const glob = await ctx.backend.glob("**/*", path);
+          const files = glob.files?.map((f) => f.path) ?? [];
+          expect(files, `glob ${String(path)}`).toContain("/scratchpad/n.txt");
+          expect(files.filter((f) => /checkpoints|artifacts/.test(f)), `glob ${String(path)}`).toEqual([]);
+        }
+      });
+      // The runtime's own, already-qualified search still reaches them.
+      await ctx.sessionZone.sessionScoped("s1", async () => {
+        const own = await ctx.backend.grep("salary", "/s1/checkpoints");
+        expect(own.matches?.map((m) => m.path)).toEqual(["/s1/checkpoints/cp-1.json"]);
       });
     }));
 });
