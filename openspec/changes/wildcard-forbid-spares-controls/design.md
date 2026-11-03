@@ -20,6 +20,7 @@ all 18 tools. `lintSpec` reports nothing. The same happens with `tools.forbid_al
 **Goals:** No forbid entry ever blocks `archmax_advance`. A bare `*` and disclosure agree.
 
 **Non-Goals:**
+
 - Exempting any other control tool. They all stay covered by `*` and deniable by name.
 - Changing consumer governance rules, safety rules, or the reply-only turn, which refuses every
   call. The exemption is about `forbid` entries only.
@@ -32,6 +33,7 @@ runtime ignores would still read to an author as a working denial. That is exact
 document the schema already rejects, as with `*` in an `allow` list. The check goes in `refineSpec`
 next to the wildcard-grant message. The message tells the author to restrict movement with
 `transitions` and to leave a dead end with no transitions. Alternatives considered:
+
 - A `validate` warning. Rejected: the runtime would still load a document that says something it
   will not do.
 - Keep the current lint error for `forbid_always` only. Rejected: it misses a state's `forbid`

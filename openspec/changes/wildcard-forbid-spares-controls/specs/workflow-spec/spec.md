@@ -128,7 +128,9 @@ the tools blocks"), and no `*` entry reaches it.
 - **WHEN** a state declares `skills: { forbid: [refund-policy] }` and nothing grants that slug there
 - **THEN** `validate` warns that the entry governs nothing
 
-#### Scenario: A wildcard denial cannot strand the graph
+#### Scenario: Forbidding movement strands the graph
 
-- **WHEN** a workflow with two states declares `tools: { forbid_always: ["*"] }`
-- **THEN** `validate` reports no stranding error, and each non-terminal state can still advance
+- **WHEN** a workflow with two states declares `tools: { forbid_always: [archmax_advance] }`
+- **THEN** loading fails before any diagnostic runs, since the entry names `archmax_advance`; and a
+  workflow declaring `tools: { forbid_always: ["*"] }` instead loads, gets no stranding error, and
+  each non-terminal state can still advance
