@@ -61,11 +61,11 @@ Structural assertions are marked ˢ.
 | `trail: { to?, kind?, reason?, count }`ˢ | Exactly `count` trail steps match every given field. `count: 0` means the state was never entered. |
 | `noTraversal: true`ˢ | Nothing moved the session: the trail holds only trigger arrivals. |
 | `triggerArrival: <id>`ˢ | The session arrived on that trigger. |
+| `variables: { expect, path?, locked? }`ˢ | Each named variable equals its expected value (deep equality). `path` steps into a value; `locked` checks the lock. |
 | `reply: { includes?, excludes? }` | Each token or `"/regex/flags"` string, one or a list, matches (or, for `excludes`, matches none of) every assistant message of the session so far. |
 | `calledTool` / `notCalledTool` / `blockedTool: { name, input? }` | The agent called the tool (`input` matches partially), never called it, or called it and governance refused it. `blockedTool` is how you test a guard. |
 | `ranWorkflow: { workflow, status?, count? }` | A sub-workflow ran, whoever called it, a script included. |
 | `usedNoTools: true` | The agent called no tool in the whole conversation. |
-| `variables: { expect, path?, locked? }` | Each named variable equals its expected value (deep equality). `path` steps into a value; `locked` checks the lock. |
 | `grade: { closedQA, atLeast }` | The judge scores the action's turn against the criterion, and a score below `atLeast` fails the case. Needs `tests.judge`. |
 
 - **A missed structural assertion halts the case**, and later steps are reported

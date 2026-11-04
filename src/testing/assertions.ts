@@ -17,15 +17,18 @@ import { resolvePath } from "../machine/variables.js";
 export type GradeFn = (criteria: string, evidence: JudgeEvidence) => Promise<JudgeResult>;
 
 /**
- * The **structural** assertions: the ones that assert where the session went.
- * Once one of them fails, every later step would drive or grade a session the
- * case no longer describes — a `decide` after a failed `parked` cannot succeed,
- * and a `reply` check after a failed `reachedState` grades the wrong state's
- * output — so a failure here halts the case.
+ * The **structural** assertions: the ones that assert where the session went
+ * and what it carries. Once one of them fails, every later step would drive or
+ * grade a session the case no longer describes — a `decide` after a failed
+ * `parked` cannot succeed, and a `reply` check after a failed `reachedState`
+ * grades the wrong state's output — so a failure here halts the case.
+ * `variables` belongs here because variables hold seeded and locked host values
+ * and route `${{…}}` guards: a wrong value means a different session.
  *
- * The content assertions (`reply`, `calledTool`, `notCalledTool`, `usedNoTools`,
- * `grade`) are deliberately absent: a wrong reply is a defect in the turn, not
- * evidence that the session stopped being the one under test.
+ * The content assertions (`reply`, `calledTool`, `notCalledTool`, `blockedTool`,
+ * `usedNoTools`, `ranWorkflow`, `grade`) are deliberately absent: a wrong reply
+ * is a defect in the turn, not evidence that the session stopped being the one
+ * under test.
  */
 const STRUCTURAL_ASSERTS: ReadonlySet<CaseExpectation["assert"]> = new Set([
   "succeeded",
