@@ -7,7 +7,7 @@
 ## 2. CI
 
 - [x] 2.1 Add a `docs` job to `.github/workflows/ci.yml` that runs `npm ci` and `npm run build` in `docs/` (Node 22, npm cache keyed on `docs/package-lock.json`) and verify it with `actionlint` or a YAML parse
-- [ ] 2.2 Verify the `docs` check runs and passes on the pull request once it is opened
+- [x] 2.2 Verify the `docs` check runs and passes on the pull request once it is opened
 
 ## 3. Spec
 
