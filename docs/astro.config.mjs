@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import { archmaxTheme } from '@archmax-ai/starlight-theme';
+import starlightLinksValidator from 'starlight-links-validator';
 
 // https://astro.build/config
 export default defineConfig({
@@ -10,6 +11,8 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			plugins: [
+				// Fails the build on a link to an unknown page or anchor (#7).
+				starlightLinksValidator(),
 				archmaxTheme({
 					product: 'harness',
 					tagline: 'A governed runtime for LangChain Deep Agents',
