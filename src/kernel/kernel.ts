@@ -4,7 +4,7 @@ import {
   HARNESS_CONTROL_TOOLS,
   EVAL_TOOL,
   SET_VARIABLES_TOOL,
-  UNGRANTABLE_TOOLS,
+  TASK_TOOL,
 } from "../machine/tool-names.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import type { ForbidEntry } from "../machine/types.js";
@@ -276,7 +276,7 @@ const evalBlockRule: GovernanceRule = (action) => {
  * same fact.
  */
 const taskBlockRule: GovernanceRule = (action) => {
-  if (action.kind !== "tool-call" || !UNGRANTABLE_TOOLS.has(action.tool)) return null;
+  if (action.kind !== "tool-call" || action.tool !== TASK_TOOL) return null;
   return { decision: "block", ruleId: "tool.ungrantable", reason: TASK_BLOCK_MESSAGE, warn: false };
 };
 
@@ -874,8 +874,9 @@ export type ForbidScope = "workflow" | "state";
  * A denial is evaluated ahead of every grant and every consumer rule, so **deny
  * beats allow and no narrower level widens a denial**: nothing reaches past a
  * workflow's `forbid_always`, and nothing in a state reaches past its `forbid`.
- * An entry naming the tool `*` denies every tool; an entry with argument guards
- * denies only the calls those guards match.
+ * An entry naming the tool `*` denies every tool but `archmax_advance`, which only
+ * a guarded entry naming it denies (a bare one is a load error); an entry with
+ * argument guards denies only the calls those guards match.
  *
  * Returns an empty list for an empty declaration, so the pipeline is unchanged
  * for a workflow that denies nothing. Pure — the same rules run at runtime and
@@ -910,6 +911,8 @@ export function compileForbidRules(
     rules.push((action, api) => {
       if (action.kind !== "tool-call") return null;
       if (!anyTool && action.tool !== tool) return null;
+      // No wildcard reaches the advance: movement is the graph's to declare.
+      if (anyTool && action.tool === ADVANCE_TOOL) return null;
       if (scope === "state" && action.state !== state) return null;
       // A state's own denial governs that state's surface, which a read on
       // runtime authority runs outside of; only workflow-wide denials bind it.

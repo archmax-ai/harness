@@ -13,7 +13,12 @@ The archmax harness requires **Node.js 22 or later** and ships as an ESM-only np
 npm install @archmax-ai/harness
 ```
 
-This installs the runtime library and the `archmax` CLI.
+This installs the runtime library and the `archmax` CLI. Host tools written with LangChain's
+`tool()`, as in the [quickstart](/getting-started/quickstart/), also need `langchain` and `zod`:
+
+```bash
+npm install langchain zod
+```
 
 For hacking on the SDK itself, see
 [development setup](/contributing/development/).
@@ -70,12 +75,15 @@ Prompt caching, streaming and token pricing have their own variables. The
 [configuration reference](/reference/configuration/) lists the
 full set.
 
-`.env` is loaded from the **workspace root**. That is the directory passed via
-`--root` (or `rootDir`), or the current working directory. Variables already
-present in the real process environment always win.
+`.env` is loaded from the **workspace root**: the directory passed as `--root`
+(or `workspace.rootDir`), else the current working directory. Variables already
+set in the process environment win.
 
 ```bash
-cp .env.example .env   # then fill in your credentials
+# .env
+ARCHMAX_API_BASE_URL=https://openrouter.ai/api/v1
+ARCHMAX_API_KEY=sk-or-v1-...
+ARCHMAX_MODEL=anthropic/claude-sonnet-4.6
 ```
 
 To supply a model programmatically instead, see the

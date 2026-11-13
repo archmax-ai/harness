@@ -21,7 +21,7 @@ import {
   READ_FILE_TEXT_ONLY_LINE,
   textOnlyReadFileDescription,
 } from "../core/binary-read.js";
-import { createFileOperationTools, workspaceEntryKind } from "../core/file-operations.js";
+import { createFileOperationTools, workspaceEntryKind, workspaceEntrySize } from "../core/file-operations.js";
 import { createSessionFiles } from "../core/attachments.js";
 import { fileGovernance, runtimeReadDenial } from "../workflow/file-values.js";
 import { runWithToolContext } from "../core/tool-context.js";
@@ -48,7 +48,7 @@ import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
 import { loadPromptCacheEnv } from "../env.js";
 import { workflowDenials, type GovernanceRule } from "../kernel/kernel.js";
-import { UNGRANTABLE_TOOLS, type WorkflowMachine } from "../machine/machine.js";
+import { TASK_TOOL, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
 import { TODO_TOOL, workflowToolName } from "../machine/tool-names.js";
 import type { ToolPaths, ToolPathTable } from "../machine/tool-paths.js";
@@ -507,7 +507,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   const disclosedAnywhere = new Set(
     Object.keys(target.spec.states).flatMap((slug) => [...target.disclosedTools(slug)]),
   );
-  const withheld = [...UNGRANTABLE_TOOLS].filter((tool) => !disclosedAnywhere.has(tool));
+  const withheld = [TASK_TOOL].filter((tool) => !disclosedAnywhere.has(tool));
   emit({ type: "prompt-shaping", cache: cacheStrategy, withheld });
 
   // One dispatcher per composition, so the depth, cycle and concurrency bounds
@@ -522,6 +522,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     mountPrefixes: ctx.mountPrefixes,
     skills: ctx.skillTable,
     kind: (path) => workspaceEntryKind(ctx.backend, path),
+    size: (path) => workspaceEntrySize(ctx.backend, path),
   });
   const dispatcher = createSubWorkflowDispatcher({
     registry: input.registry,
@@ -576,6 +577,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     ...(input.child ? { child: true } : {}),
     // Through the workspace, bound to the turn's session: what a `file` value names.
     entryKind: (path) => workspaceEntryKind(ctx.backend, path),
+    entrySize: (path) => workspaceEntrySize(ctx.backend, path),
   });
 
   // Native Anthropic/Bedrock caching is LangChain's own middleware; the

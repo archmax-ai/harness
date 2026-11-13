@@ -58,11 +58,13 @@ An automated state SHALL be offered exactly its own state's tool surface:
 - the workflow-wide grant: the workflow's declared `tools.allow_always`, or the default tools when
   it declares none;
 - the host's `essentialTools`;
-- the automated state's control tools (see "An automated state's controls").
+- the automated state's control tools (`STATE_TYPE_TOOLS[type].controls`, see "An automated
+  state's controls").
 
-It SHALL NOT be offered the agent-only tools `write_todos`, `archmax_eval` and `archmax_run`,
-nor `archmax_wait` or `archmax_reset`, whether they arrive as default tools, through a declared
-`tools.allow_always` that lists them, or through the state's own `tools.allow`. Every call SHALL be decided by the
+It SHALL NOT be offered a tool its type withholds (`STATE_TYPE_TOOLS[type].withheld`:
+`write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` and `archmax_reset`), whether it
+arrives as a default tool, through a declared `tools.allow_always` that lists it, or through the
+state's own `tools.allow` (see the `governance` capability). Every call SHALL be decided by the
 kernel against that state, as the agent's own calls are, so the state's `forbid`, the workflow's
 `forbid_always`, its skill and mount grants and every safety rule bind it. No tool of the assembly
 outside the surface SHALL be reachable.
@@ -75,7 +77,7 @@ outside the surface SHALL be reachable.
   `archmax_get_history` among them, and no host tool the assembly registered, `write_todos`,
   `archmax_eval` or `archmax_run`
 
-#### Scenario: A workflow-wide agent-only grant stays with the agent
+#### Scenario: A workflow-wide grant of a withheld tool stays with the agent
 
 - **WHEN** the root declares `tools: { allow_always: [read_file, write_todos, archmax_eval] }` and
   the session enters a grader state with no `tools` block
@@ -99,9 +101,10 @@ outside the surface SHALL be reachable.
 
 ### Requirement: An automated state's controls
 
-An automated state SHALL be offered one control set, the same for a grader and a code state:
-`archmax_advance` (omitted in a terminal state), `archmax_raise`, `archmax_get_variables`,
-`archmax_set_variables` and `archmax_get_history`.
+An automated state SHALL be offered one control set, the same for a grader and a code state
+(`STATE_TYPE_TOOLS.grader.controls` equals `STATE_TYPE_TOOLS.code.controls`): `archmax_advance`
+(omitted in a terminal state), `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`
+and `archmax_get_history`.
 
 - `archmax_advance` SHALL be validated when called: the edge must be declared and the state's
   `requires` met by the variables at that moment, and evidence is accepted only into a human state.
@@ -150,8 +153,8 @@ An automated run SHALL settle as exactly one of:
 - **advanced**: it called `archmax_advance` and finished without error;
 - **raised**: it called `archmax_raise`;
 - **completed**: a terminal state finished without either call;
-- **failed**: it threw, timed out, exhausted its budget, or a non-terminal state finished
-  without either call.
+- **failed**: it threw, its run timed out or reached its recursion limit, or a non-terminal state
+  finished without either call.
 
 A recorded advance SHALL take effect only when the run finishes without error, and a raise
 SHALL win over an error. An advance SHALL commit as a move whose trail step kind is the state's
@@ -242,12 +245,15 @@ lines SHALL be reported. A script that cannot be read, imports a module other th
 ### Requirement: A grader runs as an isolated subagent
 
 A grader state SHALL run a subagent whose system prompt is the runtime's grader preamble followed
-by the state's `instructions`, and whose task names the state and its transitions. Its context
-SHALL be isolated: it SHALL read the session only through its tools, its tokens SHALL NOT stream
-as the session's text, and it SHALL write nothing into the session's checkpoint. The run SHALL
-end as soon as it decides. `budget.maxTurns` SHALL bound its model calls and `budget.timeoutMs`
-its run time. There SHALL be no iteration budget: a grader that gives up after a number of
-rounds says so in its instructions and counts them from the history's trail.
+by the state's `instructions`, and whose task names the state and lists its transitions the way
+the session's agent is shown an edge: the target's slug, its markers and the edge's
+`description`. Its context SHALL be isolated: it SHALL read the session only through its tools,
+its tokens SHALL NOT stream as the session's text, and it SHALL write nothing into the session's
+checkpoint. The run SHALL end as soon as it decides. It SHALL be bounded by LangGraph's recursion
+limit (`DEFAULT_RECURSION_LIMIT`, 400) and by the state's `budget.timeoutMs`, and reaching either
+fails the state; no budget counts its model calls. There SHALL be no iteration budget: a grader
+that gives up after a number of rounds says so in its instructions and counts them from the
+history's trail.
 
 #### Scenario: The grader reads the history and sends the work back
 
@@ -266,11 +272,19 @@ rounds says so in its instructions and counts them from the history's trail.
 - **WHEN** a non-terminal grader ends its run with a text reply and no tool call
 - **THEN** the state fails closed and routes through `on_error`
 
-#### Scenario: A grader's `maxTurns` bounds its model calls
+#### Scenario: A grader's timeout ends its run
 
-- **WHEN** a grader state declares `budget: { maxTurns: 2 }` and its subagent has not decided
-  after two model calls
-- **THEN** the state fails with a reason naming the exhausted budget
+- **WHEN** a grader state declares `budget: { timeoutMs: 30000 }` and its subagent has not decided
+  30 seconds after it started
+- **THEN** the run is aborted, and the state fails with a reason naming `timeoutMs: 30000`, routed
+  through the state's `on_error`
+
+#### Scenario: A grader's task lists its edges with their descriptions
+
+- **WHEN** grader state `review-email` declares a transition to `send` described "The email is
+  ready to send." and one back to `decide` described "The email needs changes."
+- **THEN** the grader's task lists both targets by slug, each with its description, and nothing of
+  `send`'s or `decide`'s own `instructions`
 
 ### Requirement: The session's history
 

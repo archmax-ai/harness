@@ -112,7 +112,6 @@ describe("handleAdvance", () => {
     expect(outcome.moved).toEqual({ from: "a", to: "b", reason: "answer is complete" });
     const update = commandUpdate(outcome.message);
     expect(update.workflowState).toBe("b");
-    expect(update.stateTurns).toBeNull();
     expect(update.auditTrail).toMatchObject([{ to: "b", kind: "agent", reason: "answer is complete" }]);
     const [message] = update.messages as ToolMessage[];
     expect(String(message!.content)).toContain("Advanced to state 'b'");
@@ -211,7 +210,7 @@ describe("transitionUpdate", () => {
   it("records the mover as the trail step's kind", () => {
     for (const kind of ["agent", "grader", "code"] as const) {
       const { update, park } = transitionUpdate(machine, { workflowState: "a" }, { to: "b", kind, reason: "checked" });
-      expect(update).toMatchObject({ workflowState: "b", stateTurns: null, rejected: null });
+      expect(update).toMatchObject({ workflowState: "b", rejected: null });
       expect(update.auditTrail).toMatchObject([{ to: "b", kind, reason: "checked" }]);
       expect(park).toBeUndefined();
       // Messages are the caller's: a tool reply, or a runtime note.
@@ -633,7 +632,6 @@ describe("handleReset", () => {
     entryState: "identify-case",
     trigger: { id: "manual" },
     rejected: "an earlier refusal",
-    stateTurns: { state: "orders-question", count: 3 },
     auditTrail: [
       { to: "identify-case", kind: "trigger", reason: "manual", ts: 1 },
       { to: "orders-question", kind: "agent", reason: "order question", ts: 2 },
@@ -650,7 +648,6 @@ describe("handleReset", () => {
   it("clears the bookkeeping that gates progress", () => {
     const u = commandUpdate(reset(parked).message);
     expect(u.rejected).toBeNull();
-    expect(u.stateTurns).toBeNull();
   });
 
   it("tells the agent what was kept", () => {
@@ -766,6 +763,22 @@ describe("handleSetVariables — typed returns", () => {
 
   it("holds only the current turn's trigger to its returns", () => {
     expect(set({ approved: "yes" }, "other").delta).toEqual({ approved: { value: "yes", locked: false } });
+  });
+
+  it("refuses a return breaking its rule with the rule's message, and writes one meeting it", () => {
+    const ruled = WorkflowMachine.fromSpec({
+      states: { work: { triggers: { manual: { returns: [{ name: "contact", type: "string", format: "email" }] } } } },
+    } as MachineSpec);
+    const write = (contact: unknown) =>
+      handleSetVariables({ toolCallId: "c1", args: { variables: { contact } }, state: state() }, ruled);
+    const refused = write("nobody");
+    expect(refused.delta).toBeUndefined();
+    expect(refused.message.status).toBe("error");
+    const text = String(refused.message.content);
+    expect(text).toContain("trigger 'manual'");
+    expect(text).toContain("'contact' must be an email address");
+    expect(text).toContain("Write a value of the declared type that meets its rules.");
+    expect(write("ann@example.co").delta).toEqual({ contact: { value: "ann@example.co", locked: false } });
   });
 
   it("checks nothing without the machine", () => {

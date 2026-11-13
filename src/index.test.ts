@@ -42,8 +42,9 @@ describe("the public surface", () => {
     // 45 before the session/resume errors a host catches were added, 56 before
     // the park readers and session-id helpers a host restated were, 60 before
     // the five trigger-signature helpers (`SIGNATURE_TYPES`, `normalizeSignature`,
-    // `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues`); each
-    // new runtime export is a deliberate edit here.
+    // `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues`), 66
+    // before the two rule vocabularies (`SIGNATURE_FORMATS`, `SIGNATURE_CONTENTS`);
+    // each new runtime export is a deliberate edit here.
     expect(Object.keys(root).length).toBeLessThanOrEqual(68);
   });
 

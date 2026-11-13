@@ -9,7 +9,21 @@
 import { z } from "zod";
 import { normalizeAllowEntry } from "./allow.js";
 import { isSlug } from "./slug.js";
-import { SIGNATURE_TYPES } from "./signature.js";
+import {
+  boundsInOrder,
+  isBound,
+  isCount,
+  parseSize,
+  RULE_TYPES,
+  SIGNATURE_CONTENTS,
+  SIGNATURE_FORMATS,
+  SIGNATURE_RULE_NAMES,
+  SIGNATURE_TYPES,
+  type SignatureRuleName,
+  type SignatureType,
+} from "./signature.js";
+import { compilePattern, jsonSchemaPatternError } from "./signature-pattern.js";
+import { ADVANCE_TOOL } from "./tool-names.js";
 import { MANUAL_TRIGGER, parseSessionPath, stateTriggerIds } from "./triggers.js";
 import {
   parseReferences,
@@ -198,51 +212,17 @@ export const transitionTypeSchema = z.enum(["approve", "reject", "refine", "none
 
 /**
  * The agent is disclosed the active state's edges and nothing else of the graph,
- * so an edge must give it something to route on: its `description`, or — for an
- * **undescribed** edge (absent, empty or blank) — the target state's own
- * `instructions`, which the edge then discloses in its place. An edge with
- * neither hands the agent a bare slug and asks it to route: an unnavigable graph,
- * which is worse to warn about than to refuse, so {@link refineSpec} refuses it.
- * It refuses an undescribed transition of a human state, where the description
- * is the person's button label, and an undescribed edge into a grader or a code
- * state: a grader's instructions are its criteria, which the work it judges is
- * never shown, and a code state has none. A code state's own edges are exempt —
- * its script routes, and nothing reads their descriptions. A non-string is a
- * typo and refused here. The issue path
+ * so an edge's `description` is the only thing it is told about the edge — no
+ * attribute of the target state is disclosed — and at a human state it is also
+ * the decision's button label. A non-string is a typo and refused here; an
+ * absent or blank one is an **undescribed** edge, which {@link refineSpec}
+ * accepts only where there is nothing to choose and no condition to say (see
+ * {@link undescribedEdgeIssue}). The issue path
  * (`states.<slug>.transitions.<index>.description`) names the edge.
  */
 const TRANSITION_DESCRIPTION =
-  `must be a string: what the agent routes on when it considers this edge. Say when to take it ` +
-  `(e.g. 'Refunds over $50'), not where it goes — or omit it to route on the target state's ` +
-  `instructions instead.`;
-
-/** An undescribed edge whose target has no instructions: nothing to route on. */
-function undescribedEdgeMessage(target: string): string {
-  return (
-    `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
-    `none, on the target state's instructions — and '${target}' declares none. Say when to take ` +
-    `this edge (e.g. 'Refunds over $50'), or give '${target}' instructions.`
-  );
-}
-
-/** An undescribed edge into an automated state: there are no instructions the agent may be shown. */
-function undescribedAutomatedEdgeMessage(target: string, type: "grader" | "code"): string {
-  const why =
-    type === "grader"
-      ? `'${target}' is a grader, whose instructions are its criteria and never shown to the work it judges`
-      : `'${target}' is a code state, which has none`;
-  return (
-    `must be a non-empty string here: the agent routes on an edge's description, or, when it has ` +
-    `none, on the target state's instructions — and ${why}. Say when to take this edge ` +
-    `(e.g. 'The reply is drafted').`
-  );
-}
-
-/** An undescribed transition on a human state: the decision's button has no label. */
-const HUMAN_TRANSITION_DESCRIPTION =
-  `must be a non-empty string on a human state's transition: it is the label of the decision's ` +
-  `button for the person deciding, and a target's instructions do not tell them what choosing it ` +
-  `means. Say what the choice is (e.g. 'Approve the refund').`;
+  `must be a string: it is the only thing the agent is told about this edge, so say when to ` +
+  `take it (e.g. 'Refunds over $50'), not where it goes.`;
 
 /** @see MachineTransition */
 export const machineTransitionSchema = z
@@ -253,7 +233,7 @@ export const machineTransitionSchema = z
   })
   .strict();
 
-/** Whether an edge carries no description the agent could route on: absent, empty or blank. */
+/** Whether an edge carries no description: absent, empty or blank. */
 export function isUndescribed(transition: { description?: string }): boolean {
   return !transition.description?.trim();
 }
@@ -261,7 +241,6 @@ export function isUndescribed(transition: { description?: string }): boolean {
 /** @see StateBudget */
 export const stateBudgetSchema = z
   .object({
-    maxTurns: positiveInt.optional(),
     timeoutMs: positiveInt.optional(),
     maxParks: positiveInt.optional(),
   })
@@ -365,17 +344,47 @@ export const stateTypeSchema = z.enum(["agent", "human", "grader", "code"], {
 // --- Triggers ------------------------------------------------------------------
 
 /** The keys a signature entry object may carry, as a refusal lists them. */
-const SIGNATURE_ENTRY_KEYS = "'name', 'type' and 'description'";
+const SIGNATURE_ENTRY_KEYS =
+  `'name', 'type', 'description' and the rules ` +
+  `${SIGNATURE_RULE_NAMES.slice(0, -1).map((rule) => `'${rule}'`).join(", ")} and '${SIGNATURE_RULE_NAMES.at(-1)}'`;
 
 /** The accepted type words, as a refusal lists them. */
 const SIGNATURE_TYPE_LIST = `${SIGNATURE_TYPES.slice(0, -1).join(", ")} or ${SIGNATURE_TYPES.at(-1)}`;
+
+/** What a `maxSize` must look like, as a refusal says it. */
+const SIZE_SHAPE = "a size in bytes: an integer, or '<n>KB' / '<n>MB' (e.g. 10MB)";
+
+/** One file extension as `accept` lists it: a dot and a name holding no further dot or separator. */
+const EXTENSION = /^\.[^./\\]+$/;
+
+/** A length or count rule's shape; that it is a non-negative integer is the refinement's. */
+function countRule(rule: SignatureRuleName) {
+  return z.number({ error: `'${rule}' must be a non-negative integer` }).optional();
+}
+
+/** A `minimum`/`maximum` rule's shape; which of the two kinds the entry's type takes is the refinement's. */
+function boundRule(rule: SignatureRuleName) {
+  return z
+    .union([z.number(), z.string()], {
+      error: `'${rule}' must be a number, a date (YYYY-MM-DD or 'today') or a date-time (RFC 3339 or 'now')`,
+    })
+    .optional();
+}
+
+/** A list rule's shape: strings, with emptiness and repeats left to the refinement. */
+function listRule(rule: SignatureRuleName) {
+  return z
+    .array(z.string({ error: `'${rule}' must list strings` }), { error: `'${rule}' must be a list of strings` })
+    .optional();
+}
 
 /**
  * @see SignatureEntryDeclaration
  *
  * The object spelling of a signature entry. Strict, unlike the loose declaration
  * around it: an unknown key here is most likely a misspelled `type` or
- * `description`, and read loosely it would silently mean "untyped".
+ * `description`, and read loosely it would silently mean "untyped". A rule key
+ * is shape-checked here and held to its entry's type by {@link refineRules}.
  */
 export const signatureEntryObjectSchema = z.strictObject(
   {
@@ -398,6 +407,26 @@ export const signatureEntryObjectSchema = z.strictObject(
       .string({ error: `'description' ${NON_EMPTY}` })
       .refine((value) => value.trim() !== "", `'description' ${NON_EMPTY}`)
       .optional(),
+    format: z
+      .enum(SIGNATURE_FORMATS, {
+        error: (issue) => `'format' must be one of email, url or phone; got ${JSON.stringify(issue.input)}`,
+      })
+      .optional(),
+    pattern: z.string({ error: "'pattern' must be a string (a regular expression)" }).optional(),
+    minLength: countRule("minLength"),
+    maxLength: countRule("maxLength"),
+    enum: listRule("enum"),
+    content: z
+      .enum(SIGNATURE_CONTENTS, {
+        error: (issue) => `'content' must be one of text, markdown or html; got ${JSON.stringify(issue.input)}`,
+      })
+      .optional(),
+    minimum: boundRule("minimum"),
+    maximum: boundRule("maximum"),
+    minItems: countRule("minItems"),
+    maxItems: countRule("maxItems"),
+    accept: listRule("accept"),
+    maxSize: z.union([z.number(), z.string()], { error: `'maxSize' must be ${SIZE_SHAPE}` }).optional(),
   },
   {
     error: (issue) =>
@@ -406,7 +435,104 @@ export const signatureEntryObjectSchema = z.strictObject(
           `signature entry does not take: it has ${SIGNATURE_ENTRY_KEYS} only.`
         : undefined,
   },
-);
+).superRefine(refineRules);
+
+/** `string`, `integer, number, date and date-time`. */
+function typeList(types: readonly SignatureType[]): string {
+  return types.length === 1 ? types[0]! : `${types.slice(0, -1).join(", ")} and ${types.at(-1)}`;
+}
+
+/**
+ * Hold an entry's rules to its type and to each other. Each issue sits at the
+ * rule's key and names the entry itself: the union around the entry hands a
+ * refinement's issues on unwrapped.
+ */
+function refineRules(entry: Record<string, unknown> & { type?: SignatureType }, ctx: z.RefinementCtx): void {
+  const declared = SIGNATURE_RULE_NAMES.filter((rule) => entry[rule] !== undefined);
+  if (declared.length === 0) return;
+  const label = entryLabel(entry);
+  const issue = (rule: SignatureRuleName, message: string) =>
+    ctx.addIssue({ code: "custom", path: [rule], message: `${label} ${message}` });
+  const { type } = entry;
+  const applicable: SignatureRuleName[] = [];
+  for (const rule of declared) {
+    const types = RULE_TYPES[rule];
+    if (!type) issue(rule, `declares '${rule}', but has no 'type': it applies to ${typeList(types)} entries only.`);
+    else if (!types.includes(type)) issue(rule, `declares '${rule}', which applies to ${typeList(types)} entries only.`);
+    else applicable.push(rule);
+  }
+  if (!type) return;
+  const has = (rule: SignatureRuleName) => applicable.includes(rule);
+
+  for (const rule of ["minLength", "maxLength", "minItems", "maxItems"] as const) {
+    if (has(rule) && !isCount(entry[rule])) {
+      issue(rule, `declares '${rule}' as ${String(entry[rule])}, which is not a non-negative integer.`);
+      applicable.splice(applicable.indexOf(rule), 1);
+    }
+  }
+
+  if (has("format") && has("pattern")) {
+    issue("pattern", `declares both 'format' and 'pattern': an entry declares one or the other.`);
+  }
+  if (has("pattern")) {
+    const pattern = entry.pattern as string;
+    const compiled = compilePattern(pattern);
+    const error = compiled.ok ? jsonSchemaPatternError(pattern) : compiled.error;
+    if (error) issue("pattern", `declares a 'pattern' that cannot be used: ${error}.`);
+  }
+  for (const rule of ["minimum", "maximum"] as const) {
+    if (!has(rule) || isBound(type, entry[rule])) continue;
+    const shape =
+      type === "date"
+        ? "a date (YYYY-MM-DD, a real calendar day) or 'today'"
+        : type === "date-time"
+          ? "an RFC 3339 date-time with an offset (e.g. 2026-11-01T09:00:00Z) or 'now'"
+          : "a number";
+    issue(rule, `declares '${rule}' as ${JSON.stringify(entry[rule])}, but on a ${type} entry it must be ${shape}.`);
+  }
+  for (const [low, high] of [
+    ["minLength", "maxLength"],
+    ["minimum", "maximum"],
+    ["minItems", "maxItems"],
+  ] as const) {
+    if (!has(low) || !has(high)) continue;
+    const ordered =
+      low === "minimum"
+        ? boundsInOrder(type, entry[low], entry[high])
+        : (entry[low] as number) <= (entry[high] as number);
+    if (!ordered) {
+      issue(
+        low,
+        `declares '${low}' ${JSON.stringify(entry[low])} above '${high}' ${JSON.stringify(entry[high])}, ` +
+          `so no value could conform.`,
+      );
+    }
+  }
+  for (const rule of ["enum", "accept"] as const) {
+    if (!has(rule)) continue;
+    const list = entry[rule] as string[];
+    if (list.length === 0) {
+      issue(rule, `declares an empty '${rule}', so no value could conform.`);
+      continue;
+    }
+    const malformed = rule === "accept" ? list.find((extension) => !EXTENSION.test(extension)) : undefined;
+    if (malformed !== undefined) {
+      issue(
+        rule,
+        `lists ${JSON.stringify(malformed)} in 'accept', which is not a file extension: write a dot and ` +
+          `a name with no further dot, e.g. '.pdf'.`,
+      );
+      continue;
+    }
+    // Extensions compare case-insensitively, as `accept` is checked.
+    const keys = list.map((item) => (rule === "accept" ? item.toLowerCase() : item));
+    const repeated = list.find((_, index) => keys.indexOf(keys[index]!) !== index);
+    if (repeated !== undefined) issue(rule, `lists ${JSON.stringify(repeated)} more than once in '${rule}'.`);
+  }
+  if (has("maxSize") && parseSize(entry.maxSize) === undefined) {
+    issue("maxSize", `declares 'maxSize' as ${JSON.stringify(entry.maxSize)}, which is not ${SIZE_SHAPE}.`);
+  }
+}
 
 /** An entry as a message names it: by its `name` when it has a readable one. */
 function entryLabel(input: unknown): string {
@@ -774,6 +900,72 @@ function lockIssues(states: Spec["states"]): SpecSchemaIssue[] {
   return issues;
 }
 
+type StateTypeName = z.infer<typeof stateTypeSchema>;
+
+/** The type a state declares, `agent` when it declares none. */
+function stateTypeOf(state: { type?: StateTypeName } | undefined): StateTypeName {
+  return state?.type ?? "agent";
+}
+
+/** Why an edge of a state that is not an agent state needs a description, and what to write. */
+const NON_AGENT_EDGE: Record<Exclude<StateTypeName, "agent">, (slug: string) => string> = {
+  human: (slug) =>
+    `'${slug}' is a human state, where an edge's description is the label of the person's ` +
+    `button. Say what choosing it means (e.g. 'Approve the refund').`,
+  grader: (slug) =>
+    `'${slug}' is a grader state, which chooses its edge by the descriptions. Say when to take ` +
+    `it (e.g. 'The email is ready to send').`,
+  code: (slug) =>
+    `'${slug}' is a code state: its script routes, and the description is what a reader of the ` +
+    `spec and the trail goes by. Say when the script takes it (e.g. 'The decision matches the policy').`,
+};
+
+/** What an edge into a state that is not an agent state hands the session to. */
+const HANDED_TO: Record<Exclude<StateTypeName, "agent">, string> = {
+  human: "a person's decision",
+  grader: "a grader's check",
+  code: "a code state's check",
+};
+
+/**
+ * Why `slug`'s undescribed edge at `index` is refused, or `undefined` when it
+ * stands. An edge may go undescribed only where the agent has nothing to choose
+ * and nothing to wait for beyond the state's own work: it is the **only** edge
+ * of an **agent** state that has `instructions`, and it leads into **another
+ * agent** state. The agent takes it as soon as those instructions are done, and
+ * is told so in the edge's place. Every refusal says what to write instead.
+ */
+function undescribedEdgeIssue(states: Spec["states"], slug: string, index: number): string | undefined {
+  const state = states[slug]!;
+  const transitions = state.transitions ?? [];
+  const to = transitions[index]!.to;
+  const type = stateTypeOf(state);
+  const target = stateTypeOf(states[to]);
+  const refuse = (why: string) => `must be a non-empty string here: ${why}`;
+  const say = `Say when to take it (e.g. 'The customer confirmed the address').`;
+  if (type !== "agent") return refuse(NON_AGENT_EDGE[type](slug));
+  if (transitions.length > 1) {
+    return refuse(
+      `'${slug}' has ${transitions.length} transitions, and the agent chooses between them by their ` +
+        `descriptions; only a state's single transition may go without one. ${say}`,
+    );
+  }
+  if (to === slug) return refuse(`this edge leads back into '${slug}' itself, so it needs a condition. ${say}`);
+  if (target !== "agent") {
+    return refuse(
+      `'${to}' is a ${target} state, so this edge hands the session to ${HANDED_TO[target]}. Say ` +
+        `what must be ready for it (e.g. 'The reply is drafted').`,
+    );
+  }
+  if (!state.instructions?.trim()) {
+    return refuse(
+      `'${slug}' declares no instructions, and an undescribed edge is taken once they are done. ` +
+        `Give '${slug}' instructions, or say when to take this edge.`,
+    );
+  }
+  return undefined;
+}
+
 export function refineSpec(spec: Spec): SpecSchemaIssue[] {
   const issues: SpecSchemaIssue[] = [];
   const issue = (path: string, message: string) => issues.push({ path, message });
@@ -796,16 +988,9 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
         );
         return;
       }
-      // A code state's script routes: nothing reads its edges' descriptions.
-      if (!isUndescribed(transition) || state.type === "code") return;
-      const target = states[transition.to];
-      if (state.type === "human") {
-        issue(`${at}.transitions.${index}.description`, HUMAN_TRANSITION_DESCRIPTION);
-      } else if (target?.type === "grader" || target?.type === "code") {
-        issue(`${at}.transitions.${index}.description`, undescribedAutomatedEdgeMessage(transition.to, target.type));
-      } else if (!target?.instructions?.trim()) {
-        issue(`${at}.transitions.${index}.description`, undescribedEdgeMessage(transition.to));
-      }
+      if (!isUndescribed(transition)) return;
+      const refusal = undescribedEdgeIssue(states, slug, index);
+      if (refusal) issue(`${at}.transitions.${index}.description`, refusal);
     });
     if (state.on_error !== undefined && !(state.on_error in states)) {
       issue(`${at}.on_error`, `State '${slug}' on_error routes to undefined state '${state.on_error}'`);
@@ -838,6 +1023,7 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
       for (const message of guardReferenceIssues(`State '${slug}'`, entry)) {
         issue(`${at}.tools.forbid.${index}`, message);
       }
+      if (bareAdvance(entry)) issue(`${at}.tools.forbid.${index}`, ADVANCE_DENIAL_MESSAGE);
     }
   }
 
@@ -854,6 +1040,7 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
     for (const message of guardReferenceIssues("tools.forbid_always", entry)) {
       issue(`tools.forbid_always.${index}`, message);
     }
+    if (bareAdvance(entry)) issue(`tools.forbid_always.${index}`, ADVANCE_DENIAL_MESSAGE);
   }
 
   // Start wiring: at least one start state, and no trigger claimed by two
@@ -898,6 +1085,22 @@ export function refineSpec(spec: Spec): SpecSchemaIssue[] {
 function wildcardTool(entry: z.infer<typeof allowEntrySchema>): boolean {
   return typeof entry === "string" ? entry === FORBID_ANY_TOOL : entry?.tool === FORBID_ANY_TOOL;
 }
+
+/** Whether an entry denies `archmax_advance` outright, with no argument guards. */
+function bareAdvance(entry: z.infer<typeof allowEntrySchema>): boolean {
+  const { tool, argMatchers } = normalizeAllowEntry(entry);
+  return tool === ADVANCE_TOOL && !argMatchers;
+}
+
+/**
+ * Movement is the graph's to declare: `transitions` say where a state may go,
+ * and a state without them is terminal, so a bare denial of the advance could
+ * only strand a state. A guarded one blocks only the advances it matches.
+ */
+const ADVANCE_DENIAL_MESSAGE =
+  `'${ADVANCE_TOOL}' cannot be denied outright: a state's 'transitions' decide where it may move, ` +
+  `its 'requires' when it may leave, and a state without transitions is terminal. To block ` +
+  `particular advances, guard the entry: { tool: ${ADVANCE_TOOL}, args: { to: [<state>] } }.`;
 
 /**
  * The one wording for a wildcard where a grant belongs. Governance is

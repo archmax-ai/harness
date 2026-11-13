@@ -111,20 +111,20 @@ describe("archmax_advance", () => {
   });
 });
 
-describe("an undescribed edge", () => {
-  // `start` leaves its one edge undescribed: the agent routes on `lookup`'s own
-  // instructions, disclosed in the edge's place.
+describe("a lone undescribed edge", () => {
+  // `draft` leaves its one edge into `send` undescribed: nothing to choose, and
+  // no condition but its own instructions.
   const spec = {
     runtime: { engine: "archmax-harness", version: "3" },
     states: {
-      start: { triggers: { manual: null }, instructions: "Route the request.", transitions: [{ to: "lookup" }] },
-      lookup: { title: "Order lookup", instructions: "Look the order up by its id.\n\nSummarise its status." },
+      draft: { triggers: { manual: null }, instructions: "Draft the reply.", transitions: [{ to: "send" }] },
+      send: { title: "Send it", instructions: "Send the reply with send_email." },
     },
   };
 
-  it("discloses the target's instructions under the edge, and the edge can be taken", async () => {
+  it("tells the agent to take it once the state's instructions are done, and it can be taken", async () => {
     const { agent, events, model } = await assemble(workspaceWith(spec), {
-      turns: [advanceTo("lookup"), { reply: "ok" }],
+      turns: [advanceTo("send"), { reply: "sent" }],
     });
     await turn(agent, "s1", "go");
 
@@ -132,12 +132,14 @@ describe("an undescribed edge", () => {
       .map((part) => String(part.text))
       .join("\n");
     expect(system).toContain(
-      "- to `lookup` (terminal) — no description; the instructions you will follow once in `lookup`, " +
-        "given only for choosing this edge:\n  > Look the order up by its id.\n  >\n  > Summarise its status.",
+      "Transition — the only one out of this state, with no condition of its own: take it with " +
+        "`archmax_advance` as soon as this state's instructions are done, without asking anyone " +
+        "whether to move on.\n- to `send` (terminal)",
     );
-    // Nothing else of the target: its title stays out.
-    expect(system).not.toContain("Order lookup");
-    expect(advances(events)).toEqual([{ from: "start", to: "lookup", reason: "moving to lookup" }]);
+    // Nothing of the target: its title and instructions stay out.
+    expect(system).not.toContain("Send it");
+    expect(system).not.toContain("send_email");
+    expect(advances(events)).toEqual([{ from: "draft", to: "send", reason: "moving to send" }]);
   });
 });
 

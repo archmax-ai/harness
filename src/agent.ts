@@ -31,8 +31,8 @@ import type { TurnRunner } from "./workflow/turn-runner.js";
  * tracing backends key off, and the recursion limit a turn runs under when the
  * caller names none. One invoke is one whole turn across states — every model
  * call, tool batch and automated state is a super-step — so the limit is generous by
- * design: a state's `maxTurns` and `maxParks` bound the states that declare
- * them, and this bounds the whole turn.
+ * design: this bounds the whole turn, and a state's `timeoutMs` and
+ * `maxParks` bound the states that declare them.
  */
 export const AGENT_DEFAULT_CONFIG: RunnableConfig = {
   metadata: { ls_integration: "archmax-harness" },

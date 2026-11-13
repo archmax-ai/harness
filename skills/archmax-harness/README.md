@@ -33,11 +33,8 @@ npx skills add ./node_modules/@archmax-ai/harness
 (for installers) and as `dist/authoring-skill/archmax-harness/` (for
 `BUNDLED_AUTHORING_SKILL_DIR`).
 
-```ts
-import { BUNDLED_AUTHORING_SKILL_DIR } from "@archmax-ai/harness";
-// <BUNDLED_AUTHORING_SKILL_DIR>/archmax-harness/SKILL.md (+ references/) — the
-// constant is the dist/authoring-skill directory, for skills middleware.
-```
+For skills middleware, the package exports `BUNDLED_AUTHORING_SKILL_DIR`: the
+`dist/authoring-skill` directory, with the skill at `archmax-harness/SKILL.md` beneath it.
 
 **From a checkout of this repository**: `npx skills add ./skills/archmax-harness`.
 
@@ -48,15 +45,16 @@ separate submission step.
 
 | File | Purpose |
 | --- | --- |
-| `SKILL.md` | The entry point, loaded when the skill triggers: procedure, workspace layout, CLI, and a table saying which short reference to load for which task |
-| `references/workflow-yaml.md` | Short: every `workflow.yaml` key as an annotated skeleton, machine rules, governance |
-| `references/code-states-and-scripts.md` | Short: the code-state script and `archmax_run` contracts |
-| `references/cases.md` | Short: the case grammar (keys, actions, assertions, mocking rule) |
-| `references/diagnostics.md` | Short: every `validate` diagnostic → its fix; removed keys |
-| `references/wiring.md` | Short: `createAgent`, human states, events, artifacts |
-| `references/workflow-schema.md` | Exhaustive `workflow.yaml` field reference + annotated example |
-| `references/code-state-and-test-scripts.md` | Full code-state script, grader + cases contracts with worked examples |
-| `references/backend-integration.md` | Full `createAgent` / events / run-artifact integration reference |
+| `SKILL.md` | The entry point, loaded when the skill triggers: the procedure, the workspace layout, the CLI, and which reference to load for which task |
+| `references/workflow-schema.md` | Every `workflow.yaml` key as a skeleton that validates, the machine's rules, and governance |
+| `references/code-states-and-scripts.md` | Grader and code states at run time, the code-state script contract, and `archmax_run` scripts |
+| `references/cases.md` | The case grammar: keys, actions, assertions, mocks, and seeding from a real session |
+| `references/diagnostics.md` | Each `validate` diagnostic and failed-session reason, with its fix |
+| `references/backend-integration.md` | `createAgent`, outcomes and parked sessions, events, storage, artifacts, and `runTests` |
+
+Each reference owns one topic, so none repeats another. Two workspaces in the repository
+show the result: `examples/refund/` (the minimal SDK example) and
+`examples/customer-support/` (the full CLI reference workspace).
 
 The skill is **self-contained** — no external docs are required to use it. It
 targets **runtime contract version `"3"`**.
@@ -64,7 +62,7 @@ targets **runtime contract version `"3"`**.
 ## Naming note
 
 This **authoring skill** is distinct from a workspace's **skill bundles** —
-`skills/<slug>/` directories holding a `SKILL.md`, the capability's `assets/`
+`skills/<slug>/` directories holding a `SKILL.md`, the bundle's `assets/`
 and its `archmax_run` `scripts/`, enabled per workflow and per state by slug.
 They share the Agent Skills file format and nothing else: this skill is a
 playbook for *building* such workspaces and wiring the runtime, which is why

@@ -19,6 +19,7 @@ docs/node_modules/
 # sessions/<sessionId>/, kept out of the authored tree.
 /sessions/
 examples/customer-support/sessions/
+examples/refund/sessions/
 
 # Local skills.sh install state (records this machine's absolute path; never portable).
 .agents/

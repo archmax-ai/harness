@@ -179,7 +179,6 @@ export async function openTurn(
     pendingDelegations: null,
     parkPhase: null,
     replyOnly: null,
-    stateTurns: null,
     // Where this session began: recorded once, so the reset tool has a fixed target.
     entryState,
     specHash: machine.specHash,

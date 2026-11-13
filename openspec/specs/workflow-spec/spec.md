@@ -265,15 +265,20 @@ second reference to the former slug is left behind.
 
 A state's `transitions` SHALL be a list of `{ to, description?, type? }` where `to` names a
 declared state, `description` is a string, and `type` is one of `approve`, `reject`, `refine`,
-`none`. An absent, empty or whitespace-only `description` SHALL mark the edge **undescribed**: the
-agent routes on the target state's `instructions` instead (see the `governance` capability). A
-non-string `description`, an undescribed edge whose target has no non-blank `instructions`, and an
-undescribed edge into a grader or code state SHALL each be a load error addressed to
-`states.<slug>.transitions.<index>.description`, which names the edge, stating that the agent
-routes on the description or else on the target's instructions, and what to write instead: a
-grader's instructions are its criteria, never shown to the work it judges, and a code state has
-none. A code state's own edges MAY go undescribed, whatever their target: its script routes on
-them, and nothing reads their descriptions. A state with no transitions SHALL be terminal: the
+`none`. The description is the only thing the agent is told about the edge (see the `governance`
+capability), and at a human state it is also the decision's button label. A non-string
+`description` SHALL be a load error. An absent, empty or whitespace-only one makes the edge
+**undescribed**, which SHALL load only where nothing is chosen by it: the edge is the **single**
+transition of an **agent** state that declares non-blank `instructions`, and it leads into
+**another agent** state. Every other undescribed edge SHALL be a load error addressed to
+`states.<slug>.transitions.<index>.description`, which names the edge, saying why this edge needs
+one and what to write: the state has several transitions, and the agent chooses between them by
+their descriptions; the state is a human state (the description is the person's button label), a
+grader state (the grader chooses by the descriptions) or a code state (the description is what a
+reader of the spec and the trail goes by); the target is a human, grader or code state, to which
+the edge hands the session; the edge leads back into its own state; or the state declares no
+`instructions`, which are the undescribed edge's whole condition. A target's `instructions`
+SHALL never stand in for a description. A state with no transitions SHALL be terminal: the
 session completes when the state's work finishes there — the agent's last turn in an agent state,
 the script's return in a code state — and `archmax_advance` is not disclosed or offered in it.
 `on_error`, when declared, SHALL name a declared state; a state's failure (an exhausted budget, or
@@ -281,13 +286,26 @@ an automated state that errors, times out or finishes without deciding) routes t
 without one ends the session rejected. Transitions carry no preconditions of their own: an edge is
 decided only by its existence and the state's `requires`, whoever takes it.
 
-#### Scenario: Missing description rejected
+#### Scenario: A lone edge between agent states may go undescribed
 
-- **WHEN** a state declares `transitions: [{ to: review }]`, or a `description` that is empty or
-  whitespace-only, and `review` declares no `instructions` (or blank ones) — or a `description`
-  that is not a string, whatever the target
+- **WHEN** an agent state with `instructions` declares `transitions: [{ to: send }]`, or a
+  `description` that is empty or whitespace-only, and `send` is an agent state
+- **THEN** the spec loads, and the agent is told to take the edge as soon as the state's
+  instructions are done, without asking anyone whether to move on
+
+#### Scenario: Missing description rejected where an edge is chosen
+
+- **WHEN** an undescribed edge is one of its state's two or more transitions, leaves a human,
+  grader or code state, enters a human, grader or code state, leads back into its own state, or
+  leaves a state with no `instructions`
 - **THEN** loading fails with one error addressed to that transition's `description` field, saying
-  what the description is for and what to write instead
+  why this edge needs a description and what to write instead
+
+#### Scenario: A non-string description rejected
+
+- **WHEN** a transition's `description` is a number or a list
+- **THEN** loading fails with an error addressed to that transition's `description` field, on
+  whichever edge it is
 
 #### Scenario: Dangling targets rejected
 
@@ -300,33 +318,25 @@ decided only by its existence and the state's `requires`, whoever takes it.
   declares no transition to `x`
 - **THEN** `archmax validate` warns that the runtime will block the transition
 
-#### Scenario: An undescribed edge to an instructed state loads
-
-- **WHEN** an agent state declares `transitions: [{ to: lookup }]` and `lookup` declares non-blank
-  `instructions`
-- **THEN** the spec loads with no error and no warning about the edge, and `description: ""` on the
-  same edge loads the same way
-
 #### Scenario: An automated state's failure takes the error route
 
 - **WHEN** a code state declaring `on_error: escalate` has a script that throws
 - **THEN** the session moves to `escalate`; with no `on_error`, the session ends rejected
 
-#### Scenario: An undescribed edge into an automated state is refused
+#### Scenario: An edge into a grader needs a description like any other
 
-- **WHEN** an agent state declares `transitions: [{ to: review-enrichment }]`, where `review-enrichment` is
-  a grader state with `instructions`, or `transitions: [{ to: check-refund }]`, where `check-refund`
-  is a code state
-- **THEN** loading fails with one error addressed to that transition's `description`, saying that
-  a grader's instructions are its criteria and never shown to the work it judges, or that a code
-  state has none, and `archmax validate` fails with the same error
+- **WHEN** an agent state declares `transitions: [{ to: review-enrichment }]`, where
+  `review-enrichment` is a grader state with `instructions`
+- **THEN** loading fails with the same error as for an edge into any other state, addressed to that
+  transition's `description`, and `archmax validate` fails with the same error
 
-#### Scenario: A code state's own edges may go undescribed
+#### Scenario: A code state's own edges need descriptions
 
-- **WHEN** a code state declares `transitions: [{ to: answer }, { to: decline }]`, with no
-  `description` on either
-- **THEN** the spec loads with no error and no warning about the edges, whatever `answer` and
-  `decline` declare
+- **WHEN** a code state declares `transitions: [{ to: answer }, { to: decline }]`, neither carrying a
+  `description`
+- **THEN** loading fails with one error per edge, addressed to
+  `states.<slug>.transitions.0.description` and `states.<slug>.transitions.1.description`, although
+  the state's script chooses the edge itself
 
 ### Requirement: Human-state rules are split between schema and lint
 
@@ -335,18 +345,19 @@ A `type: human` state parks the session for a person's decision, so it SHALL dec
 labeled `type` (`approve`/`reject`/`refine`), and no transition to itself. These SHALL be
 **lint errors**: the runtime tolerates them and the spec still loads, while `archmax validate`
 fails on them. The shape rules a human state shares with every state — the `type` enum, the
-transition `type` enum, an existing `to` — remain schema errors, and so does a non-empty
-`description` on each of a human state's own transitions, which an agent state's edge may omit:
-there it is the decision's button label for a person, so a human state's decision button labels
-are guaranteed by the schema rather than by lint. The decision record SHALL be built from the
-state's `title`, `instructions`, declared `evidence` (leading, deduplicated with any evidence the
-advancing call attached) and its transitions' `to`/`description`/`type`.
+transition `type` enum, an existing `to`, a non-empty `description` on every transition of a
+state that is not an agent state — remain schema errors. On a human state the description is the decision's button label for a person, so a
+human state's decision button labels are guaranteed by the schema rather than by lint. The
+decision record SHALL be built from the state's `title`, `instructions`, declared `evidence`
+(leading, deduplicated with any evidence the advancing call attached) and its transitions'
+`to`/`description`/`type`.
 
 #### Scenario: Human state without a button label
 
-- **WHEN** a `type: human` state declares a transition with no `description`
-- **THEN** loading fails under the strict schema naming that transition's `description` and saying
-  that it is the decision's button label, even though the target declares `instructions`
+- **WHEN** a `type: human` state declares a transition without a `description`
+- **THEN** loading fails under the strict schema, addressed to that transition's `description`
+  and naming it the label of the person's button, even when it is the state's only transition
+  and the target is an agent state that declares `instructions`
 
 #### Scenario: A leftover hook key on a human state
 
@@ -362,33 +373,34 @@ advancing call attached) and its transitions' `to`/`description`/`type`.
 
 ### Requirement: Budgets
 
-A state's `budget` SHALL accept `maxTurns`, `timeoutMs` and `maxParks`, each a positive
-integer when present and unbounded when absent. In an agent state, `maxTurns` counts the state's
-model turns, `timeoutMs` bounds a model call in the state, and `maxParks` counts the state's
-`archmax_wait` parks. In a grader state, `maxTurns` bounds the grader's own model calls and
-`timeoutMs` bounds the grader's run; neither spends the session agent's `maxTurns`. A
-`budget.maxParks` on a grader and any `budget` on a code state are lint errors (see "Keys a
-state type never reads are lint errors"). Exhausting any budget fails the state, which routes
-through `on_error` when declared and otherwise rejects the session. A budget SHALL be declared
-only on a state; the spec root carries none (see "Root keys").
+A state's `budget` SHALL accept `timeoutMs` and `maxParks`, each a positive integer when present
+and unbounded when absent, and no other key: `budget.maxTurns` is an unknown key and a load error.
+In an agent state, `timeoutMs` bounds a model call in the state and `maxParks` counts the state's
+`archmax_wait` parks. In a grader state, `timeoutMs` bounds the grader's whole run. No budget
+counts model calls: how many a turn makes, and how many a grader's run makes, is bounded by
+LangGraph's recursion limit (see the `runtime` capability). A `budget.maxParks` on a grader and
+any `budget` on a code state are lint errors (see "Keys a state type never reads are lint
+errors"). Exhausting either budget fails the state, which routes through `on_error` when declared
+and otherwise rejects the session. A budget SHALL be declared only on a state; the spec root
+carries none (see "Root keys").
 
 #### Scenario: Non-positive budget rejected
 
 - **WHEN** a state declares `budget: { maxParks: 0 }` or a non-integer value
 - **THEN** loading fails with "must be a positive number" addressed to that field
 
-#### Scenario: A grader's `maxTurns` bounds the grader
+#### Scenario: A turn count is not a budget
 
-- **WHEN** a grader state declares `budget: { maxTurns: 3 }` and its grader has made three model
-  calls without calling `archmax_advance` or `archmax_raise`
-- **THEN** the grader's run fails, and the failure routes through the state's `on_error` when
-  declared and otherwise rejects the session
+- **WHEN** a state declares `budget: { maxTurns: 8 }`
+- **THEN** loading fails with `Unrecognized key: "maxTurns"` addressed to `states.<slug>.budget`,
+  and `archmax validate` fails with the same error
 
 #### Scenario: A grader's timeout bounds the run
 
 - **WHEN** a grader state declares `budget: { timeoutMs: 30000 }` and its grader has not decided
   30 seconds after it started
-- **THEN** the grader's run fails the same way
+- **THEN** the grader's run fails, and the failure routes through the state's `on_error` when
+  declared and otherwise rejects the session
 
 ### Requirement: Allow entries and the tools blocks
 
@@ -399,7 +411,12 @@ root, and an entry's mapping form is
 allowed) to a glob or list of globs — the entry's **argument guards** — and `paths` is
 shorthand for `args: { file_path: … }`. `connection` and `source` are free-form strings the
 runtime preserves and does not read. In a **forbid** entry only, the tool MAY be `*`, meaning every
-tool: `{ tool: "*", paths: [logs/**] }` denies every tool on those globs, and `*` in an `allow`
+tool except `archmax_advance` (see the `governance` capability, "Workflow and state denials"):
+`{ tool: "*", paths: [logs/**] }` denies every other tool on those globs. A forbid or
+`forbid_always` entry naming `archmax_advance` without argument guards SHALL be a document-level
+error whose message points to `transitions` (and to a state without them, which is terminal) as
+the way to restrict movement; a guarded one, `{ tool: archmax_advance, args: { to: [review] } }`,
+is accepted. `*` in an `allow`
 entry SHALL be a document-level error, since a wildcard grant is not a thing this governance has.
 
 `tools.allow_always` SHALL be the workflow-wide grant when it is declared, an empty list included:
@@ -411,10 +428,10 @@ A state with no `tools` block permits the workflow-wide grant only. A state entr
 workflow grants narrows it there (`{ tool: archmax_run, paths: [skills/x/scripts/**] }`), and a state
 entry naming a default tool that a declared `allow_always` omits grants it in that state. A default
 tool listed in `allow_always`, bare or guarded, SHALL be an ordinary grant and draw no warning. In
-a grader or code state the workflow-wide grant SHALL leave out the agent-only tools
-(`write_todos`, `archmax_eval`, `archmax_run`) and `archmax_wait` and `archmax_reset`, whether
-they arrive as default tools or are listed in a declared `allow_always` (see the `governance`
-capability).
+a grader or code state the workflow-wide grant SHALL leave out the tools that state type withholds
+(`STATE_TYPE_TOOLS[type].withheld`: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`
+and `archmax_reset`), whether they arrive as default tools or are listed in a declared
+`allow_always` (see the `governance` capability).
 
 A workflow that declares `tools.allow_always` and names none of the default tools there or in any
 state's `tools.allow` SHALL draw one lint warning. The warning SHALL name the default tools and say
@@ -484,6 +501,14 @@ capability for enforcement.
 - **THEN** the lint warns once at `tools.allow_always`, naming the default tools and saying that a
   declared list replaces them — and it does not warn once any state's `tools.allow` or the root list
   names one of them
+
+#### Scenario: A bare forbid entry naming the advance fails loading
+
+- **WHEN** a state declares `tools: { forbid: [archmax_advance] }`, or the root declares
+  `tools: { forbid_always: [archmax_advance] }`
+- **THEN** loading fails naming the entry, and the message says that `transitions` decide where a
+  state may move and that a state without them is terminal, while
+  `tools: { forbid_always: [{ tool: archmax_advance, args: { to: [review] } }] }` loads
 
 ### Requirement: Skills blocks
 
@@ -815,9 +840,10 @@ the table declares) under every key, and:
 - a state that both grants and denies the same tool or skill — a **warning**, because the denial
   wins and the grant governs nothing;
 - a `forbid` or `forbid_always` entry for a tool or slug that nothing would have granted where it
-  applies — a **warning**, because the entry governs nothing;
-- `archmax_advance` named by `tools.forbid_always` in a workflow that has
-  a non-terminal state — an **error**, because no state could ever move and every run would strand.
+  applies — a **warning**, because the entry governs nothing.
+
+A bare denial of `archmax_advance` needs no diagnostic here: it is a load error (see "Allow
+entries and the tools blocks"), and no `*` entry reaches the advance.
 
 #### Scenario: A grant the state's own denial cancels
 
@@ -832,8 +858,9 @@ the table declares) under every key, and:
 #### Scenario: Forbidding movement strands the graph
 
 - **WHEN** a workflow with two states declares `tools: { forbid_always: [archmax_advance] }`
-- **THEN** `validate` reports an error: no state can leave itself, so no run can reach a terminal
-  state
+- **THEN** loading fails before any diagnostic runs, since the entry names `archmax_advance`; and a
+  workflow declaring `tools: { forbid_always: ["*"] }` instead loads, gets no stranding error, and
+  each non-terminal state can still advance
 
 ### Requirement: Settings, tests, runtime and metadata
 
@@ -1062,22 +1089,23 @@ payload arrives as session variables.
 
 A trigger declaration's `requires` and `returns` SHALL each be a list of distinct variable
 names, declared on the state the trigger enters, where each entry is either a bare variable
-name or an object `{ name, type?, description? }` naming one: `name` a variable name, `type`
-one of the **signature types** `string`, `integer`, `number`, `boolean`, `date`, `date-time`,
-`object`, `array` and `file`, and `description` a non-empty string saying what the variable holds
-for whoever supplies or reads it. A bare name and an object with only `name` SHALL mean the same
-untyped entry, and one list MAY mix the two spellings. An object entry carrying any other key
-SHALL be an error naming the trigger, the entry and the key. Distinctness SHALL be by name
-across both spellings. `returns` SHALL NOT name `trigger` (runtime-set and locked) or `title`
-(a child's title describes the child; returning it would rename the caller's task).
+name or an object `{ name, type?, description?, …rules }` naming one: `name` a variable name,
+`type` one of the **signature types** `string`, `integer`, `number`, `boolean`, `date`,
+`date-time`, `object`, `array` and `file`, `description` a non-empty string saying what the
+variable holds for whoever supplies or reads it, and optionally the **rules** its type takes
+(see "A signature entry may declare rules"). A bare name and an object with only `name` SHALL
+mean the same untyped entry, and one list MAY mix the two spellings. An object entry carrying
+any other key SHALL be an error naming the trigger, the entry and the key. Distinctness SHALL be
+by name across both spellings. `returns` SHALL NOT name `trigger` (runtime-set and locked) or
+`title` (a child's title describes the child; returning it would rename the caller's task).
 `requires` MAY name either; a firing supplying `title` seeds it unlocked. A signature declares
 the contract a caller relies on — each variable's name, and optionally what kind of value it
-holds and what it is for — and nothing about how a state produces it, which belongs in the
-state `instructions` that set it. The machine SHALL expose the names per trigger
-(`requiresForTrigger`, `returnsForTrigger`) and the whole normalized signature per trigger
-(`signatureForTrigger`: its `description` and both lists as `{ name, type?, description? }`
-objects in declaration order), and every variable a signature requires SHALL count as declared
-for the purpose of guard-reference advisories.
+holds, what that value must look like and what it is for — and nothing about how a state
+produces it, which belongs in the state `instructions` that set it. The machine SHALL expose the
+names per trigger (`requiresForTrigger`, `returnsForTrigger`) and the whole normalized signature
+per trigger (`signatureForTrigger`: its `description` and both lists as
+`{ name, type?, description?, …rules }` objects in declaration order), and every variable a
+signature requires SHALL count as declared for the purpose of guard-reference advisories.
 
 #### Scenario: Malformed signature
 
@@ -1113,7 +1141,15 @@ for the purpose of guard-reference advisories.
 #### Scenario: An unknown entry key is refused
 
 - **WHEN** an entry declares `{ name: amount, type: number, default: 0 }`
-- **THEN** loading fails naming the trigger, the entry and `default`
+- **THEN** loading fails naming the trigger, the entry and `default`, and the message lists the
+  rule keys among the keys an entry takes
+
+#### Scenario: A ruled entry is read with its rules
+
+- **WHEN** a `manual` declaration has
+  `requires: [{ name: invoice, type: file, accept: [.pdf], maxSize: 10MB }]`
+- **THEN** `signatureForTrigger("manual").requires` is
+  `[{ name: invoice, type: file, accept: [.pdf], maxSize: 10000000 }]`
 
 ### Requirement: The signature holds at the session boundary
 
@@ -1782,14 +1818,15 @@ SHALL name the state, the key and the state's type.
 
 - **WHEN** a `type: grader` state declares `budget: { maxParks: 1 }`
 - **THEN** `archmax validate` reports an error naming `budget.maxParks`, while
-  `budget: { maxTurns: 4, timeoutMs: 60000 }` on the same grader draws no diagnostic
+  `budget: { timeoutMs: 60000 }` on the same grader draws no diagnostic
 
 ### Requirement: An automated state's allow list names no tool it is never offered
 
-In a `grader` or `code` state, a `tools.allow` entry naming `write_todos`, `archmax_eval`,
-`archmax_run`, `archmax_wait` or `archmax_reset` SHALL be a **lint error** naming the state and
-the tool. No automated state is offered those tools, so the entry grants nothing: the spec still
-loads, and the runtime leaves the tool off the state's surface. A `tools.allow_always` entry naming
+In a `grader` or `code` state, a `tools.allow` entry naming a tool its type withholds
+(`STATE_TYPE_TOOLS[type].withheld`: `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`
+and `archmax_reset`) SHALL be a **lint error** naming the state and the tool. No automated state
+is offered those tools, so the entry grants nothing: the spec still loads, and the runtime leaves
+the tool off the state's surface. A `tools.allow_always` entry naming
 one of those tools SHALL draw no such error: it grants the tool in the workflow's agent and human
 states, and every automated state is left without it.
 
@@ -1812,3 +1849,340 @@ states, and every automated state is left without it.
 - **WHEN** a `type: grader` state declares `tools: { allow: [archmax_wait] }`
 - **THEN** `archmax validate` reports an error naming the state and `archmax_wait`, because an
   automated state never parks
+
+### Requirement: A signature entry may declare rules
+
+An object entry SHALL accept, beside its `type`, the rules that type takes, spelled as JSON
+Schema keywords: on `string` `format` (`email`, `url`, `phone`), `pattern`, `minLength`,
+`maxLength`, `enum` and `content` (`text`, `markdown`, `html`); on `integer` and `number`
+`minimum`/`maximum` as numbers; on `date` `minimum`/`maximum` as `YYYY-MM-DD` or `today`; on
+`date-time` as an RFC 3339 date-time or `now`; on `array` `minItems`/`maxItems`; on `file`
+`accept` and `maxSize`.
+
+#### Scenario: Every rule on a type that takes it loads
+
+- **WHEN** a signature declares `{ name: customer_email, type: string, format: email }`,
+  `{ name: order_id, type: string, pattern: "^A-[0-9]+$", maxLength: 24 }`,
+  `{ name: priority, type: string, enum: [low, normal, high] }`,
+  `{ name: note, type: string, maxLength: 2000, content: markdown }`,
+  `{ name: quantity, type: integer, minimum: 1, maximum: 100 }`,
+  `{ name: due, type: date, minimum: today }`,
+  `{ name: starts_at, type: date-time, maximum: "2027-01-01T00:00:00Z" }`,
+  `{ name: tags, type: array, minItems: 1, maxItems: 10 }` and
+  `{ name: invoice, type: file, accept: [.pdf], maxSize: 10MB }`
+- **THEN** the spec loads with no diagnostic
+
+#### Scenario: maxSize is read as bytes
+
+- **WHEN** an entry declares `maxSize: 10MB`, `maxSize: 512KB` or `maxSize: 2048`
+- **THEN** the normalized entry carries `maxSize` `10000000`, `512000` or `2048`
+
+#### Scenario: Symbolic date bounds stay symbolic
+
+- **WHEN** an entry declares `{ name: due, type: date, minimum: today }`
+- **THEN** the normalized entry carries `minimum: today`, read against the clock only when a
+  value is checked
+
+### Requirement: A rule declaration that cannot hold is refused
+
+Loading SHALL fail, naming the trigger, the entry and the key, and `archmax validate` SHALL report
+the same, for: a rule on a type that does not take it or on an untyped entry; `format` together
+with `pattern`; a `pattern` that does not compile, uses a lookaround or a backreference, or is
+over 1,000 characters; a `min…` above its `max…`; an empty or repeated `enum` or `accept`; a
+negative or fractional length or count; and a malformed bound, `format`, `content`, extension or
+size.
+
+#### Scenario: A rule on the wrong type
+
+- **WHEN** an entry declares `{ name: quantity, type: integer, format: email }`
+- **THEN** loading fails with a message naming `quantity`, `format` and that it applies to
+  `string` entries only
+
+#### Scenario: A rule on an untyped entry
+
+- **WHEN** an entry declares `{ name: note, maxLength: 10 }`
+- **THEN** loading fails naming `note`, `maxLength` and that the entry needs a `type`
+
+#### Scenario: format and pattern together
+
+- **WHEN** an entry declares `{ name: contact, type: string, format: email, pattern: "@acme\\." }`
+- **THEN** loading fails naming `contact` and saying an entry declares `format` or `pattern`,
+  not both
+
+#### Scenario: A pattern that does not compile, or is not linear
+
+- **WHEN** an entry declares `pattern` as `"[a-"`, `"(?=a)b"`, `"(?<!a)b"`, `"(a)\\1"` or a
+  1,001-character string
+- **THEN** loading fails naming the entry and `pattern`, quoting the engine's error for the first
+  four and the 1,000-character limit for the last
+
+#### Scenario: Inconsistent bounds
+
+- **WHEN** an entry declares `minLength: 5, maxLength: 3`, `minimum: 10, maximum: 1`,
+  `minimum: 2026-12-01, maximum: 2026-11-01`, `minItems: -1`, `enum: []` or `enum: [a, a]`
+- **THEN** loading fails naming the entry and the offending key
+
+#### Scenario: No platform policy in the SDK
+
+- **WHEN** an entry declares `{ name: body, type: string, maxLength: 1000000 }`
+- **THEN** the spec loads: the SDK caps no length
+
+### Requirement: An authored pattern is matched in linear time
+
+A `pattern` SHALL be matched by a linear-time regular-expression engine with RE2 semantics,
+never by a backtracking engine, so a value's check takes time linear in its length whatever the
+pattern. A pattern SHALL also compile as an ECMA-262 regular expression with the `u` flag
+(compiled, never executed), so a JSON Schema validator reads the same pattern. A pattern
+matches when it is found anywhere in the value; an author anchors with `^…$`.
+
+#### Scenario: A catastrophic pattern stays fast
+
+- **WHEN** an entry declares `pattern: "(a+)+$"` and a value of 8,000 `a`s followed by `!` is
+  checked
+- **THEN** the check reports the value as not matching within milliseconds
+
+#### Scenario: RE2-only syntax is refused
+
+- **WHEN** an entry declares `pattern: "(?i)abc"` or `pattern: "\\pL+"`
+- **THEN** loading fails naming the entry and `pattern`, because a JSON Schema validator could not
+  read it
+
+#### Scenario: An unanchored pattern matches anywhere
+
+- **WHEN** an entry declares `pattern: "[0-9]"` and the value is `"order 7"`
+- **THEN** the value conforms
+
+### Requirement: Rules are checked after the type, one issue per entry
+
+The conformance rule SHALL check an entry's rules only on a value that conforms to its type, and
+SHALL report at most one issue per entry: the first rule broken, in the order `format`/`pattern`,
+`enum`, `minLength`/`maxLength`, `minimum`/`maximum`, `minItems`/`maxItems`, `accept`. The issue
+SHALL be an `invalid` issue carrying the rule's name and a message naming the variable. Nothing
+SHALL be coerced or trimmed.
+
+#### Scenario: A mistyped value reports the type only
+
+- **WHEN** an entry declares `{ name: quantity, type: integer, minimum: 1 }` and the value is the
+  string `"0"`
+- **THEN** one issue reports `quantity` as not an `integer`, with no rule
+
+#### Scenario: The first broken rule is the one reported
+
+- **WHEN** an entry declares `{ name: order_id, type: string, pattern: "^A-[0-9]+$",
+  maxLength: 4 }` and the value is `"B-12345"`
+- **THEN** exactly one issue is reported, for `pattern`: `'order_id' must match ^A-[0-9]+$`
+
+#### Scenario: Whitespace is not trimmed
+
+- **WHEN** an entry declares `format: email` and the value is `" a@b.co"`
+- **THEN** the value does not conform
+
+#### Scenario: An entry without rules checks as before
+
+- **WHEN** an entry declares only `{ name: quantity, type: integer }`
+- **THEN** every value is judged and worded exactly as it was before rules existed
+
+### Requirement: Each rule's check
+
+Each rule SHALL be decided as follows: `format: email` by the WHATWG valid-email-address grammar
+with a domain of at least two labels; `format: url` as an absolute `http:`/`https:` URL with no
+credentials and no whitespace or control character; `format: phone` as E.164; `enum` by exact,
+case-sensitive membership; lengths in code points; numeric and date bounds inclusive; item counts
+by array length; `accept` by the path's last extension, case-insensitively.
+
+#### Scenario: Email addresses
+
+- **WHEN** an entry declares `format: email`
+- **THEN** `ann+orders@example.co` conforms, and `ann@localhost`, `"ann"@example.co`,
+  `ann@example..co`, `ann@-example.co` and `annexample.co` do not, each reported as
+  `'<name>' must be an email address`
+
+#### Scenario: URLs
+
+- **WHEN** an entry declares `format: url`
+- **THEN** `https://example.com/a?b=1` conforms, and `ftp://example.com`, `javascript:alert(1)`,
+  `/relative/path`, `https://user:pw@example.com` and `" https://example.com"` do not, each
+  reported as `'<name>' must be an http(s) URL`
+
+#### Scenario: Phone numbers
+
+- **WHEN** an entry declares `format: phone`
+- **THEN** `+4930123456` conforms, and `030123456`, `+0301234` and `+49 30 123456` do not, each
+  reported as `'<name>' must be a phone number in international form, such as +4930123456`
+
+#### Scenario: enum
+
+- **WHEN** an entry declares `enum: [low, normal, high]` and the value is `"High"`
+- **THEN** it is reported as `'<name>' must be one of low, normal, high`
+
+#### Scenario: Lengths count code points
+
+- **WHEN** an entry declares `maxLength: 2` and the value is two emoji, each outside the Basic
+  Multilingual Plane
+- **THEN** the value conforms, and a third emoji is reported as
+  `'<name>' must be at most 2 characters`
+
+#### Scenario: Numeric bounds are inclusive
+
+- **WHEN** an entry declares `{ type: integer, minimum: 1, maximum: 100 }`
+- **THEN** `1` and `100` conform, and `0` is reported as `'<name>' must be at least 1` and `101`
+  as `'<name>' must be at most 100`
+
+#### Scenario: Item counts
+
+- **WHEN** an entry declares `{ type: array, minItems: 1, maxItems: 10 }` and the value is `[]`
+- **THEN** it is reported as `'<name>' must hold at least 1 entry`
+
+#### Scenario: accept
+
+- **WHEN** an entry declares `{ type: file, accept: [.pdf] }`
+- **THEN** `scratchpad/attachments/Invoice.PDF` conforms, and `scratchpad/attachments/invoice.png`
+  is reported as `'<name>' must be a .pdf file`
+
+#### Scenario: Linear in the value's length
+
+- **WHEN** an email, a URL, a length or a pattern check is given a 1 MB string
+- **THEN** it completes in time linear in the string's length
+
+### Requirement: Date bounds read a clock the caller may pin
+
+A `date` bound of `today` SHALL be the UTC calendar date of the check's clock, and a `date-time`
+bound of `now` SHALL be the clock's instant. The clock SHALL default to the current time, and a
+caller of the conformance rule MAY pin it. A literal bound SHALL be compared as a calendar date
+(`date`) or an instant (`date-time`, offsets applied). Bounds are inclusive.
+
+#### Scenario: today around a UTC midnight
+
+- **WHEN** an entry declares `{ name: due, type: date, minimum: today }`, the clock is pinned to
+  `2026-11-01T00:30:00+02:00`, and the value is `2026-10-31`
+- **THEN** the value conforms, since the clock's UTC date is `2026-10-31`; `2026-10-30` is
+  reported as `'due' must not be before today`
+
+#### Scenario: A literal date bound
+
+- **WHEN** an entry declares `{ name: due, type: date, minimum: 2026-11-01 }` and the value is
+  `2026-10-31`
+- **THEN** it is reported as `'due' must not be before 2026-11-01`
+
+#### Scenario: now and offsets
+
+- **WHEN** an entry declares `{ name: starts_at, type: date-time, minimum: now }`, the clock is
+  pinned to `2026-11-01T10:00:00Z`, and the value is `2026-11-01T11:30:00+02:00`
+- **THEN** it is reported as `'starts_at' must not be before now`, since the value is
+  `09:30:00Z`
+
+### Requirement: A file value is held to its maxSize where it crosses a boundary
+
+Where a `file` value crosses a boundary (the turn boundary, `archmax_set_variables` for a typed
+return, the completion check and a delegation call), the runtime SHALL refuse a value whose entry
+declares `maxSize` when the file it names is larger, or its size cannot be determined, beside
+the existence and permission refusals, naming the variable and the limit.
+
+#### Scenario: An oversized file is refused at the start
+
+- **WHEN** a session starts on `requires: [{ name: invoice, type: file, maxSize: 1KB }]` seeded
+  with a path naming a 2,000-byte file the session may read
+- **THEN** no model call is made and the session is refused with `'invoice' must be at most 1 KB`
+
+#### Scenario: A file within its limit is accepted
+
+- **WHEN** the same file is 1,000 bytes
+- **THEN** the session starts
+
+#### Scenario: One issue for the entry
+
+- **WHEN** an entry declares `{ type: file, accept: [.pdf], maxSize: 1KB }` and the value names
+  a missing `.png`
+- **THEN** the only issue reported for the entry is that it must be a `.pdf` file
+
+### Requirement: content is a declaration, not a check
+
+`content` SHALL be carried by the normalized signature and mapped into the JSON Schema, and
+SHALL NOT affect conformance: the runtime SHALL neither refuse nor alter a value for its
+`content`. What a declared kind of text permits is a host's decision.
+
+#### Scenario: HTML in a markdown entry is not refused
+
+- **WHEN** an entry declares `{ name: note, type: string, content: markdown }` and the value is
+  `"<script>alert(1)</script>"`
+- **THEN** the value conforms and reaches the session unchanged
+
+### Requirement: Rules map into the JSON Schema
+
+The mapping from a signature to JSON Schema SHALL carry each rule JSON Schema can express:
+`format: email` as `format: email`; `format: url` as `format: uri` with
+`pattern: "^https?://"`; `format: phone` as the E.164 `pattern`; `pattern`, `minLength`,
+`maxLength`, `enum`, numeric `minimum`/`maximum`, `minItems` and `maxItems` as themselves;
+`content` as `contentMediaType` (`text/plain`, `text/markdown`, `text/html`). Date bounds,
+`accept` and `maxSize` SHALL be left out.
+
+#### Scenario: A ruled signature becomes a schema
+
+- **WHEN** the mapping is given `[{ name: quantity, type: integer, minimum: 1, maximum: 100 },
+  { name: website, type: string, format: url }, { name: due, type: date, minimum: today }]`
+- **THEN** it yields `quantity: { type: integer, minimum: 1, maximum: 100 }`,
+  `website: { type: string, format: uri, pattern: "^https?://" }` and
+  `due: { type: string, format: date }`
+
+#### Scenario: content becomes a media type
+
+- **WHEN** the mapping is given `[{ name: note, type: string, content: markdown }]`
+- **THEN** it yields `note: { type: string, contentMediaType: text/markdown }`
+
+### Requirement: Rules hold wherever the signature holds
+
+Every check that decides by the conformance rule SHALL enforce rules, with the rule's message:
+the turn boundary over the trigger's `requires`, the completion check over its `returns`,
+`archmax_set_variables` writing a typed return (a correctable tool refusal), a delegation's
+arguments before the child runs, and a child's or a mock's returns when it settles.
+
+#### Scenario: A firing breaking a rule does not start
+
+- **WHEN** a session starts on `requires: [{ name: quantity, type: integer, maximum: 100 }]`
+  seeded with `quantity: 101`
+- **THEN** no model call is made and the session is refused naming the trigger and
+  `'quantity' must be at most 100`
+
+#### Scenario: A return breaking a rule is refused at the write
+
+- **WHEN** the current turn's trigger declares `returns: [{ name: contact, type: string,
+  format: email }]` and the agent writes `contact: "nobody"`
+- **THEN** the call is refused naming the trigger and `'contact' must be an email address`,
+  nothing is written, and the session continues
+
+#### Scenario: A completion with a return breaking a rule is rejected
+
+- **WHEN** a session finishes in a terminal state with `contact` holding a value that breaks
+  its rule, set another way than `archmax_set_variables`
+- **THEN** the session is rejected naming the state and the rule's message
+
+#### Scenario: A delegation argument breaking a rule is refused
+
+- **WHEN** a caller invokes `archmax_workflow_<slug>` whose `manual` trigger declares
+  `requires: [{ name: priority, type: string, enum: [low, high] }]` with `priority: "urgent"`
+- **THEN** the call is refused `invalid-param` before the child runs, naming
+  `'priority' must be one of low, high`
+
+#### Scenario: A child's return breaking a rule fails the call
+
+- **WHEN** a child settles with a declared return that breaks its rule
+- **THEN** the call fails `invalid-return` with the rule's message
+
+### Requirement: The agent is told an entry's rules
+
+Where the system prompt renders the current trigger's signature, an entry that declares rules
+SHALL be rendered with them, after its type, as short phrases (`name (type; rule; rule) —
+description`), so the agent is told what a value must look like before a write is refused for
+it. An entry without rules SHALL render exactly as before.
+
+#### Scenario: A ruled return is rendered with its rules
+
+- **WHEN** the current trigger declares `returns: [{ name: contact, type: string, format: email,
+  maxLength: 80, description: "The contact address." }]`
+- **THEN** the prompt renders `- contact (string; an email address; at most 80 characters) — The
+  contact address.`
+
+#### Scenario: An entry without rules renders as before
+
+- **WHEN** the current trigger declares `requires: [{ name: due, type: date }]`
+- **THEN** the prompt renders `- due (date)`

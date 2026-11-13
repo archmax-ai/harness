@@ -9,6 +9,7 @@
  */
 import type { WorkflowMachine } from "../machine/machine.js";
 import {
+  formatSize,
   isFilePath,
   signatureValueIssues,
   type SignatureEntry,
@@ -24,12 +25,14 @@ export type InvalidValueIssue = Extract<SignatureValueIssue, { kind: "invalid" }
 
 /**
  * What the file check asks of the session a `file` value belongs to: what a
- * path names in its workspace, and why it may not read it on runtime authority
+ * path names in its workspace, how many bytes a file there holds (`undefined`
+ * when that cannot be told), and why it may not read it on runtime authority
  * (the rules that bind runtime authority — the zone rules and every
  * workflow-wide denial, inherited ones included), or `undefined` when it may.
  */
 export interface FileValueCheck {
   kind(path: string): Promise<"file" | "directory" | "missing">;
+  size(path: string): Promise<number | undefined>;
   denied(path: string): string | undefined;
 }
 
@@ -41,8 +44,11 @@ export function filePathOf(value: string): string {
 /**
  * The runtime half of the `file` type: one issue per `file` entry whose value
  * has the right shape (the pure rule's business) but names a path this session
- * may not read, a folder, or nothing. Entries of another type, unset values and
- * malformed paths are left to {@link signatureValueIssues}.
+ * may not read, a folder, nothing, or a file larger than the entry's `maxSize`
+ * (or one whose size cannot be told: the limit fails closed). Entries of
+ * another type, unset values, malformed paths and values breaking a
+ * synchronous rule (`accept`) are left to {@link signatureValueIssues}, so an
+ * entry reports one issue at most.
  */
 export async function fileValueIssues(
   entries: readonly SignatureEntry[],
@@ -54,9 +60,10 @@ export async function fileValueIssues(
     if (entry.type !== "file") continue;
     const value = Object.hasOwn(values, entry.name) ? values[entry.name] : undefined;
     if (typeof value !== "string" || !isFilePath(value)) continue;
+    if (signatureValueIssues([entry], { [entry.name]: value }).length > 0) continue;
     const path = filePathOf(value);
-    const issue = (message: string) =>
-      issues.push({ kind: "invalid", name: entry.name, type: "file", found: "string", message });
+    const issue = (message: string, rule?: "maxSize") =>
+      issues.push({ kind: "invalid", name: entry.name, type: "file", found: "string", ...(rule ? { rule } : {}), message });
     const denied = check.denied(path);
     if (denied) {
       issue(`'${entry.name}' names '${path}', which this session may not read: ${denied}`);
@@ -65,6 +72,12 @@ export async function fileValueIssues(
     const kind = await check.kind(path);
     if (kind === "directory") issue(`'${entry.name}' must name a file, but '${path}' is a folder`);
     else if (kind === "missing") issue(`'${entry.name}' must name a file, but nothing is at '${path}'`);
+    else if (entry.maxSize !== undefined) {
+      const size = await check.size(path);
+      const limit = `'${entry.name}' must be at most ${formatSize(entry.maxSize)}`;
+      if (size === undefined) issue(`${limit}, but the size of '${path}' cannot be told`, "maxSize");
+      else if (size > entry.maxSize) issue(limit, "maxSize");
+    }
   }
   return issues;
 }

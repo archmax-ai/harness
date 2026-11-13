@@ -60,8 +60,18 @@ export type ScriptedModelName = string;
 
 /** One scripted model turn. */
 export type ScriptedTurn =
-  /** A single tool call, with `text` the message says beside it (what a person reads next to an advance). */
-  | { tool: string; args: Record<string, unknown>; text?: string; usage?: ScriptedUsage; reports?: ScriptedModelName }
+  /**
+   * A single tool call, with `text` the message says beside it (what a person reads next to an
+   * advance). `delayMs` holds the answer back that long, for a call that outlives a time budget.
+   */
+  | {
+      tool: string;
+      args: Record<string, unknown>;
+      text?: string;
+      usage?: ScriptedUsage;
+      reports?: ScriptedModelName;
+      delayMs?: number;
+    }
   /** Several tool calls issued in one assistant message (a tool batch). */
   | {
       batch: Array<{ tool: string; args: Record<string, unknown> }>;
@@ -187,6 +197,7 @@ export class ScriptedModel extends BaseChatModel<BaseChatModelCallOptions> {
     const scripted = this.turns[this.cursor];
     if (scripted) this.cursor += 1;
     const turn: ScriptedTurn = scripted ?? { reply: this.fallbackReply };
+    if ("delayMs" in turn && turn.delayMs) await new Promise((resolve) => setTimeout(resolve, turn.delayMs));
     const usage = turn.usage
       ? {
           usage_metadata: {

@@ -326,6 +326,32 @@ export async function workspaceEntryKind(
 }
 
 /**
+ * How many bytes the file at `path` holds, or `undefined` when that cannot be
+ * told: the listing's size when the store reports one, else the length of the
+ * file's bytes. What a `file` entry's `maxSize` is checked against.
+ */
+export async function workspaceEntrySize(backend: BackendProtocolV2, path: string): Promise<number | undefined> {
+  const resolved = canonicalizeRelPath(path);
+  if (resolved.escapes || resolved.path === "") return undefined;
+  const at = resolved.path.lastIndexOf("/");
+  const parent = at < 0 ? "" : resolved.path.slice(0, at);
+  const name = resolved.path.slice(at + 1);
+  try {
+    const listing = await backend.ls(keyOf(parent));
+    for (const entry of listing.files ?? []) {
+      const trimmed = entry.path.replace(/\/+$/, "");
+      if (trimmed.slice(trimmed.lastIndexOf("/") + 1) !== name) continue;
+      if (typeof entry.size === "number" && Number.isFinite(entry.size)) return entry.size;
+      break;
+    }
+  } catch {
+    // Fall through to the bytes.
+  }
+  const read = await readWorkspaceBytes(backend, resolved.path);
+  return "bytes" in read ? read.bytes.byteLength : undefined;
+}
+
+/**
  * One workspace file's exact bytes, or why they cannot be read — the refusals
  * `copy_file` meets, worded for a copy. The runtime's own cross-session copies
  * (a sub-workflow's `file` arguments and returns) read through this.

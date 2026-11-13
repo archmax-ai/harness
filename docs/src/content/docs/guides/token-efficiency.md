@@ -149,10 +149,10 @@ stay out of the static section.
   they are sent once in the cached prefix. The same paragraph pasted into every
   state is paid for per turn.
 - Write each transition's `description` for a reader standing in the *source*
-  state. It is what the agent knows about where an edge leads. Say *when* to take
-  the edge ("Refunds over $50"). An undescribed edge is shown the target's whole
-  `instructions` instead, on every call in the source state, so a one-line
-  description is the cheaper choice when the instructions are long.
+  state. It is all the agent knows about where an edge leads, and it is sent on
+  every call in that state. Say *when* to take the edge ("Refunds over $50") in
+  one line. A state's single edge into another agent state needs none: leave it
+  out rather than writing "Proceed".
 - A state's `summary` and `title` stay out of every model call and cost nothing.
   They are labels for people and hosts, so write them for whoever opens the spec.
 - Splitting one broad state into several narrow ones does not widen the prefix.

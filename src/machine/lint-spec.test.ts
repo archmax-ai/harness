@@ -248,7 +248,7 @@ describe("automated states", () => {
   it("reports nothing for a clean code state and a clean grader", () => {
     expect(lintState(CODE).filter((f) => f.severity === "error")).toEqual([]);
     expect(
-      lintState({ ...GRADER, model: "large-model", budget: { maxTurns: 4, timeoutMs: 30_000 } }).filter(
+      lintState({ ...GRADER, model: "large-model", budget: { timeoutMs: 30_000 } }).filter(
         (f) => f.severity === "error",
       ),
     ).toEqual([]);
@@ -257,7 +257,7 @@ describe("automated states", () => {
   it.each<[string, StateDecl, string]>([
     ["instructions", { instructions: "Check the refund." }, "makes no model call"],
     ["model", { model: "large-model" }, "makes no model call"],
-    ["budget", { budget: { maxTurns: 3 } }, "settings.timeoutMs"],
+    ["budget", { budget: { timeoutMs: 3000 } }, "settings.timeoutMs"],
     ["evidence", { evidence: ["scratchpad/refund.json"] }, "human state's decision record"],
     ["approvers", { approvers: ["finance"] }, "human state's decision record"],
   ])("errors on a code state declaring '%s'", (key, extra, why) => {
@@ -290,7 +290,7 @@ describe("automated states", () => {
   });
 
   it("errors on a grader's park budget, and only that budget key", () => {
-    const findings = lintState({ ...GRADER, budget: { maxTurns: 4, maxParks: 2 } });
+    const findings = lintState({ ...GRADER, budget: { timeoutMs: 30_000, maxParks: 2 } });
     const [finding] = errorsAt(findings, "states.check.budget.maxParks");
     expect(finding?.message).toContain("a grader cannot park");
     expect(findings.filter((f) => f.severity === "error")).toHaveLength(1);
