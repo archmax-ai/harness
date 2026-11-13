@@ -55,6 +55,18 @@ describe("write_todos guidance follows the grant", () => {
       expect(model.calls[0]?.tools).toContain("write_todos");
     }
   });
+
+  it("leaves out langchain's advice to end on a final answer, which would talk the model out of a raise", async () => {
+    const { agent, model } = await assemble(workspaceWith({ runtime: RUNTIME, states: answer }), {
+      turns: [{ reply: "ok" }],
+    });
+    await turn(agent, "s1", "hi");
+    expect(systemText(model)).toContain("## Important To-Do List Usage Notes to Remember");
+    expect(systemText(model)).not.toContain("## Finishing a task");
+    const described = model.calls[0]?.toolDescriptions["write_todos"] ?? "";
+    expect(described).toContain("structured task list");
+    expect(described).not.toContain("## When You Finish");
+  });
 });
 
 describe("a declared allow_always replaces the default tools", () => {
