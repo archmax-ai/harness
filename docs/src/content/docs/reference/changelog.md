@@ -9,6 +9,38 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 2.1.0
+
+Path governance closes four gaps, thinking-mode endpoints get their reasoning back, and the
+harness moves to Deep Agents 1.16.
+
+- **A path a host would rewrite is refused.** A tool path holding a backslash, a control or
+  invisible (format) character, or a space at either end of a segment is refused by the kernel
+  (`tool.path-form`), and the workspace router refuses it with `WorkspacePathFormError`, so a
+  spelling a host normalizes differently cannot reach a path the guard never saw. See
+  [allow entries](/reference/machine-spec/#allow-entries).
+- **A path naming the session's own folder is refused.** A path whose first segment is the bound
+  session's id is refused (`zone.session-folder`). The runtime's own writers are unaffected.
+- **Scripts list what the model lists.** Code-state scripts and graders get the same skill and
+  mount redaction as the model, and a root-wide `grep` or `glob` leaves out `checkpoints/` and
+  `artifacts/` while a session is bound.
+- **A path guard variable must name a path.** A `${{…}}` reference standing for whole segments
+  of a path guard (`${{dir}}/**`) that resolves to an empty value, `.` or `/` leaves the guard
+  unresolvable, which ends the session (`tool.unresolved-variable`), and `archmax_set_variables`
+  refuses to set such a value.
+- **Thinking-mode endpoints get their reasoning back.** The env-configured model
+  (`createChatModel`) sends each assistant turn's `reasoning_content` back on the next request,
+  and an empty one on the runtime's own notes, once any turn in the request carries reasoning.
+  DeepSeek in thinking mode no longer refuses the follow-up call; a request with no reasoning
+  goes out as before. See [model endpoint](/reference/configuration/#model-endpoint).
+- **Deep Agents 1.16.3.** The langchain group moves to deepagents 1.16.3, langchain 1.6.3,
+  `@langchain/core` 1.3.6, `@langchain/langgraph` 1.7.3 and `@langchain/openai` 1.8.2, within
+  the existing ranges. A governed agent's `write_todos` guidance leaves out langchain's
+  "Finishing a task" and "When You Finish" sections, which tell the model to end on a text
+  answer; a plain agent keeps them. Deep Agents now adds one `after_agent` step to every turn,
+  which counts toward the [`recursionLimit`](/reference/machine-spec/#budget).
+- **Dependencies.** The js-yaml (under gray-matter) and brace-expansion advisories are cleared.
+
 ## 2.0.1
 
 A fix: a wildcard denial no longer strands a state.
