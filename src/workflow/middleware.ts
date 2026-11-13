@@ -47,6 +47,7 @@ import { NO_MOUNTS, type MountPrefixes } from "../core/mounts.js";
 import type { SkillRegistry } from "../core/skills.js";
 import type { FrameworkRuntime, WorkflowRequestState } from "../core/deepagents.js";
 import { addSummaries, extractUsage, summarizeUsage, type PricingTable } from "../core/usage.js";
+import type { Telemetry } from "../core/telemetry.js";
 import { routeFailure } from "./on-error.js";
 import { closingTurn, servePark, suspendIfParked, type ParkContext } from "./parks.js";
 import { openTurn } from "./turn-boundary.js";
@@ -112,6 +113,8 @@ export interface WorkflowMiddlewareOptions {
   seededVariables?: VariableStore;
   /** Token prices used to attach `costUsd` to usage events. */
   pricing?: PricingTable;
+  /** Where the model-call and tool-call spans go: the assembly's telemetry. */
+  telemetry?: Telemetry;
   /** The sessions are a sub-workflow's children: the control tools ask for no title. */
   child?: boolean;
   /**
@@ -188,6 +191,8 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
     skills: opts.skills ?? new Map(),
     shaping: opts.promptShaping ?? {},
     ...(opts.stateModels ? { stateModels: opts.stateModels } : {}),
+    ...(pricing ? { pricing } : {}),
+    ...(opts.telemetry ? { telemetry: opts.telemetry } : {}),
     ...(ptcGateway ? { ptcGateway } : {}),
     ...(subWorkflows ? { subWorkflows } : {}),
     child: opts.child === true,

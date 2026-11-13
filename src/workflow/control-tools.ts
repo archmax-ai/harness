@@ -928,6 +928,12 @@ export function setVariablesCommand(outcome: SetVariablesOutcome): Command | Too
 export { unmetRequirements } from "../kernel/kernel.js";
 
 /**
+ * The rule a call is blocked by when an argument names a variable that is not
+ * set — refused before the kernel is asked, so it has no kernel rule of its own.
+ */
+export const UNRESOLVED_ARGUMENT_RULE = "unresolved-argument";
+
+/**
  * The wording for a `${{…}}` reference in the agent's own tool arguments that
  * could not be resolved: a correctable refusal carrying the two fixes it might
  * need — discover what is set, or escape a reference meant as literal text.

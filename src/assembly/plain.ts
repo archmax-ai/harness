@@ -7,6 +7,7 @@ import { createFileOperationTools } from "../core/file-operations.js";
 import { asCompiledAgentGraph, type CompiledAgentGraph } from "../core/deepagents.js";
 import { TOOL_MOCK_MIDDLEWARE_NAME } from "../core/tool-mocks.js";
 import { withoutDeletion } from "../core/workspace-router.js";
+import { createTelemetryMiddleware } from "./telemetry-middleware.js";
 import {
   fileReadMiddleware,
   frameworkPassthrough,
@@ -29,8 +30,14 @@ export function composePlain(
   ctx: AssemblyContext,
   systemPrompt: string,
 ): { graph: CompiledAgentGraph; toolMocks: boolean } {
-  // The host's middleware rides after the runtime's own, as on the governed path.
-  const middleware = [todoMiddleware(), ...fileReadMiddleware(ctx), ...(ctx.params.middleware ?? [])];
+  // The host's middleware rides after the runtime's own, as on the governed path;
+  // the telemetry leads, so a call's span wraps everything the call passes through.
+  const middleware = [
+    createTelemetryMiddleware({ telemetry: ctx.telemetry, ...(ctx.pricing ? { pricing: ctx.pricing } : {}) }),
+    todoMiddleware(),
+    ...fileReadMiddleware(ctx),
+    ...(ctx.params.middleware ?? []),
+  ];
   const deepAgent = createDeepAgent({
     model: ctx.model,
     // Without `delete`: Deep Agents' own recursive `delete` tool stays out, and

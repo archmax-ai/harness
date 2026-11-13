@@ -51,6 +51,7 @@ export default defineConfig({
 						{ label: 'Using the CLI', slug: 'guides/cli' },
 						{ label: 'Testing workflows', slug: 'guides/testing' },
 						{ label: 'Token efficiency and cost', slug: 'guides/token-efficiency' },
+						{ label: 'Telemetry', slug: 'guides/telemetry' },
 					],
 				},
 				{

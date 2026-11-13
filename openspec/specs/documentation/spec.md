@@ -36,7 +36,9 @@ a GitHub social link, and an edit link pointing at the `docs/` source on the def
 Reference section SHALL carry the configuration, CLI, machine-spec, glossary, public-API and
 changelog pages; the Guides section SHALL cover the workflow machine, the authoring plane,
 triggers, skills, grader and code states (`guides/automated-states.md`), sub-workflows, sessions,
-the code interpreter, the CLI, testing, and token efficiency.
+the code interpreter, the CLI, testing, token efficiency, and telemetry
+(`guides/telemetry.md`: the OpenTelemetry spans and metrics the runtime reports, and what a host
+does to see them).
 
 No page SHALL present a removed concept as current behaviour: a `subagents/` directory, a
 `SUBAGENT.md` file, a `before` or `after` hook of any kind (`script`, `rubric`, `subagent` or a
@@ -55,6 +57,12 @@ custom kind), a hook verdict (`ok`, `correct`, `veto`), an agent-callable `task`
 - **WHEN** a reader looks for how a session's work is graded or checked before the session moves on
 - **THEN** the Guides section offers the grader and code states page (`guides/automated-states.md`),
   and no page documents grading rubrics, hooks or subagents
+
+#### Scenario: A host looks for tracing
+
+- **WHEN** a reader wants to see the harness's work in their tracing backend
+- **THEN** the Guides section offers the telemetry page, which shows the span tree, every span's
+  attributes, the metrics, what a span never carries, and registering an SDK in the host
 
 ### Requirement: The glossary is the vocabulary law
 
@@ -418,7 +426,10 @@ members on the agent (`sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `dispos
 `onEvent` stream, including the `code-*` and `grader-*` events that bracket an automated state's
 run; the session artifacts (`graph.json`, `trail.json`, `variables.json`,
 `metadata.json`); and token accounting via `model-usage` events (a grader's calls included),
-`createUsageTracker` and the `pricing` option. Every code path or export it names SHALL exist in
+`createUsageTracker` and the `pricing` option; and tracing: that the runtime reports
+OpenTelemetry spans and metrics through `@opentelemetry/api` once the host registers an SDK, with
+nothing to pass to `createAgent`, the turn, state, model-call and tool-call spans, and that spans
+carry metadata only. Every code path or export it names SHALL exist in
 the current source, so it names no `hookExecutors` option and no `rubric` model role.
 
 #### Scenario: Wiring example is Deep Agents-shaped
@@ -438,6 +449,12 @@ the current source, so it names no `hookExecutors` option and no `rubric` model 
 - **WHEN** an agent reads how to run grader states on a different model from the session's agent
 - **THEN** the reference shows a `modelFactory` that answers the `grader` role, and names no
   `rubric` role and no `hookExecutors` option
+
+#### Scenario: Tracing needs only the host's SDK
+
+- **WHEN** an agent reads how to see a session's turns in a tracing backend
+- **THEN** the reference shows registering an OpenTelemetry SDK in the host before `createAgent`,
+  passes no tracing option, and names the `invoke_agent`, `state`, `chat` and `execute_tool` spans
 
 ### Requirement: Mandatory JSDoc header on authored code files
 

@@ -20,6 +20,15 @@ This installs the runtime library and the `archmax` CLI. Host tools written with
 npm install langchain zod
 ```
 
+The package has one peer dependency, `@opentelemetry/api`, through which it reports
+[telemetry](/guides/telemetry/). npm 7 and later and pnpm install it along with the harness. With
+a package manager that does not install peer dependencies (Yarn, or pnpm with `auto-install-peers`
+off), add it yourself:
+
+```bash
+yarn add @opentelemetry/api
+```
+
 For hacking on the SDK itself, see
 [development setup](/contributing/development/).
 

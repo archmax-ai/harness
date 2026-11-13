@@ -44,6 +44,7 @@ import type { SkillPrefixes, SkillRegistry } from "../core/skills.js";
 import { TOOL_MOCK_MIDDLEWARE_NAME } from "../core/tool-mocks.js";
 import { withoutDeletion } from "../core/workspace-router.js";
 import type { PricingTable, UsageTracker } from "../core/usage.js";
+import type { Telemetry } from "../core/telemetry.js";
 import type { Workspace } from "../core/workspace.js";
 import type { MountPrefixes } from "../core/zones.js";
 import { loadPromptCacheEnv } from "../env.js";
@@ -100,6 +101,8 @@ export interface AssemblyContext {
   checkpointer: BaseCheckpointSaver;
   emit: WorkflowEventEmitter;
   usage: UsageTracker;
+  /** The assembly's OpenTelemetry spans, every composition's turns and calls among them, a child's included. */
+  telemetry: Telemetry;
   model: BaseChatModel;
   /**
    * The model a **state** runs on: the id it declares (or its workflow's
@@ -498,6 +501,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     mountPrefixes: ctx.mountPrefixes,
     skills: ctx.skillTable,
     emit,
+    telemetry: ctx.telemetry,
   });
   const interpreter = createInterpreter({ executor, ptcNames: [], ptcGateway });
   emit({ type: "interpreter-enabled" });
@@ -591,6 +595,7 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
     trigger: { id: defaultTrigger.id },
     seededVariables,
     ...(ctx.pricing ? { pricing: ctx.pricing } : {}),
+    telemetry: ctx.telemetry,
     ...(input.child ? { child: true } : {}),
     // Through the workspace, bound to the turn's session: what a `file` value names.
     entryKind: (path) => workspaceEntryKind(ctx.backend, path),
@@ -655,7 +660,13 @@ export async function composeGoverned(ctx: AssemblyContext, input: ComposeInput)
   // Assembly-time topology summary; the CLI's structured renderer ignores it.
   emit({ type: "graph-topology", topology: describeMachineTopology(target) });
 
-  const driver = createTurnRunner({ graph, emit, bindSession: sessionBinder(ctx), entryState: target.entry });
+  const driver = createTurnRunner({
+    graph,
+    emit,
+    bindSession: sessionBinder(ctx),
+    entryState: target.entry,
+    telemetry: { telemetry: ctx.telemetry, workflow: input.workflow, stateType: (slug) => target.stateType(slug) },
+  });
   return {
     graph,
     driver,
