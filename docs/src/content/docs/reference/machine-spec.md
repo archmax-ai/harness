@@ -399,7 +399,10 @@ An `args` glob matches an argument according to what the argument is. An
 argument the tool declares as a **path** (`file_path`, `path`, `source`,
 `destination`, or a host's declared ones; for a tool that declares none,
 `file_path`) is canonicalized before it is matched: a leading `/`, `./`, `//` and
-`..` are resolved, so a different spelling cannot dodge a guard. Every **other**
+`..` are resolved, so a different spelling cannot dodge a guard. A path with a
+backslash, a control or invisible character, or a space at either end of a
+segment is refused (`tool.path-form`), as is one whose first segment is the
+session's own id (`zone.session-folder`). Every **other**
 argument is matched **as written**: a grant on
 `url: ["https://api.example.com/**"]` admits that API's URLs, and a stored value
 matches itself exactly. A denial on such an argument also catches its path form,
@@ -417,6 +420,9 @@ incomplete.
 An `args`/`paths` glob may reference a **variable** (`${{name}}` or
 `${{name.dotted.path}}`). It is resolved against the session's variables at call
 time and matched literally, so a value can never widen the guard it lands in.
+In a path guard, a reference standing for whole segments (`${{dir}}/**`) must
+name a path: an empty value, `.` or `/` leaves the guard unresolvable, and
+`archmax_set_variables` refuses to set such a value.
 
 The **agent** may write the same references into the arguments of its *own*
 calls, embedded anywhere in a string and repeated. The runtime substitutes them

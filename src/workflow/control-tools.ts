@@ -35,7 +35,9 @@ import {
   WAIT_TOOL,
 } from "../machine/tool-names.js";
 import {
+  isRootPathValue,
   normalizeTitle,
+  pathGuardVariables,
   resolvePath,
   TITLE_VARIABLE,
   titleWriteError,
@@ -825,6 +827,18 @@ export function handleSetVariables(
       const problem = titleWriteError(variables[name]);
       if (problem) return refuse(`${SET_VARIABLES_TOOL} rejected: ${problem} Nothing was written.`);
     }
+  }
+
+  // A path guard substituting a variable whole (`${{dir}}/**`) cannot resolve a
+  // value naming no path, so such a write is refused here, where it can be corrected.
+  const guarded = machine ? pathGuardVariables(machine) : new Set<string>();
+  const rootValued = names.find((name) => guarded.has(name) && isRootPathValue(variables[name]));
+  if (rootValued !== undefined) {
+    return refuse(
+      `${SET_VARIABLES_TOOL} rejected: '${rootValued}' is used in a path guard, and ` +
+        `${JSON.stringify(variables[rootValued])} names no path (empty, '.' or '/'). Set it to a ` +
+        `directory or file below the workspace root. Nothing was written.`,
+    );
   }
 
   const mistyped = machine ? mistypedReturns(machine, request.state, variables) : undefined;

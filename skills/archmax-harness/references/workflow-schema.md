@@ -423,6 +423,10 @@ block one. What a type withholds, no grant can give.
 
 - A path argument (a tool's declared paths, else `file_path`) is canonicalized before it
   is matched. Any other argument, such as a URL or an address, is matched as written.
+- A path with a backslash, a control character or a space at either end of a segment is
+  refused. So is one starting with the session's own id.
+- A variable filling whole segments of a path guard (`${{dir}}/**`) must name a path. An
+  empty value, `.` or `/` is refused.
 - `*` never crosses `/`; `**` does. Globs match dot-files, so `secrets/**` covers
   `secrets/.env`. `""` matches only an empty value.
 - In an allow entry, `paths:` needs every path argument to match. In a forbid entry, one

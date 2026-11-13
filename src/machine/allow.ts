@@ -111,8 +111,8 @@ export function argsSatisfy(
 ): boolean {
   if (!argMatchers) return true;
   return Object.entries(argMatchers).every(([name, globs]) => {
-    const resolved = resolveGlobs(globs, variables, onUnresolved);
     const as: MatchAs = kinds.pathArgs.includes(name) ? "path" : kinds.side === "deny" ? "text-or-path" : "text";
+    const resolved = resolveGlobs(globs, variables, onUnresolved, as === "path");
     return resolved !== null && valueMatches(resolvePath(args, name.split(".")), resolved, as);
   });
 }
@@ -127,11 +127,16 @@ export interface ArgKinds {
   side: "grant" | "deny";
 }
 
-/** A guard's globs with every `${{…}}` resolved, or `null` (reported) when one cannot be. */
+/**
+ * A guard's globs with every `${{…}}` resolved, or `null` (reported) when one
+ * cannot be. A path guard (`path`) also refuses a reference whose value names
+ * no path (`isRootPathValue`), which would widen `${{dir}}/**` to `**`.
+ */
 function resolveGlobs(
   globs: string[],
   variables?: VariableStore,
   onUnresolved?: (failure: GuardResolutionFailure) => void,
+  path = false,
 ): string[] | null {
   const resolved: string[] = [];
   for (const glob of globs) {
@@ -139,7 +144,7 @@ function resolveGlobs(
       resolved.push(glob);
       continue;
     }
-    const result = resolveGlob(glob, variables ?? {});
+    const result = resolveGlob(glob, variables ?? {}, { path });
     if (!result.ok) {
       onUnresolved?.({ reference: result.reference, detail: result.detail });
       return null;
@@ -176,7 +181,7 @@ export function pathGuardMatches(
   variables?: VariableStore,
   onUnresolved?: (failure: GuardResolutionFailure) => void,
 ): boolean | null {
-  const globs = resolveGlobs(entry.argMatchers?.[DEFAULT_PATH_ARG] ?? [], variables, onUnresolved);
+  const globs = resolveGlobs(entry.argMatchers?.[DEFAULT_PATH_ARG] ?? [], variables, onUnresolved, true);
   if (globs === null) return null;
   const test = (value: unknown) => valueMatches(value, globs);
   return mode === "every" ? values.length > 0 && values.every(test) : values.some(test);
@@ -193,6 +198,8 @@ export interface GuardVariableReference {
   arg: string;
   glob: string;
   reference: VariableReference;
+  /** The entry is the `paths:` shorthand, so the reference sits in a path guard on every path argument. */
+  fromPaths: boolean;
 }
 
 /**
@@ -204,12 +211,12 @@ export function guardReferences(spec: MachineSpec): GuardVariableReference[] {
   const found: GuardVariableReference[] = [];
   const collect = (entries: AllowEntry[] | undefined, state: string | null) => {
     for (const entry of entries ?? []) {
-      const { tool, argMatchers } = normalizeAllowEntry(entry);
+      const { tool, argMatchers, fromPaths } = normalizeAllowEntry(entry);
       if (!argMatchers) continue;
       for (const [arg, globs] of Object.entries(argMatchers)) {
         for (const glob of globs) {
           for (const ref of parseReferences(glob)) {
-            found.push({ state, tool, arg, glob, reference: ref });
+            found.push({ state, tool, arg, glob, reference: ref, fromPaths: fromPaths === true });
           }
         }
       }

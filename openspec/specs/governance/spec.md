@@ -447,7 +447,10 @@ binds the next call. Only the reference span SHALL be replaced and the substitut
 glob-escaped, so a value such as `*`, `**` or `{a,b}` matches only itself. A reference that cannot be
 resolved — unset variable, missing path, non-own property, index out of range, or a non-scalar value —
 SHALL make the entry match nothing, and the verdict SHALL be a terminal block
-(`tool.unresolved-variable`): the turn ends rejected, routed through the state's `on_error` when one is
+(`tool.unresolved-variable`). In a path guard, a reference filling whole segments (`${{dir}}/**`,
+`out/${{dir}}`) whose value canonicalizes to the root (`""`, `.`, `/`, `//`) SHALL be unresolvable
+the same way, so it never widens the guard to every path, and `archmax_set_variables` SHALL refuse
+such a value for a variable a path guard substitutes whole: the turn ends rejected, routed through the state's `on_error` when one is
 declared, and the model is not invited to retry. A call decided without a variables snapshot SHALL fail
 the same way.
 
@@ -455,6 +458,12 @@ the same way.
 
 - **WHEN** `folder_id` is set to `F-123` and the model then calls a tool guarded by `["${{folder_id}}"]`
 - **THEN** `F-123` is permitted and `F-999` is blocked
+
+#### Scenario: A path guard variable naming no path
+
+- **WHEN** a state allows `{ tool: write_file, paths: ["${{dir}}/**"] }` and `dir` is `""`
+- **THEN** a write to any path is a terminal block with `tool.unresolved-variable`, and the agent's
+  `archmax_set_variables` of `dir: ""` is refused with nothing written
 
 #### Scenario: Unresolvable reference is terminal
 
@@ -515,6 +524,26 @@ as authored, and with no table nothing SHALL. A path argument declared `write` o
 `authored` path SHALL be blocked with `zone.read-only` in every state, with a message naming the
 mount and directing the model to `scratchpad/`; mounts SHALL also refuse writes, uploads and
 deletes themselves, so the kernel rule is the diagnostic layer rather than the only enforcement.
+
+Before any zone is decided, a declared path holding a backslash, a control or format character
+(NUL, tab, newline, BOM, zero-width space), or whitespace at either end of a segment (NBSP included)
+SHALL be blocked with `tool.path-form`, naming the path quoted. Such a path classifies by the
+characters it holds, while a host that folds `\` or trims would act on another path, so it is
+refused outright. When the caller names the session the call runs in, a declared path
+whose canonical first segment is that session's id SHALL be blocked with `zone.session-folder`: the
+session zone forwards such a path unprefixed, into the session's own store folder.
+
+#### Scenario: A backslash or edge whitespace cannot dodge a mount
+
+- **WHEN** the model calls `read_file` on `finance\q3.xlsx` or ` finance/q3.xlsx` in a state without
+  the governed mount `finance`
+- **THEN** both calls are blocked with `tool.path-form`, and `finance/q3.xlsx` with `mount.not-allowed`
+
+#### Scenario: The session's own folder is not addressable
+
+- **WHEN** the model in session `s1` writes `s1/checkpoints/x.json`, `s1/./checkpoints/x.json` or
+  `/s1//checkpoints/x.json`
+- **THEN** each call is blocked with `zone.session-folder`, and nothing is written to the checkpoints
 
 #### Scenario: Skill file cannot be tampered with
 
