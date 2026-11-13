@@ -314,7 +314,6 @@ export function transitionUpdate(
     workflowState: move.to,
     // A successful transition clears an earlier rejection marker and starts the target's turn budget afresh.
     ...NO_PENDING_FAILURE,
-    stateTurns: null,
     auditTrail: [step],
   };
   if (!machine.isHumanState(move.to)) return { update };
@@ -607,8 +606,7 @@ export function handleReset(machine: WorkflowMachine, request: ResetRequest): Re
     message: commit({
       workflowState: entry,
       ...NO_PENDING_FAILURE,
-      stateTurns: null,
-      auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
+        auditTrail: [{ to: entry, kind: "reset", reason: parsed.data.reason, ts: Date.now() } satisfies TrailStep],
       ...(released.length > 0
         ? {
             variables: Object.fromEntries(
@@ -870,9 +868,11 @@ function mistypedReturns(
   );
   const invalid = signatureValueIssues(typed, variables).filter((issue) => issue.kind === "invalid");
   if (invalid.length === 0) return undefined;
+  const ruled = invalid.some((issue) => issue.kind === "invalid" && issue.rule);
   return (
     `trigger '${trigger}' declares ${invalid.length === 1 ? "this return" : "these returns"} typed: ` +
-    `${invalid.map((issue) => issue.message).join("; ")}. Write a value of the declared type.`
+    `${invalid.map((issue) => issue.message).join("; ")}. Write a value of the declared type` +
+    `${ruled ? " that meets its rules" : ""}.`
   );
 }
 

@@ -18,7 +18,7 @@ import {
   type NormalizedMountGrant,
 } from "../machine/mount-grants.js";
 import { authoringPlanePrefix, describeAuthoringPrefix } from "../core/mounts.js";
-import { ADVANCE_TOOL, RUN_TOOL, UNGRANTABLE_TOOLS, workflowToolName } from "../machine/tool-names.js";
+import { ADVANCE_TOOL, RUN_TOOL, TASK_TOOL, workflowToolName } from "../machine/tool-names.js";
 import { MANUAL_TRIGGER, triggerBindings } from "../machine/triggers.js";
 import { WorkflowMachine } from "../machine/machine.js";
 import { loadMachineSpec } from "../machine/load-spec.js";
@@ -214,7 +214,7 @@ export async function validateWorkflow(
   for (const entry of spec.tools?.allow_always ?? []) {
     const { tool, argMatchers } = normalizeAllowEntry(entry);
     if (!tool) continue;
-    if (UNGRANTABLE_TOOLS.has(tool)) {
+    if (tool === TASK_TOOL) {
       add("error", ungrantableReason("tools.allow_always", tool), {
         file: specFile,
         field: "tools.allow_always",
@@ -720,7 +720,7 @@ function validateStateGovernance(
   const entries = (state.tools?.allow ?? []).map(normalizeAllowEntry);
 
   for (const { tool } of entries) {
-    if (tool && UNGRANTABLE_TOOLS.has(tool)) {
+    if (tool && tool === TASK_TOOL) {
       add("error", ungrantableReason(`State '${slug}'`, tool), { field: `${field}.tools.allow` });
     }
   }

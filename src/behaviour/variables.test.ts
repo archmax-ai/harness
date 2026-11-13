@@ -336,6 +336,77 @@ describe("a typed trigger signature", () => {
   });
 });
 
+describe("a signature with rules", () => {
+  const ruledSpec = (manual: Record<string, unknown>) => ({
+    runtime: { engine: "archmax-harness", version: "3" },
+    states: {
+      start: { triggers: { manual }, transitions: [{ to: "done", description: "Test edge to done." }] },
+      done: {},
+    },
+  });
+
+  it("refuses a start breaking a rule, before any model call, naming the trigger and the rule", async () => {
+    const { agent, model } = await assemble(
+      workspaceWith(ruledSpec({ requires: [{ name: "quantity", type: "integer", maximum: 100 }] })),
+      { turns: [{ reply: "never" }], params: { variables: { quantity: 101 } } },
+    );
+    const outcome = await agent.workflow!.send("s1", { message: "go" });
+    expect(model.calls).toHaveLength(0);
+    expect(outcome).toMatchObject({ kind: "rejected", status: "rejected" });
+    expect(outcome.rejected).toContain("trigger 'manual'");
+    expect(outcome.rejected).toContain("'quantity' must be at most 100");
+  });
+
+  it("starts on a value meeting its rules", async () => {
+    const { agent } = await assemble(
+      workspaceWith(ruledSpec({ requires: [{ name: "quantity", type: "integer", maximum: 100 }] })),
+      { turns: [advanceTo("done"), { reply: "ok" }], params: { variables: { quantity: 100 } } },
+    );
+    expect((await agent.workflow!.send("s1", { message: "go" })).kind).toBe("completed");
+  });
+
+  it("refuses the agent's write of a return breaking its rule, then takes one meeting it", async () => {
+    const { agent } = await assemble(
+      workspaceWith(ruledSpec({ returns: [{ name: "contact", type: "string", format: "email" }] })),
+      { turns: [setVars({ contact: "nobody" }), setVars({ contact: "ann@example.co" }), advanceTo("done"), { reply: "ok" }] },
+    );
+    const { messages } = await turn(agent, "s1", "go");
+    const [refusal, accepted] = toolResults(messages).filter((r) => r.name === "archmax_set_variables");
+    expect(refusal?.status).toBe("error");
+    expect(refusal?.content).toContain("'contact' must be an email address");
+    expect(accepted?.status).not.toBe("error");
+    expect((await agent.sessions.get("s1"))?.status).toBe("completed");
+  });
+
+  it("rejects a completion whose return breaks its rule", async () => {
+    const { agent } = await assemble(
+      workspaceWith(ruledSpec({ returns: [{ name: "contact", type: "string", format: "email" }] })),
+      { turns: [advanceTo("done"), { reply: "ok" }], params: { variables: { contact: "nobody" } } },
+    );
+    const outcome = await agent.workflow!.send("s1", { message: "go" });
+    expect(outcome.kind).toBe("rejected");
+    expect(outcome.rejected).toContain("state 'done'");
+    expect(outcome.rejected).toContain("'contact' must be an email address");
+  });
+
+  it("tells the agent each return's rules beside its type", async () => {
+    const { agent, model } = await assemble(
+      workspaceWith(
+        ruledSpec({
+          returns: [
+            { name: "contact", type: "string", format: "email", maxLength: 80, description: "The contact address." },
+          ],
+        }),
+      ),
+      { turns: [advanceTo("done"), { reply: "ok" }], params: { variables: { contact: "ann@example.co" } } },
+    );
+    await turn(agent, "s1", "go");
+    expect(model.calls[0]?.systemPrompt).toContain(
+      "- contact (string; an email address; at most 80 characters) — The contact address.",
+    );
+  });
+});
+
 describe("the reserved title", () => {
   it("emits title-set with the value when the agent sets it, and stores it unlocked", async () => {
     const { agent, events } = await assemble(workspaceWith(linearSpec()), {

@@ -61,13 +61,16 @@ custom kind), a hook verdict (`ok`, `correct`, `veto`), an agent-callable `task`
 The site SHALL carry a glossary (`reference/glossary.md`) naming one term per concept — session,
 turn, state, human state, **automated state**, **grader state**, **code state**, case, grade,
 mount, zone, authoring backend, park, decide/reply/deliver, runtime note, trail, **history**, state
-flow, archmax harness/runtime/kernel/Deep Agents — and every page, README section, skill file, CLI
+flow, **rule**, archmax harness/runtime/kernel/Deep Agents — and every page, README section, skill file, CLI
 message and identifier SHALL use those terms. A page that uses a different word for one of those
 concepts is a defect. "Subagent" SHALL NOT be one of the terms: what grades a session's work is a
 grader state, and what runs a delegated process is a sub-workflow. The glossary SHALL carry no
 entry for hook, verdict, grading rubric or iteration budget. It SHALL keep **trail** (the
 checkpointed audit trail) distinct from **history** (the full transcript and trail that
-`archmax_get_history` returns to a grader and to a code state's script alike).
+`archmax_get_history` returns to a grader and to a code state's script alike). It SHALL define
+**rule** as a constraint a signature entry declares on its value beyond its type (a format, a
+pattern, a length, a range, a set of values), never "validator", "constraint" or "check" for the
+same concept.
 
 #### Scenario: A page uses the glossary term
 
@@ -104,6 +107,11 @@ checkpointed audit trail) distinct from **history** (the full transcript and tra
 - **WHEN** a page refers to what executes a session or decides whether a tool call or a
   transition is allowed
 - **THEN** it says "the runtime" or "the kernel", not "the harness"
+
+#### Scenario: A signature's rules are named consistently
+
+- **WHEN** a page refers to `format`, `pattern`, `maxLength` or `minimum` on a signature entry
+- **THEN** it calls each a "rule", not a "validator" or a "constraint"
 
 ### Requirement: The public-API page matches the barrel
 
@@ -173,22 +181,64 @@ Impact section and task lists SHALL carry an explicit task for each.
 
 ### Requirement: README as product
 
-`README.md` SHALL state what the archmax harness is, how to install it, a quickstart for the CLI and the
-library, where the authoring skill ships, and where the full documentation lives, and SHALL NOT
-duplicate guide content. Its API examples SHALL use `createAgent`, `agent.workflow.send` and the
-current export names.
+`README.md` SHALL state what the archmax harness is, how to install it, a quickstart, how to run a
+workflow from the CLI, where the authoring skill ships, and where the full documentation lives, and
+SHALL NOT duplicate guide content. Its API examples SHALL use `createAgent`, `agent.workflow.send`
+and the current export names.
+
+The quickstart SHALL be the SDK example `examples/refund/`, a refund desk in four states: the agent
+state `decide` looks the customer up with the host tool `lookup_customer`, records `decision` and
+drafts `scratchpad/email.md`; the code state `check-decision` checks the decision against the
+policy and sends a wrong one back to `decide`; the grader state `review-email` judges the email;
+and the terminal agent state `send` sends it with the host tool `send_email`. The quickstart SHALL
+show the example's `workflow.yaml`, its code-state script, its host tools (`tools.js`) and the
+program that runs it (`index.js`, `createAgent({ workflow, tools, workspace })` and
+`agent.workflow.send(id, { message, variables })`), each code block identical to the example's
+file. A behaviour test (`src/behaviour/refund-example.test.ts`) SHALL run the example's workflow,
+script and tools with a scripted model, and SHALL fail when a README block differs from the file it
+shows.
+
+The README's CLI section SHALL point at `examples/customer-support/`, the reference workspace the
+CLI and the end-to-end suite run against: the refund example needs host tools, which the CLI does
+not supply, so it runs from the host's code.
 
 #### Scenario: README stays a front door
 
 - **WHEN** a reader opens the README
-- **THEN** they find install, a CLI and a library quickstart, and links into the docs site, with
-  the detail left to the guides
+- **THEN** they find install, the refund quickstart, the CLI section and links into the docs site,
+  with the detail left to the guides
+
+#### Scenario: The quickstart is the example's code
+
+- **WHEN** a code block of the README's quickstart differs from the file under `examples/refund/`
+  it shows
+- **THEN** `src/behaviour/refund-example.test.ts` fails, naming that file
+
+#### Scenario: The quickstart's trail is the one it prints
+
+- **WHEN** the behaviour test runs the refund workflow for `ann@example.com`, whose order is
+  delivered, and the agent approves the refund
+- **THEN** the session completes with the trail `trigger → decide`, `agent → check-decision`,
+  `code → review-email`, `grader → send`, the trail the README shows
+
+#### Scenario: The check sends a wrong decision back before any grading
+
+- **WHEN** the agent approves the refund for `bob@example.com`, whose order has only shipped
+- **THEN** `check-decision` sends the session back to `decide` with the reason "Order ORD-1002 is
+  shipped, so the refund must be denied.", and the grader runs only on the corrected email
+
+#### Scenario: The CLI section runs the reference workspace
+
+- **WHEN** a reader follows the README's CLI section
+- **THEN** it runs `archmax run`, `archmax test` and `archmax validate` against
+  `examples/customer-support/`, and says that the refund example runs from code because it needs
+  host tools
 
 ### Requirement: Distributable authoring skill
 
 The project SHALL provide one Agent Skill under `skills/archmax-harness/` — a `SKILL.md` with frontmatter
-(`name`, `description`) and a concise playbook body, plus `references/workflow-schema.md`, a
-script reference covering code-state scripts and cases, `references/backend-integration.md` and a
+(`name`, `description`) and a concise playbook body, plus `references/workflow-schema.md`,
+`references/code-states-and-scripts.md`, `references/cases.md`, `references/backend-integration.md` and a
 `README.md` with the `npx skills add` command, license and safety notes. The build SHALL copy it to
 `dist/authoring-skill/archmax-harness/` and the package SHALL export `BUNDLED_AUTHORING_SKILL_DIR`, the
 `dist/authoring-skill` directory holding `archmax-harness/`. The published package SHALL also ship the
@@ -221,8 +271,9 @@ users, the packaged copy as the version-matched path, and a checkout as the deve
 
 The skill SHALL teach, from the current code: the two-file workflow (`workflow.yaml` as the strict,
 authoritative machine; `WORKFLOW.md` as prose with no frontmatter) and the spec-rendered graph
-section; every root and state key of the schema, slugs versus titles, `disabled`, state budgets,
-`on_error`, transitions and their types, the four state types (`agent`, `human`, `grader`,
+section; every root and state key of the schema, slugs versus titles, `disabled`, state budgets
+(`timeoutMs` and `maxParks`), `on_error`, transitions with their `description` (left out only on
+an agent state's lone edge into another agent state) and their types, the four state types (`agent`, `human`, `grader`,
 `code`) and the keys each reads, human states, terminal states; the `metadata` slot at the
 root and on a state (free-form host data the runtime never reads); triggers (`manual`, several
 per state, the state's `triggers` mapping keyed by trigger id with `session`, `message`,
@@ -258,16 +309,23 @@ the session with `archmax_raise`; that it has no iteration budget, so instructio
 send-backs count them from the history's trail; that a grader belongs on work the agent hands on
 (a report, a recorded decision), not on a live answer, since everything the agent says in a turn
 is that turn's reply, a draft sent back included; that approving into a terminal code state ends
-the session with no further model call; and that no sandbox context has `task()`); that an edge
-into a grader or code state needs a `description`, while a code state's own edges may go
-undescribed; that a chain of code states makes no model call, and
+the session with no further model call; and that no sandbox context has `task()`); that a
+transition carries a non-empty `description` saying when to take it, the only thing the agent is
+told about the edge, except an agent state's single edge into another agent state out of a state
+with `instructions`, which needs none (never a filler like "Proceed") because the agent takes it
+as soon as those instructions are done; that a chain of code states makes no model call;
 that a turn, a runaway cycle of automated states included, is bounded by LangGraph's recursion
-limit (`DEFAULT_RECURSION_LIMIT`, 400, unless the caller sets one) and the workflow declares no
-root `budget`; sub-workflows, including that a child inherits every ancestor's workflow-wide denials and no per-state list; cases (the strict YAML grammar, `title`/`description`,
+limit (`DEFAULT_RECURSION_LIMIT`, 400, unless the caller sets one), a grader's run by the same
+limit and its `budget.timeoutMs`, and that neither a state nor the workflow declares a count of
+model calls; sub-workflows, including that a child inherits every ancestor's workflow-wide denials and no per-state list; cases (the strict YAML grammar, `title`/`description`,
 `trigger`/`variables`/`workspace` with `from:` fixtures, `mocks`, the flat `steps` list, `grade`,
 the `tests:` block); and the verify loop `archmax validate` → fix → `archmax test`. It SHALL teach
 sequential execution only (no `parallel`/`join`) and SHALL declare the runtime contract it targets
 (`engine: archmax-harness`, `version: "3"`).
+
+It SHALL stay concise: `SKILL.md` holds the procedure and routes each task to one short
+reference, and the skill shows one example per idea — one complete code-state script and one
+grader-state example — rather than variations of either.
 
 It SHALL teach one form per concept and no superseded one: no `subagents/` directory or
 `SUBAGENT.md`, no `before`/`after` hook of any kind (`script`, `rubric`, `subagent` or a custom
@@ -317,6 +375,12 @@ kin) or verdict return shape (a bare `false`, `{ ok: false }`).
   `workflows/<slug>/scripts/`, and the file's default export moves the session with
   `tools.archmax_advance` or ends it with `tools.archmax_raise`, returning no verdict
 
+#### Scenario: One example of each automated state
+
+- **WHEN** the skill is searched for complete code-state scripts and for grader-state declarations
+- **THEN** it holds one complete code-state script and one grader-state example, not variations
+  of either
+
 #### Scenario: Grading example follows the current model
 
 - **WHEN** an agent follows the skill to have the work a state hands on graded
@@ -346,9 +410,10 @@ kin) or verdict return shape (a bare `false`, `{ ok: false }`).
 plus `workflow`, `workspace` (`rootDir`, `mounts`, `sessionStore`) and
 `authoring` (the backend serving `workflows/**`, that is specs, `WORKFLOW.md`, code-state scripts
 and cases, to the runtime only); `modelFactory` and its roles (`agent`, `judge`, `grader`), a
-grader state's model being resolved under `grader`; that omitting `workflow` yields a plain Deep
-Agent; the `agent.workflow.*` surface
-(`send`, `decide`, `respond`, `deliver`, `resolveSession`, `resolveTrigger`) and the session-level
+grader state's model being resolved under `grader`; that `workflow: false` declares a plain Deep
+Agent, while an omitted `workflow` looks for the default workflow and is governed by it when found;
+the `agent.workflow.*` surface
+(`send`, `decide`, `reply`, `deliver`, `resolveSession`, `resolveTrigger`) and the session-level
 members on the agent (`sessions`, `emitRunArtifacts`, `getSpecSnapshot`, `dispose`); the
 `onEvent` stream, including the `code-*` and `grader-*` events that bracket an automated state's
 run; the session artifacts (`graph.json`, `trail.json`, `variables.json`,
@@ -412,3 +477,32 @@ and `requires:` lists.
 - **WHEN** an agent writes a case for a trigger-started workflow
 - **THEN** the skill has it read a matching session's variables first and map locked entries to
   seeds and unlocked ones to assertions
+
+### Requirement: The docs build fails on a dead internal link
+
+`npm run docs:build` SHALL exit non-zero when a page links to an internal page that does not
+exist, or to an anchor that the target page (or the same page) does not define. The failure SHALL
+name each dead link and the page that contains it. The `ci.yml` workflow SHALL run the docs build
+on every pull request, so a dead link fails a PR check before it can merge.
+
+#### Scenario: A link to an unknown anchor fails the build
+
+- **WHEN** a page links to `/reference/machine-spec/#this-heading-does-not-exist`
+- **THEN** `npm run docs:build` exits non-zero
+- **AND** its output names that link and the page it appears on
+
+#### Scenario: A link to an unknown page fails the build
+
+- **WHEN** a page links to `/reference/no-such-page/`
+- **THEN** `npm run docs:build` exits non-zero
+- **AND** its output names that link and the page it appears on
+
+#### Scenario: A pull request with a dead link fails CI
+
+- **WHEN** a pull request adds a dead internal link to a page under `docs/`
+- **THEN** the `docs` check in `ci.yml` fails on that pull request
+
+#### Scenario: Valid links build clean
+
+- **WHEN** every internal link resolves to an existing page and anchor
+- **THEN** `npm run docs:build` exits zero

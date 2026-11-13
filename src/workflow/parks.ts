@@ -435,7 +435,6 @@ function applyDecision(
     status: WORKFLOW_STATUSES.running,
     replyOnly: null,
     parkPhase: null,
-    stateTurns: null,
     ...NO_PENDING_FAILURE,
     auditTrail: [humanStep],
     ...continueToModel(site),

@@ -15,8 +15,8 @@ prompt and its caching, and the typed event stream. Grader and code states are s
 
 A workflow SHALL execute as exactly one `createDeepAgent` graph whose checkpointed state carries the
 machine's channels beside `messages`: `workflowState`, `entryState`, `trigger`, `status`,
-`specHash`, `variables`, `auditTrail`, `usage`, the per-state counters `stateTurns` and
-`parkCounts`, the outstanding delegation failures `failedDelegations`, and the park records
+`specHash`, `variables`, `auditTrail`, `usage`, the per-state park counter `parkCounts`, the
+outstanding delegation failures `failedDelegations`, and the park records
 `pendingDecision`, `pendingInput`, `pendingDelegations`, `parkPhase` and `replyOnly`, declared once
 in `src/workflow/state.ts`. There SHALL be no `iterations`, `beforeDone`, `turnCalls` or `visits`
 channel. Governance middleware SHALL be the only writer; a control tool commits its change through a
@@ -63,7 +63,7 @@ session that completed in a terminal automated state (see the `automated-states`
 `state-enter`, and append a `trigger` trail step; `workflow-reset` SHALL be emitted only when a turn
 opens at a start state. No transcript message SHALL announce a turn. The boundary SHALL reset the
 turn's mechanics only — `rejected`, the outstanding delegation failures, the exit record,
-`parkCounts`, `stateTurns`, every park record and phase, `replyOnly`, status to `running` — and
+`parkCounts`, every park record and phase, `replyOnly`, status to `running` — and
 retain the conversation: position, `entryState`, variables, transcript, trail, usage and files. A
 session in a terminal state SHALL continue there under that state's governance; `archmax_reset` is
 the way out. A session that ended `failed` SHALL take its next turn the same way, continuing at the
@@ -189,7 +189,7 @@ stored canonically, de-duplicated, and carried into the park record after the st
 
 The runtime SHALL expose `archmax_reset({ reason })` in every agent and human state, requiring a
 non-empty `reason`; no automated state offers it. It SHALL move the position to the recorded
-`entryState` (else the trigger's start state), clear `rejected` and `stateTurns`, append a `reset`
+`entryState` (else the trigger's start state), clear `rejected`, append a `reset`
 trail step with the reason, and re-enter the entry state; an automated entry state SHALL run again
 in place of the next model call (see the `automated-states` capability). It SHALL release every
 lock set with `archmax_set_variables` (by the agent, a grader or a code state's script), keeping
@@ -271,44 +271,38 @@ and an earlier delivery resumes the park just the same.
 
 ### Requirement: Budgets
 
-In an agent or human state, `budget.maxTurns` SHALL be an exact count of the session agent's model
-calls made in the state since it was entered: the call that would exceed it is not made and the
-exhaustion is routed as a failure; the count resets on every transition and at each turn boundary.
+A state's budget SHALL bound time and parks, never model calls. In an agent or human state,
 `budget.timeoutMs` SHALL race the state's model call against a timer; on expiry the runtime
 substitutes a budget-exhausted result, removes it from the transcript and routes the failure through
-`on_error`, without aborting the in-flight request. `budget.maxParks` SHALL cap `archmax_wait` parks
-per state within a turn, checked before the park is committed; an exceeded bound refuses the wait
-and commits `rejected` naming the state and the bound. A delegated child's park SHALL NOT count.
+`on_error`, without aborting the in-flight request. In a grader state, `budget.timeoutMs` SHALL
+bound the grader's whole run instead (see the `automated-states` capability). `budget.maxParks`
+SHALL cap `archmax_wait` parks per state within a turn, checked before the park is committed; an
+exceeded bound refuses the wait and commits `rejected` naming the state and the bound. A delegated
+child's park SHALL NOT count.
 
-An automated state makes no model call of the session's agent and SHALL NOT spend a state's
-`maxTurns`; a grader state's `maxTurns` and `timeoutMs` bound its grader's run instead (see the
-`automated-states` capability). The agent's call after an automated move into an agent state SHALL
-count as that state's first. Every exhaustion SHALL route through `on_error` when declared, else
-end the turn rejected. There SHALL be no workflow-wide budget on a turn's model calls: a turn is
-bounded by its recursion limit (see "A turn runs under LangGraph's recursion limit").
-
-#### Scenario: A state's `maxTurns` is exact
-
-- **WHEN** a state declares `maxTurns: 8` and the agent advances on its fifth model call
-- **THEN** the state completes normally
+How many model calls a turn makes, in every state it passes through, SHALL be bounded by its
+recursion limit alone (see "A turn runs under LangGraph's recursion limit"): a state's `budget`
+declares no turn count (see the `workflow-spec` capability), and there is no workflow-wide budget.
+Every exhaustion SHALL route through `on_error` when declared, else end the turn rejected.
 
 #### Scenario: Timeout substitutes a result
 
 - **WHEN** a model call in a state with `timeoutMs: 1000` has not returned after one second
 - **THEN** the failure is routed through `on_error` and the request itself is not aborted
 
-#### Scenario: A grader's budget counts only its grader's calls
+#### Scenario: A park budget refuses the wait
 
-- **WHEN** a grader state declares `budget: { maxTurns: 1 }` and its grader decides on its first
-  model call
-- **THEN** the grader's decision commits, and no exhaustion is routed for the state
+- **WHEN** state `clarify` declares `budget: { maxParks: 1 }` and `on_error: escalate`, the agent
+  parks with `archmax_wait`, a delivery resumes the session, and the agent calls `archmax_wait`
+  again
+- **THEN** the second wait is refused and the session does not park, and once the model finishes
+  the failure routes to `escalate` with a reason naming `maxParks: 1`
 
-#### Scenario: Automated states spend no state's turns
+#### Scenario: A state's model calls are not counted
 
-- **WHEN** in one turn the agent advances into a code state, which advances into a second code
-  state, which advances into agent state `answer` declaring `budget: { maxTurns: 1 }`
-- **THEN** both scripts run, the agent's first call in `answer` is made as that state's first, and
-  no exhaustion is routed
+- **WHEN** the agent makes twenty model calls in one agent state before it advances, in a turn
+  under the default recursion limit
+- **THEN** every call is made and no exhaustion is routed for the state
 
 ### Requirement: A turn runs under LangGraph's recursion limit
 
@@ -318,9 +312,11 @@ LangGraph's `recursionLimit`: the one the caller's invoke config sets, else
 invocation, across every state, is a step against it. A delegated child's run SHALL run under
 `DEFAULT_RECURSION_LIMIT` as well, unless the config its caller's tool call carries already sets a
 limit, which it keeps. An invocation that reaches its limit SHALL end the session `failed` with
-exit code `recursion-limit` (see "A turn that throws ends the session failed"). The runtime SHALL
-keep no count of a turn's model calls, and the prompt SHALL state no number of calls a turn has
-left.
+exit code `recursion-limit` (see "A turn that throws ends the session failed"). A grader's own run
+SHALL run under `DEFAULT_RECURSION_LIMIT` too; a grader that reaches it fails its grader state,
+which routes through `on_error` (see the `automated-states` capability). The runtime SHALL keep no
+count of a turn's or a state's model calls, and the prompt SHALL state no number of calls a turn
+has left.
 
 #### Scenario: A turn runs under 400 steps by default
 
@@ -334,8 +330,7 @@ left.
 
 #### Scenario: A cycle between states ends at the limit
 
-- **WHEN** the agent advances back and forth between two states on every call and no state's
-  `maxTurns` stops it
+- **WHEN** the agent advances back and forth between two states on every call
 - **THEN** the turn stops at its recursion limit, `send` rejects with the `GraphRecursionError`,
   and the session is `failed` with `exit.code: "recursion-limit"`
 
@@ -628,25 +623,28 @@ the "Current state" block.
 
 ### Requirement: The graph section is rendered from the spec
 
-The graph section SHALL be a pure, deterministic function of the spec: a `# Workflow: <title>`
-heading; the spec's `instructions` verbatim under `## Instructions` when declared; then `## States`
-with each state in declaration order headed by its backticked slug, its `title` as a parenthetical
-label, and markers — the start-state marker naming every trigger the state is entered by (singular
-`trigger:` or plural `triggers:` in declaration order), a human-state marker, `terminal` — followed
-by its one-line `summary`, each signed trigger's `requires`/`returns` labelled with the trigger id,
-and its transitions as target slugs with `type` and `description`. State `instructions` bodies SHALL
-NOT be rendered here, and transition lines SHALL name slugs, never titles. `validate` SHALL warn when
-a non-terminal state declares neither a `summary` nor any transition `description`.
+The graph section SHALL be a pure, deterministic function of the spec, in two halves. The
+cacheable half is a `# Workflow: <title>` heading and the spec's `instructions` verbatim under
+`## Instructions` when declared; it names no state. The volatile half is rendered per model call
+for the active state only: the signature of the trigger the session was started by, then that
+state's transitions — each as the target's backticked slug, its markers (the edge `type`,
+`human decision node`, `grader`, `code`, `terminal`) and its `description` — or, for a terminal
+state, the statement that no transition leads out of it. No other state's slug, `title`,
+`summary`, `instructions`, budget or transitions SHALL be rendered, and transition lines SHALL name
+slugs, never titles.
 
 A grader state's `instructions`, the standard it grades against, SHALL reach no prompt of the
 session's agent: the graph section renders no state's `instructions`, and an automated state makes
 no model call of that agent, so the agent whose work is graded reads no part of the standard. No
 prompt section SHALL render any `metadata` block, at the root or on a state.
 
-#### Scenario: Heading carries slug and title
+#### Scenario: Only the active state's edges are rendered
 
-- **WHEN** state `refund-request` declares `title: Evaluate refund request`
-- **THEN** its heading is `` `refund-request` (Evaluate refund request)``
+- **WHEN** the session is in `identify-case`, whose transitions lead to `orders-question` and
+  `refund-request`, and `refund-request` declares `title: Evaluate refund request`
+- **THEN** the graph section lists `` `orders-question` `` and `` `refund-request` `` with their
+  descriptions, and contains neither `refund-request`'s title nor any state `identify-case` has no
+  edge to
 
 #### Scenario: A graded state says only that it is graded
 
@@ -1024,8 +1022,9 @@ step (see the `automated-states` capability).
 ### Requirement: A failed state routes to its `on_error` target
 
 A failed state SHALL route to its declared `on_error` target — failure being an exhausted budget, a
-timed-out model call, an automated state's failed run (it threw, timed out, exhausted its budget, or
-a non-terminal automated state finished without deciding; see the `automated-states` capability), a
+timed-out model call, an automated state's failed run (it threw, timed out, a grader's run reached
+its recursion limit, or a non-terminal automated state finished without deciding; see the
+`automated-states` capability), a
 terminal kernel block or a failed delegation call that no later call recovered (see `delegation`).
 Routing SHALL append an `[error]` runtime note marked `error`, commit the new position and an
 `on_error` trail step, clear every park record, the committed rejection and every outstanding

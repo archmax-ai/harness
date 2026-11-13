@@ -1,115 +1,226 @@
-# Code-state scripts and `archmax_run` scripts — contracts
+# Grader states, code states and scripts
 
-Load this when writing a `workflows/<slug>/scripts/*.js` code-state script or a
-`skills/<cap>/scripts/*.js` source. Worked examples, graders and the sandbox details:
-[`code-state-and-test-scripts.md`](code-state-and-test-scripts.md) Part 1.
+Load this when you write a code state's script, a grader state, or a skill bundle's
+`archmax_run` script. The keys each state type takes are in
+[`workflow-schema.md`](workflow-schema.md#state-keys).
 
-## Code-state script contract
+## Pick the mechanism
 
-A `type: code` state runs its `script: scripts/<file>.js` on entry, with no model
-call. The default export is called once with the state's input and **moves the
-session itself**; its return value is never read. The typed import is optional
-(`import { defineCodeState } from "@archmax-ai/harness/sandbox";`, placed below the
-JSDoc; no other import is allowed).
+| The work | Use |
+| --- | --- |
+| A deterministic check the graph runs at a fixed point: a screen, a policy check, recording a result | a code state |
+| A judgment of work already done: tone, completeness, faithfulness | a grader state |
+| Deterministic work the agent decides to run: a calculation, a fan-out | an `archmax_run` script in a skill bundle |
+| Work that is a process of its own, or shared by several workflows | a sub-workflow |
+
+The agent cannot call a grader or a code state. It reaches one only by a transition.
+
+## How an automated state runs
+
+A grader or code state runs whenever the session reaches it: the agent's advance,
+another automated state's advance, a human decision, an `on_error` route, a turn that
+opens there, a reset. It runs in place of the agent's next model call, so a chain of
+code states makes no model call at all. A chain that never reaches an agent state, a
+human state or a completion ends at the turn's `recursionLimit`, with the session
+`failed` (`recursion-limit`).
+
+**What it is offered.** Exactly its own state's tools: its `tools.allow`, the
+workflow-wide grant and the host's `essentialTools`, plus five controls:
+`archmax_advance` (absent in a terminal state), `archmax_raise`,
+`archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`. It is never
+offered `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`
+([Tool governance](workflow-schema.md#tool-governance) has the table), so it cannot park.
+The kernel decides each call against that state. Grant what a check reads on the
+check's own state: a tool, a skill bundle or a mount that another state grants is out
+of reach.
+
+**How it decides.** `archmax_advance({ to, reason })` is checked at the call: the
+transition must exist and the state's `requires` must hold. The first accepted advance
+or raise is the decision, and a later one is refused. The decision takes effect when
+the state finishes cleanly.
+
+**How it settles.** Exactly one of:
+
+| Outcome | When | Effect |
+| --- | --- | --- |
+| advanced | it advanced and finished cleanly | The session moves. The trail records `{ kind: code \| grader, to, reason }`, and the next state reads the reason as a `[code]` or `[grader]` runtime note. A human target parks after its handoff message. |
+| raised | it called `archmax_raise` | The session ends `failed` with that code and reason. |
+| completed | a terminal state finished without either call | The session completes, held to the trigger's `returns`. |
+| failed | it threw, timed out, or (in a non-terminal state) finished without either call | Routed through `on_error`, else the session ends rejected. A raise beats an error; an error discards a recorded advance. |
+
+**The history.** Both types read the session with `archmax_get_history`, which answers
+`{ messages, trail }` as JSON: the session as it stood on entry, whole and oldest
+first, across every turn.
+
+| Field | Shape |
+| --- | --- |
+| `messages` | `{ role, text, toolCalls?, tool?, id?, note? }`. `role` is `user`, `assistant`, `tool`, `system` or `runtime` (a runtime note, its kind in `note`). An `assistant` entry lists its calls in `toolCalls` as `{ id?, name, args }`; the `tool` entry with the same `id` carries the result in `text`. |
+| `trail` | `{ to, kind, reason?, workflow?, status?, ts }`, where `kind` is `trigger`, `agent`, `human`, `grader`, `code`, `sub-workflow`, `reset` or `on_error`. Count earlier rounds here. |
+
+Check the records, not the agent's retelling of them: a tool's result as the history
+carries it, a variable, a file. Never call a tool again just to see its result; for a
+tool that acts on an outside system, that is a second action. The history spans every
+turn, so take the last match where only the latest round counts. An automated state's
+own calls are not in the transcript.
+
+## Code states
+
+A code state runs the file its `script` names. Wire it in `workflow.yaml`, here adapted
+from [`examples/refund/`](https://github.com/archmax-ai/harness/tree/main/examples/refund):
+
+```yaml
+check-decision:
+  type: code
+  script: scripts/check-decision.js     # workflows/refund/scripts/check-decision.js
+  tools:
+    allow: [lookup_customer]            # the script calls it, so this state grants it
+  on_error: escalate
+  transitions:
+    - to: review-email
+      description: The decision matches the refund policy.
+    - to: decide
+      description: The decision contradicts the refund policy.
+```
+
+The script's default export is called once. It moves the session itself, and the
+runtime ignores what it returns:
 
 ```js
 /**
- * Request screen — the request must name a requester the order records know.
+ * Refund decision check — the recorded decision must follow the refund policy.
  *
- * Reads the first user message from the session's history, extracts the first
- * email address, reads skills/order-data/assets/orders.json (this state enables
- * `order-data`) and matches the address against every record's `email`,
- * case-insensitively.
- *
- * Advances to identify-case when it matches; otherwise to decline, with a reason
- * naming what was missing. An unreadable order database throws, so the state
- * fails through its on_error.
+ * Looks the customer up with lookup_customer by the `email` variable. A refund is
+ * due ("approved") only when the latest order is delivered, otherwise "denied".
+ * Advances to review-email when `decision` matches; otherwise back to decide,
+ * naming the decision the policy requires.
  */
-import { defineCodeState } from "@archmax-ai/harness/sandbox";
-
-export default defineCodeState(async ({ tools }) => {
-  const { messages } = JSON.parse(await tools.archmax_get_history());
-  const orders = JSON.parse(await tools.read_file({ file_path: "skills/order-data/assets/orders.json" }));
-  const text = messages.find((m) => m.role === "user")?.text ?? "";
-  const email = text.match(/[\w.+-]+@[\w.-]+\.\w{2,}/)?.[0];
-  if (!email) return tools.archmax_advance({ to: "decline", reason: "The request names no email address." });
-  if (!orders.some((o) => o.email?.toLowerCase() === email.toLowerCase())) {
-    return tools.archmax_advance({ to: "decline", reason: `"${email}" is not in the order database.` });
+export default async function ({ variables, tools }) {
+  const customer = JSON.parse(await tools.lookup_customer({ email: variables.email }));
+  const order = customer?.order;
+  const due = order?.status === "delivered" ? "approved" : "denied";
+  if (variables.decision === due) {
+    await tools.archmax_advance({ to: "review-email", reason: `The refund is ${due}, as the policy requires.` });
+  } else {
+    await tools.archmax_advance({
+      to: "decide",
+      reason: `Order ${order?.id ?? "(none)"} is ${order?.status ?? "unknown"}, so the refund must be ${due}.`,
+    });
   }
-  await tools.archmax_advance({ to: "identify-case", reason: `${email} is a known requester.` });
-});
+}
 ```
 
 | Input | Meaning |
 | --- | --- |
-| `state` | the code state's own slug |
-| `trigger?` | the turn's trigger id string (its payload is in `variables`) |
-| `variables` | read-only `name → value` map incl. `trigger`; structured values whole; write with `tools.archmax_set_variables` |
-| `tools` | **exactly this state's surface**, async, by own name or camelCase (`tools.read_file`, `tools.readFile`): its grants (the workflow-wide grant included, minus `write_todos`, `archmax_eval`, `archmax_run`), the host's essential tools, and the controls `archmax_advance` (absent when terminal), `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` — the same set a grader gets. Anything else is `undefined`; a call with no argument passes `{}` |
+| `state` | The code state's slug. |
+| `trigger` | The current trigger id. Its payload is in `variables`. |
+| `variables` | The variables as a read-only `name → value` map, structured values whole. Write with `tools.archmax_set_variables`; the script's later calls see the write. |
+| `tools` | The state's tools as async functions, by name (`tools.read_file`, `tools["archmax_workflow_enrich-order"]`) or camelCase (`tools.readFile`). A tool the state does not offer is `undefined`. A call with no argument passes `{}`. A refused call rejects with the reason, which a `try`/`catch` may handle. |
 
-**The session's history** is read, not passed in:
-`const { messages, trail } = JSON.parse(await tools.archmax_get_history())` — the
-same `SessionHistory` a grader reads, the session as it stood when the state was
-entered, whole and oldest first.
+- **The return value is not read.** Only `archmax_advance` and `archmax_raise` decide,
+  and every path through a non-terminal state's script must call one.
+- **Send work back; throw on infrastructure.** Parse what the agent wrote defensively,
+  and send it back with the fix as the `reason`. Let an unreadable database throw, so
+  the state fails through `on_error`.
+- **One evaluation in a fresh sandbox.** Each entry runs in a fresh QuickJS REPL, with
+  top-level `await` and no Node APIs, bounded as a whole by `settings.timeoutMs`.
+  `console.log` lines become `code-output` events, which the CLI prints under the
+  state.
+- **Imports** are limited to `@archmax-ai/harness/*` type carriers, which are stripped
+  before evaluation. `import { defineCodeState } from "@archmax-ai/harness/sandbox"`
+  types the input (`CodeStateInput`, `SessionHistory`). Any other import fails the
+  state.
+- **No references.** `${{…}}` in a script's tool call is plain text: compose strings
+  from `variables`.
+- **Approve, then end.** A terminal code state completes the session when its script
+  returns, with no further model call. Set any declared `returns` with
+  `tools.archmax_set_variables` first.
+- **Files.** `tools.read_file` answers a missing or binary file with an `Error: …`
+  string instead of throwing, so check before you parse. Use `copy_file`, `move_file`
+  and `remove_file` to duplicate, move or delete a file.
 
-| Field | Meaning |
-| --- | --- |
-| `messages` | the **whole** transcript, `{ role, text, toolCalls?, tool?, id?, note? }`; roles `user`/`assistant`/`tool`/`system`/`runtime` (a runtime note, `note` naming its kind; match `role === "runtime"`, never a `[bracket]`). An `assistant` entry lists the calls it made in `toolCalls` (`{ id?, name, args }`); the `tool` entry whose `id` matches carries the tool's name in `tool` and its result in `text` (`JSON.parse` it when the tool returns JSON) |
-| `trail` | the whole trail, `{ to, kind, reason?, workflow?, status?, ts }`; `kind` is `trigger`/`agent`/`human`/`grader`/`code`/`sub-workflow`/`reset`/`on_error` — count rounds here |
+## Grader states
 
-| The script… | Effect |
-| --- | --- |
-| calls `tools.archmax_advance({ to, reason })` and finishes | the session moves; `reason` reaches the next state as a `[code]` runtime note and the trail as a `kind: code` step |
-| calls `tools.archmax_raise({ code, reason })` | the session ends `failed` with that code and reason |
-| finishes without either, in a terminal state | the session completes, held to the trigger's `returns` |
-| finishes without either, in a non-terminal state | **fails**: `code state '<slug>' finished without calling archmax_advance or archmax_raise` → `on_error` |
-| throws, times out (`settings.timeoutMs`), imports a foreign module, or its file is missing | fails → `on_error` (else the session ends rejected); a recorded advance is discarded, a raise still stands |
+A grader state runs an isolated subagent. Its system prompt is a compiled-in preamble
+followed by the state's `instructions`, which are its criteria, and its task lists the
+state's transitions. It reads the session only through `archmax_get_history`, and the
+work with its own state's tools. It decides with `archmax_advance`, or ends the session
+with `archmax_raise`.
 
-A refused call **rejects** with governance's reason, and a `try`/`catch` can
-handle it: a blocked tool, an `archmax_advance` to an undeclared target, or one
-made while the state's `requires` are unmet. The first accepted advance or raise is
-the state's decision; a later one is refused. A write with `archmax_set_variables`
-is visible to the script's later calls, so it can set what `requires` names and
-then advance. Each run starts in a fresh REPL; `console.log` lines become
-`code-output` events. A file with no default export runs as a plain script, reading
-the same input from the global `args` and calling the global `tools`.
+The refund example's grader, with a give-up rule and an `on_error` added:
 
-**Governance is the state's own.** Every `tools.*` call is decided against the code
-state, exactly as the agent's calls are: grant what the script reads or calls in
-*that* state's `skills.allow` / `mounts.allow` / `tools.allow`; its `forbid`,
-`forbid_always` and the safety rules bind it. A code state is never offered
-`write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` or
-`task`, even when the workflow's `tools.allow_always` lists one (naming one in its
-own `tools.allow` is a `validate` error). Neither script kind can read `workflows/**`.
-
-## `archmax_run` script contract
-
-`skills/<cap>/scripts/<x>.js`: plain script, top-level `await`, `tools.*`,
-`console.log`; the **last expression** is the tool result. Input is the global
-`args`: the arguments the model passed plus `args.variables` (read-only snapshot).
-No control tool and no `task` is on its `tools`. Fan-out shape:
-
-```js
-/** One sub-run per requested order, all in flight at once; returns [{ order_id, ...returns }]. */
-const orders = args.variables?.orders_to_enrich ?? [];
-await Promise.all(orders.map(async (o) => {
-  const answer = await tools.archmaxWorkflowEnrichOrder({ order_id: o.order_id });
-  return { order_id: o.order_id, ...JSON.parse(answer).returns };
-}));
+```yaml
+review-email:
+  type: grader
+  instructions: |-
+    Read scratchpad/email.md and the `decision` variable. Approve the email
+    when it is polite, states the decision plainly and names the order.
+    Otherwise send it back to `decide`, saying exactly what to change. If the
+    trail from archmax_get_history already holds two steps with kind "grader"
+    and to "decide", raise `email-rejected` instead.
+  on_error: escalate
+  transitions:
+    - to: send
+      description: The email is ready to send.
+    - to: decide
+      description: The email needs changes.
 ```
 
-The calling state must allow every tool the script calls (here
-`archmax_workflow_enrich-order`). A script's `tools` holds exactly the calling
-state's tools, re-scoped at every evaluation (so after an advance the same REPL
-holds the next state's); a tool the state does not offer is `undefined`, and a call
-the state's guards refuse rejects with governance's reason. The listing is
-camelCased, but a tool's own name reaches the same function
-(`tools["archmax_workflow_enrich-order"]`, `tools.read_file`).
+- `instructions` and at least one transition are required; `evidence`, `approvers` and
+  `budget.maxParks` are errors.
+- Say in the criteria exactly when to take each transition and when to raise. A grader
+  that answers in text without deciding fails through `on_error`.
+- There is no iteration budget. To give up after N rounds, count the earlier send-backs
+  on the trail (`{ kind: grader, to: <graded state> }`) and raise.
+- `budget.timeoutMs` bounds its whole run, and the turn's `recursionLimit` bounds its
+  loop. Its `model`, else `settings.model`, is resolved under the `grader` model role.
+- Its messages never enter the session's transcript, and its tokens never stream. The
+  session sees its decision as a trail step and a runtime note. Its model calls are
+  `model-usage` events under its state.
+- The history is not windowed, so name the part that counts: "the last assistant
+  message", "the files `enrichments` names".
+- Grade work the agent hands on, not a live answer: everything the agent says in a turn
+  is that turn's reply, a draft sent back included.
 
-**Return into a variable.** A script's result reaches the model as one tool
-message and no further — it is not written to the variable store, and a script
-cannot write there itself. Return structured data and name the variable in the
-calling state's `requires:`; the model then records it with
-`archmax_set_variables`, which is what makes it survive the state, guard a
-`tools.allow` glob, and be quotable downstream as `${{name}}` instead of retyped.
-A result worth computing is worth naming.
+## `archmax_run` scripts
+
+An `archmax_run` script, `skills/<slug>/scripts/<x>.js`, is deterministic work the agent
+decides to run. It is a plain script with top-level `await`.
+
+| It gets | |
+| --- | --- |
+| `args` | The arguments the model passed, plus `args.variables`, a read-only snapshot of the variables. |
+| `tools` | The calling state's tools, as for a code state, re-scoped at every evaluation. No control tool and no `task`. |
+| its result | The value of its last expression, returned to the model as the tool result. |
+
+Write one in this order:
+
+1. **Get the shapes first**: tool inputs and outputs from the host's describe tools, and
+   the variables a session carries from `archmax sessions <id>`. A guessed field name
+   costs a whole session.
+2. **Write it**, JSDoc header first.
+3. **Land the result in a variable.** The result is one tool message and nothing more,
+   and a script cannot set variables. Return structured data and name the variable in
+   the calling state's `requires`, so the agent records it with `archmax_set_variables`.
+   Later states can then guard on it and quote it as `${{name}}`.
+4. **Announce it in the bundle's `SKILL.md`.** The `description` says when to run it; the
+   body gives its path, its arguments and the variable its result belongs in. A script
+   nothing points at is never run.
+5. **Grant it.** The calling state enables the bundle and allows every tool the script
+   calls. Narrow execution with `{ tool: archmax_run, paths: ["skills/<slug>/scripts/**"] }`.
+   Then validate.
+
+A script may fan out over a delegation tool with `Promise.all`. Each call runs one child
+session and succeeds or fails on its own, so `Promise.allSettled` keeps the successes.
+When the host cancels the turn, a pending call fails and later calls are refused.
+
+## The JSDoc header
+
+Both kinds of workspace JavaScript, code-state scripts and `archmax_run` scripts, open
+with a JSDoc block: a title line, a blank line, then what the script reads, what it
+checks or computes, and each outcome. For a code state, that is every `archmax_advance`
+target and why, and every raise. The description ends at the first `@tag`.
+
+Admin UIs show this block instead of the code (`parseCodeDescription` extracts it), so
+write it first and keep the code true to it. `archmax validate` does not check it: it is
+an authoring standard. Cases carry the same depth in their `description`, which
+`validate` does check.

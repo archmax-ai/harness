@@ -184,7 +184,7 @@ describe("validateWorkflow", () => {
           "  poll:",
           "    triggers: { manual: }",
           "    summary: Check the bank, then wait a day.",
-          "    budget: { maxTurns: 6, maxParks: 5 }",
+          "    budget: { timeoutMs: 60000, maxParks: 5 }",
         ].join("\n"),
       ),
     });
@@ -1123,7 +1123,7 @@ describe("validateWorkflow", () => {
           "    type: grader",
           "    instructions: Approve a polite reply; send anything else back with the fix.",
           "    model: large-model",
-          "    budget: { maxTurns: 4 }",
+          "    budget: { timeoutMs: 30000 }",
           "    transitions:",
           "      - to: record",
           "        description: The reply is polite.",
@@ -1480,7 +1480,7 @@ describe("validateWorkflow", () => {
   // Root `instructions` are standing prose for every turn; they cannot say when
   // one edge is the right one. The description is the only per-edge routing text
   // the agent gets, so the schema requires it however well the root is written.
-  it("lets an edge go undescribed when its target has instructions", async () => {
+  it("lets an agent state's lone edge into another agent state go undescribed", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
@@ -1488,27 +1488,20 @@ describe("validateWorkflow", () => {
           "states:",
           "  start:",
           "    triggers: { manual: }",
-          "    instructions: Route the request.",
-          "    transitions:",
-          "      - to: lookup",
-          "      - to: done",
-          "        description: ''",
-          "  lookup:",
-          "    instructions: Look the order up by its id.",
+          "    instructions: Find the order the customer means.",
           "    transitions:",
           "      - to: done",
-          "        description: The order is summarised.",
           "  done:",
           "    instructions: Say goodbye.",
         ].join("\n"),
       ),
     });
     const result = await validateWorkflow({ rootDir: root, workflow: "p" });
-    expect(result.valid).toBe(true);
     expect(result.diagnostics.filter((d) => d.field?.includes("transitions"))).toEqual([]);
+    expect(result.valid).toBe(true);
   });
 
-  it("requires a description on an edge whose target has no instructions, whatever the root instructions say", async () => {
+  it("requires a description on a lone edge out of a state with no instructions, whatever the root instructions say", async () => {
     const root = makeWorkspace({
       "workflows/p/workflow.yaml": workflowFile(
         [
@@ -1518,7 +1511,8 @@ describe("validateWorkflow", () => {
           "    triggers: { manual: }",
           "    transitions:",
           "      - to: done",
-          "  done: {}",
+          "  done:",
+          "    instructions: Say goodbye.",
         ].join("\n"),
       ),
     });
@@ -1528,7 +1522,7 @@ describe("validateWorkflow", () => {
       (d) => d.field === "states.start.transitions.0.description",
     );
     expect(diagnostic?.severity).toBe("error");
-    expect(diagnostic?.message).toContain("'done' declares none");
+    expect(diagnostic?.message).toContain("'start' declares no instructions");
   });
 
   it("fails when the workflow slug is not kebab-case", async () => {
@@ -2346,31 +2340,28 @@ states:
     expect(errors(result).join("\n")).toContain("allows 'web_fetch' and forbids it in the same state");
   });
 
-  it("errors when the workflow denies the only way a state can move", async () => {
-    const result = await validateWith(`
-tools:
-  forbid_always: [archmax_advance]
+  it("rejects a bare denial of archmax_advance in either position and accepts a guarded one", async () => {
+    const workflow = (tools: string, forbid = "") => `
+${tools}
 states:
   lookup:
     triggers: { manual: }
+    ${forbid}
     transitions: [{ to: done, description: finished }]
-  done:
-`);
-    expect(result.valid).toBe(false);
-    expect(errors(result).join("\n")).toContain(
-      "denies 'archmax_advance', the only way a state moves",
+  done: {}
+`;
+    for (const yaml of [
+      workflow("tools:\n  forbid_always: [archmax_advance]"),
+      workflow("", "tools: { forbid: [archmax_advance] }"),
+    ]) {
+      const result = await validateWith(yaml);
+      expect(result.valid).toBe(false);
+      expect(errors(result).join("\n")).toContain("'archmax_advance' cannot be denied outright");
+    }
+    const guarded = await validateWith(
+      workflow("", "tools: { forbid: [{ tool: archmax_advance, args: { to: [done] } }] }"),
     );
-  });
-
-  it("accepts that denial in a workflow with nowhere to move", async () => {
-    const result = await validateWith(`
-tools:
-  forbid_always: [archmax_advance]
-states:
-  only:
-    triggers: { manual: }
-`);
-    expect(errors(result)).toEqual([]);
+    expect(errors(guarded).join("\n")).not.toContain("cannot be denied");
   });
 
   it("accepts a wildcard denial and rejects a wildcard grant", async () => {

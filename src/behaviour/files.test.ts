@@ -100,6 +100,48 @@ describe("a file input at the start of a session", () => {
   });
 });
 
+describe("a file input's maxSize", () => {
+  const LIMITED = { requires: [{ name: "invoice", type: "file", maxSize: "1KB" }] };
+
+  it("refuses a file over the limit at the start, before any model call", async () => {
+    const { agent, store, model } = await assemble(workspaceWith(fileSpec(LIMITED)), { turns: [{ reply: "never" }] });
+    await store.backend.write("/s1/scratchpad/attachments/invoice.txt", "x".repeat(2000));
+    const outcome = await agent.workflow.send("s1", {
+      message: "go",
+      variables: { invoice: "scratchpad/attachments/invoice.txt" },
+    });
+    expect(model.calls).toHaveLength(0);
+    expect(outcome).toMatchObject({ kind: "rejected" });
+    expect(outcome.rejected).toContain("'invoice' must be at most 1 KB");
+  });
+
+  it("starts on a file within the limit", async () => {
+    const { agent, store } = await assemble(workspaceWith(fileSpec(LIMITED)), {
+      turns: [advanceTo("done"), { reply: "ok" }],
+    });
+    await store.backend.write("/s1/scratchpad/attachments/invoice.txt", "x".repeat(1000));
+    const outcome = await agent.workflow.send("s1", {
+      message: "go",
+      variables: { invoice: "scratchpad/attachments/invoice.txt" },
+    });
+    expect(outcome.kind).toBe("completed");
+  });
+
+  it("refuses a file of the wrong extension once, by its accept rule", async () => {
+    const { agent, model } = await assemble(
+      workspaceWith(fileSpec({ requires: [{ name: "invoice", type: "file", accept: [".pdf"], maxSize: 10 }] })),
+      { turns: [{ reply: "never" }] },
+    );
+    const outcome = await agent.workflow.send("s1", {
+      message: "go",
+      variables: { invoice: "scratchpad/attachments/missing.png" },
+    });
+    expect(model.calls).toHaveLength(0);
+    expect(outcome.rejected).toContain("'invoice' must be a .pdf file");
+    expect(outcome.rejected).not.toContain("nothing is at");
+  });
+});
+
 describe("a file return", () => {
   it("refuses the agent's write naming no file, then takes it once the file is written", async () => {
     const { agent, events } = await assemble(workspaceWith(fileSpec(REPORT)), {

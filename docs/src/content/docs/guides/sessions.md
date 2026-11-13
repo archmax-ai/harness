@@ -5,20 +5,17 @@ sidebar:
   order: 3
 ---
 
-A session can stop and wait for the outside world. **`archmax_wait`** parks the
-session where it stands. The session id is what lets the event that eventually
-arrives find it.
+A session can stop and wait for the outside world. **`archmax_wait`** parks the session where it
+stands, and the **session id** lets the event that eventually arrives find it.
 
-The two are separable. A session can park with no session path declared, and a
-session id serves a conversation that never parks. Together they make an email
-conversation, a chat conversation, or a webhook round-trip a single governed
-session.
+The two are separable: a session can park with no session path declared, and a session id serves a
+conversation that never parks. Together they make an email conversation, a chat conversation or a
+webhook round-trip a single governed session.
 
 ## Parking a session: `archmax_wait`
 
-The agent discovers a wait *inside* a state, so waiting is a tool rather than a
-state type. Whichever state cannot finish without an answer asks for it, then
-calls `archmax_wait({ reason })`:
+The agent discovers a wait *inside* a state, so waiting is a tool rather than a state type. The
+state that cannot finish without an answer asks for it, then calls `archmax_wait({ reason })`:
 
 ```yaml
 states:
@@ -37,35 +34,29 @@ states:
         description: The conversation closed before a usable reply arrived.
 ```
 
-The call **parks the session deterministically**: no transition, and no model call
-spent on the parking itself. The runtime commits a `pendingInput` record naming
-the state, the agent's reason, and when it parked. The session's status becomes
-`awaiting_input`, and the process can exit.
+The call **parks the session deterministically**, with no transition. The runtime commits a park
+record (`PendingInput`) naming the state, the agent's reason and when it parked. The session's
+status becomes `awaiting_input`, and the process can exit. The checkpoint *is* the record:
+`archmax sessions` and `agent.sessions.list()` surface it on demand.
 
-The checkpoint *is* the record. `archmax sessions` and `sessions.list()` surface it
-on demand.
+Parking is the event-driven sibling of a
+[human state](/guides/workflow-machine/#human-in-the-loop-states): one suspension mechanism, two
+ways back in. The difference is where the session continues:
 
-Parking is the event-driven sibling of a [human
-state](/guides/workflow-machine/#human-in-the-loop-states): one suspension
-mechanism, two resolution channels. The difference is where the session continues.
-
-| Channel | Where the session continues |
+| Park | Where the session continues |
 | --- | --- |
 | a human state | a person picks one of the state's declared edges, and the session advances along it |
 | `archmax_wait` | a delivered event **resumes the state that stopped**, which chooses its own transition from what arrived |
 
-A park at a human state spends one tool-less model call: the **handoff message**.
-It tells the person what happened and what the session is now waiting for. A
-decision that routes straight into another human state spends one too.
+A park owes the person a **handoff message**, one model call with no tools that says what
+happened and what the session now waits for. A park at a human state always spends it, and so does
+a decision that routes straight into another human state. An `archmax_wait` park spends it only
+when the agent has said nothing since the person's last message; where the agent's question
+already is the message, the session suspends straight away.
 
-An `archmax_wait` park spends that call when the agent has said nothing since the
-person's last message. Where the agent's question already is the message, the
-session suspends straight away.
-
-That message is the model's own text, so it surfaces as an ordinary `agent-text`
-event and lands in the checkpointed transcript. A message a person sends *to* a
-parked session, and the answer it gets, are the `park-message` events (`inbound`
-and `outbound`). Those move the session nowhere.
+The handoff is the model's own text, so it surfaces as an ordinary `agent-text` event and lands in
+the checkpointed transcript. A message a person sends *to* a parked session, and the answer it
+gets, are `park-message` events (`inbound` and `outbound`), and they move the session nowhere.
 
 `archmax_wait` is available in every agent and human state, terminal ones included. A session that
 has answered and now awaits a reply parks where it answered, and stays open.
@@ -82,38 +73,45 @@ await agent.workflow.deliver(sessionId, {
 });
 ```
 
-or from the CLI:
+or, from the CLI:
 
 ```bash
 archmax deliver th_01HZ… --trigger email_reply --variables '{"reply_body":"It'"'"'s ORD-1001."}'
 ```
 
-A delivery carries the same two channels a session *starts* with: a trigger id,
-and variables carrying what the event brought. The id becomes the session's
-current trigger, read by a code state's script as `trigger` and by guards as
-`${{trigger}}`.
+A delivery carries the same two things a session *starts* with: a trigger id, and variables
+carrying what the event brought. The id becomes the session's current trigger, read by a code
+state's script as `trigger` and by guards as `${{trigger}}`. The delivered values are seeded as
+**locked** session variables, `title` excepted, exactly like a host's `variables`, so a downstream
+`tools.allow` guard can bind to them.
 
-The delivered values are seeded as **locked** session variables, `title` excepted,
-exactly like a host's `variables`. A downstream `tools.allow` guard can then bind
-to them. The arrival is also written into the transcript as an `[event]` **runtime
-note**, so the resumed turn sees what happened.
+A park selects no edge, so **any** trigger id resumes it: what a host delivers into a conversation
+is the host's decision, and the resumed state reads what arrived. The id is still required, because
+it is recorded as the session's current trigger. `agent.workflow.send(sessionId, { message,
+trigger, variables })` applies the same rule: a session parked with `archmax_wait` has the trigger
+and variables delivered into it.
 
-A runtime note is how the runtime says something to a session in a channel the
-model reads as machine output. It is carried as a synthetic `archmax_note` tool
-call and its result, which is how every provider represents machine output
-injected into a conversation. Every position a note lands in accepts a tool
-result. A mid-thread system message is accepted in fewer.
+Everything is validated before the session is touched, and a refused delivery leaves the session
+parked exactly as it was:
 
-`archmax_note` is reserved and unregistered, so the model has no way to call it.
-The call is answered the instant it appears. Derived views (a case's `calledTool`,
-the CLI's flow) skip the pair: the session made no such call. The notes are
-`[decision]`, `[event]`, `[error]`, `[after]` and `[sub-workflow: <slug>]`.
+| Delivery | Result |
+| --- | --- |
+| to a session that is not parked awaiting input | `SessionNotAwaitingInputError` |
+| carrying no trigger id | `MissingDeliveryTriggerError` |
+| naming an unaddressable variable | refused the way a host seed is |
 
-A reply to a session parked at a human state is the one message a person actually
-sends, and it stays an ordinary human message.
+### Runtime notes
 
-Hosts should read the marker rather than infer authorship from a role or a
-`[bracket]` prefix:
+The arrival is written into the transcript as an `[event]` **runtime note**, so the resumed turn
+sees what happened. A runtime note is how the runtime tells a session something in a channel the
+model reads as machine output, never as a person's message. The kinds are `[decision]`, `[event]`,
+`[error]`, `[grader]`, `[code]` and `[sub-workflow: <slug>]`. A reply to a session parked at a human
+state is the one message a person actually sends, and it stays an ordinary human message.
+
+A note is carried as a call of the reserved `archmax_note` tool and its result, a shape every
+provider accepts wherever a note lands. The model cannot call that tool, and derived views (a
+case's `calledTool`, the CLI's state flow) skip the pair. Hosts read the marker rather than infer
+authorship from a role or a `[bracket]` prefix:
 
 ```ts
 import { isRuntimeNote, runtimeNoteKind } from "@archmax-ai/harness";
@@ -127,45 +125,25 @@ for (const message of session.messages) {
 }
 ```
 
-A park selects no edge, so **any** trigger id resumes it. What a host delivers
-into a conversation is the host's decision, and the resumed state reads what
-arrived. The id is required, because it is recorded as the session's current
-trigger; matching it against the workflow is the step a park skips.
-
-`agent.workflow.send(sessionId, { message, trigger, variables })` applies the same
-rule from a host. A session parked with `archmax_wait` has the trigger and
-variables delivered into it.
-
-Everything is validated before the session is touched, and a refused delivery
-leaves the session parked exactly as it was:
-
-| Delivery | Result |
-| --- | --- |
-| to a session that is not parked awaiting input | `SessionNotAwaitingInputError` |
-| carrying no trigger id | `MissingDeliveryTriggerError` |
-| naming an unaddressable variable | refused the way a host seed is |
-
 ## Waiting for a time, not a reply
 
-A reply-wait works because the world eventually pushes the event. A "check the
-bank tomorrow" wait has nobody to push it, so the session says for itself when it
-wants to be woken. `archmax_wait` takes an optional `until`:
+A reply-wait works because the world eventually pushes the event. A "check the bank tomorrow" wait
+has nobody to push it, so the session says for itself when it wants to be woken. `archmax_wait`
+takes an optional `until`:
 
 ```ts
 archmax_wait({ reason: "the transaction posts overnight", until: "1d" })
 ```
 
-`until` is a relative duration (`30m`, `2h`, `1d`) or an ISO-8601 instant. The
-runtime normalizes it to an **absolute** `resumeAt` on the park record, because a
-relative duration means little to the process that reads the checkpoint tomorrow.
+`until` is a relative duration (`30m`, `2h`, `1d`) or an ISO-8601 instant. The runtime normalizes
+it to an **absolute** `resumeAt` on the park record, because a relative duration means little to
+the process that reads the checkpoint tomorrow. An `until` the runtime cannot parse is a tool
+error, and the park is refused, rather than leaving a session waiting on a wake-up that never
+comes.
 
-An `until` the runtime cannot parse is a tool error, and the park is refused.
-Parking without the schedule the agent asked for would leave a session waiting on
-a wake-up that never comes.
-
-`resumeAt` then rides `SessionSummary` and the park event, and that is the whole
-feature. **The SDK schedules nothing**: no timer, no cron, no background work.
-Waking the session is the host's job, and it is a query:
+`resumeAt` rides `SessionSummary` and the park event, and that is the whole feature. **The SDK
+schedules nothing**: no timer, no cron, no background work. Waking the session is the host's job,
+and it is a query:
 
 ```ts
 for (const t of await agent.sessions.list()) {
@@ -175,49 +153,44 @@ for (const t of await agent.sessions.list()) {
 }
 ```
 
-Two things fall out of the design:
+Two things follow from the design:
 
-- **A double-fired timer is safe.** `deliver` refuses a session that is not parked,
-  so the second firing throws `SessionNotAwaitingInputError` and the session runs
-  once.
-- **`resumeAt` is advice to the scheduler.** An email reply arriving an hour after
-  the park resumes it immediately, exactly as it would without an `until`.
+- **A double-fired timer is safe.** `deliver` refuses a session that is not parked, so the second
+  firing throws `SessionNotAwaitingInputError`, and the session runs once.
+- **`resumeAt` is advice to the scheduler.** An email reply arriving an hour after the park resumes
+  it at once, exactly as it would without an `until`.
 
-The polling loop is then park → resume → **re-park with a new `until`**. The
-resumed turn re-checks with its own tools, then either advances or waits again.
+The polling loop is then park → resume → **park again with a new `until`**. The resumed turn
+checks again with its own tools, then either advances or waits again.
 
 ### Bounding the loop
 
-"Check daily, up to five days, then escalate" is the real shape of that loop. The
-bound belongs in the workflow:
+"Check daily, up to five days, then escalate" is the real shape of that loop. The bound belongs in
+the workflow:
 
 ```yaml
 check-bank:
   summary: Look for the transaction; wait a day and retry if it has not posted.
   budget:
-    maxParks: 5          # beside maxTurns / timeoutMs
+    maxParks: 5          # beside timeoutMs
   on_error: escalate     # where the sixth attempt lands
   transitions:
     - { to: reconcile, description: The transaction was found. }
 ```
 
-The runtime counts parks per state, checkpointed, so the count survives restarts.
-It refuses the park that would exceed `maxParks` as a **turn failure**, routed by
-`on_error` like an exhausted `maxTurns`.
+The runtime counts parks per state, checkpointed, so the count survives restarts. It refuses the
+park that would exceed `maxParks` as a **turn failure**, routed by `on_error`. So the sixth failed
+check lands in `escalate` deterministically, whether or not the agent notices its own loop. A state
+that declares no `maxParks` may park any number of times.
 
-So the sixth failed check lands in `escalate` deterministically, whether or not
-the agent notices its own loop. A state that declares no `maxParks` may park any
-number of times.
+## Which session an event belongs to
 
-## Sessions: which session does this event belong to?
+A **session id** is an opaque string naming the conversation: a mail conversation id, a chat
+session id, a case number. The host chooses it, and it is the only id there is: the runtime
+addresses the conversation by it directly, with no second identity underneath to keep in sync.
 
-A **session id** is an opaque string naming the conversation: a mail conversation
-id, a chat session id, a case number. The host chooses it, and it is the only id
-there is. The runtime addresses the conversation by it directly, with no second
-identity underneath to keep in sync.
-
-Where it comes from is declared on the trigger, under the `triggers:` of the
-state that trigger enters:
+Where a firing's id comes from is declared on the trigger, under the `triggers:` of the state that
+trigger enters:
 
 ```yaml
 states:
@@ -229,8 +202,8 @@ states:
         session: conversation_id  # unknown/finished conversation → start fresh here
 ```
 
-`session:` is a **dotted path over the session's variables**, the same syntax
-guards use inside `${{…}}`, including array indices and negative indices:
+`session:` is a **dotted path over the session's variables**, the same syntax guards use inside
+`${{…}}`, array indices and negative indices included:
 
 | Declaration | Reads |
 | --- | --- |
@@ -238,22 +211,18 @@ guards use inside `${{…}}`, including array indices and negative indices:
 | `session: triggers.-1.conversationId` | `conversationId` of the **last** entry of a `triggers` array |
 | `session: mail.thread.id` | a nested field |
 
-The identity is already in the payload the host maps into variables, so naming it
-is a one-line authoring act, with no script or callback in between. Different
-channels derive differently: an email trigger reads the mail conversation id, a
-chat trigger the chat session id.
+The identity is already in the payload the host maps into variables, so naming it is a one-line
+authoring act, with no script or callback in between. Related triggers that must land in the same
+conversation declare the *same* path: `email_received` starts the conversation, and `email_reply`
+resumes it.
 
-Related triggers that must land in the same conversation declare the *same* path.
-`email_received` starts the conversation, and `email_reply` resumes it.
-
-**Every turn belongs to a session.** A fresh session id is minted when a trigger
-declares no path, or when the path does not resolve for a firing (a plain
-`archmax run` with no variables). Downstream handling is the same either way.
+**Every turn belongs to a session.** A fresh session id is minted when a trigger declares no path,
+or when the path does not resolve for a firing (a plain `archmax run` with no variables).
 
 ### Supplying the path from outside the workflow
 
-The same path can come from the host instead. That suits a deployment that knows
-its own payload shape and would rather configure it than encode it in the workflow:
+The same path can come from the host instead, for a deployment that knows its own payload shape and
+would rather configure it than encode it in the workflow:
 
 ```bash
 archmax run support-inbox --trigger email_reply \
@@ -277,33 +246,39 @@ Precedence, most specific first:
 4. the invoking trigger's `session:` declaration;
 5. a minted id.
 
-A malformed path is rejected wherever it is written. The same parser reads all
-four sources, so a path means one thing everywhere.
+A malformed path is rejected wherever it is written. One parser reads all four sources, so a path
+means one thing everywhere.
 
 ## Starting versus resuming
 
 One rule decides what a firing does:
 
-> A session whose turn has **finished** takes its next turn on the same session,
-> continuing from the state it is in. A session whose turn is still **open**
-> resumes from the state where it parked.
+> A session whose turn has **finished** takes its next turn on the same session, continuing from
+> the state it is in. A session whose turn is still **open** resumes from the state where it parked.
 
-A session is **extended, never copied**. Both dispositions land on the same id, the
-same checkpoints, the same folder. The transcript, the position, the variables and
-the files are simply there, with no replay into the firing.
+A session is **extended, never copied**. Both land on the same id, the same checkpoints and the
+same folder: the transcript, the position, the variables and the files are all there.
 
-`agent.workflow.send` applies the rule for you: one call, whatever the session's
-state. It returns one `Outcome`:
+`agent.workflow.send` applies the rule for you, in one call whatever the session's state, and
+returns one `Outcome`:
 
 ```ts
 const outcome = await agent.workflow.send(sessionId, { message: text, trigger, variables });
 // outcome.kind: "completed" | "parked" | "failed" | "rejected"
-// outcome.disposition: "turn" | "reply" | "deliver" — what the session's state made of it
-// outcome.exit: { success: true } | { success: false, code, reason } — on a finished turn the agent ended
+// outcome.disposition: "turn" | "decide" | "reply" | "deliver" — what the session's state made of it
+// outcome.exit: { success: true } | { success: false, code, reason } — on a finished turn
 ```
 
-`resolveSession` is the same rule without the invoke, for a host that wants to
-look before it acts:
+| Session's state | What `send` does |
+| --- | --- |
+| none yet | a `turn`: opens at the trigger's entry state |
+| finished | a `turn`: continues in the state it is in, on the same id |
+| parked awaiting an event | a `deliver`: the trigger and variables are delivered into it, whatever the trigger id |
+| parked at a human state | a `reply`: the session answers the message and stays parked; only a decision routes |
+| mid-turn | `SessionNotResumableError`: one writer per session; retry after it parks |
+
+`resolveSession` is the same rule without the invoke, for a host that wants to look before it acts.
+It answers `turn`, `resume` or `reply` for the session the firing resolves to:
 
 ```ts
 const resolved = await agent.workflow.resolveSession({ trigger, variables });
@@ -323,26 +298,14 @@ if (resolved.disposition === "resume") {
 }
 ```
 
-Anything the rule does not cover fails closed with a typed error:
-
-| Session's state | Result |
-| --- | --- |
-| none yet | `turn`: opens at the trigger's entry state |
-| finished | `turn`: continues in the state it is in, on the same id |
-| parked awaiting an event | `resume`: deliver into it, whatever the trigger id |
-| parked at a human state | `reply`: the session answers it and stays parked; only a decision routes |
-| mid-turn | `SessionNotResumableError`: one writer per session; retry after it parks |
-
-`archmax run` composes both steps for you. Give it `--session <id>`, or a trigger
-that declares a session path, and one command starts *or* continues the right
-conversation.
+`archmax run` composes both steps. Give it `--session <id>`, or a trigger that declares a session
+path, and one command starts *or* continues the right conversation.
 
 ## One id, one folder
 
-This works out of the box. The session id *is* the address, so a firing is one
-direct lookup of the session's own checkpoint:
+The session id *is* the address, so a firing is one direct lookup of the session's own checkpoint:
 
-```
+```text
 <session store>/
   _specs/<specHash>.json             # the spec a turn ran under
   chat-42/checkpoints/…              # the conversation's durable state
@@ -352,31 +315,25 @@ direct lookup of the session's own checkpoint:
   chat-42/scratchpad/…               # what its turns wrote
 ```
 
-Two consequences worth knowing:
-
-- **The folder is stable across turns.** A file a turn writes to `scratchpad/`
-  is there for the next turn at the same path. The next turn is the same session,
-  so the file carries forward untouched.
-- **A session that has not run yet simply has no checkpoint**, and opens at its
-  trigger's entry state.
+- **The folder is stable across turns.** A file a turn writes to `scratchpad/` is there for the
+  next turn at the same path, because the next turn is the same session.
+- **A session that has not run yet has no checkpoint**, and opens at its trigger's entry state.
 
 ## Files handed to a session
 
-Every file the runtime hands a session lands in that session's
-`scratchpad/attachments/`:
+Every file the runtime hands a session lands in that session's `scratchpad/attachments/`:
 
-- **A host's files.** `agent.workflow.send(sessionId, { message, files })` takes
-  `files` as variable → `{ name, content }`. Each file is placed before the turn
-  starts, and its variable is seeded, locked, with the placed path. The CLI does
-  the same with `archmax run … --file invoice=./invoice.pdf`.
-- **A sub-workflow's `file` arguments.** They are copied into the *child's*
-  attachments before it starts (see [passing
-  files](/guides/sub-workflows/#passing-files)).
-- **A sub-workflow's `file` returns.** They are copied into the *caller's*
-  attachments when the child finishes.
+- **A host's files.** `agent.workflow.send(sessionId, { message, files })` takes `files` as
+  variable → `{ name, content }`. Each file is placed before the turn starts, and its variable is
+  seeded, locked, with the placed path. The CLI does the same with
+  `archmax run … --file invoice=./invoice.pdf`.
+- **A sub-workflow's `file` arguments.** They are copied into the *child's* attachments before it
+  starts (see [passing files](/guides/sub-workflows/#passing-files)).
+- **A sub-workflow's `file` returns.** They are copied into the *caller's* attachments when the
+  child finishes.
 
-A placement keeps the file's own name unless that name is taken. Then it inserts
-`-1`, `-2`, … before the last extension, using the lowest free number:
+A placement keeps the file's own name unless that name is taken. Then it inserts `-1`, `-2`, …
+before the last extension, using the lowest free number:
 
 | Already in `scratchpad/attachments/` | A new `report.pdf` lands at |
 | --- | --- |
@@ -384,20 +341,19 @@ A placement keeps the file's own name unless that name is taken. Then it inserts
 | `report.pdf` | `report-1.pdf` |
 | `report.pdf`, `report-1.pdf` | `report-2.pdf` |
 
-A name with no extension takes the suffix at its end (`notes-1`, `.env-1`), and only
-the last extension moves (`archive.tar-1.gz`). Placements into one session run one
-at a time, so concurrent sub-workflows returning files of the same name each take
-their own. A placement never overwrites a file.
+A name with no extension takes the suffix at its end (`notes-1`, `.env-1`), and only the last
+extension moves (`archive.tar-1.gz`). Placements into one session run one at a time, so concurrent
+sub-workflows returning files of the same name each take their own. A placement never overwrites a
+file.
 
-The bytes arrive exactly. A file that is not text needs a session store that
-takes raw bytes (`uploadFiles`). The filesystem and memory stores do, and so does a
-`createBackendSessionStore` over a backend that has `uploadFiles`. Through a store
-without it, such a file is refused with an error naming the path, and nothing is
-written. A text file is placed either way.
+The bytes arrive exactly. A file that is not text needs a session store that takes raw bytes
+(`uploadFiles`). The filesystem and memory stores do, and so does a `createBackendSessionStore` over
+a backend that has `uploadFiles`. Through a store without it, such a file is refused with an error
+naming the path, and nothing is written. A text file is placed either way.
 
-`agent.sessions.seed(sessionId, files)` is the other way in. It writes files at
-paths you choose and seeds no variable, so it suits fixtures. `files` on a turn is
-the way to satisfy a trigger's [`file` input](/guides/triggers/#typing-a-signature).
+`agent.sessions.seed(sessionId, files)` is the other way in. It writes files at paths you choose and
+seeds no variable, so it suits fixtures. `files` on a turn is the way to satisfy a trigger's
+[`file` input](/guides/triggers/#typing-a-signature).
 
 ## How a session ended
 
@@ -405,14 +361,13 @@ A finished turn ends one of three ways, and the outcome says which:
 
 | `kind` | Who ended it | What the outcome carries |
 | --- | --- | --- |
-| `completed` | the agent finished its work | `exit: { success: true }` |
-| `failed` | the agent called `archmax_raise({ code, reason })` | `exit: { success: false, code, reason }` |
-| `rejected` | governance or the runtime (a refused start, a missing return, a failed state or an exhausted budget with no `on_error`) | `rejected`, the reason; no `exit` |
+| `completed` | the session finished its work | `exit: { success: true }` |
+| `failed` | the agent, a grader or a code state called `archmax_raise({ code, reason })` | `exit: { success: false, code, reason }` |
+| `rejected` | governance or the runtime: a refused start, a missing return, or a failed state with no `on_error` | `rejected`, the reason; no `exit` |
 
-A session is a success unless the agent says otherwise: `archmax_raise` is the
-agent's one way to declare that the work **could not be done**, and it is only
-for failure. The `code` is the agent's own short token (`orders-unavailable`,
-`customer-unknown`), so a host can branch on it without parsing text:
+A session is a success unless something declares otherwise. `archmax_raise` is the way to declare
+that the work **could not be done**, and it is only for failure. The `code` is a short token
+(`orders-unavailable`, `customer-unknown`), so a host can branch on it without parsing text:
 
 ```ts
 const outcome = await agent.workflow.send(sessionId, { message: text });
@@ -421,75 +376,63 @@ if (outcome.kind === "failed" && !outcome.exit?.success) {
 }
 ```
 
-A raise ends the session at once, in the state it was made in, with no further
-model call. It does not route through `on_error`, runs no further state and is
-not held to the trigger's `returns`. A grader or a code state raises the same way,
-and its code and reason are the outcome's `exit`. The session's summary (`agent.sessions.get`) carries
-the same record as `exit` while the session is `failed`. A parked outcome has no
-`exit`: the session has not ended.
+A raise ends the session at once, in the state it was made in, with no further model call. It does
+not route through `on_error`, runs no further state and is not held to the trigger's `returns`.
+The session's summary (`agent.sessions.get`) carries the same `exit` while the session is `failed`.
+A parked outcome has no `exit`: the session has not ended.
+
+A turn that throws, such as one that hits the recursion limit, rejects the `send` with the original
+error. The session still ends `failed`, with a code of its own such as `recursion-limit`, so its
+next message starts a fresh turn (see
+[a turn that throws](/reference/public-api/#a-turn-that-throws)).
 
 ## Waiting is not finishing
 
 Session statuses partition explicitly:
 
-- **finished**: `completed`, `failed`, `rejected`. The turn is over. The next
-  event for that session is its next turn.
-- **open**: `running`, `awaiting_decision`, `awaiting_input`. A parked session is
-  suspended mid-graph with its state retained.
+- **finished**: `completed`, `failed`, `rejected`. The turn is over, and the next event for that
+  session is its next turn.
+- **open**: `running`, `awaiting_decision`, `awaiting_input`. A parked session is suspended
+  mid-graph with its state retained.
 
-`SessionSummary` carries the classification, and `isFinished(status)` is exported,
-so hosts and the CLI share one definition of it.
+`SessionSummary` carries the classification, and `isFinished(status)` is exported, so hosts and the
+CLI share one definition of it. The `parked` event says which channel a session awaits and, for an
+`archmax_wait` park, the reason it gave, so an `onEvent` subscriber can tell "turn ended" from
+"session waiting" straight from the stream. `archmax run` prints a waiting outcome line and exits
+zero, because waiting is a successful outcome.
 
-The `parked` event says which channel a session awaits, and for an agent park,
-the reason it gave. An `onEvent` subscriber can therefore tell "turn ended" from
-"session waiting" straight from the stream. `archmax run` prints a waiting
-outcome line and exits zero, because waiting is a successful outcome.
+A firing that arrives after a turn finished is the **next turn** of the same session. It continues
+in the state the previous turn ended in, so the transcript the model reads and the state it
+occupies always agree. That state may be one with no outgoing transitions (an `answer` state, say);
+the turn still runs there, under that state's tool governance.
 
-A firing that arrives after a turn finished is simply the **next turn** of the same
-session. It continues in the state the previous turn ended in, so the transcript
-the model reads and the state it occupies always agree.
-
-That state may be one with no outgoing transitions (an `answer` state, say). The
-turn still runs there, under that state's tool governance.
-
-When the current state can serve the new message, the agent answers there, with no
-reset. When what was asked needs a path the current state cannot reach, the agent
-calls **`archmax_reset`** to return to the state the conversation began in.
-`archmax_reset` is available in every agent and human state, and it keeps the
-transcript, the variables and the files. A workflow that expects follow-ups can also declare the
+When the current state can serve the new message, the agent answers there. When the message needs
+a path the current state cannot reach, the agent calls **`archmax_reset`** to return to the state
+the conversation began in, keeping the transcript, the variables and the files. `archmax_reset` is
+available in every agent and human state. A workflow that expects follow-ups can also declare the
 re-entry transitions it wants.
 
-The prompt says so outright. A model sitting in a terminal state it moved into would
-otherwise answer the follow-up in place and skip every state the answer depends on,
-so the graph-state prompt tells it to reset *before* answering. The per-turn state
-block repeats that instruction on exactly the turns where it applies.
+The prompt says so outright. A model in a terminal state would otherwise answer the follow-up in
+place and skip every state the answer depends on, so the platform prompt tells it to reset *before*
+answering, and the per-turn state block repeats that on exactly the turns where it applies. A reset
+only ever returns to the state the conversation began in, so the prompt also tells the agent never
+to call it while it is still there. A terminal state that is the one the conversation began in, as
+in a one-state chat workflow, answers its follow-ups in place.
 
-A reset only ever returns to the state the conversation began in, so the prompt
-also tells the agent never to call it while it is still there. A terminal state that
-is the one the conversation began in, as in a one-state chat workflow, answers its
-follow-ups in place.
+A turn boundary resets the turn's own mechanics: a pending rejection, the failure a previous turn
+raised, and the per-state park counts. So `budget.maxParks` bounds parks *within* a turn, and a long
+conversation starts each turn with a fresh count. Everything belonging to the conversation carries
+forward: position, variables (the agent's as well as the host's seeds), transcript, trail, metrics
+and the session's files.
 
-A turn boundary resets the turn's own mechanics:
-
-- the pending rejection, and the failure a previous turn raised;
-- the count of model calls in the current state that `budget.maxTurns` bounds;
-- per-state park counts.
-
-Everything belonging to the conversation carries forward: position, variables,
-transcript, audit trail, metrics, and the session's files. That includes the
-variables the agent set with `archmax_set_variables`, alongside the host's seeds.
-So `budget.maxParks` bounds parks *within* a turn, and a long conversation starts
-each turn with a fresh count.
-
-Parking remains the way to continue **mid-state**. A parked session resumes
-*inside* the state that stopped, with the arrival in its transcript. A fresh turn
-would begin at the top of that state instead.
+Parking remains the way to continue **mid-state**. A parked session resumes *inside* the state that
+stopped, with the arrival in its transcript, where a fresh turn would begin at the top of that
+state.
 
 ## Testing a park-and-resume flow
 
-Cases drive both halves. `deliver` is a step action beside `send` and `decide`.
-`parked: input` pins the channel, so a session parked for input is the one thing
-that satisfies it:
+Cases drive both halves. `deliver` is a step action beside `send` and `decide`, and
+`parked: { channel: input }` pins the channel, so only a session parked for input satisfies it:
 
 ```yaml
 variables:
@@ -506,5 +449,5 @@ steps:
       includes: ["ORD-1001"]
 ```
 
-See the [testing guide](/guides/testing/) for the rest of the case
+See [testing workflows](/guides/testing/#driving-a-park-and-resume-flow) for the rest of the case
 format.

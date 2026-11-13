@@ -10,7 +10,7 @@
  * in one process, so nothing else can place into it concurrently.
  */
 import type { BackendProtocolV2 } from "deepagents";
-import { readWorkspaceBytes, workspaceEntryKind, writeWorkspaceBytes } from "./file-operations.js";
+import { readWorkspaceBytes, workspaceEntryKind, workspaceEntrySize, writeWorkspaceBytes } from "./file-operations.js";
 
 /** Where the runtime places the files it hands a session. */
 export const ATTACHMENTS_DIR = "scratchpad/attachments";
@@ -110,6 +110,8 @@ export function placeAttachment(
 export interface SessionFiles {
   /** What `path` names in `sessionId`'s workspace. */
   kind(sessionId: string, path: string): Promise<"file" | "directory" | "missing">;
+  /** How many bytes the file at `path` in `sessionId`'s workspace holds, or `undefined` when that cannot be told. */
+  size(sessionId: string, path: string): Promise<number | undefined>;
   /** One file's exact bytes from `sessionId`'s workspace, or why they cannot be read. */
   read(sessionId: string, path: string): Promise<{ bytes: Uint8Array } | { error: string }>;
   /** Place bytes in `sessionId`'s `scratchpad/attachments/` under a name nothing holds. */
@@ -123,6 +125,7 @@ export function createSessionFiles(
 ): SessionFiles {
   return {
     kind: (sessionId, path) => bind(sessionId, () => workspaceEntryKind(backend, path)),
+    size: (sessionId, path) => bind(sessionId, () => workspaceEntrySize(backend, path)),
     read: (sessionId, path) => bind(sessionId, () => readWorkspaceBytes(backend, path)),
     place: (sessionId, fileName, bytes) => bind(sessionId, () => placeAttachment(backend, sessionId, fileName, bytes)),
   };

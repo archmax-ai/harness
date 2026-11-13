@@ -116,18 +116,15 @@ function graderTool(governed: StructuredTool): StructuredTool {
 
 /**
  * Run a grader state's subagent. Settles with the error that stopped it, if one
- * did — an exhausted `budget.maxTurns`, an expired `budget.timeoutMs`, a model
- * or runtime failure — and with its usage across every model call. A cancelled
+ * did — an expired `budget.timeoutMs`, the recursion limit, a model or runtime
+ * failure — and with its usage across every model call. A cancelled
  * turn is not the grader's failure: its abort propagates.
  */
 export async function runGraderState(run: GraderStateRun): Promise<{ error?: string; usage?: UsageSummary }> {
   const { machine, emit, recorder, state } = run;
   const declared = machine.spec.states[state];
-  const maxTurns = declared?.budget?.maxTurns;
   const timeoutMs = declared?.budget?.timeoutMs;
   let usage: UsageSummary | undefined;
-  let modelCalls = 0;
-  let exhausted: string | undefined;
 
   const middleware = createMiddleware({
     name: "GraderMiddleware",
@@ -136,11 +133,6 @@ export async function runGraderState(run: GraderStateRun): Promise<{ error?: str
       hook: () => {
         // Decided: the run is over, with no further model call.
         if (recorder.decision) return { jumpTo: "end" } as never;
-        if (maxTurns != null && modelCalls + 1 > maxTurns) {
-          exhausted = `grader state '${state}' exhausted its turn budget (maxTurns: ${maxTurns})`;
-          return { jumpTo: "end" } as never;
-        }
-        modelCalls += 1;
         return undefined;
       },
     },
@@ -197,10 +189,8 @@ export async function runGraderState(run: GraderStateRun): Promise<{ error?: str
       {
         ...(signal ? { signal } : {}),
         tags: [NO_STREAM_TAG],
-        // A model call is up to four graph steps (before it, the call, after it,
-        // its tools): room for every call the budget allows, which the
-        // middleware enforces first; unbounded, a session's own limit.
-        recursionLimit: maxTurns != null ? 4 * maxTurns + 8 : DEFAULT_RECURSION_LIMIT,
+        // The grader's own loop is bounded the way a turn is.
+        recursionLimit: DEFAULT_RECURSION_LIMIT,
       },
     );
   } catch (err) {
@@ -214,5 +204,5 @@ export async function runGraderState(run: GraderStateRun): Promise<{ error?: str
       ...(usage ? { usage } : {}),
     };
   }
-  return { ...(exhausted && !recorder.decision ? { error: exhausted } : {}), ...(usage ? { usage } : {}) };
+  return usage ? { usage } : {};
 }

@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { BackendProtocolV2 } from "deepagents";
 import { Workspace } from "../core/workspace.js";
-import { ALWAYS_ALLOWED_TOOLS, DEFAULT_TOOLS, WorkflowMachine } from "./machine.js";
+import { DEFAULT_TOOLS, STATE_TYPE_TOOLS, WorkflowMachine } from "./machine.js";
 import {
   ADVANCE_TOOL,
-  AUTOMATED_STATE_CONTROL_TOOLS,
   GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
   RAISE_TOOL,
@@ -299,6 +298,18 @@ describe("WorkflowMachine graph queries", () => {
     // The default grant is a per-state default; a denial outranks it (the
     // kernel evaluates both denial stages ahead of the state's tools rule).
     expect(m.disclosedTools("s").has("archmax_eval")).toBe(false);
+  });
+
+  it("leaves only archmax_advance disclosed under a bare '*', and nothing in a terminal state", () => {
+    const m = WorkflowMachine.fromSpec({
+      tools: { forbid_always: ["*"] },
+      states: {
+        s: { triggers: { manual: null } as const, transitions: [{ to: "done", description: "d" }] },
+        done: {},
+      },
+    });
+    expect([...m.disclosedTools("s")]).toEqual(["archmax_advance"]);
+    expect([...m.disclosedTools("done")]).toEqual([]);
   });
 
   it("grants write_todos as a default tool in every state and profile", () => {
@@ -824,11 +835,11 @@ describe("tool surfaces by state type", () => {
   });
 
   it("gives each type its control set", () => {
-    expect(machine.controlTools("draft")).toBe(ALWAYS_ALLOWED_TOOLS);
-    expect(machine.controlTools("approve")).toBe(ALWAYS_ALLOWED_TOOLS);
-    expect(machine.controlTools("screen")).toBe(AUTOMATED_STATE_CONTROL_TOOLS);
-    expect(machine.controlTools("review")).toBe(AUTOMATED_STATE_CONTROL_TOOLS);
-    expect([...AUTOMATED_STATE_CONTROL_TOOLS].sort()).toEqual([
+    expect(machine.controlTools("draft")).toBe(STATE_TYPE_TOOLS.agent.controls);
+    expect(machine.controlTools("approve")).toBe(STATE_TYPE_TOOLS.agent.controls);
+    expect(machine.controlTools("screen")).toBe(STATE_TYPE_TOOLS.code.controls);
+    expect(machine.controlTools("review")).toBe(STATE_TYPE_TOOLS.code.controls);
+    expect([...STATE_TYPE_TOOLS.code.controls].sort()).toEqual([
       ADVANCE_TOOL,
       GET_HISTORY_TOOL,
       GET_VARIABLES_TOOL,
@@ -866,7 +877,7 @@ describe("tool surfaces by state type", () => {
   it("offers a grader the same controls as a code state", () => {
     const disclosed = machine.disclosedTools("review");
     expect(machine.checkAllowed("review", GET_HISTORY_TOOL, {})).toBe(true);
-    for (const tool of AUTOMATED_STATE_CONTROL_TOOLS) expect(disclosed.has(tool)).toBe(true);
+    for (const tool of STATE_TYPE_TOOLS.code.controls) expect(disclosed.has(tool)).toBe(true);
     for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) {
       expect(disclosed.has(tool)).toBe(false);
       expect(machine.checkAllowed("review", tool, {})).toBe(false);

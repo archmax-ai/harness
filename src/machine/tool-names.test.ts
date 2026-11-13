@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { BackendProtocolV2 } from "deepagents";
 import { Workspace } from "../core/workspace.js";
 import { normalizeAllowEntry } from "./allow.js";
-import { ALWAYS_ALLOWED_TOOLS, WorkflowMachine } from "./machine.js";
+import { WorkflowMachine } from "./machine.js";
 import {
   ADVANCE_TOOL,
-  AGENT_ONLY_TOOLS,
-  AUTOMATED_STATE_CONTROL_TOOLS,
+  STATE_TYPE_TOOLS,
   DEFAULT_TOOLS,
   GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
@@ -68,7 +67,7 @@ describe("harness control tool names", () => {
       if (tool === RUN_TOOL || tool === EVAL_TOOL) continue;
       // The history is a grader's control, offered in no other state type.
       if (tool === GET_HISTORY_TOOL) continue;
-      expect(ALWAYS_ALLOWED_TOOLS.has(tool)).toBe(true);
+      expect(STATE_TYPE_TOOLS.agent.controls.has(tool)).toBe(true);
     }
   });
 
@@ -78,7 +77,7 @@ describe("harness control tool names", () => {
     expect(GET_HISTORY_TOOL).toBe("archmax_get_history");
     expect(HARNESS_CONTROL_TOOLS.has(GET_HISTORY_TOOL)).toBe(true);
     expect(isReservedToolName(GET_HISTORY_TOOL)).toBe(true);
-    expect(ALWAYS_ALLOWED_TOOLS.has(GET_HISTORY_TOOL)).toBe(false);
+    expect(STATE_TYPE_TOOLS.agent.controls.has(GET_HISTORY_TOOL)).toBe(false);
   });
 });
 
@@ -88,22 +87,27 @@ describe("harness control tool names", () => {
  */
 describe("the automated-state control set", () => {
   it("is advance, raise, the variable tools and the history", () => {
-    expect([...AUTOMATED_STATE_CONTROL_TOOLS].sort()).toEqual(
+    expect([...STATE_TYPE_TOOLS.code.controls].sort()).toEqual(
       [ADVANCE_TOOL, GET_HISTORY_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, SET_VARIABLES_TOOL].sort(),
     );
-    expect(AUTOMATED_STATE_CONTROL_TOOLS.has(WAIT_TOOL)).toBe(false);
-    expect(AUTOMATED_STATE_CONTROL_TOOLS.has(RESET_TOOL)).toBe(false);
+    expect(STATE_TYPE_TOOLS.code.controls.has(WAIT_TOOL)).toBe(false);
+    expect(STATE_TYPE_TOOLS.code.controls.has(RESET_TOOL)).toBe(false);
   });
 
   it("names every automated control among the harness's controls", () => {
-    for (const tool of AUTOMATED_STATE_CONTROL_TOOLS) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
+    for (const tool of STATE_TYPE_TOOLS.code.controls) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
   });
 
   it("withholds the planning list and both sandbox entry points from automated states", () => {
-    expect([...AGENT_ONLY_TOOLS].sort()).toEqual([EVAL_TOOL, RUN_TOOL, "write_todos"].sort());
+    expect([...STATE_TYPE_TOOLS.code.withheld].sort()).toEqual(
+      [EVAL_TOOL, RUN_TOOL, "write_todos", "archmax_wait", "archmax_reset"].sort(),
+    );
+    expect(STATE_TYPE_TOOLS.grader).toEqual(STATE_TYPE_TOOLS.code);
+    expect(STATE_TYPE_TOOLS.human).toEqual(STATE_TYPE_TOOLS.agent);
+    expect(STATE_TYPE_TOOLS.agent.withheld.size).toBe(0);
     // Each is a default tool of an agent: what an automated state loses, not what
     // nobody had.
-    for (const tool of AGENT_ONLY_TOOLS) expect(DEFAULT_TOOLS.has(tool)).toBe(true);
+    for (const tool of [EVAL_TOOL, RUN_TOOL, "write_todos"]) expect(DEFAULT_TOOLS.has(tool)).toBe(true);
   });
 });
 
