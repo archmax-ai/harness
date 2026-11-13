@@ -10,6 +10,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # TypeScript majors wait until typescript-eslint supports them: 8.x
+    # declares no TypeScript 7 peer, so the bump fails at install (#19).
+    ignore:
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
     groups:
       # The LangChain/deepagents family bumps together across all update
       # types (including majors) since the packages are interdependent.

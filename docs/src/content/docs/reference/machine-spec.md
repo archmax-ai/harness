@@ -1416,9 +1416,13 @@ subtracts from the workflow-wide grant, the state's own `allow`, and the host's
 `essentialTools` alike, which is how a state opts out of a capability the workflow gives
 everywhere. An empty `allow` list leaves the grant standing.
 
-A forbid entry may name the tool `*`, meaning **every** tool. That is vocabulary
-the deny side alone has, since a wildcard there can only close the surface
-further, and `*` in an `allow` list is a load error.
+A forbid entry may name the tool `*`, meaning **every** tool except `archmax_advance`. The advance
+is denied only by a guarded entry naming it, such as
+`{ tool: archmax_advance, args: { to: [review] } }`, which blocks the advances it matches. A bare
+`archmax_advance` entry is a load error: `transitions` say where a state may move, `requires` when
+it may leave, and a state without transitions is terminal, so the bare denial could only strand it.
+The wildcard is vocabulary the deny side alone has, since a wildcard there can only close the
+surface further, and `*` in an `allow` list is a load error.
 
 An entry's argument guards narrow what it denies.
 `{ tool: write_file, paths: ["logs/**"] }` denies that tool on those globs and
@@ -1429,11 +1433,9 @@ A `paths:` denial matches a call when **any** of its declared paths matches, so
 into it. (A `paths:` grant needs **every** path to match.) An argument holding a
 list of paths contributes each element.
 
-`archmax validate` flags three shapes here: a state whose `allow` list would
-permit a call a denial blocks, a state that both allows and forbids one tool,
-and a denial of `archmax_advance` in a workflow that has anywhere to move, since
-no run could leave its start state. The globs cover dotfiles, so a denial of
-`secrets/**` blocks a write to `secrets/.env`.
+`archmax validate` flags two shapes here: a state whose `allow` list would
+permit a call a denial blocks, and a state that both allows and forbids one tool.
+The globs cover dotfiles, so a denial of `secrets/**` blocks a write to `secrets/.env`.
 
 A **grader or a code state** is bound by its own state's `forbid` and by every
 workflow-wide denial, like the agent in that state, and a denial can refuse even

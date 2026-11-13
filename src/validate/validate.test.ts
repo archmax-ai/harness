@@ -2340,31 +2340,28 @@ states:
     expect(errors(result).join("\n")).toContain("allows 'web_fetch' and forbids it in the same state");
   });
 
-  it("errors when the workflow denies the only way a state can move", async () => {
-    const result = await validateWith(`
-tools:
-  forbid_always: [archmax_advance]
+  it("rejects a bare denial of archmax_advance in either position and accepts a guarded one", async () => {
+    const workflow = (tools: string, forbid = "") => `
+${tools}
 states:
   lookup:
     triggers: { manual: }
+    ${forbid}
     transitions: [{ to: done, description: finished }]
-  done:
-`);
-    expect(result.valid).toBe(false);
-    expect(errors(result).join("\n")).toContain(
-      "denies 'archmax_advance', the only way a state moves",
+  done: {}
+`;
+    for (const yaml of [
+      workflow("tools:\n  forbid_always: [archmax_advance]"),
+      workflow("", "tools: { forbid: [archmax_advance] }"),
+    ]) {
+      const result = await validateWith(yaml);
+      expect(result.valid).toBe(false);
+      expect(errors(result).join("\n")).toContain("'archmax_advance' cannot be denied outright");
+    }
+    const guarded = await validateWith(
+      workflow("", "tools: { forbid: [{ tool: archmax_advance, args: { to: [done] } }] }"),
     );
-  });
-
-  it("accepts that denial in a workflow with nowhere to move", async () => {
-    const result = await validateWith(`
-tools:
-  forbid_always: [archmax_advance]
-states:
-  only:
-    triggers: { manual: }
-`);
-    expect(errors(result)).toEqual([]);
+    expect(errors(guarded).join("\n")).not.toContain("cannot be denied");
   });
 
   it("accepts a wildcard denial and rejects a wildcard grant", async () => {

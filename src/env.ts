@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,6 +217,109 @@ function withAssistantRoleDefault(completions: ChatOpenAICompletions): ChatOpenA
   return completions;
 }
 
+/**
+ * Send each assistant turn's `reasoning_content` back to the provider.
+ *
+ * A thinking-mode endpoint (DeepSeek, and others on its protocol) returns the
+ * model's reasoning as `reasoning_content`, which `@langchain/openai` keeps in
+ * `additional_kwargs` — and then leaves out of the next request, so the endpoint
+ * refuses it: "The reasoning_content in the thinking mode must be passed back".
+ *
+ * Once any assistant turn in a request carries reasoning, every assistant turn
+ * gets the field: the runtime's own notes (`runtimeNote` in `core/messages.ts`,
+ * written at every state change) are assistant turns the model never reasoned
+ * for, and they carry an empty one. A request with no reasoning anywhere — any
+ * endpoint not in thinking mode — goes out exactly as before.
+ */
+function withReasoningPassback(completions: ChatOpenAICompletions): ChatOpenAICompletions {
+  // The provider turns messages into request params in a module-level function
+  // with no seam, so the request's reasoning is captured where the messages come
+  // in and attached where the params go out; the store keeps concurrent calls on
+  // one model (sub-runs share it) apart.
+  const reasoning = new AsyncLocalStorage<Array<string | undefined>>();
+  const seam = completions as unknown as Record<string, unknown>;
+
+  for (const entry of ["_generate", "_streamResponseChunks", "_streamChatModelEvents"]) {
+    const method = seam[entry];
+    if (typeof method !== "function") continue;
+    const original = method as (messages: unknown[], ...rest: unknown[]) => unknown;
+    seam[entry] = (messages: unknown[], ...rest: unknown[]): unknown => {
+      const store = assistantReasoning(messages);
+      const result = reasoning.run(store, () => original.call(completions, messages, ...rest));
+      // The streaming entries are async generators: their body runs on each
+      // `next()`, outside the call that made them, so each step re-enters the store.
+      return isAsyncIterator(result) ? stepsWithin(reasoning, store, result) : result;
+    };
+  }
+
+  const send = seam.completionWithRetry;
+  if (typeof send === "function") {
+    const original = send as (request: Record<string, unknown>, ...rest: unknown[]) => unknown;
+    seam.completionWithRetry = (request: Record<string, unknown>, ...rest: unknown[]): unknown =>
+      original.call(completions, withReasoning(request, reasoning.getStore()), ...rest);
+  }
+
+  return completions;
+}
+
+function isAsyncIterator(value: unknown): value is AsyncIterator<unknown> & AsyncIterable<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { next?: unknown }).next === "function" &&
+    Symbol.asyncIterator in value
+  );
+}
+
+/** `steps`, with every step taken inside `store`. */
+async function* stepsWithin<T>(
+  storage: AsyncLocalStorage<T>,
+  store: T,
+  steps: AsyncIterator<unknown>,
+): AsyncGenerator<unknown> {
+  try {
+    for (;;) {
+      const step = await storage.run(store, () => steps.next());
+      if (step.done) return step.value;
+      yield step.value;
+    }
+  } finally {
+    await steps.return?.();
+  }
+}
+
+/** Each assistant message's `reasoning_content`, in order. */
+function assistantReasoning(messages: unknown[]): Array<string | undefined> {
+  return messages.flatMap((message) => {
+    const m = message as { getType?: () => string; additional_kwargs?: Record<string, unknown> };
+    if (m?.getType?.() !== "ai") return [];
+    const content = m.additional_kwargs?.reasoning_content;
+    return [typeof content === "string" ? content : undefined];
+  });
+}
+
+/** `request` with `reasoning` on its assistant params, when there is any to send. */
+function withReasoning(
+  request: Record<string, unknown>,
+  reasoning: Array<string | undefined> | undefined,
+): Record<string, unknown> {
+  if (!reasoning?.some((content) => content !== undefined)) return request;
+  const params = request.messages as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(params)) return request;
+  const assistant = params.filter((param) => param.role === "assistant");
+  // One param per assistant message is the provider's mapping; a message it
+  // splits (audio) breaks the pairing, and nothing is attached rather than
+  // attaching reasoning to the wrong turn.
+  if (assistant.length !== reasoning.length) return request;
+  let next = 0;
+  return {
+    ...request,
+    messages: params.map((param) =>
+      param.role === "assistant" ? { ...param, reasoning_content: reasoning[next++] ?? "" } : param,
+    ),
+  };
+}
+
 /** The `role` a provider named on a delta/message, if it named a non-empty one. */
 function stringRole(payload: Record<string, unknown> | null | undefined): string | undefined {
   const role = payload?.role;
@@ -262,7 +366,7 @@ export function createChatModel(env: AgentEnv = loadEnv()): ChatOpenAI {
   // be dropped by it.
   return new ChatOpenAI({
     ...fields,
-    completions: withAssistantRoleDefault(new ChatOpenAICompletions(fields)),
+    completions: withReasoningPassback(withAssistantRoleDefault(new ChatOpenAICompletions(fields))),
   });
 }
 

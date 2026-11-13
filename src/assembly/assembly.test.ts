@@ -619,7 +619,7 @@ describe("createAgent run metadata + spec snapshot", () => {
     });
     await runtime.invoke(
       { messages: [{ role: "user", content: "hi" }] } as never,
-      { configurable: { thread_id: "r5" }, recursionLimit: 12 } as never,
+      { configurable: { thread_id: "r5" }, recursionLimit: 13 } as never,
     );
     await runtime.emitRunArtifacts("r5", { ...trajectory, sessionId: "r5" });
 
@@ -1112,7 +1112,7 @@ describe("createAgent skill discovery and disclosure", () => {
     });
     await runtime.invoke(
       { messages: [{ role: "user", content: "hi" }] } as never,
-      { configurable: { thread_id: "sk1" }, recursionLimit: 12 } as never,
+      { configurable: { thread_id: "sk1" }, recursionLimit: 13 } as never,
     );
 
     const prompt = model.systemPrompts.join("\n---\n");
