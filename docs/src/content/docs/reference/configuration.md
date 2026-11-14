@@ -113,6 +113,9 @@ A keyed table resolves against the id the response reported, then against the id
 the runtime asked the endpoint to run. That second lookup keeps a workload priced
 behind a proxy that omits the model id from its response.
 
+A priced call's cost also reaches its OpenTelemetry span as `gen_ai.usage.cost`, and a turn's
+span carries the turn's total. See [telemetry](/guides/telemetry/#model-calls).
+
 To bypass env configuration entirely, pass `model` (a LangChain
 `BaseChatModel`) or a per-role `modelFactory` to `createAgent`. See
 the [public API reference](/reference/public-api/).

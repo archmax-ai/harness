@@ -24,6 +24,7 @@ import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import type { MountPrefixes } from "../core/mounts.js";
 import type { PricingTable, UsageSummary } from "../core/usage.js";
+import type { Telemetry } from "../core/telemetry.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { TRIGGER_VARIABLE, type VariableStore } from "../machine/variables.js";
 import type { ScriptExecutor } from "../sandbox/executor.js";
@@ -90,6 +91,8 @@ export interface AutomatedStatesContext {
   files?: (state: string, variables: VariableStore) => FileValueCheck;
   /** The sub-runs the session's calls dispatched since the last drain, as trail steps. */
   dispatchSteps(sessionId: string, state: string): TrailStep[];
+  /** Where a grader's model-call and tool-call spans go. */
+  telemetry?: Telemetry;
 }
 
 export interface AutomatedStepRequest {
@@ -190,6 +193,8 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
     ({ error, usage } = await runGraderState({
       machine,
       emit,
+      sessionId,
+      ...(ctx.telemetry ? { telemetry: ctx.telemetry } : {}),
       ...(ctx.pricing ? { pricing: ctx.pricing } : {}),
       state,
       model,

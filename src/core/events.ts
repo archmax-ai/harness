@@ -404,6 +404,11 @@ export function withEventContext<T>(context: Partial<EventContext> & { sessionId
   return eventContext.run(merged, fn);
 }
 
+/** The ambient binding in force now, if any: the session and sub-workflow dispatch work is running for. */
+export function currentEventContext(): Readonly<EventContext> | undefined {
+  return eventContext.getStore();
+}
+
 /**
  * Per-handler sequence counters. Many emitter instances deliver to one
  * handler (one assembled agent), so the counter is keyed by the handler to

@@ -81,6 +81,7 @@ import { BackendCheckpointSaver } from "../workflow/checkpointer.js";
 import { DEFAULT_WORKFLOW, workflowPaths } from "../workflow/paths.js";
 import type { PromptCacheOptions } from "../workflow/prompt-cache.js";
 import { createPlainTurnRunner } from "../workflow/turn-runner.js";
+import { Telemetry } from "../core/telemetry.js";
 import { composeGoverned, renderSystemPrompt, sessionBinder, type AssemblyContext } from "./compose.js";
 import { createDelegationRegistry } from "./delegation-registry.js";
 import { composePlain } from "./plain.js";
@@ -328,7 +329,13 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   // where artifacts are written; every event still reaches `onEvent` (or the
   // console).
   const usage = createUsageTracker({ onEvent: params.onEvent ?? consoleEventHandler });
-  const emit = createWorkflowEventEmitter((event) => usage.handler(event));
+  // The telemetry follows the same chain: the sites that move a session report
+  // it there, and that is where a state visit's span opens and ends.
+  const telemetry = new Telemetry();
+  const emit = createWorkflowEventEmitter((event) => {
+    telemetry.observe(event);
+    usage.handler(event);
+  });
 
   // Load the machine spec once from workflow.yaml (the sole spec source).
   const loaded: LoadSpecResult = governed
@@ -429,6 +436,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     checkpointer,
     emit,
     usage,
+    telemetry,
     model,
     agentModel,
     honoursDeclaredModels: params.model === undefined,
@@ -466,7 +474,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     const plain = composePlain(ctx, systemPrompt);
     // Bound like a governed session: `configurable.thread_id` names the session
     // whose zone the agent's id-free paths resolve in.
-    const driver = createPlainTurnRunner({ graph: plain.graph, bindSession: sessionBinder(ctx) });
+    const driver = createPlainTurnRunner({ graph: plain.graph, bindSession: sessionBinder(ctx), telemetry: { telemetry } });
     return new ArchmaxAgent({
       graph: plain.graph,
       members: members(plain.graph, () => {}, plain.toolMocks),

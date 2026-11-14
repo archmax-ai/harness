@@ -12,6 +12,7 @@ export of the installed package. When in doubt, check its `dist/index.d.ts`.
 - [Models](#models)
 - [Outcomes and parked sessions](#outcomes-and-parked-sessions)
 - [Events](#events)
+- [Tracing](#tracing)
 - [Sessions, storage and artifacts](#sessions-storage-and-artifacts)
 - [Host tools that use the workspace](#host-tools-that-use-the-workspace)
 - [Exposing a workflow to callers](#exposing-a-workflow-to-callers)
@@ -195,6 +196,25 @@ The runtime writes its own messages into the transcript, as tool-call pairs: run
 notes such as `[decision]`, `[event]`, `[error]`, `[grader]` and `[code]`. Tell them
 apart with `isRuntimeNote(message)` and `runtimeNoteKind(message)`, never by role or by
 a bracket prefix.
+
+## Tracing
+
+The runtime reports OpenTelemetry spans and metrics through `@opentelemetry/api`, a peer
+dependency. Register an SDK in the host (`new NodeSDK({ traceExporter }).start()`) before the
+first turn; there is nothing to pass to `createAgent`, and without an SDK nothing is recorded.
+
+| Span | One per | Under |
+| --- | --- | --- |
+| `invoke_agent <workflow>` | Turn: a message, `decide`, `reply`, `deliver`, a child session's turn | The host's active span |
+| `state <slug>` | Visit to a state, automated states included | The turn |
+| `chat <model>` | Model call, a grader's included; tokens and cost as `gen_ai.usage.*` | Its state |
+| `execute_tool <tool>` | Tool call by the agent, a grader or a script; `archmax.tool.outcome`, `archmax.tool.rule` on a block | Its state, or the `archmax_eval` call a script made it in |
+
+A child session's turn sits under the `execute_tool archmax_workflow_<slug>` span that dispatched
+it. `gen_ai.conversation.id` is the session id and `gen_ai.tool.call.id` the events' `callId`, so
+spans join to events. Spans carry metadata only, never messages, arguments, results, variable
+values or error text. The guide lists every attribute:
+<https://harness.archmax.ai/guides/telemetry/>.
 
 ## Sessions, storage and artifacts
 

@@ -9,6 +9,23 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 2.2.0
+
+The harness reports its work as OpenTelemetry spans and metrics.
+
+- **Every turn, state visit, model call and tool call is a span.** A turn is an
+  `invoke_agent <workflow>` span in the context it is invoked in. Each visit to a state is a
+  `state <slug>` span, each model call a `chat <model>` span, a grader's included, and each tool
+  call an `execute_tool <tool>` span, a script's and a grader's included. A sub-workflow's child
+  turn nests under the call that dispatched it. Names and attributes follow the GenAI semantic
+  conventions. Spans carry metadata only: slugs, models, tokens, cost, durations, outcomes and the
+  ids the events carry. See [telemetry](/guides/telemetry/).
+- **The GenAI client metrics.** Every model call records `gen_ai.client.operation.duration` and
+  `gen_ai.client.token.usage`. See [metrics](/guides/telemetry/#metrics).
+- **`@opentelemetry/api` is a peer dependency** (`^1.9.0`). npm 7 and later and pnpm install it
+  with the harness; with Yarn, or pnpm with `auto-install-peers` off, add it yourself. The harness registers no SDK. A host that
+  registers none sees no change. See [installation](/getting-started/installation/).
+
 ## 2.1.0
 
 Path governance closes four gaps, thinking-mode endpoints get their reasoning back, and the

@@ -15,21 +15,24 @@
  * as an error the model can read rather than thrown — and ends the loop the
  * moment a decision is recorded.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import type { StructuredTool } from "@langchain/core/tools";
 import { isCommand, isGraphBubbleUp } from "@langchain/langgraph";
+import { context } from "@opentelemetry/api";
 import { createAgent, createMiddleware, tool } from "langchain";
 import { DEFAULT_RECURSION_LIMIT } from "../core/deepagents.js";
 import { contentToString, isAiMessage } from "../core/messages.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
+import { Telemetry, toolOutcomeOf, type ToolOutcome } from "../core/telemetry.js";
 import { addSummaries, extractUsage, summarizeUsage, type PricingTable, type UsageSummary } from "../core/usage.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { ADVANCE_TOOL, GET_HISTORY_TOOL, RAISE_TOOL, isWorkflowToolName } from "../machine/tool-names.js";
 import { resolveArguments } from "../machine/variables.js";
 import { PtcGovernanceError } from "../sandbox/ptc-gateway.js";
 import type { StepRecorder } from "./automated-controls.js";
-import { unresolvedArgumentMessage } from "./control-tools.js";
+import { UNRESOLVED_ARGUMENT_RULE, unresolvedArgumentMessage } from "./control-tools.js";
 import { renderTransitions } from "./render-prompt.js";
 import { blockedMessage } from "./tool-service.js";
 
@@ -69,6 +72,10 @@ export function graderTask(machine: WorkflowMachine, state: string): string {
 export interface GraderStateRun {
   machine: WorkflowMachine;
   emit: WorkflowEventEmitter;
+  /** The session graded: what the grader's spans are reported under. */
+  sessionId: string;
+  /** Where the grader's model-call and tool-call spans go; omitted, they parent to the active context. */
+  telemetry?: Telemetry;
   pricing?: PricingTable;
   state: string;
   model: BaseChatModel;
@@ -80,6 +87,12 @@ export interface GraderStateRun {
   /** The turn's abort signal: a cancelled turn cancels the grader. */
   signal?: AbortSignal;
 }
+
+/**
+ * Whether a grader's call reached the gateway, which reports every call it
+ * sees; the grader's middleware reports the ones that never do.
+ */
+const gatewayReached = new AsyncLocalStorage<{ reached: boolean }>();
 
 /** The tag LangGraph's message stream skips: a grader's tokens are not the session's text. */
 const NO_STREAM_TAG = "langsmith:nostream";
@@ -107,7 +120,12 @@ function answerText(value: unknown): string {
  * the session's turn config, which the gateway supplies.
  */
 function graderTool(governed: StructuredTool): StructuredTool {
-  return tool(async (args: Record<string, unknown>) => answerText(await governed.invoke(args as never)), {
+  return tool(async (args: Record<string, unknown>) => {
+    // The arguments passed the tool's schema: the call reaches the gateway, which reports it.
+    const probe = gatewayReached.getStore();
+    if (probe) probe.reached = true;
+    return answerText(await governed.invoke(args as never));
+  }, {
     name: governed.name,
     description: governed.description,
     schema: governed.schema as never,
@@ -121,13 +139,39 @@ function graderTool(governed: StructuredTool): StructuredTool {
  * turn is not the grader's failure: its abort propagates.
  */
 export async function runGraderState(run: GraderStateRun): Promise<{ error?: string; usage?: UsageSummary }> {
-  const { machine, emit, recorder, state } = run;
+  const { machine, emit, recorder, state, sessionId } = run;
   const declared = machine.spec.states[state];
   const timeoutMs = declared?.budget?.timeoutMs;
+  const telemetry = run.telemetry ?? new Telemetry();
   let usage: UsageSummary | undefined;
 
   const middleware = createMiddleware({
     name: "GraderMiddleware",
+    // Each of the grader's model calls is a span under its state's, priced as its `model-usage` event is.
+    wrapModelCall: async (request, handler) => {
+      const span = telemetry.modelCall({
+        sessionId,
+        state,
+        role: "grader",
+        model: run.model,
+        ...(run.modelId ? { requestModel: run.modelId, pricingModel: run.modelId } : {}),
+        ...(run.pricing ? { pricing: run.pricing } : {}),
+      });
+      // The call ends at the budget's expiry, whether or not the model honours the abort.
+      const onExpiry = () => span.expire();
+      expiry?.addEventListener("abort", onExpiry, { once: true });
+      try {
+        const answer = await context.with(span.context, () => handler(request));
+        span.settle(answer);
+        return answer;
+      } catch (err) {
+        if (expiry?.aborted && !run.signal?.aborted) span.expire();
+        else span.fail(err);
+        throw err;
+      } finally {
+        expiry?.removeEventListener("abort", onExpiry);
+      }
+    },
     beforeModel: {
       canJumpTo: ["end"],
       hook: () => {
@@ -147,21 +191,36 @@ export async function runGraderState(run: GraderStateRun): Promise<{ error?: str
       usage = usage ? addSummaries(usage, summary) : summary;
       return undefined;
     },
+    // A call that reaches the gateway is reported there, under the id its events
+    // carry; one that never does — a name no tool has, an unresolved argument,
+    // arguments the tool's schema refuses — is reported here.
     wrapToolCall: async (request, handler) => {
       const name = request.toolCall.name;
       const callId = request.toolCall.id ?? "";
+      const unknown = request.tool === undefined;
+      const report = (outcome: ToolOutcome, rule?: string) =>
+        telemetry
+          .toolCall({ sessionId, state, tool: unknown ? "unknown" : name, callId, origin: "grader" })
+          .end(unknown ? "unknown" : outcome, rule);
       let call = request;
       // `${{…}}` resolves against the session's variables as this run sees them,
       // exactly as the agent's own arguments do; a delegation's are its params.
       if (!isWorkflowToolName(name)) {
         const substituted = resolveArguments((request.toolCall.args ?? {}) as Record<string, unknown>, recorder.store());
-        if (!substituted.ok) return blockedMessage(name, callId, unresolvedArgumentMessage(substituted));
+        if (!substituted.ok) {
+          report("blocked", UNRESOLVED_ARGUMENT_RULE);
+          return blockedMessage(name, callId, unresolvedArgumentMessage(substituted));
+        }
         call = { ...request, toolCall: { ...request.toolCall, args: substituted.args } };
       }
+      const probe = { reached: false };
       try {
-        return await handler(call);
+        const answer = await gatewayReached.run(probe, () => handler(call));
+        if (!probe.reached) report(toolOutcomeOf(answer));
+        return answer;
       } catch (err) {
         if (isGraphBubbleUp(err) || run.signal?.aborted) throw err;
+        if (!probe.reached) report("error");
         const cause = (err as { cause?: unknown })?.cause ?? err;
         const message = String((cause as Error)?.message ?? cause);
         if (cause instanceof PtcGovernanceError) return blockedMessage(name, callId, message);
@@ -179,7 +238,10 @@ export async function runGraderState(run: GraderStateRun): Promise<{ error?: str
     name: `grader:${state}`,
   });
 
-  const signals = [run.signal, timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined].filter(
+  // The time budget starts here, as the grader is invoked; the middleware above
+  // reads it during the run, when it is already set.
+  const expiry = timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
+  const signals = [run.signal, expiry].filter(
     (signal): signal is AbortSignal => signal !== undefined,
   );
   const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];

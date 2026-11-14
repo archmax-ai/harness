@@ -1,6 +1,8 @@
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
+import { context as otelContext } from "@opentelemetry/api";
 import type { WorkflowEventEmitter } from "../core/events.js";
+import { Telemetry, thrownOutcomeOf, type ToolOutcome } from "../core/telemetry.js";
 import { findMock, mockPayload, readMocks } from "../core/tool-mocks.js";
 import { HARNESS_CONTROL_TOOLS, isWorkflowToolName } from "../machine/tool-names.js";
 import { SubWorkflowError, subWorkflowParkOf } from "../workflow/sub-workflow.js";
@@ -125,6 +127,12 @@ export interface PtcToolGatewayOptions {
    */
   skills?: SkillPrefixes;
   emit: WorkflowEventEmitter;
+  /**
+   * Where every call through the gateway is reported as a span: a script's
+   * (`script`), and a grader's (`grader`, the gateway's `agent` origin), each
+   * under the id its events carry.
+   */
+  telemetry?: Telemetry;
 }
 
 /**
@@ -155,6 +163,7 @@ function toArgs(input: unknown): Record<string, unknown> {
 
 export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGateway {
   const { machine, policyRules = [], mountPrefixes = NO_MOUNTS, skills = NO_SKILLS, emit } = opts;
+  const telemetry = opts.telemetry ?? new Telemetry();
   const contexts = new Map<string, PtcCallContext>();
   // The machine is fixed for the gateway's life, so a state's surface is too.
   const surfaces = new Map<string, readonly string[]>();
@@ -177,11 +186,40 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
   ): (input: unknown, config?: RunnableConfig) => Promise<unknown> {
     return async (input: unknown, config?: RunnableConfig) => {
       const tool = inner.name;
-      const args = toArgs(input);
       // Read per call, not per wrap: the session's tool set is frozen but the
       // workflow state behind it moves with every `archmax_advance`.
-      const { state, config: contextConfig, replyOnly, variables = {} } = context;
+      const { state } = context;
       const callId = `ptc:${++callSeq}`;
+      const span = telemetry.toolCall({
+        sessionId,
+        state,
+        tool,
+        callId,
+        origin: origin === "script" ? "script" : "grader",
+      });
+      let outcome: ToolOutcome = "error";
+      let rule: string | undefined;
+      try {
+        const result = await otelContext.with(span.context, () => governed(input, config, callId));
+        outcome = "ok";
+        return result;
+      } catch (err) {
+        if (err instanceof PtcGovernanceError) {
+          outcome = "blocked";
+          rule = err.ruleId;
+        } else {
+          outcome = thrownOutcomeOf(err, (config ?? context.config).signal);
+        }
+        throw err;
+      } finally {
+        span.end(outcome, rule);
+      }
+    };
+
+    async function governed(input: unknown, config: RunnableConfig | undefined, callId: string): Promise<unknown> {
+      const tool = inner.name;
+      const args = toArgs(input);
+      const { state, config: contextConfig, replyOnly, variables = {} } = context;
       // The tool events mark a programmatic call; a grader's is a model's call, as the agent's is.
       const marked = origin === "script" ? { origin } : {};
 
@@ -270,7 +308,7 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
         settle("error", (err as Error)?.message ?? String(err));
         throw err;
       }
-    };
+    }
   }
 
   return {

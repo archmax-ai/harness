@@ -5,11 +5,13 @@
  * and settle to the same state the graph's `invoke` would.
  */
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { GraphRecursionError, INTERRUPT } from "@langchain/langgraph";
+import { Command, GraphRecursionError, INTERRUPT } from "@langchain/langgraph";
+import { context } from "@opentelemetry/api";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import type { CompiledAgentGraph } from "../core/deepagents.js";
 import { contentToString, isAiMessage } from "../core/messages.js";
-import { currentWorkflowState, WORKFLOW_STATUSES } from "./state.js";
+import type { Telemetry, TurnHandle, TurnSettled, TurnStart } from "../core/telemetry.js";
+import { currentWorkflowState, readWorkflowState, WORKFLOW_STATUSES } from "./state.js";
 import { DEFAULT_SESSION_ID } from "../sessions/scope.js";
 
 /** Drives one turn on a session: the graph's `invoke`/`stream`/`streamEvents`, session-bound. */
@@ -29,6 +31,17 @@ export interface TurnRunnerOptions {
   bindSession: SessionBinder;
   /** The state deltas are attributed to before the graph reports one. */
   entryState: string;
+  /** Where the turn's span goes, and the workflow and state types it is named by. */
+  telemetry: TurnTelemetry;
+}
+
+/** What a turn's span is opened with: the assembly's telemetry, and how this composition names its turns. */
+export interface TurnTelemetry {
+  telemetry: Telemetry;
+  /** The workflow slug; absent for a plain agent. */
+  workflow?: string;
+  /** A state's type, for a governed turn's state spans. */
+  stateType?: (slug: string) => string | undefined;
 }
 
 export function sessionIdOfConfig(config: RunnableConfig | undefined): string {
@@ -36,22 +49,78 @@ export function sessionIdOfConfig(config: RunnableConfig | undefined): string {
   return typeof id === "string" && id ? id : DEFAULT_SESSION_ID;
 }
 
-/** Bind every step of an async iterable to the session: `next()` runs in the caller's context, so the binding is per step. */
+/** The start of a turn's span: a resume (a decision, a reply, a delivery) is a command to the parked graph. */
+function turnStart(turn: TurnTelemetry, sessionId: string, input: unknown): TurnStart {
+  return {
+    sessionId,
+    resume: input instanceof Command,
+    ...(turn.workflow ? { workflow: turn.workflow } : {}),
+    ...(turn.stateType ? { stateType: turn.stateType } : {}),
+  };
+}
+
+/** How a governed turn settled, from the session's values: its status and the state it is in. */
+function settledFrom(values: unknown): TurnSettled {
+  const status = (values as { status?: unknown } | undefined)?.status;
+  const state = readWorkflowState(values).workflowState;
+  return {
+    ...(typeof status === "string" ? { status } : {}),
+    ...(typeof state === "string" ? { state } : {}),
+  };
+}
+
+/**
+ * Bind every step of an async iterable to the session: `next()` runs in the
+ * caller's context, so the binding — the turn's span among it — is per step.
+ * The turn's span opens with the stream and ends when the iterator does: at its
+ * last step (settled from `settled`, read only when a provider records it), at
+ * a throw, or when the consumer stops reading.
+ */
 async function* boundIterable<T>(
   sessionId: string,
   bind: TurnRunnerOptions["bindSession"],
   open: () => Promise<AsyncIterable<T>>,
+  turn: { telemetry: Telemetry; start: TurnStart; settled?: () => Promise<TurnSettled> },
 ): AsyncGenerator<T> {
-  const iterator = (await bind(sessionId, open))[Symbol.asyncIterator]();
-  for (;;) {
-    const step = await bind(sessionId, () => iterator.next());
-    if (step.done) return;
-    yield step.value;
+  let handle: TurnHandle | undefined;
+  const inTurn = <R>(fn: () => Promise<R>): Promise<R> => (handle ? context.with(handle.context, fn) : fn());
+  try {
+    const iterable = await bind(sessionId, () => {
+      handle = turn.telemetry.openTurn(turn.start);
+      return inTurn(open);
+    });
+    const iterator = iterable[Symbol.asyncIterator]();
+    for (;;) {
+      const step = await bind(sessionId, () => inTurn(() => iterator.next()));
+      if (step.done) break;
+      yield step.value;
+    }
+    let settled: TurnSettled = {};
+    if (handle?.recording && turn.settled) {
+      try {
+        settled = await bind(sessionId, turn.settled);
+      } catch {
+        // Reading how the turn ended is reporting, never the turn's failure.
+      }
+    }
+    handle?.end(settled);
+  } catch (err) {
+    handle?.fail(err);
+    throw err;
+  } finally {
+    // The consumer stopped reading: the turn's span ends where it did.
+    handle?.end();
   }
 }
 
 export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
   const { graph, emit, bindSession } = opts;
+  const { telemetry } = opts.telemetry;
+  /** The session's values after a streamed turn, for its span. */
+  const settledOf = (sessionId: string) => async () =>
+    settledFrom(
+      ((await graph.getState({ configurable: { thread_id: sessionId } })) as { values?: unknown } | undefined)?.values,
+    );
 
   /**
    * Drive one turn via LangGraph streaming (`["values", "messages"]`): each AI
@@ -143,17 +212,26 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
     // `async`, so a refused session id is a rejection like every other failure of
     // the call, never a synchronous throw out of `invoke`.
     async invoke(input, config) {
-      return bindSession(sessionIdOfConfig(config), () => drive(input, config));
+      const sessionId = sessionIdOfConfig(config);
+      return bindSession(sessionId, () =>
+        telemetry.turn(turnStart(opts.telemetry, sessionId, input), () => drive(input, config), settledFrom),
+      );
     },
     stream(input, config) {
-      return boundIterable(sessionIdOfConfig(config), bindSession, () =>
-        graph.stream(input, config as never),
-      );
+      const sessionId = sessionIdOfConfig(config);
+      return boundIterable(sessionId, bindSession, () => graph.stream(input, config as never), {
+        telemetry,
+        start: turnStart(opts.telemetry, sessionId, input),
+        settled: settledOf(sessionId),
+      });
     },
     streamEvents(input, config, options) {
-      return boundIterable(sessionIdOfConfig(config), bindSession, async () =>
-        graph.streamEvents(input, config, options),
-      );
+      const sessionId = sessionIdOfConfig(config);
+      return boundIterable(sessionId, bindSession, async () => graph.streamEvents(input, config, options), {
+        telemetry,
+        start: turnStart(opts.telemetry, sessionId, input),
+        settled: settledOf(sessionId),
+      });
     },
   };
 }
@@ -167,19 +245,37 @@ export function createTurnRunner(opts: TurnRunnerOptions): TurnRunner {
  * under `<sessionId>/` in the session store exactly as a governed session's do,
  * and that a reserved or escaping id is refused before anything is written.
  */
-export function createPlainTurnRunner(opts: { graph: CompiledAgentGraph; bindSession: SessionBinder }): TurnRunner {
+export function createPlainTurnRunner(opts: {
+  graph: CompiledAgentGraph;
+  bindSession: SessionBinder;
+  telemetry: TurnTelemetry;
+}): TurnRunner {
   const { graph, bindSession } = opts;
+  const { telemetry } = opts.telemetry;
   return {
     async invoke(input, config) {
-      return bindSession(sessionIdOfConfig(config), () => graph.invoke(input as never, config));
+      const sessionId = sessionIdOfConfig(config);
+      return bindSession(sessionId, () =>
+        telemetry.turn(
+          turnStart(opts.telemetry, sessionId, input),
+          () => graph.invoke(input as never, config) as Promise<Record<string, unknown>>,
+          () => ({}),
+        ),
+      );
     },
     stream(input, config) {
-      return boundIterable(sessionIdOfConfig(config), bindSession, () => graph.stream(input as never, config as never));
+      const sessionId = sessionIdOfConfig(config);
+      return boundIterable(sessionId, bindSession, () => graph.stream(input as never, config as never), {
+        telemetry,
+        start: turnStart(opts.telemetry, sessionId, input),
+      });
     },
     streamEvents(input, config, options) {
-      return boundIterable(sessionIdOfConfig(config), bindSession, async () =>
-        graph.streamEvents(input as never, config, options),
-      );
+      const sessionId = sessionIdOfConfig(config);
+      return boundIterable(sessionId, bindSession, async () => graph.streamEvents(input as never, config, options), {
+        telemetry,
+        start: turnStart(opts.telemetry, sessionId, input),
+      });
     },
   };
 }

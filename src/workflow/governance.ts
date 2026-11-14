@@ -13,11 +13,20 @@ import type { StructuredTool } from "@langchain/core/tools";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
 import { Command, isGraphBubbleUp } from "@langchain/langgraph";
+import { context } from "@opentelemetry/api";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import { readClockPin } from "../core/clock.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
-import { ADVANCE_TOOL, entryStateOf, RESET_TOOL, unresolvedArgumentMessage } from "./control-tools.js";
+import { Telemetry, thrownOutcomeOf, toolOutcomeOf } from "../core/telemetry.js";
+import type { PricingTable } from "../core/usage.js";
+import {
+  ADVANCE_TOOL,
+  entryStateOf,
+  RESET_TOOL,
+  UNRESOLVED_ARGUMENT_RULE,
+  unresolvedArgumentMessage,
+} from "./control-tools.js";
 import { resolveArguments, type VariableStore } from "../machine/variables.js";
 import type { FileValueCheck } from "./signature-checks.js";
 import {
@@ -50,6 +59,7 @@ import {
 import {
   cacheControl,
   DEFAULT_CACHE_TTL,
+  modelIdOf,
   type CacheControlMarker,
   type CacheTtl,
   type PromptCacheStrategy,
@@ -118,7 +128,14 @@ export interface GovernanceContext {
    * What runs an automated state. Omitted, an automated position has nothing to
    * run it, and its model call is refused as a failure of the state.
    */
-  automated?: Omit<AutomatedStatesContext, "dispatchSteps" | "machine" | "emit" | "mountPrefixes" | "files" | "ptcGateway">;
+  automated?: Omit<
+    AutomatedStatesContext,
+    "dispatchSteps" | "machine" | "emit" | "mountPrefixes" | "files" | "ptcGateway" | "telemetry"
+  >;
+  /** Token prices, so a model call's span carries the cost its `model-usage` event does. */
+  pricing?: PricingTable;
+  /** Where the model-call and tool-call spans go; omitted, they parent to whatever context is active. */
+  telemetry?: Telemetry;
   sessionIdOf(runtime: unknown): string;
 }
 
@@ -141,6 +158,12 @@ export interface Governance {
   endTurn(sessionId: string): void;
   /** Release the session and every sub-run scope nested beneath it; returns the scopes released. */
   release(sessionId: string): string[];
+}
+
+/** What a governed call's span learns on the way: a name no tool has, the rule that blocked it. */
+interface ToolCallFacts {
+  unknown?: boolean;
+  rule?: string;
 }
 
 /**
@@ -321,6 +344,7 @@ export function budgetExhaustedReason(message: unknown): string | undefined {
 
 export function createGovernance(ctx: GovernanceContext): Governance {
   const { machine, emit, policyRules, mountPrefixes, skills, ptcGateway, subWorkflows } = ctx;
+  const telemetry = ctx.telemetry ?? new Telemetry();
   const skillTable = skillPrefixes(skills);
   const skillSlugs = [...skills.keys()];
   const enabledSkillsIn = (state: string) => machine.enabledSkills(state, skillSlugs);
@@ -353,6 +377,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
           ptcGateway,
           ...(ctx.files ? { files: ctx.files } : {}),
           dispatchSteps: service.dispatchSteps,
+          telemetry,
         }
       : undefined;
 
@@ -528,9 +553,35 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       strategy === "anthropic-compat" ? cacheControl(cacheTtl) : undefined,
     );
 
+    // The call's span, active around the handler so the provider's request nests
+    // under it; priced by the id `afterModel` prices its `model-usage` event by.
+    const modelId = ctx.stateModels?.idFor(workflowState);
+    const requestModel = modelId ?? (modelIdOf(request.model) || undefined);
+    const span = telemetry.modelCall({
+      sessionId,
+      state: workflowState,
+      role: "agent",
+      model: request.model,
+      ...(requestModel ? { requestModel } : {}),
+      ...(ctx.pricing ? { pricing: ctx.pricing } : {}),
+      ...(modelId ? { pricingModel: modelId } : {}),
+    });
+
     // Narrowed rather than forwarded blind: this middleware is innermost, so the
     // agent node blames it for whatever the handler returned.
-    const call = async () => asModelCallResult(await handler(request), `state '${workflowState}'`);
+    const call = async () => {
+      try {
+        const answer = asModelCallResult(
+          await context.with(span.context, () => handler(request)),
+          `state '${workflowState}'`,
+        );
+        span.settle(answer);
+        return answer;
+      } catch (err) {
+        span.fail(err);
+        throw err;
+      }
+    };
     // `budget.timeoutMs`: the call races a timer. On expiry an empty marker message
     // stands in for the answer so `afterModel` can route through `on_error`; the
     // in-flight request itself is not cancelled (the framework exposes no per-call signal).
@@ -538,9 +589,10 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     if (timeoutMs == null) return call();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expiry = new Promise<AIMessage>((resolve) => {
-      timer = setTimeout(
-        () =>
-          resolve(
+      timer = setTimeout(() => {
+        // The span ends at the expiry; an answer arriving later changes nothing.
+        span.expire();
+        resolve(
             new AIMessage({
               content: "",
               id: `budget_${uuidv4()}`,
@@ -548,9 +600,8 @@ export function createGovernance(ctx: GovernanceContext): Governance {
                 [BUDGET_EXHAUSTED_KEY]: `state '${workflowState}' exceeded its time budget (timeoutMs: ${timeoutMs})`,
               },
             }),
-          ),
-        timeoutMs,
-      );
+        );
+      }, timeoutMs);
     });
     try {
       return await Promise.race([call(), expiry]);
@@ -607,28 +658,73 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     return taken > counted ? withDispatchCount(result, taken) : result;
   }
 
+  /**
+   * One governed tool call as a span: opened before the name is resolved and
+   * active around the whole governed path, so a blocked or unknown call is a span
+   * too, and whatever the call runs — a host tool's own work, a sub-workflow's
+   * child turn — nests under it.
+   */
   async function governToolCall(
     request: WorkflowToolCallRequest,
     handler: WorkflowToolCallHandler,
     dispatchNumber?: number,
   ): Promise<Command | ToolMessage> {
+    const callId: string = request.toolCall?.id || `tool-${++generatedCallSeq}`;
+    const sessionId = ctx.sessionIdOf(request.runtime);
+    const resolved = resolvedToolName(request, sessionId);
+    // Named for the tool the call resolves to: a name no tool has is the model's
+    // text, and never names a span, not even while it runs.
+    const span = telemetry.toolCall({
+      sessionId,
+      state: currentWorkflowState(request.state, machine.entry),
+      tool: resolved ?? "unknown",
+      callId,
+      origin: "agent",
+    });
+    const facts: ToolCallFacts = {};
+    try {
+      const result = await context.with(span.context, () =>
+        governCall(request, handler, callId, resolved, facts, dispatchNumber),
+      );
+      span.end(facts.unknown ? "unknown" : toolOutcomeOf(result), facts.rule);
+      return result;
+    } catch (err) {
+      span.end(thrownOutcomeOf(err, request.runtime?.signal));
+      throw err;
+    }
+  }
+
+  /**
+   * The registered tool a call resolves to: an exact match, or the target a bare
+   * action name of a namespaced id resolves to; `undefined` when no tool has the
+   * name, a different mistake from a governance denial. The control tools never
+   * reach the tool node, so they are registered by definition.
+   */
+  function resolvedToolName(request: WorkflowToolCallRequest, sessionId: string): string | undefined {
+    const called: string = request.toolCall?.name ?? "";
+    const registeredNames = modelContexts.get(sessionId)?.toolNames;
+    return request.tool !== undefined || registeredNames === undefined || called === ADVANCE_TOOL
+      ? called
+      : resolveToolName(called, registeredNames);
+  }
+
+  async function governCall(
+    request: WorkflowToolCallRequest,
+    handler: WorkflowToolCallHandler,
+    callId: string,
+    resolved: string | undefined,
+    facts: ToolCallFacts,
+    dispatchNumber?: number,
+  ): Promise<Command | ToolMessage> {
     const called: string = request.toolCall?.name ?? "";
     const sessionId = ctx.sessionIdOf(request.runtime);
     const workflowState = currentWorkflowState(request.state, machine.entry);
-    const callId: string = request.toolCall?.id || `tool-${++generatedCallSeq}`;
     const toolCallId = request.toolCall?.id ?? "";
 
-    // A bare action name of a namespaced id resolves to its target; the rest is
-    // refused as unknown, a different mistake from a governance denial. The control
-    // tools never reach the tool node, so they are registered by definition.
-    const registeredNames = modelContexts.get(sessionId)?.toolNames;
-    const resolved =
-      request.tool !== undefined || registeredNames === undefined || called === ADVANCE_TOOL
-        ? called
-        : resolveToolName(called, registeredNames);
     if (resolved === undefined) {
+      facts.unknown = true;
       return new ToolMessage({
-        content: unknownToolMessage(called, registeredNames ?? []),
+        content: unknownToolMessage(called, modelContexts.get(sessionId)?.toolNames ?? []),
         tool_call_id: toolCallId,
         name: called,
         status: "error",
@@ -651,7 +747,10 @@ export function createGovernance(ctx: GovernanceContext): Governance {
     let args = (request.toolCall?.args ?? {}) as Record<string, unknown>;
     if (!isWorkflowToolName(toolName)) {
       const substituted = resolveArguments(args, variables);
-      if (!substituted.ok) return block(unresolvedArgumentMessage(substituted), args);
+      if (!substituted.ok) {
+        facts.rule = UNRESOLVED_ARGUMENT_RULE;
+        return block(unresolvedArgumentMessage(substituted), args);
+      }
       args = substituted.args;
       request = { ...request, toolCall: { ...request.toolCall, args } };
     }
@@ -674,6 +773,7 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       skillTable,
     );
     if (verdict.decision === "block") {
+      facts.rule = verdict.ruleId;
       const message = verdict.reason ?? "";
       if (verdict.warn) {
         emit({ type: "tool-blocked", state: workflowState, tool: toolName, reason: message, callId, args });

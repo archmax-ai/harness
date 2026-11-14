@@ -257,6 +257,15 @@ The refund example needs your two tools, so it runs from your code. See the
 - [Testing](https://harness.archmax.ai/guides/testing/): cases for `archmax test`
 - [Public API](https://harness.archmax.ai/reference/public-api/): `createAgent`, outcomes, events
 
+### Tracing
+
+The harness reports every turn, state visit, model call and tool call as an OpenTelemetry span,
+and records the GenAI client metrics for every model call. Register an OpenTelemetry SDK in your
+process and they appear in the trace you are already in. There is nothing to pass to
+`createAgent`, and without an SDK nothing changes. Spans carry metadata only: slugs, models,
+tokens, cost, durations and outcomes, never what the session said. See the
+[telemetry guide](https://harness.archmax.ai/guides/telemetry/).
+
 ### Authoring with a coding agent
 
 The authoring skill teaches a coding agent the schema, grader and code states, governance, human
@@ -287,7 +296,8 @@ the packaged copy. The source is `skills/archmax-harness/`.
   [skills](https://harness.archmax.ai/guides/skills/),
   [sub-workflows](https://harness.archmax.ai/guides/sub-workflows/),
   [testing](https://harness.archmax.ai/guides/testing/),
-  [token efficiency](https://harness.archmax.ai/guides/token-efficiency/)
+  [token efficiency](https://harness.archmax.ai/guides/token-efficiency/),
+  [telemetry](https://harness.archmax.ai/guides/telemetry/)
 - Reference: [machine spec](https://harness.archmax.ai/reference/machine-spec/),
   [CLI](https://harness.archmax.ai/reference/cli/),
   [public API](https://harness.archmax.ai/reference/public-api/),
