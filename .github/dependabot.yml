@@ -1,58 +1,40 @@
-# Weekly dependency update PRs over the npm lockfiles at the root and under
-# docs/, plus GitHub Actions. Updates are grouped so each ecosystem opens at
-# most one combined minor/patch PR per week; only major bumps arrive as
-# individual PRs. Patch updates are grouped rather than ignored because
-# dependabot ignore rules would also suppress security patches.
+# One dependency update PR a day: a multi-ecosystem group gathers every version
+# update from the npm lockfiles at the root and under docs/ and from GitHub
+# Actions, majors included, into a single PR. A scheduled Claude task looks
+# after that PR until CI is green, labels it `release` and merges it, so each
+# day's updates ship as one patch release.
+#
+# Dependabot holds back a version until it is three days old (its default
+# cooldown). Security updates are not grouped and still open at once.
 version: 2
+multi-ecosystem-groups:
+  daily:
+    schedule:
+      # Every day, weekends included: interval `daily` runs on weekdays only.
+      interval: cron
+      cronjob: "0 7 * * *"
+      timezone: Europe/Berlin
+    commit-message:
+      prefix: "chore(deps)"
+
 updates:
   - package-ecosystem: npm
     directory: "/"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+    multi-ecosystem-group: daily
+    patterns: ["*"]
     # TypeScript majors wait until typescript-eslint supports them: 8.x
     # declares no TypeScript 7 peer, so the bump fails at install (#19).
     ignore:
       - dependency-name: "typescript"
         update-types:
           - "version-update:semver-major"
-    groups:
-      # The LangChain/deepagents family bumps together across all update
-      # types (including majors) since the packages are interdependent.
-      langchain:
-        patterns:
-          - "@langchain/*"
-          - "langchain"
-          - "deepagents"
-      # Everything else: one combined PR for minor and patch bumps.
-      npm-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
 
   - package-ecosystem: npm
     directory: "/docs"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    groups:
-      docs-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+    multi-ecosystem-group: daily
+    patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: "/"
-    schedule:
-      interval: weekly
-    groups:
-      actions-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
+    multi-ecosystem-group: daily
+    patterns: ["*"]
