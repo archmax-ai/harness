@@ -12,7 +12,7 @@ import type { Diagnostic } from "./diagnostic.js";
 import { guardReferences, normalizeAllowEntry } from "./allow.js";
 import { normalizeMountGrants } from "./mount-grants.js";
 import { triggerDeclarationSchema } from "./spec-schema.js";
-import { ADVANCE_TOOL, DEFAULT_TOOLS, STATE_TYPE_TOOLS } from "./tool-names.js";
+import { ADD_MESSAGE_TOOL, ADVANCE_TOOL, DEFAULT_TOOLS, STATE_TYPE_TOOLS } from "./tool-names.js";
 import { BUILT_IN_TOOL_PATHS, MUTATING_ACCESSES, SCRATCHPAD_ACCESSES } from "./tool-paths.js";
 import { normalizeSignature } from "./signature.js";
 import { declaredVariableNames } from "./triggers.js";
@@ -388,11 +388,15 @@ export function lintSpec(spec: MachineSpec): Diagnostic[] {
       (state.tools?.allow ?? []).forEach((entry, index) => {
         const { tool } = normalizeAllowEntry(entry);
         if (!tool || !withheld.has(tool)) return;
+        const why =
+          tool === ADD_MESSAGE_TOOL
+            ? `a grader judges the session and never speaks in it; a code state's script adds the ` +
+              `session's messages`
+            : `an automated state cannot park or reset, and the planning list and the sandbox tools ` +
+              `are the agent's`;
         error(
           `${at}.tools.allow.${index}`,
-          `State '${slug}' is a ${state.type} state, which is never offered '${tool}': an automated ` +
-            `state cannot park or reset, and the planning list and the sandbox tools are the agent's. ` +
-            `Drop the entry.`,
+          `State '${slug}' is a ${state.type} state, which is never offered '${tool}': ${why}. Drop the entry.`,
         );
       });
     }

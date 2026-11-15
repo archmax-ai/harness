@@ -192,7 +192,8 @@ so a host reasons about a surface with the same data:
 | Type | `controls` | `withheld` |
 | --- | --- | --- |
 | `agent`, `human` | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | empty |
-| `grader`, `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`, `archmax_add_message` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| `grader` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`, `archmax_add_message` |
 
 The machine's tool surface, the kernel's grant and `archmax validate` all read
 this one table. A `forbid` still blocks a control. `archmax_advance` is blocked only by
@@ -370,7 +371,8 @@ if (agent.workflow) {
 by a blank line. Text written next to an `archmax_advance`, `archmax_wait` or
 `archmax_raise` is part of it, because the agent is told to write what a person
 should read in that same message. A park's handoff message is part of it too, and
-so is a draft a grader or code state sent back, beside the corrected one. A turn
+so is a draft a grader or code state sent back, beside the corrected one, and every
+message a code state added with `archmax_add_message`. A turn
 that said nothing has `reply: ""`, not the previous turn's text. For the last
 thing the session ever said, read `lastAgentText(outcome.messages)`.
 
@@ -1623,10 +1625,10 @@ and parked sessions](/guides/sessions/).
 
 ## Reserved tool names
 
-The runtime's own tools carry the `archmax_` prefix: the nine of
+The runtime's own tools carry the `archmax_` prefix: the ten of
 `HARNESS_CONTROL_TOOLS` (`archmax_advance`, `archmax_reset`, `archmax_wait`,
 `archmax_raise`, `archmax_eval`, `archmax_run`, `archmax_get_variables`,
-`archmax_set_variables` and `archmax_get_history`), and one
+`archmax_set_variables`, `archmax_get_history` and `archmax_add_message`), and one
 `archmax_workflow_<slug>` per sub-workflow a state allows. Which state type is
 offered which is in [tool tables](#tool-tables).
 
@@ -1730,9 +1732,9 @@ subscriber and the CLI pass over them silently:
 
 | Event | Payload highlights |
 | --- | --- |
-| `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint, and `origin: "script"` for a programmatic call (an agent's script or a code state's); absent for a model's call, the session's agent's or a grader's. Emitted for **every** governed call, including the control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`. |
+| `tool-called` | `callId` (the tool-call id, correlating with message history), structured `args`, one-string `detail` hint, and `origin: "script"` for a programmatic call (an agent's script or a code state's); absent for a model's call, the session's agent's or a grader's. Emitted for **every** governed call, including the control tools: `archmax_advance`, `archmax_wait`, `archmax_reset`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`, `archmax_add_message`. |
 | `tool-result` | Same `callId`, `status` (`ok`/`error`), `durationMs`, `output` preview (capped at 4 KB, `truncated` flag). A tool that throws settles `error` with the error's message as its preview; the model reads that same message as the call's answer (an error-status tool message) and the turn continues, so read tool failures here, not from a thrown turn. A park or a cancelled run still settles `error` and then propagates. Blocked calls emit `tool-blocked` instead (nothing ran), carrying the governance `reason`. A refused `archmax_advance` settles `error` even though the reply the model reads is not an error message: the status reports whether the session moved. |
-| `agent-text` | Complete text of each AI message a turn produced, with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
+| `agent-text` | Complete text of each AI message a turn produced, a code state's messages included (reported when its run settles, under the code state), with that message's `messageId`, always present for a completed message and absent only on a `partial: true` event from a failed turn |
 | `agent-text-delta` | Text chunks as the model produces them, attributed to the active state; render live typing without consuming `graph.streamEvents`. Emitted via the graph's native streaming for every session, whether you drive the graph with `invoke` or `stream`; when the model endpoint does not stream (`ARCHMAX_STREAMING=0`), the whole message arrives as one delta. A grader's tokens never stream as the session's text. A sub-workflow child's chunks are the child's own: they carry the child's `sessionId` and the dispatch's `subWorkflowDispatchId`, and never reach the caller as its text, so concurrent children cannot interleave into the caller's reply. |
 | `model-usage` | Per-turn tokens from the provider's own usage metadata, a grader's model calls included, under its grader state: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `model`, and `costUsd` when pricing is configured (the whole event is omitted when the endpoint reports no usage) |
 | `prompt-shaping` | Assembly-time summary of the model-facing payload: resolved prompt `profile`, the resolved prompt-cache mechanism, and any built-in tools `withheld` |

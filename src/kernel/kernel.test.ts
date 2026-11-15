@@ -89,6 +89,23 @@ describe("decide — tool-call", () => {
     expect(v.ruleId).toBe("tool.not-allowed");
   });
 
+  it("permits the message control in a code state only", () => {
+    const typed = WorkflowMachine.fromSpec({
+      states: {
+        work: { triggers: { manual: null }, transitions: [{ to: "screen", description: "Done." }] },
+        screen: { type: "code", script: "scripts/screen.js", transitions: [{ to: "judge", description: "Screened." }] },
+        judge: { type: "grader", instructions: "Judge it.", transitions: [{ to: "work", description: "Again." }] },
+      },
+    });
+    const verdict = (state: string) =>
+      decide(typed, { kind: "tool-call", state, tool: "archmax_add_message", args: { text: "Hello." } });
+    expect(verdict("screen").decision).toBe("allow");
+    for (const state of ["work", "judge"]) {
+      expect(verdict(state).decision, state).toBe("block");
+      expect(verdict(state).ruleId, state).toBe("tool.not-allowed");
+    }
+  });
+
   it("allows default tools in a state with no tools block (closed default)", () => {
     for (const [tool, args] of [
       ["read_file", { file_path: "data/orders.json" }],

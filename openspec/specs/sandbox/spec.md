@@ -367,9 +367,9 @@ evaluation, so each quota in `settings` bounds it whole.
 
 A code state's script SHALL see under `tools` exactly its state's surface: its own grants, the file
 tools, `archmax_advance` (outside a terminal state), `archmax_raise`, `archmax_get_variables`,
-`archmax_set_variables` and `archmax_get_history`. Each call SHALL be governed with origin `script`
-against that code state, under either spelling (`tools.read_file`, `tools.readFile`); a name
-outside the surface SHALL be `undefined`. What the control tools do is the `automated-states`
+`archmax_set_variables`, `archmax_get_history` and `archmax_add_message`. Each call SHALL be
+governed with origin `script` against that code state, under either spelling (`tools.read_file`,
+`tools.readFile`); a name outside the surface SHALL be `undefined`. What the control tools do is the `automated-states`
 capability's.
 
 #### Scenario: The listing names the surface only
@@ -377,8 +377,8 @@ capability's.
 - **WHEN** code state `check-refund` allows `lookup_order`, state `refund-request` allows
   `issue_refund`, and the script of `check-refund` lists `Object.keys(tools)`
 - **THEN** it sees `lookupOrder`, the file tools, `archmaxAdvance`, `archmaxRaise`,
-  `archmaxGetVariables`, `archmaxSetVariables` and `archmaxGetHistory`, and none of `issueRefund`,
-  `writeTodos`, `archmaxEval`, `archmaxRun`, `archmaxWait` or `archmaxReset`
+  `archmaxGetVariables`, `archmaxSetVariables`, `archmaxGetHistory` and `archmaxAddMessage`, and
+  none of `issueRefund`, `writeTodos`, `archmaxEval`, `archmaxRun`, `archmaxWait` or `archmaxReset`
 
 #### Scenario: A tool outside the surface is undefined
 

@@ -10,7 +10,8 @@ calls `archmax_advance`. Two state types are run by the runtime instead. Togethe
 **automated states**:
 
 - A **code state** (`type: code`) runs a script the workflow ships: a deterministic check, a
-  lookup, a record written at the end. The script decides where the session goes.
+  lookup, a record written at the end, an answer it can give without a model. The script decides
+  where the session goes, and can say something to the person on the way.
 - A **grader state** (`type: grader`) runs a grader, an isolated subagent whose criteria are the
   state's `instructions`. It approves the work onward or sends it back with what to change.
 
@@ -58,10 +59,12 @@ An automated state is offered exactly its own state's tool surface:
 | State type | Controls | Never offered |
 | --- | --- | --- |
 | agent, human | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | none |
-| grader, code | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| code | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`, `archmax_add_message` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| grader | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`, `archmax_add_message` |
 
-`archmax_advance` is left out in a terminal state, whatever its type. On a grader or code state, a
-grant naming a withheld tool offers nothing, and a `tools.allow` entry naming one is an
+`archmax_advance` is left out in a terminal state, whatever its type. `archmax_add_message` is a
+code state's alone: a grader judges the session and never speaks in it. On a grader or code state,
+a grant naming a withheld tool offers nothing, and a `tools.allow` entry naming one is an
 `archmax validate` error. A host reads the same table as `STATE_TYPE_TOOLS` from
 [`@archmax-ai/harness/spec`](/reference/public-api/#archmax-aiharnessspec).
 
@@ -140,6 +143,8 @@ The rules:
 - **The script moves the session.** `tools.archmax_advance({ to, reason })` takes one of the
   state's transitions, and the next state reads the `reason`. `tools.archmax_raise({ code, reason })`
   ends the session as failed. The return value is not read.
+- **The script can speak.** `tools.archmax_add_message({ text })` adds a message the session says
+  to the person (see [saying something](#saying-something-to-the-person)).
 - **One decision, applied at the end.** The first accepted `archmax_advance` or `archmax_raise` is
   the decision, and every later one is refused. It takes effect when the script finishes, so a
   script that advances and then throws fails, and the session does not move.
@@ -162,6 +167,57 @@ A file with no default export runs as a plain script. It reads the same input fr
 
 The session's transcript and trail are not in the input. A script reads them with
 `tools.archmax_get_history()` (see [the history](#the-history)).
+
+### Saying something to the person
+
+A code state's script adds a message to the session with `tools.archmax_add_message({ text })`.
+The message is the session speaking, exactly as if the agent had written it: an assistant message
+in the transcript, part of the turn's [`reply`](#the-turns-reply), reported as an `agent-text`
+event, read by the agent on its next model call, and read as an `assistant` message by a later
+grader or code state. Use it where the answer is already known to the script, so no model call is
+spent putting it into words:
+
+```yaml
+status:
+  type: code
+  script: scripts/status.js
+  triggers:
+    manual:
+  tools:
+    allow: [lookup_order]
+```
+
+```js
+// workflows/order-status/scripts/status.js
+export default async function ({ tools }) {
+  const { messages } = JSON.parse(await tools.archmax_get_history());
+  const asked = [...messages].reverse().find((m) => m.role === "user")?.text ?? "";
+  const id = asked.match(/ORD-\d+/)?.[0];
+  const order = id ? JSON.parse(await tools.lookup_order({ id })) : null;
+  if (!order) {
+    await tools.archmax_add_message({ text: `I could not find ${id ? `order ${id}` : "an order number in your message"}.` });
+    return tools.archmax_raise({ code: "order-unknown", reason: `no order ${id ?? "named"}` });
+  }
+  await tools.archmax_add_message({ text: `Order ${order.id} is ${order.status}.` });
+}
+```
+
+`status` is the trigger's entry and a terminal code state, so a known order completes the session
+with the answer as its reply, and no model is called in the whole turn.
+
+- **Each call adds one message**, in the order called, before or after the state's decision. A
+  blank `text` is refused, and the script can catch the rejection.
+- **Messages land when the run settles**, ahead of the runtime note of the state's move or raise,
+  so the next state reads what was said and then why it was entered.
+- **A failed run says nothing.** When the script throws, times out or leaves a non-terminal state
+  undecided, its messages are discarded with its move: a retry through `on_error` never repeats a
+  half-said answer. A raise keeps them, so a script can tell the person why before it ends the
+  session.
+- **The run's own history leaves them out.** `archmax_get_history` answers with the session as it
+  stood when the state was entered, so a script does not read back what it just said.
+
+A move into a human state still owes the park's one handoff message, whether or not the script
+said something.
 
 ## Grader states
 
@@ -290,7 +346,7 @@ for the transcript is the pointer to its file under `large_tool_results/`.
 
 The transcript holds the calls of the session's agent, its control calls included. A script's or a
 grader's own calls are not in it: only the move they decide reaches the session, as a trail step
-and a runtime note.
+and a runtime note, and the messages an earlier code state added, as `assistant` messages.
 
 The history is read from the checkpointed session as it stood when the automated state was
 entered, earlier turns included, never from the request a summary shortened for the model. Nothing
@@ -308,7 +364,8 @@ Every automated run settles as exactly one of four outcomes:
 | **completed** | A terminal code state's script returned without raising. | The session completes, held to the trigger's [`returns`](/guides/triggers/#a-return-is-owed-when-the-session-finishes). |
 | **failed** | It threw or ran out of time, or a non-terminal state finished without deciding. | The failure routes through the state's [`on_error`](/reference/machine-spec/#on_error), else the session ends rejected. |
 
-A raise wins over a later error, and an error discards a recorded advance. A non-terminal state
+What a code state said lands with an advance, a raise or a completion, and a failure discards it
+with the move. A raise wins over a later error, and an error discards a recorded advance. A non-terminal state
 that finishes undecided fails with the reason
 `code state '<slug>' finished without calling archmax_advance or archmax_raise` (or
 `grader state '<slug>' …`). Finishing undecided is never read as approval.
@@ -342,10 +399,11 @@ should then fix the work and advance again.
 
 ### The turn's reply
 
-A turn's [`reply`](/reference/public-api/#agent-in-detail) is every text the agent wrote during the
-turn, in order, joined by a blank line, and `""` when it said nothing. A draft the agent wrote
-before a grader or a code state sent it back stays in the reply, beside the corrected one. A
-grader's own text never enters the transcript, so it is never part of a reply.
+A turn's [`reply`](/reference/public-api/#agent-in-detail) is every text the session said during
+the turn, the agent's and the messages its code states added, in order, joined by a blank line, and
+`""` when it said nothing. A draft the agent wrote before a grader or a code state sent it back
+stays in the reply, beside the corrected one. A grader's own text never enters the transcript, so
+it is never part of a reply.
 
 So put a send-back loop where the work is handed on rather than said, in front of no live answer.
 The refund workflow drafts its email into a file and sends it with a tool, so a rejected draft
@@ -359,6 +417,7 @@ Each run is bracketed on the [event stream](/reference/public-api/#lifecycle-eve
 | --- | --- |
 | `code-start` | `{ state, script }` |
 | `code-output` | `{ state, line }`, one per console line |
+| `agent-text` | `{ state, text, messageId }`, one per message the run added, when it did not fail |
 | `code-result` | `{ state, status, durationMs, reason? }` |
 | `grader-start` | `{ state }` |
 | `grader-result` | `{ state, status, durationMs, reason? }` |
@@ -371,7 +430,9 @@ no origin, as a model's call does.
 The narrative events follow once the run has settled, so nothing announces a move that a later
 error discarded. A code state that logs one line and advances emits `code-start`, the advance
 call's `tool-called` and `tool-result`, the `code-output` line, `code-result`, and then `advance`,
-`state-leave` and `state-enter`. A raise emits `raised` and `state-leave` instead.
+`state-leave` and `state-enter`. A message the run added is reported between its `code-output`
+lines and `code-result`, as an `agent-text` whose `messageId` is the transcript message's id, so a
+host shows it as it shows the agent's text. A raise emits `raised` and `state-leave` instead.
 
 The CLI's [state flow](/guides/cli/#the-state-flow) prints a code state's run as
 `› code scripts/check-refund.js` with its output beneath it, and a grader's as `› grader grading`.
@@ -402,8 +463,9 @@ screen-request:
 ```
 
 `decline` is an agent state that reads the script's reason from the `code` note and tells the
-person. To end the session as a failure instead, with no reply, the script calls
-`tools.archmax_raise({ code, reason })`.
+person. To end the session as a failure instead, the script calls
+`tools.archmax_raise({ code, reason })`, after `tools.archmax_add_message({ text })` when the person
+should hear why.
 
 ### A check behind a state
 
@@ -425,6 +487,17 @@ emails-filed:
   script: scripts/emails-filed.js
 ```
 
+### Answer without a model call
+
+When a script can answer on its own, such as a status read from a record or a confirmation after a
+lookup, make the trigger's entry a terminal code state that adds the answer with
+`archmax_add_message` and returns, as `status` does in
+[saying something](#saying-something-to-the-person). The turn's reply is the script's message and
+no model is called. To hand a request the script cannot answer to the agent rather than raise,
+give the entry two transitions: after adding the answer it advances into a terminal code state
+whose script does nothing, and otherwise into an agent state, with what it could not answer as the
+`reason`.
+
 ## Testing automated states
 
 A case asserts an automated state by what it committed: `reachedState`, a `trail` step with
@@ -432,7 +505,8 @@ A case asserts an automated state by what it committed: `reachedState`, a `trail
 set, `ranWorkflow` for its dispatches. A code state's and a grader's own tool calls are not in the
 transcript, so `calledTool`, `notCalledTool` and `usedNoTools` see only the agent's. Mocks answer
 their calls as they answer the agent's, but a control tool is never mocked: an automated state's
-`archmax_advance` and `archmax_get_history` are always the runtime's. See
+`archmax_advance`, `archmax_get_history` and `archmax_add_message` are always the runtime's. A
+code state's messages are assistant messages, so a `reply` assertion reads them. See
 [testing workflows](/guides/testing/#assertions).
 
 ```yaml

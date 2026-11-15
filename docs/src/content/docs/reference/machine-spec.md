@@ -345,10 +345,13 @@ tools whatever a grant names:
 | State type | Controls | Withheld |
 | --- | --- | --- |
 | `agent`, `human` | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | none |
-| `grader`, `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| `code` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`, `archmax_add_message` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| `grader` | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`, `archmax_add_message` |
 
 - `archmax_advance` is left out in a terminal state, and its target is checked
   against the state's transitions.
+- `archmax_add_message` is a code state's alone: a grader never speaks in the
+  session.
 - A `forbid` can still block a control.
 - A `tools.allow` entry on a grader or code state naming a withheld tool is an
   `archmax validate` error.
@@ -768,9 +771,10 @@ authoring backend does not hold, and an import from anything but
 
 The file is an ordinary hand-authored JavaScript module. Its default export is
 called with `{ state, trigger?, variables, tools }`, reads the session with
-`tools.archmax_get_history()`, moves it with `tools.archmax_advance({ to, reason })`
-or ends it with `tools.archmax_raise({ code, reason })`, and its return value is
-not read. See
+`tools.archmax_get_history()`, says something to the person with
+`tools.archmax_add_message({ text })`, moves it with
+`tools.archmax_advance({ to, reason })` or ends it with
+`tools.archmax_raise({ code, reason })`, and its return value is not read. See
 [the script contract](/guides/automated-states/#the-script-contract).
 
 ### Keys each state type reads

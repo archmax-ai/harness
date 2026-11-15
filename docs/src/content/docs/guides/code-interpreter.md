@@ -181,9 +181,9 @@ differences:
 - **Its own REPL.** Each run evaluates in a fresh REPL, shared with neither the agent's
   `archmax_eval` nor another code state, and released when the run settles.
 - **Its own state's tools.** `tools` is the code state's surface: its own and the workflow-wide
-  grants, plus `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`
-  and `archmax_get_history`. Each call is governed against the code state, so the state has to
-  enable whatever bundle or mount the script reads.
+  grants, plus `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`,
+  `archmax_get_history` and `archmax_add_message`. Each call is governed against the code state, so
+  the state has to enable whatever bundle or mount the script reads.
 - **Its input.** The default export receives `{ state, trigger, variables, tools }`, and reads the
   session itself with `tools.archmax_get_history()`.
 - **No return value.** The session moves only through `tools.archmax_advance` or

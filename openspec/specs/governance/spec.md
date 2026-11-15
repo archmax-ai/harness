@@ -227,13 +227,15 @@ type's `controls`, the control tools the type always has whatever its `tools` go
 | State type    | `controls`                                                                                                 | `withheld`                                                                     |
 | ------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | agent, human  | `archmax_advance`, `archmax_reset`, `archmax_wait`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` | none                                                                           |
-| code, grader  | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| code          | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`, `archmax_add_message` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset` |
+| grader        | `archmax_advance`, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history` | `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait`, `archmax_reset`, `archmax_add_message` |
 
 A state SHALL never be offered a tool its type withholds: not as a default tool, and not where the
 workflow's `tools.allow_always` or the state's own `tools.allow` names one (see "Effective entries
 and precedence"). The reserved control tools (`HARNESS_CONTROL_TOOLS`) SHALL be every type's
 `controls` plus the two sandbox tools. `archmax_get_history` SHALL be a control tool like the
 others: never part of an agent script's surface, and permitted only in a grader or a code state.
+`archmax_add_message` SHALL be one too, permitted only in a code state.
 
 Every other call SHALL be blocked with a reason naming the tool, the state and what the state
 permits. A state with no `tools` block and one with an empty `allow` list SHALL behave identically,
@@ -278,6 +280,13 @@ or the workflow declares, with a refusal that points at grader states and the wo
   which a `tools` block names
 - **THEN** each is blocked with `tool.not-allowed`, while `archmax_raise` is permitted in all three
   states and `archmax_get_history` in the code state and in the grader state
+
+#### Scenario: The message control is a code state's alone
+
+- **WHEN** `decide` is asked about `archmax_add_message` in an agent state, a grader state and a
+  code state, none of which a `tools` block names
+- **THEN** it is permitted in the code state and blocked with `tool.not-allowed` in the agent state
+  and in the grader state
 
 #### Scenario: task is blocked in every state
 
@@ -630,8 +639,9 @@ default"):
 
 - in an agent or human state, `archmax_reset`, `archmax_wait`, `archmax_raise`,
   `archmax_get_variables` and `archmax_set_variables`;
-- in a code state and in a grader state alike, `archmax_raise`, `archmax_get_variables`,
-  `archmax_set_variables` and `archmax_get_history`.
+- in a grader state, `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` and
+  `archmax_get_history`;
+- in a code state, the grader state's and `archmax_add_message`.
 
 `task` SHALL NOT be disclosed in any state of any assembly, though Deep Agents registers it in every
 assembly for its general-purpose subagent, and whatever a grant names. Deep Agents adds no prompt
@@ -653,9 +663,11 @@ whether or not the tool was disclosed.
 - **WHEN** a session passes through a non-terminal code state and a grader state, neither of which
   declares a `tools` block
 - **THEN** the code state's script and the grader are both offered the file tools, `archmax_advance`,
-  `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`, and
-  neither is offered `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or
-  `archmax_reset`. No model call of the session's agent offers `archmax_get_history`
+  `archmax_raise`, `archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`, the
+  code state's script also `archmax_add_message`, and neither is offered `write_todos`,
+  `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`. No model call of the session's
+  agent offers `archmax_get_history` or `archmax_add_message`, and the grader is not offered
+  `archmax_add_message`
 
 #### Scenario: Advance hidden in a terminal state
 

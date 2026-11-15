@@ -14,7 +14,8 @@
  * session's recursion limit like any runaway turn.
  *
  * The outcome rides in the marker, not in memory, so a process that dies
- * between the model node and `afterModel` replays the commit from the marker.
+ * between the model node and `afterModel` replays the commit from the marker —
+ * a code state's messages included, under the ids they were added with.
  */
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage } from "@langchain/core/messages";
@@ -29,7 +30,12 @@ import type { WorkflowMachine } from "../machine/machine.js";
 import { TRIGGER_VARIABLE, type VariableStore } from "../machine/variables.js";
 import type { ScriptExecutor } from "../sandbox/executor.js";
 import type { PtcToolGateway } from "../sandbox/ptc-gateway.js";
-import { createAutomatedControls, createStepRecorder, type AutomatedDecision } from "./automated-controls.js";
+import {
+  createAutomatedControls,
+  createStepRecorder,
+  type AutomatedDecision,
+  type StateMessage,
+} from "./automated-controls.js";
 import { runCodeState, type CodeScriptResolver } from "./code-state.js";
 import { runGraderState } from "./grader-state.js";
 import { sessionHistory } from "./history.js";
@@ -63,6 +69,12 @@ export interface AutomatedOutcome {
   usage?: UsageSummary;
   /** The sub-runs its calls dispatched, as trail steps. */
   trail?: TrailStep[];
+  /**
+   * What a code state's run said: the messages it added, committed as assistant
+   * messages ahead of the move's note. Absent when it said nothing, and always
+   * when it failed — a failed run's messages are discarded with its move.
+   */
+  messages?: StateMessage[];
 }
 
 /** Where the marker message carries its outcome. */
@@ -208,6 +220,11 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
   const decision = recorder.decision;
   const result = settle(machine, state, type, decision, error);
   const failed = result.kind === "failed";
+  // What the run said stands with its outcome: a failure discards it with the move.
+  const messages = failed ? [] : [...recorder.messages];
+  for (const message of messages) {
+    emit({ type: "agent-text", state, text: message.text.trim(), messageId: message.id });
+  }
   emit({
     type: type === "code" ? "code-result" : "grader-result",
     state,
@@ -246,6 +263,7 @@ export async function runAutomatedStep(ctx: AutomatedStatesContext, request: Aut
     ...(Object.keys(variables).length > 0 ? { variables } : {}),
     ...(usage ? { usage } : {}),
     ...(trail.length > 0 ? { trail } : {}),
+    ...(messages.length > 0 ? { messages } : {}),
   };
   return new AIMessage({
     content: "",

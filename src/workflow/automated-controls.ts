@@ -1,7 +1,8 @@
 /**
  * The controls an automated state calls — `archmax_advance`, `archmax_raise`,
- * `archmax_get_variables`, `archmax_set_variables`, and for a grader
- * `archmax_get_history` — as real tools bound to one run's **step recorder**.
+ * `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`, and
+ * for a code state `archmax_add_message` — as real tools bound to one run's
+ * **step recorder**.
  *
  * The session's agent's controls are declarations serviced in `wrapToolCall`,
  * where checkpointed state is in hand. An automated state calls its tools from a
@@ -12,18 +13,20 @@
  * decides every call, a forbid can deny one, and every call emits its pair of
  * tool events.
  *
- * Nothing here commits: the recorder holds the run's one decision and its
- * variable writes, and the run's outcome carries them to the commit when it
- * settles. A refused call throws its reason, which a script can catch and a
- * grader reads as its tool's error answer.
+ * Nothing here commits: the recorder holds the run's one decision, its variable
+ * writes and the messages it added, and the run's outcome carries them to the
+ * commit when it settles. A refused call throws its reason, which a script can
+ * catch and a grader reads as its tool's error answer.
  */
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
+import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
 import { tool } from "langchain";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import type { MountPrefixes } from "../core/mounts.js";
 import type { WorkflowMachine } from "../machine/machine.js";
 import {
+  ADD_MESSAGE_TOOL,
   ADVANCE_TOOL,
   GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
@@ -53,9 +56,22 @@ export type AutomatedDecision =
   | { kind: "raise"; code: string; reason: string; callId?: string };
 
 /**
+ * A message a code state's run added to the session: what the session says to
+ * the person, committed as an assistant message under `id` when the run settles
+ * — the id assigned when it was added, so the `agent-text` event and the
+ * transcript name one message.
+ */
+export interface StateMessage {
+  id: string;
+  text: string;
+}
+
+/**
  * One automated run's record of what it decided and wrote. The **live view** is
  * the checkpointed session with this run's writes merged in, so a later call of
  * the same run — a `requires` check, a read, a guard — sees an earlier write.
+ * The messages it added are not in the view: the history a run reads is the
+ * session as it stood when the state was entered.
  */
 export interface StepRecorder {
   /** The state this run is in. */
@@ -68,12 +84,15 @@ export interface StepRecorder {
   readonly delta: VariableStore;
   /** The run's decision, once one was accepted. */
   readonly decision: AutomatedDecision | undefined;
+  /** The messages the run added, in the order added, to commit with its outcome. */
+  readonly messages: readonly StateMessage[];
 }
 
 /** A recorder the controls may write to. */
 interface MutableRecorder extends StepRecorder {
   decide(decision: AutomatedDecision): void;
   write(delta: VariableStore): void;
+  addMessage(message: StateMessage): void;
 }
 
 /**
@@ -89,6 +108,7 @@ export function createStepRecorder(
   let store = readVariables(session);
   let delta: VariableStore = {};
   let decision: AutomatedDecision | undefined;
+  const messages: StateMessage[] = [];
   return {
     state,
     store: () => store,
@@ -99,6 +119,9 @@ export function createStepRecorder(
     get decision() {
       return decision;
     },
+    get messages() {
+      return messages;
+    },
     decide(next) {
       decision = next;
     },
@@ -107,8 +130,16 @@ export function createStepRecorder(
       store = mergeVariables(store, written);
       onWrite?.(store);
     },
+    addMessage(message) {
+      messages.push(message);
+    },
   };
 }
+
+/** `archmax_add_message`'s input: the text the session says. */
+const addMessageSchema = z.object({
+  text: z.string().describe("What the session says to the person, as the agent would write it."),
+});
 
 export interface AutomatedControlsContext {
   machine: WorkflowMachine;
@@ -137,7 +168,8 @@ function alreadyDecided(name: string, decision: AutomatedDecision): Error {
  * The control tools for one automated run, bound to its recorder — in the order
  * `controlTools(state)` names them, so the surface and the tools agree.
  * `archmax_get_history` answers with `history`: the session as it stood when the
- * state was entered.
+ * state was entered. `archmax_add_message`, a code state's alone, records a
+ * message whatever the run decided; whether it is said is the run's outcome's.
  */
 export function createAutomatedControls(
   ctx: AutomatedControlsContext,
@@ -269,6 +301,30 @@ export function createAutomatedControls(
           "(every state the session entered, with how and why).",
         schema: z.object({}),
       }) as unknown as StructuredTool,
+    );
+  }
+
+  if (offered.has(ADD_MESSAGE_TOOL)) {
+    tools.push(
+      tool(
+        async (input: z.infer<typeof addMessageSchema>) => {
+          if (input.text.trim() === "") {
+            throw new Error(
+              `${ADD_MESSAGE_TOOL} rejected: 'text' is empty. Pass the message the session says to the person.`,
+            );
+          }
+          recorder.addMessage({ id: uuidv4(), text: input.text });
+          return "Message added: the session says it when this state finishes.";
+        },
+        {
+          name: ADD_MESSAGE_TOOL,
+          description:
+            "Add a message to the session: `text` is what the session says to the person, as the " +
+            "agent would write it. Each call adds one message, in order; they join the session's " +
+            "transcript when this state finishes, unless the state fails.",
+          schema: addMessageSchema,
+        },
+      ) as unknown as StructuredTool,
     );
   }
 

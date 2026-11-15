@@ -312,6 +312,16 @@ describe("automated states", () => {
     },
   );
 
+  it("errors on a grader granting the message control, and leaves a code state's grant alone", () => {
+    const grader = lintState({ ...GRADER, tools: { allow: ["read_file", "archmax_add_message"] } });
+    const [finding, ...rest] = errorsAt(grader, "states.check.tools.allow.1");
+    expect(rest).toEqual([]);
+    expect(finding?.message).toContain("State 'check' is a grader state, which is never offered 'archmax_add_message'");
+    expect(finding?.message).toContain("never speaks in it");
+    const code = lintState({ ...CODE, tools: { allow: ["archmax_add_message"] } });
+    expect(errorsAt(code, "states.check.tools.allow.0")).toEqual([]);
+  });
+
   it("leaves an agent state's grant of those tools alone", () => {
     const findings = lintState({
       tools: { allow: ["write_todos", "archmax_eval", { tool: "archmax_run", paths: ["skills/**"] }, "archmax_wait"] },

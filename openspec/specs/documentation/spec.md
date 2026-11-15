@@ -306,7 +306,10 @@ moving the session with `tools.archmax_advance({ to, reason })` or ending it wit
 such as `defineCodeState` and `CodeStateInput`; that it reads the session with
 `JSON.parse(await tools.archmax_get_history())`, the history a grader reads: `{ messages, trail }`,
 the session's whole transcript and trail, a tool entry carrying its tool, its call `id` and its
-result as `text`; that its `tools.*` reach exactly its own state's tool surface, held
+result as `text`; that it says something to the person with
+`tools.archmax_add_message({ text })`, an assistant message the session speaks, committed when the
+run settles and discarded when it fails, and that a grader is never offered it; that its `tools.*`
+reach exactly its own state's tool surface, held
 to that state's allow and forbid lists as an `archmax_run` script is, and to every workflow-wide
 denial; that a terminal code state completes the session when its script returns, while a
 non-terminal one that neither advances nor raises fails through `on_error`); **grader states**

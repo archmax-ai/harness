@@ -3,6 +3,7 @@ import type { BackendProtocolV2 } from "deepagents";
 import { Workspace } from "../core/workspace.js";
 import { DEFAULT_TOOLS, STATE_TYPE_TOOLS, WorkflowMachine } from "./machine.js";
 import {
+  ADD_MESSAGE_TOOL,
   ADVANCE_TOOL,
   GET_HISTORY_TOOL,
   GET_VARIABLES_TOOL,
@@ -838,8 +839,16 @@ describe("tool surfaces by state type", () => {
     expect(machine.controlTools("draft")).toBe(STATE_TYPE_TOOLS.agent.controls);
     expect(machine.controlTools("approve")).toBe(STATE_TYPE_TOOLS.agent.controls);
     expect(machine.controlTools("screen")).toBe(STATE_TYPE_TOOLS.code.controls);
-    expect(machine.controlTools("review")).toBe(STATE_TYPE_TOOLS.code.controls);
+    expect(machine.controlTools("review")).toBe(STATE_TYPE_TOOLS.grader.controls);
     expect([...STATE_TYPE_TOOLS.code.controls].sort()).toEqual([
+      ADD_MESSAGE_TOOL,
+      ADVANCE_TOOL,
+      GET_HISTORY_TOOL,
+      GET_VARIABLES_TOOL,
+      RAISE_TOOL,
+      SET_VARIABLES_TOOL,
+    ]);
+    expect([...STATE_TYPE_TOOLS.grader.controls].sort()).toEqual([
       ADVANCE_TOOL,
       GET_HISTORY_TOOL,
       GET_VARIABLES_TOOL,
@@ -850,7 +859,7 @@ describe("tool surfaces by state type", () => {
 
   it("offers a code state its controls and file tools, and nothing an agent's loop uses", () => {
     const disclosed = machine.disclosedTools("screen");
-    for (const tool of [ADVANCE_TOOL, RAISE_TOOL, GET_VARIABLES_TOOL, SET_VARIABLES_TOOL, GET_HISTORY_TOOL]) {
+    for (const tool of [ADVANCE_TOOL, RAISE_TOOL, GET_VARIABLES_TOOL, SET_VARIABLES_TOOL, GET_HISTORY_TOOL, ADD_MESSAGE_TOOL]) {
       expect(disclosed.has(tool)).toBe(true);
       expect(machine.checkAllowed("screen", tool, {})).toBe(true);
     }
@@ -871,14 +880,15 @@ describe("tool surfaces by state type", () => {
     expect(disclosed.has(RAISE_TOOL)).toBe(true);
     expect(disclosed.has(GET_VARIABLES_TOOL)).toBe(true);
     expect(disclosed.has(SET_VARIABLES_TOOL)).toBe(true);
+    expect(disclosed.has(ADD_MESSAGE_TOOL)).toBe(true);
     for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) expect(disclosed.has(tool)).toBe(false);
   });
 
-  it("offers a grader the same controls as a code state", () => {
+  it("offers a grader a code state's controls except the message control", () => {
     const disclosed = machine.disclosedTools("review");
     expect(machine.checkAllowed("review", GET_HISTORY_TOOL, {})).toBe(true);
-    for (const tool of STATE_TYPE_TOOLS.code.controls) expect(disclosed.has(tool)).toBe(true);
-    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET]) {
+    for (const tool of STATE_TYPE_TOOLS.grader.controls) expect(disclosed.has(tool)).toBe(true);
+    for (const tool of [...AGENT_ONLY, ...PARK_AND_RESET, ADD_MESSAGE_TOOL]) {
       expect(disclosed.has(tool)).toBe(false);
       expect(machine.checkAllowed("review", tool, {})).toBe(false);
     }
@@ -893,8 +903,10 @@ describe("tool surfaces by state type", () => {
         const args = tool === "archmax_run" ? { file_path: "skills/x.js" } : {};
         expect(machine.checkAllowed(state, tool, args)).toBe(true);
       }
-      expect(disclosed.has(GET_HISTORY_TOOL)).toBe(false);
-      expect(machine.checkAllowed(state, GET_HISTORY_TOOL, {})).toBe(false);
+      for (const tool of [GET_HISTORY_TOOL, ADD_MESSAGE_TOOL]) {
+        expect(disclosed.has(tool)).toBe(false);
+        expect(machine.checkAllowed(state, tool, {})).toBe(false);
+      }
     }
   });
 
