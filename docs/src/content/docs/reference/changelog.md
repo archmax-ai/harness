@@ -9,6 +9,22 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 2.3.0
+
+A code state can say something to the person.
+
+- **`archmax_add_message({ text })`.** A code state's script adds a message to the session: an
+  assistant message, part of the turn's `reply`, reported as an `agent-text` event, read by the
+  agent on its next model call and by a later state's history. The messages land when the run
+  settles, ahead of the move's note; a failed run's are discarded with its move, and a raise keeps
+  them. A terminal code state can now answer a request with no model call at all. See
+  [saying something to the person](/guides/automated-states/#saying-something-to-the-person).
+- **The automated control sets split.** `STATE_TYPE_TOOLS.code.controls` gains
+  `archmax_add_message` and `STATE_TYPE_TOOLS.grader.withheld` gains it, so the two entries no
+  longer match: a grader never speaks in the session, and a grader state whose `tools.allow` names
+  the tool is an `archmax validate` error. `HARNESS_CONTROL_TOOLS` holds ten tools. See
+  [what each state is offered](/guides/automated-states/#what-each-state-is-offered).
+
 ## 2.2.0
 
 The harness reports its work as OpenTelemetry spans and metrics.

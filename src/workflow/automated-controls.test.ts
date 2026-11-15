@@ -44,7 +44,7 @@ function controls(state: string, session: unknown = {}) {
 }
 
 describe("an automated state's controls", () => {
-  it("are the automated control set, in order, for a code state and a grader alike", () => {
+  it("are the automated control set, in order, with the message control a code state's alone", () => {
     const names = [
       "archmax_advance",
       "archmax_raise",
@@ -52,7 +52,7 @@ describe("an automated state's controls", () => {
       "archmax_set_variables",
       "archmax_get_history",
     ];
-    expect(controls("check").tools.map((tool) => tool.name)).toEqual(names);
+    expect(controls("check").tools.map((tool) => tool.name)).toEqual([...names, "archmax_add_message"]);
     expect(controls("grade").tools.map((tool) => tool.name)).toEqual(names);
     // A terminal state is not offered the advance.
     expect(controls("done").tools.map((tool) => tool.name)).not.toContain("archmax_advance");
@@ -104,5 +104,35 @@ describe("an automated state's controls", () => {
       const history = JSON.parse(await controls(state).byName("archmax_get_history").invoke({}));
       expect(history).toEqual({ messages: [{ role: "user", text: "hi" }], trail: [] });
     }
+  });
+
+  it("record a code state's messages in order, each with its own id, before or after the decision", async () => {
+    const { recorder, byName } = controls("done");
+    expect(recorder.messages).toEqual([]);
+    expect(await byName("archmax_add_message").invoke({ text: "Checking your order." })).toMatch(/Message added/);
+    await byName("archmax_raise").invoke({ code: "gone", reason: "the order is gone" });
+    await byName("archmax_add_message").invoke({ text: "  It is gone.\n" });
+    expect(recorder.messages.map((m) => m.text)).toEqual(["Checking your order.", "  It is gone.\n"]);
+    const [first, second] = recorder.messages;
+    expect(first!.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second!.id).not.toBe(first!.id);
+    expect(recorder.decision).toMatchObject({ kind: "raise", code: "gone" });
+  });
+
+  it("refuse a blank message, and record nothing for it", async () => {
+    const { recorder, byName } = controls("check");
+    for (const text of ["", "   \n "]) {
+      await expect(byName("archmax_add_message").invoke({ text })).rejects.toThrow(
+        /archmax_add_message rejected: 'text' is empty/,
+      );
+    }
+    expect(recorder.messages).toEqual([]);
+  });
+
+  it("leave the messages out of the history the run reads", async () => {
+    const { byName } = controls("check");
+    await byName("archmax_add_message").invoke({ text: "Said." });
+    const history = JSON.parse(await byName("archmax_get_history").invoke({}));
+    expect(history.messages).toEqual([{ role: "user", text: "hi" }]);
   });
 });

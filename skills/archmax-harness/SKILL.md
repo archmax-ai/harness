@@ -142,6 +142,7 @@ through `on_error`.
 | A deterministic check **in front of** a state | The trigger's entry (or the transition's target) is a code state that advances to the work, or to a state that declines it |
 | A check **behind** a state | The state's transition points at a code state with a transition onward and one **back**; a send-back's `reason` names the fix |
 | **Approve, then end** | Approve into a terminal code state: its script records the result and the session completes with no further model call |
+| **Answer without a model** | The trigger's entry is a code state whose script knows the answer: it says it with `tools.archmax_add_message({ text })` and the session ends there (a terminal code state, or an advance into one); what it cannot answer it raises, or advances to an agent state |
 | Judgment, with a bounded loop | A grader behind the state it grades, with transitions onward and back; its `instructions` say "raise after two send-backs", counted on the trail |
 
 Grade work the agent hands on (a report, a recorded decision), not a live answer:

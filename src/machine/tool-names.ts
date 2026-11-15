@@ -27,8 +27,10 @@ export const RUN_TOOL = "archmax_run";
 export const GET_VARIABLES_TOOL = "archmax_get_variables";
 /** Create, update, and lock the run's variables. */
 export const SET_VARIABLES_TOOL = "archmax_set_variables";
-/** Read the session's history: its whole transcript and its trail. A grader state's tool. */
+/** Read the session's history: its whole transcript and its trail. A grader's and a code state's tool. */
 export const GET_HISTORY_TOOL = "archmax_get_history";
+/** Add a message to the session: what the session says to the person. A code state's tool. */
+export const ADD_MESSAGE_TOOL = "archmax_add_message";
 
 /**
  * The runtime's own file operations, beside Deep Agents' built-ins and named
@@ -129,8 +131,8 @@ const AGENT_CONTROLS: ReadonlySet<string> = new Set([
   SET_VARIABLES_TOOL,
 ]);
 
-/** The controls a grader or a code state always has. */
-const AUTOMATED_CONTROLS: ReadonlySet<string> = new Set([
+/** The controls a grader state always has: it moves, fails, keeps the variables and reads the history. */
+const GRADER_CONTROLS: ReadonlySet<string> = new Set([
   ADVANCE_TOOL,
   RAISE_TOOL,
   GET_VARIABLES_TOOL,
@@ -138,8 +140,14 @@ const AUTOMATED_CONTROLS: ReadonlySet<string> = new Set([
   GET_HISTORY_TOOL,
 ]);
 
-/** The tools no grader or code state is offered, whatever a grant names. */
-const AUTOMATED_WITHHELD: ReadonlySet<string> = new Set([TODO_TOOL, EVAL_TOOL, RUN_TOOL, WAIT_TOOL, RESET_TOOL]);
+/** The controls a code state always has: the grader's, and it can say something to the person. */
+const CODE_CONTROLS: ReadonlySet<string> = new Set([...GRADER_CONTROLS, ADD_MESSAGE_TOOL]);
+
+/** The tools no code state is offered, whatever a grant names. */
+const CODE_WITHHELD: ReadonlySet<string> = new Set([TODO_TOOL, EVAL_TOOL, RUN_TOOL, WAIT_TOOL, RESET_TOOL]);
+
+/** The tools no grader state is offered: a code state's, and the message control — a grader's words never enter the transcript. */
+const GRADER_WITHHELD: ReadonlySet<string> = new Set([...CODE_WITHHELD, ADD_MESSAGE_TOOL]);
 
 /** What a state type is offered beyond its grants, and what no grant can give it. */
 export interface StateTypeTools {
@@ -158,20 +166,22 @@ export interface StateTypeTools {
  * reads the history it checks; it never parks — a script frame is not durable,
  * and a grader judges rather than waits — never resets, and is never offered the
  * planning list or the sandbox entry points: a code state *is* a script, and a
- * grader judges rather than computes. `archmax_advance`'s target is checked
- * against the state's transitions whatever the table says.
+ * grader judges rather than computes. A code state alone can also add a message
+ * to the session; a grader, an isolated judge, never speaks in it.
+ * `archmax_advance`'s target is checked against the state's transitions
+ * whatever the table says.
  */
 export const STATE_TYPE_TOOLS: Readonly<Record<StateType, StateTypeTools>> = {
   agent: { controls: AGENT_CONTROLS, withheld: new Set() },
   human: { controls: AGENT_CONTROLS, withheld: new Set() },
-  grader: { controls: AUTOMATED_CONTROLS, withheld: AUTOMATED_WITHHELD },
-  code: { controls: AUTOMATED_CONTROLS, withheld: AUTOMATED_WITHHELD },
+  grader: { controls: GRADER_CONTROLS, withheld: GRADER_WITHHELD },
+  code: { controls: CODE_CONTROLS, withheld: CODE_WITHHELD },
 };
 
 /** Every harness-owned control tool, by canonical name: every type's controls and the two sandbox tools. */
 export const HARNESS_CONTROL_TOOLS: ReadonlySet<string> = new Set([
   ...AGENT_CONTROLS,
-  ...AUTOMATED_CONTROLS,
+  ...CODE_CONTROLS,
   EVAL_TOOL,
   RUN_TOOL,
 ]);

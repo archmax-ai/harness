@@ -185,7 +185,8 @@ Every state starts from three things:
   adding to them, so a new workflow lists all twelve and removes only what it must not have.
 - **Its state type's controls**, the runtime's `archmax_*` tools: `archmax_advance` outside
   terminal states, `archmax_raise` and the variable tools in every state, `archmax_reset` and
-  `archmax_wait` in agent and human states, and `archmax_get_history` in grader and code states.
+  `archmax_wait` in agent and human states, `archmax_get_history` in grader and code states, and
+  `archmax_add_message` in code states.
 - **The host's `essentialTools`**, whatever the workflow declares.
 
 A grader or a code state is never offered `write_todos`, `archmax_eval`, `archmax_run`,
@@ -615,7 +616,8 @@ by the **runtime** itself, the **automated states**:
   change, when it does not.
 - A **code state** (`type: code`) runs the JavaScript file its `script` names,
   `workflows/<slug>/scripts/<file>.js`, in the QuickJS sandbox. The script moves the session itself
-  with `tools.archmax_advance({ to, reason })`.
+  with `tools.archmax_advance({ to, reason })`, and can say something to the person with
+  `tools.archmax_add_message({ text })`.
 
 An automated state runs whenever the session reaches it, in place of the agent's next model call,
 and consecutive code states run one after another with no model call at all. Each is offered

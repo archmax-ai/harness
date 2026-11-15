@@ -6,7 +6,7 @@
  */
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
-import { RemoveMessage } from "@langchain/core/messages";
+import { AIMessage, RemoveMessage } from "@langchain/core/messages";
 import { v4 as uuidv4 } from "@langchain/core/utils/uuid";
 import { createMiddleware } from "langchain";
 import type { AgentMiddleware } from "langchain";
@@ -417,9 +417,10 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
 
   /**
    * The update an automated step's outcome commits, beside the marker's removal:
-   * its variable writes, its sub-run trail steps, its usage, and — for a move or
-   * a raise — the move itself or the failure record, with the runtime note the
-   * next state reads. A move jumps back to the model, which skips the
+   * a code state's messages, as assistant messages under the ids they were added
+   * with, its variable writes, its sub-run trail steps, its usage, and — for a
+   * move or a raise — the move itself or the failure record, with the runtime
+   * note the next state reads, after what the state said. A move jumps back to the model, which skips the
    * `beforeModel` site, so what that site would do for the next call is done
    * here: into a human state the park opens straight in its closing turn, and
    * into an agent state the call is counted as the state's first.
@@ -427,8 +428,9 @@ export function createWorkflowInstrumentation(opts: WorkflowMiddlewareOptions): 
   function commitAutomated(step: AutomatedOutcome, markerId: string, state: WorkflowRequestState): WorkflowUpdate {
     const note = automatedNoteText(step);
     const notes = note ? runtimeNote(step.type, note) : [];
+    const said = (step.messages ?? []).map((message) => new AIMessage({ id: message.id, content: message.text }));
     const committed: WorkflowUpdate = {
-      messages: [new RemoveMessage({ id: markerId }), ...notes],
+      messages: [new RemoveMessage({ id: markerId }), ...said, ...notes],
       ...(step.variables ? { variables: step.variables } : {}),
       ...(step.usage ? { usage: addSummaries(readRunUsage(state), step.usage) } : {}),
       ...(step.trail?.length ? { auditTrail: step.trail } : {}),

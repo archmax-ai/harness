@@ -22,7 +22,9 @@
  * along one of its transitions, or `tools.archmax_raise({ code, reason })` to end
  * the session as failed. Nothing the script returns is read. A non-terminal code
  * state that finishes without either call fails, as does one that throws. It
- * reads the session it checks with `tools.archmax_get_history()`.
+ * reads the session it checks with `tools.archmax_get_history()`, and says
+ * something to the person with `tools.archmax_add_message({ text })`: each call
+ * adds one assistant message, committed when the state finishes unless it fails.
  */
 
 /** One transcript message, as plain data. `role` is `user`, `assistant`, `tool`, `system`, or `runtime`. */
@@ -81,7 +83,8 @@ export interface SessionHistory {
 /**
  * The code state's tools (`tools.*`): exactly its state's surface — its grants,
  * the workflow-wide grant, and its controls (`archmax_advance`, `archmax_raise`,
- * `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`) — as async functions, by
+ * `archmax_get_variables`, `archmax_set_variables`, `archmax_get_history`,
+ * `archmax_add_message`) — as async functions, by
  * their own name (`tools.read_file`) or camelCase (`tools.readFile`). A tool the
  * state does not offer is `undefined`. Every call is governed against the code
  * state as a model's would be; a refused call rejects with the governance reason.

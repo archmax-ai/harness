@@ -163,6 +163,10 @@ export default async function ({ variables, tools }) {
 The policy lives in code, so it holds whatever the model says. When the agent records the wrong
 decision, the script sends it back with the reason, before anyone grades the email.
 
+A code state can also speak. `tools.archmax_add_message({ text })` adds a message the session says
+to the person, so a script that already knows the answer, such as an order's status, gives it
+without a model call.
+
 ### Running it
 
 ```bash

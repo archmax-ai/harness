@@ -123,6 +123,7 @@ describe("a code state", () => {
       expect.arrayContaining(["readFile", "writeFile", "ls", "archmaxAdvance", "archmaxRaise", "archmaxSetVariables"]),
     );
     expect(listed).toContain("archmaxGetHistory");
+    expect(listed).toContain("archmaxAddMessage");
     for (const name of ["writeTodos", "archmaxEval", "archmaxRun", "archmaxWait", "archmaxReset", "grep", "task"]) {
       expect(listed).not.toContain(name);
     }
@@ -372,6 +373,271 @@ describe("a code state", () => {
   });
 });
 
+/** The transcript's assistant messages with text, in order, as `id: text`. */
+function said(messages: unknown[]): Array<{ id: string; text: string }> {
+  return messages
+    .filter((m) => (m as { getType?: () => string }).getType?.() === "ai" && !isRuntimeNote(m))
+    .map((m) => ({ id: String((m as { id?: unknown }).id), text: String((m as { content?: unknown }).content) }))
+    .filter((m) => m.text !== "");
+}
+
+describe("a code state's messages", () => {
+  it("answer the person from a terminal code state, with no model call", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: { status: { type: "code", script: "scripts/status.js", triggers: { manual: null } } },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/status.js": script(
+        `  const id = messages.find((m) => m.role === "user").text.match(/ORD-\\d+/)[0];\n` +
+          `  await tools.archmax_add_message({ text: "Order " + id + " shipped on 3 May." });`,
+      ),
+    });
+    const { agent, model, events } = await assemble(root, { turns: [] });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "Where is ORD-1001?" });
+
+    expect(outcome).toMatchObject({ kind: "completed", state: "status", reply: "Order ORD-1001 shipped on 3 May." });
+    expect(model.calls).toHaveLength(0);
+    const [message, ...more] = said(outcome.messages);
+    expect(more).toEqual([]);
+    expect(message?.text).toBe("Order ORD-1001 shipped on 3 May.");
+    expect(outcome.messages.at(-1)).toMatchObject({ content: "Order ORD-1001 shipped on 3 May." });
+    // The event names the message the transcript holds.
+    expect(eventsOf(events, "agent-text")).toEqual([
+      expect.objectContaining({ state: "status", text: "Order ORD-1001 shipped on 3 May.", messageId: message?.id }),
+    ]);
+  });
+
+  it("precede the move's note, and the agent reads them before it", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        screen: {
+          type: "code",
+          script: "scripts/screen.js",
+          triggers: { manual: null },
+          transitions: [{ to: "answer", description: "Looked up." }],
+        },
+        answer: {},
+      },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/screen.js": script(
+        `  await tools.archmax_add_message({ text: "Checking your order." });\n` +
+          `  await tools.archmax_add_message({ text: "It shipped." });\n` +
+          `  await tools.archmax_advance({ to: "answer", reason: "looked up" });`,
+      ),
+    });
+    const { agent, model } = await assemble(root, { turns: [{ reply: "Anything else?" }] });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "where is my order?" });
+
+    expect(outcome).toMatchObject({ kind: "completed", state: "answer" });
+    expect(outcome.reply).toBe("Checking your order.\n\nIt shipped.\n\nAnything else?");
+    // In the transcript: the person, both messages in order, then the note's pair.
+    const kinds = outcome.messages.map((m) =>
+      isRuntimeNote(m) ? `note:${(m as { getType: () => string }).getType()}` : (m as { getType: () => string }).getType(),
+    );
+    expect(kinds.slice(0, 5)).toEqual(["human", "ai", "ai", "note:ai", "note:tool"]);
+    expect(said(outcome.messages).map((m) => m.text)).toEqual(["Checking your order.", "It shipped.", "Anything else?"]);
+    // The agent's model call reads both, then the note.
+    const shown = model.calls[0]!.parts.map((m) => `${m.type}:${m.parts.map((p) => p.text ?? "").join("")}`);
+    const first = shown.indexOf("ai:Checking your order.");
+    const second = shown.indexOf("ai:It shipped.");
+    const note = shown.findIndex((line) => line.startsWith("tool:[code] 'screen' moved the run to 'answer'"));
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBeGreaterThan(first);
+    expect(note).toBeGreaterThan(second);
+  });
+
+  it("stand when the script raises", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        refund: {
+          type: "code",
+          script: "scripts/refund.js",
+          triggers: { manual: null },
+          transitions: [{ to: "done", description: "Refunded." }],
+        },
+        done: {},
+      },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/refund.js": script(
+        `  await tools.archmax_add_message({ text: "We cannot refund an order older than 30 days." });\n` +
+          `  await tools.archmax_raise({ code: "refund-window", reason: "the order is 41 days old" });`,
+      ),
+    });
+    const { agent, model } = await assemble(root, { turns: [] });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "refund ORD-7" });
+
+    expect(outcome).toMatchObject({ kind: "failed", state: "refund", reply: "We cannot refund an order older than 30 days." });
+    expect(outcome.exit).toEqual({ success: false, code: "refund-window", reason: "the order is 41 days old" });
+    expect(model.calls).toHaveLength(0);
+    expect(notes(outcome.messages)).toEqual([
+      "code: [code] 'refund' ended the session as failed ('refund-window'): the order is 41 days old",
+    ]);
+  });
+
+  it("are discarded when the run fails, so the on_error route speaks alone", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        refund: {
+          type: "code",
+          script: "scripts/refund.js",
+          triggers: { manual: null },
+          on_error: "escalate",
+          transitions: [{ to: "done", description: "Refunded." }],
+        },
+        done: {},
+        escalate: {},
+      },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/refund.js": script(
+        `  await tools.archmax_add_message({ text: "Your refund is on its way." });\n` +
+          `  throw new Error("the payment provider is down");`,
+      ),
+    });
+    const { agent, events } = await assemble(root, { turns: [{ reply: "A colleague will look into it." }] });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "refund ORD-7" });
+
+    expect(outcome).toMatchObject({ kind: "completed", state: "escalate", reply: "A colleague will look into it." });
+    expect(said(outcome.messages).map((m) => m.text)).toEqual(["A colleague will look into it."]);
+    expect(eventsOf(events, "agent-text").map((e) => e.text)).toEqual(["A colleague will look into it."]);
+    expect(eventsOf(events, "code-result")[0]).toMatchObject({ state: "refund", status: "error" });
+  });
+
+  it("refuse a blank message the script can catch", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        screen: {
+          type: "code",
+          script: "scripts/screen.js",
+          triggers: { manual: null },
+          transitions: [{ to: "done", description: "Screened." }],
+        },
+        done: { type: "code", script: "scripts/done.js" },
+      },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/screen.js": script(
+        `  let refusal = "";\n` +
+          `  try { await tools.archmax_add_message({ text: "   " }); } catch (e) { refusal = e.message; }\n` +
+          `  await tools.archmax_set_variables({ variables: { refusal } });\n` +
+          `  await tools.archmax_advance({ to: "done", reason: "screened" });`,
+      ),
+      "workflows/w/scripts/done.js": script(`  console.log("done");`),
+    });
+    const { agent, events } = await assemble(root, { turns: [] });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "go" });
+
+    expect(outcome).toMatchObject({ kind: "completed", state: "done", reply: "" });
+    expect(String(outcome.variables.refusal?.value)).toMatch(/archmax_add_message rejected: 'text' is empty/);
+    expect(said(outcome.messages)).toEqual([]);
+    expect(eventsOf(events, "agent-text")).toEqual([]);
+  });
+
+  it("reach a later state's history as the session's own, and not the run's own history", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        "look-up": {
+          type: "code",
+          script: "scripts/look-up.js",
+          triggers: { manual: null },
+          transitions: [{ to: "check", description: "Looked up." }],
+        },
+        check: { type: "code", script: "scripts/check.js" },
+      },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/look-up.js":
+        `export default async function ({ tools }) {\n` +
+        `  await tools.archmax_add_message({ text: "Looked it up." });\n` +
+        `  const { messages } = JSON.parse(await tools.archmax_get_history());\n` +
+        `  await tools.archmax_set_variables({ variables: { own: messages.filter((m) => m.role === "assistant").length } });\n` +
+        `  await tools.archmax_advance({ to: "check", reason: "looked up" });\n` +
+        `}\n`,
+      "workflows/w/scripts/check.js":
+        `export default async function ({ tools }) {\n` +
+        `  const { messages } = JSON.parse(await tools.archmax_get_history());\n` +
+        `  await tools.archmax_set_variables({ variables: { seen: messages.map((m) => m.role + (m.note ? ":" + m.note : "") + ":" + m.text) } });\n` +
+        `}\n`,
+    });
+    const { agent } = await assemble(root, { turns: [] });
+    const outcome = await agent.workflow.send(freshSessionId(), { message: "find it" });
+
+    expect(outcome).toMatchObject({ kind: "completed", state: "check", reply: "Looked it up." });
+    expect(outcome.variables.own?.value).toBe(0);
+    expect(outcome.variables.seen?.value).toEqual([
+      "user:find it",
+      "assistant:Looked it up.",
+      "runtime:code:[code] 'look-up' moved the run to 'check': looked up. You are now in 'check'.",
+    ]);
+  });
+
+  it("are reported after the script's console lines and before its result", async () => {
+    const spec = {
+      runtime: RUNTIME,
+      states: {
+        screen: {
+          type: "code",
+          script: "scripts/screen.js",
+          triggers: { manual: null },
+          transitions: [{ to: "answer", description: "Screened." }],
+        },
+        answer: {},
+      },
+    };
+    const root = workspaceWith(spec, {
+      "workflows/w/scripts/screen.js": script(
+        `  console.log("screening");\n` +
+          `  await tools.archmax_add_message({ text: "One moment." });\n` +
+          `  await tools.archmax_advance({ to: "answer", reason: "screened" });`,
+      ),
+    });
+    const { agent, events } = await assemble(root, { turns: [{ reply: "Here it is." }] });
+    await agent.workflow.send(freshSessionId(), { message: "go" });
+
+    const ORDERED = new Set([
+      "code-start",
+      "tool-called",
+      "tool-result",
+      "code-output",
+      "agent-text",
+      "code-result",
+      "advance",
+      "state-leave",
+      "state-enter",
+    ]);
+    const stream = events
+      .filter((e) => ORDERED.has(e.type))
+      .map((e) => {
+        const tool = (e as { tool?: string }).tool;
+        return tool ? `${e.type}:${tool}` : e.type;
+      });
+    const from = stream.indexOf("code-start");
+    expect(stream.slice(from, from + 13)).toEqual([
+      "code-start",
+      "tool-called:archmax_get_history",
+      "tool-result:archmax_get_history",
+      "tool-called:archmax_add_message",
+      "tool-result:archmax_add_message",
+      "tool-called:archmax_advance",
+      "tool-result:archmax_advance",
+      "code-output",
+      "agent-text",
+      "code-result",
+      "advance",
+      "state-leave",
+      "state-enter",
+    ]);
+  });
+});
+
 describe("a grader state", () => {
   const spec = (grader: Record<string, unknown> = {}) => ({
     runtime: RUNTIME,
@@ -425,7 +691,15 @@ describe("a grader state", () => {
     // The grader was offered exactly its state's surface.
     const offered = grader.calls[0]!.tools;
     expect(offered).toEqual(expect.arrayContaining(["archmax_get_history", "archmax_advance", "archmax_raise", "read_file"]));
-    for (const name of ["archmax_eval", "archmax_run", "write_todos", "archmax_wait", "archmax_reset", "task"]) {
+    for (const name of [
+      "archmax_eval",
+      "archmax_run",
+      "write_todos",
+      "archmax_wait",
+      "archmax_reset",
+      "archmax_add_message",
+      "task",
+    ]) {
       expect(offered).not.toContain(name);
     }
     // The grader's prompt is its preamble plus the state's criteria, and its task names the transitions.

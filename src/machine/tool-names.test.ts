@@ -4,6 +4,7 @@ import { Workspace } from "../core/workspace.js";
 import { normalizeAllowEntry } from "./allow.js";
 import { WorkflowMachine } from "./machine.js";
 import {
+  ADD_MESSAGE_TOOL,
   ADVANCE_TOOL,
   STATE_TYPE_TOOLS,
   DEFAULT_TOOLS,
@@ -65,8 +66,8 @@ describe("harness control tool names", () => {
       // default tools, granted like any other: a denial outranks the grant and
       // a state's own entry can narrow it.
       if (tool === RUN_TOOL || tool === EVAL_TOOL) continue;
-      // The history is a grader's control, offered in no other state type.
-      if (tool === GET_HISTORY_TOOL) continue;
+      // The history and the message control are automated states' controls, offered to no agent.
+      if (tool === GET_HISTORY_TOOL || tool === ADD_MESSAGE_TOOL) continue;
       expect(STATE_TYPE_TOOLS.agent.controls.has(tool)).toBe(true);
     }
   });
@@ -79,30 +80,47 @@ describe("harness control tool names", () => {
     expect(isReservedToolName(GET_HISTORY_TOOL)).toBe(true);
     expect(STATE_TYPE_TOOLS.agent.controls.has(GET_HISTORY_TOOL)).toBe(false);
   });
+
+  it("reserves archmax_add_message as a control tool, a code state's alone", () => {
+    expect(ADD_MESSAGE_TOOL).toBe("archmax_add_message");
+    expect(HARNESS_CONTROL_TOOLS.has(ADD_MESSAGE_TOOL)).toBe(true);
+    expect(isReservedToolName(ADD_MESSAGE_TOOL)).toBe(true);
+    expect(STATE_TYPE_TOOLS.code.controls.has(ADD_MESSAGE_TOOL)).toBe(true);
+    expect(STATE_TYPE_TOOLS.grader.controls.has(ADD_MESSAGE_TOOL)).toBe(false);
+    expect(STATE_TYPE_TOOLS.agent.controls.has(ADD_MESSAGE_TOOL)).toBe(false);
+  });
 });
 
 /**
  * An automated state — a grader or a code state alike — moves, fails, keeps the
- * session's variables and reads its history; it never parks or resets.
+ * session's variables and reads its history; it never parks or resets. A code
+ * state alone can also add a message to the session.
  */
-describe("the automated-state control set", () => {
-  it("is advance, raise, the variable tools and the history", () => {
-    expect([...STATE_TYPE_TOOLS.code.controls].sort()).toEqual(
-      [ADVANCE_TOOL, GET_HISTORY_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, SET_VARIABLES_TOOL].sort(),
-    );
-    expect(STATE_TYPE_TOOLS.code.controls.has(WAIT_TOOL)).toBe(false);
-    expect(STATE_TYPE_TOOLS.code.controls.has(RESET_TOOL)).toBe(false);
+describe("the automated-state control sets", () => {
+  it("is advance, raise, the variable tools and the history, and for a code state the message control", () => {
+    const shared = [ADVANCE_TOOL, GET_HISTORY_TOOL, GET_VARIABLES_TOOL, RAISE_TOOL, SET_VARIABLES_TOOL];
+    expect([...STATE_TYPE_TOOLS.grader.controls].sort()).toEqual([...shared].sort());
+    expect([...STATE_TYPE_TOOLS.code.controls].sort()).toEqual([...shared, ADD_MESSAGE_TOOL].sort());
+    for (const type of ["code", "grader"] as const) {
+      expect(STATE_TYPE_TOOLS[type].controls.has(WAIT_TOOL)).toBe(false);
+      expect(STATE_TYPE_TOOLS[type].controls.has(RESET_TOOL)).toBe(false);
+    }
   });
 
   it("names every automated control among the harness's controls", () => {
-    for (const tool of STATE_TYPE_TOOLS.code.controls) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
+    for (const type of ["code", "grader"] as const) {
+      for (const tool of STATE_TYPE_TOOLS[type].controls) expect(HARNESS_CONTROL_TOOLS.has(tool)).toBe(true);
+    }
   });
 
   it("withholds the planning list and both sandbox entry points from automated states", () => {
     expect([...STATE_TYPE_TOOLS.code.withheld].sort()).toEqual(
       [EVAL_TOOL, RUN_TOOL, "write_todos", "archmax_wait", "archmax_reset"].sort(),
     );
-    expect(STATE_TYPE_TOOLS.grader).toEqual(STATE_TYPE_TOOLS.code);
+    // A grader withholds the same, and the message control: a grader never speaks in the session.
+    expect([...STATE_TYPE_TOOLS.grader.withheld].sort()).toEqual(
+      [...STATE_TYPE_TOOLS.code.withheld, ADD_MESSAGE_TOOL].sort(),
+    );
     expect(STATE_TYPE_TOOLS.human).toEqual(STATE_TYPE_TOOLS.agent);
     expect(STATE_TYPE_TOOLS.agent.withheld.size).toBe(0);
     // Each is a default tool of an agent: what an automated state loses, not what

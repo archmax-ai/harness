@@ -3063,6 +3063,7 @@ describe("workflow middleware — automated states", () => {
       "archmax_get_variables",
       "archmax_set_variables",
       "archmax_get_history",
+      "archmax_add_message",
     ]);
     expect(params.surface).toContain("read_file");
     for (const absent of ["write_todos", "archmax_eval", "archmax_run", "archmax_wait", "archmax_reset", "web_fetch"]) {

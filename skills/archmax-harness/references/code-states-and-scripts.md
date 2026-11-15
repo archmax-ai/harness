@@ -27,9 +27,11 @@ human state or a completion ends at the turn's `recursionLimit`, with the sessio
 **What it is offered.** Exactly its own state's tools: its `tools.allow`, the
 workflow-wide grant and the host's `essentialTools`, plus five controls:
 `archmax_advance` (absent in a terminal state), `archmax_raise`,
-`archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`. It is never
-offered `write_todos`, `archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`
-([Tool governance](workflow-schema.md#tool-governance) has the table), so it cannot park.
+`archmax_get_variables`, `archmax_set_variables` and `archmax_get_history`, and for a
+code state a sixth, `archmax_add_message`. It is never offered `write_todos`,
+`archmax_eval`, `archmax_run`, `archmax_wait` or `archmax_reset`, and a grader never
+`archmax_add_message` ([Tool governance](workflow-schema.md#tool-governance) has the
+table), so it cannot park, and a grader never speaks in the session.
 The kernel decides each call against that state. Grant what a check reads on the
 check's own state: a tool, a skill bundle or a mount that another state grants is out
 of reach.
@@ -46,7 +48,7 @@ the state finishes cleanly.
 | advanced | it advanced and finished cleanly | The session moves. The trail records `{ kind: code \| grader, to, reason }`, and the next state reads the reason as a `[code]` or `[grader]` runtime note. A human target parks after its handoff message. |
 | raised | it called `archmax_raise` | The session ends `failed` with that code and reason. |
 | completed | a terminal state finished without either call | The session completes, held to the trigger's `returns`. |
-| failed | it threw, timed out, or (in a non-terminal state) finished without either call | Routed through `on_error`, else the session ends rejected. A raise beats an error; an error discards a recorded advance. |
+| failed | it threw, timed out, or (in a non-terminal state) finished without either call | Routed through `on_error`, else the session ends rejected. A raise beats an error; an error discards a recorded advance and every message the run added. |
 
 **The history.** Both types read the session with `archmax_get_history`, which answers
 `{ messages, trail }` as JSON: the session as it stood on entry, whole and oldest
@@ -61,7 +63,8 @@ Check the records, not the agent's retelling of them: a tool's result as the his
 carries it, a variable, a file. Never call a tool again just to see its result; for a
 tool that acts on an outside system, that is a second action. The history spans every
 turn, so take the last match where only the latest round counts. An automated state's
-own calls are not in the transcript.
+own calls are not in the transcript; a message an earlier code state added is, as an
+`assistant` entry.
 
 ## Code states
 
@@ -134,6 +137,36 @@ export default async function ({ variables, tools }) {
 - **Approve, then end.** A terminal code state completes the session when its script
   returns, with no further model call. Set any declared `returns` with
   `tools.archmax_set_variables` first.
+- **Say it yourself when the script knows the answer.** `tools.archmax_add_message({ text })`
+  adds a message the session says to the person: an assistant message in the
+  transcript, part of the turn's `reply`, an `agent-text` event, read by the agent next
+  and by a later state's history. Each call adds one, in order; a blank `text` is
+  refused. They land when the run settles, ahead of the move's runtime note, and only
+  if the run does not fail (a raise keeps them, a throw discards them). The run's own
+  `archmax_get_history` does not show them. A move into a human state still owes its
+  handoff message. Use it for an answer with no model call (a terminal code state that
+  adds the answer and returns) and to tell the person why before `archmax_raise`:
+
+  ```js
+  /**
+   * Order status — answers "where is ORD-…?" from the order records, with no model call.
+   *
+   * Reads the person's latest message from the history and looks the order up with
+   * lookup_order. Adds the order's status as the session's answer and completes; when
+   * no order matches, says so and raises order-unknown.
+   */
+  export default async function ({ tools }) {
+    const { messages } = JSON.parse(await tools.archmax_get_history());
+    const asked = [...messages].reverse().find((m) => m.role === "user")?.text ?? "";
+    const id = asked.match(/ORD-\d+/)?.[0];
+    const order = id ? JSON.parse(await tools.lookup_order({ id })) : null;
+    if (!order) {
+      await tools.archmax_add_message({ text: `I could not find ${id ? `order ${id}` : "an order number in your message"}.` });
+      return tools.archmax_raise({ code: "order-unknown", reason: `no order ${id ?? "named"}` });
+    }
+    await tools.archmax_add_message({ text: `Order ${order.id} is ${order.status}.` });
+  }
+  ```
 - **Files.** `tools.read_file` answers a missing or binary file with an `Error: …`
   string instead of throwing, so check before you parse. Use `copy_file`, `move_file`
   and `remove_file` to duplicate, move or delete a file.
