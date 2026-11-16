@@ -125,7 +125,9 @@ export default async function ({ variables, tools }) {
   and send it back with the fix as the `reason`. Let an unreadable database throw, so
   the state fails through `on_error`.
 - **One evaluation in a fresh sandbox.** Each entry runs in a fresh QuickJS REPL, with
-  top-level `await` and no Node APIs, bounded as a whole by `settings.timeoutMs`.
+  top-level `await` and no Node APIs, bounded as a whole by `settings.timeoutMs`
+  (wall-clock time, awaited `tools.*` calls included; the evaluation also waits for
+  calls started without `await`).
   `console.log` lines become `code-output` events, which the CLI prints under the
   state.
 - **Imports** are limited to `@archmax-ai/harness/*` type carriers, which are stripped
