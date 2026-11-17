@@ -171,24 +171,31 @@ describe("disposing a session while a script's call is pending", () => {
   it("waits for a running eval to return before freeing its REPL", async () => {
     const frees = watchReplFrees();
     const runtime = createQuickJsSandboxRuntime();
-    const running = runtime.session("running:agent", {}).eval("await new Promise(() => {})", 200);
-    await tick();
+    const slow = gatedTool();
+    const running = runtime
+      .session("running:agent", { tools: [slow.tool] })
+      .eval("await tools.slowTool({})", 30_000);
+    await vi.waitFor(() => expect(slow.calls).toHaveLength(1));
 
+    // Disposal abandons the pending call; the eval resumes on it and returns.
     runtime.dispose("running:agent");
-    await tick(50);
     expect(frees.freed("running:agent")).toBeUndefined();
 
-    expect((await running).error?.message).toMatch(/timed out/);
+    const outcome = await running;
+    expect(outcome.error?.message).toMatch(/the sandbox session was disposed/);
+    // Freed only once the eval has returned, never under it.
+    expect(frees.freed("running:agent")).toBeUndefined();
     await vi.waitFor(() => expect(frees.freed("running:agent")).toBeDefined());
     expect(frees.freed("running:agent")?.assertion).toBeUndefined();
+    slow.resolve();
   });
 
   it("starts the namespace afresh, and refuses the released session", async () => {
     const runtime = createQuickJsSandboxRuntime();
     const slow = gatedTool();
     const released = runtime.session("afresh:agent", { tools: [slow.tool] });
-    // A call left pending past its eval: the REPL is still in use when disposed.
-    await released.eval("globalThis.kept = 1; tools.slowTool({}); 'started'", 1_000);
+    // An eval waits for a call it did not await, so this one runs to its timeout.
+    await released.eval("globalThis.kept = 1; tools.slowTool({}); 'started'", 100);
     runtime.dispose("afresh:agent");
 
     const fresh = runtime.session("afresh:agent", {});
@@ -197,5 +204,96 @@ describe("disposing a session while a script's call is pending", () => {
     expect(refused.error?.message).toBe("the sandbox session was disposed");
     runtime.dispose("afresh:agent");
     slow.resolve();
+  });
+});
+
+describe("an eval's timeout", () => {
+  it("bounds the wall clock while the script awaits a host call", async () => {
+    const unhandled = watchUnhandled();
+    const runtime = createQuickJsSandboxRuntime();
+    const slow = gatedTool();
+    const session = runtime.session("timeout-awaits:agent", { tools: [slow.tool] });
+
+    const startedAt = Date.now();
+    const outcome = await session.eval("console.log('before'); await tools.slowTool({})", 100);
+    const elapsed = Date.now() - startedAt;
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error?.message).toMatch(/timed out/);
+    expect(outcome.logs).toEqual(["before"]);
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(elapsed).toBeLessThan(1_000);
+    // The session evaluates again at once: the timed-out eval does not hold it.
+    expect((await session.eval("1 + 1", 1_000)).value).toBe(2);
+    runtime.dispose("timeout-awaits:agent");
+    slow.resolve();
+    await tick();
+    expect(unhandled).toEqual([]);
+  });
+
+  it("abandons the pending call and refuses the next one before it reaches the tool", async () => {
+    const runtime = createQuickJsSandboxRuntime();
+    const slow = gatedTool();
+    const next = countingTool("next_tool");
+    const session = runtime.session("timeout-refuses:agent", { tools: [slow.tool, next.tool] });
+
+    const code = [
+      "try { await tools.slowTool({}); } catch (e) { globalThis.first = e.message; }",
+      "try { await tools.nextTool({}); } catch (e) { globalThis.second = e.message; }",
+    ].join("\n");
+    expect((await session.eval(code, 100)).error?.message).toMatch(/timed out/);
+
+    const seen = await session.eval("[first, second]", 1_000);
+    runtime.dispose("timeout-refuses:agent");
+    expect(seen.value).toEqual([
+      "Tool 'slow_tool' failed: the evaluation timed out",
+      "Tool 'next_tool' failed: the evaluation timed out",
+    ]);
+    expect(next.calls).toEqual([]);
+    slow.resolve();
+  });
+
+  it("bounds a call the script did not await", async () => {
+    const runtime = createQuickJsSandboxRuntime();
+    const slow = gatedTool();
+    const session = runtime.session("timeout-unawaited:agent", { tools: [slow.tool] });
+
+    const startedAt = Date.now();
+    const outcome = await session.eval("tools.slowTool({}); 'started'", 100);
+    runtime.dispose("timeout-unawaited:agent");
+
+    expect(outcome.error?.message).toMatch(/timed out/);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    slow.resolve();
+  });
+
+  it("does not count against an eval that finishes in time", async () => {
+    const runtime = createQuickJsSandboxRuntime();
+    const quick = countingTool("quick_tool");
+    const session = runtime.session("timeout-in-time:agent", { tools: [quick.tool] });
+
+    const outcome = await session.eval("await tools.quickTool({})", 1_000);
+    // Past the first eval's deadline, a call from the next eval still runs.
+    await tick(1_050);
+    const after = await session.eval("await tools.quickTool({})", 1_000);
+    runtime.dispose("timeout-in-time:agent");
+
+    expect(outcome.value).toBe("ok");
+    expect(after.value).toBe("ok");
+    expect(quick.calls).toHaveLength(2);
+  });
+
+  it("still interrupts a script that keeps executing", async () => {
+    const runtime = createQuickJsSandboxRuntime();
+    const session = runtime.session("timeout-loop:agent", {});
+
+    const startedAt = Date.now();
+    const outcome = await session.eval("while (true) {}", 100);
+    runtime.dispose("timeout-loop:agent");
+
+    // QuickJS interrupts the loop itself, and reports it as its own error.
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error?.message).toMatch(/interrupted/);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });

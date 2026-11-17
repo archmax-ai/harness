@@ -45,9 +45,10 @@ export interface SandboxEvalResult {
 /** A namespaced sandbox session that evaluates code with a per-call timeout. */
 export interface SandboxSession {
   /**
-   * Evaluate `code`. `signal` is the turn's: once it aborts, the evaluation
-   * settles with an error rather than at its timeout, and a host call the
-   * script makes from then on is refused before it reaches the tool.
+   * Evaluate `code`. `timeoutMs` bounds the evaluation's wall-clock time, time
+   * spent awaiting host calls included. `signal` is the turn's: once it aborts,
+   * the evaluation settles with an error rather than at its timeout, and a host
+   * call the script makes from then on is refused before it reaches the tool.
    */
   eval(code: string, timeoutMs?: number, signal?: AbortSignal): Promise<SandboxEvalResult>;
 }
@@ -68,11 +69,17 @@ const DEFAULT_SUBAGENT_CONCURRENCY = 32;
 const DEFAULT_TIMEOUT_MS = 5_000;
 /** How long a released REPL is kept past its last eval's deadline before it is freed regardless. */
 const RELEASE_GRACE_MS = 1_000;
+/** How long a timed-out eval is given to return, so its result keeps the script's logs. */
+const TIMEOUT_GRACE_MS = 25;
 
 /** Why a script was stopped, or its host call refused: the turn's signal aborted. */
 const TURN_ABORTED = "the turn was aborted";
 /** Why a host call was refused: the REPL it was made from was disposed. */
 const SESSION_RELEASED = "the sandbox session was disposed";
+/** Why a host call was refused: the eval it was made from ran past its timeout. */
+const EVAL_TIMED_OUT = "the evaluation timed out";
+/** The error a timed-out eval settles with: the message `@langchain/quickjs` uses for one. */
+const TIMED_OUT_MESSAGE = "Promise timed out — execution interrupted";
 
 /**
  * One REPL and what is still running in it. A host call made from a script
@@ -88,6 +95,8 @@ interface Lease {
   dispatch?: SubagentBridgeOptions["dispatch"];
   /** The signal of the turn whose eval ran last: a call made from the REPL stops with it. */
   turn?: AbortSignal;
+  /** Aborted when the eval that ran last passes its timeout: a call made from the REPL stops with it. */
+  timer?: AbortSignal;
   /** Aborted at disposal: no call starts from then on, and a pending one is abandoned. */
   released: AbortController;
   freed: boolean;
@@ -104,6 +113,7 @@ interface Lease {
 function stopReason(lease: Lease): string | undefined {
   if (lease.released.signal.aborted) return SESSION_RELEASED;
   if (lease.turn?.aborted) return TURN_ABORTED;
+  if (lease.timer?.aborted) return EVAL_TIMED_OUT;
   return undefined;
 }
 
@@ -128,11 +138,11 @@ function freeWhenIdle(lease: Lease): void {
 
 /**
  * Run one host call made from the lease's REPL. Refused once the turn has
- * aborted or the REPL was released, and abandoned — rejected without waiting
- * for the tool — when either happens while it runs, so the script resumes
- * promptly and the call settles into a context that is still alive. A call
- * that would settle after the REPL was freed never settles: the bridge would
- * write it into freed memory.
+ * aborted, the eval has timed out or the REPL was released, and abandoned —
+ * rejected without waiting for the tool — when any of them happens while it
+ * runs, so the script resumes promptly and the call settles into a context that
+ * is still alive. A call that would settle after the REPL was freed never
+ * settles: the bridge would write it into freed memory.
  */
 function guardCall<T>(lease: Lease, call: () => Promise<T>): Promise<T> {
   if (lease.freed) return new Promise<T>(() => {});
@@ -140,7 +150,9 @@ function guardCall<T>(lease: Lease, call: () => Promise<T>): Promise<T> {
   if (refused) return Promise.reject(new Error(refused));
 
   lease.calls += 1;
-  const sources = lease.turn ? [lease.released.signal, lease.turn] : [lease.released.signal];
+  const sources = [lease.released.signal, lease.turn, lease.timer].filter(
+    (source): source is AbortSignal => source !== undefined,
+  );
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (settle: () => void) => {
@@ -191,6 +203,49 @@ function stoppedResult(message: string): SandboxEvalResult {
     error,
     formatted: formatReplResult({ ok: false, error, logs: [], logsDroppedChars: 0 }),
   };
+}
+
+/** The result of an eval that ran past its timeout, with the logs it wrote, if known. */
+function timedOutResult(logs: string[] = []): SandboxEvalResult {
+  const error = { message: TIMED_OUT_MESSAGE };
+  return {
+    ok: false,
+    value: undefined,
+    logs,
+    error,
+    formatted: formatReplResult({ ok: false, error, logs, logsDroppedChars: 0 }),
+  };
+}
+
+/**
+ * `running`, bounded by `timer`. `@langchain/quickjs` charges only the time a
+ * script spends executing to its budget, not the time it awaits host calls, so
+ * the wall clock is enforced here. Once `timer` aborts, the script's pending
+ * host calls are abandoned (see {@link guardCall}) and the REPL returns soon
+ * after: its result, given {@link TIMEOUT_GRACE_MS} to arrive, supplies the logs.
+ * Either way the eval settles as timed out.
+ */
+function untilTimedOut(
+  running: Promise<SandboxEvalResult>,
+  timer: AbortSignal,
+): Promise<SandboxEvalResult> {
+  return new Promise((resolve, reject) => {
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const onTimeout = () => {
+      grace = setTimeout(() => resolve(timedOutResult()), TIMEOUT_GRACE_MS);
+      running.then(
+        (result) => resolve(timedOutResult(result.logs)),
+        () => resolve(timedOutResult()),
+      );
+    };
+    timer.addEventListener("abort", onTimeout, { once: true });
+    running
+      .finally(() => {
+        timer.removeEventListener("abort", onTimeout);
+        clearTimeout(grace);
+      })
+      .then((result) => (timer.aborted ? undefined : resolve(result)), reject);
+  });
 }
 
 /**
@@ -265,10 +320,15 @@ export function createQuickJsSandboxRuntime(): SandboxRuntime {
           if (lease.released.signal.aborted) return stoppedResult(SESSION_RELEASED);
           if (signal?.aborted) return stoppedResult(TURN_ABORTED);
           const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+          // A negative timeout means none, as `@langchain/quickjs` takes it.
+          const timer = new AbortController();
+          const deadline = timeout >= 0 ? setTimeout(() => timer.abort(), timeout) : undefined;
           lease.turn = signal;
+          lease.timer = timer.signal;
           lease.evals += 1;
-          lease.deadline = Math.max(lease.deadline, Date.now() + timeout);
-          const running = lease.repl
+          lease.deadline = Math.max(lease.deadline, Date.now() + Math.max(timeout, 0));
+          // The REPL's own budget still stops a script that keeps executing.
+          const repl = lease.repl
             .eval(code, timeout)
             .then((result) => ({
               ok: result.ok,
@@ -278,9 +338,11 @@ export function createQuickJsSandboxRuntime(): SandboxRuntime {
               formatted: formatReplResult(result),
             }))
             .finally(() => {
+              clearTimeout(deadline);
               lease.evals -= 1;
               freeWhenIdle(lease);
             });
+          const running = untilTimedOut(repl, timer.signal);
           return signal ? untilAborted(running, signal) : running;
         },
       };

@@ -182,7 +182,8 @@ paths outside `skills/` SHALL be inert and reported by validation. A code state'
 ### Requirement: Quotas and settings
 
 Every sandbox session SHALL run under the workflow's `settings`: `timeoutMs` (per evaluation,
-default 5,000 ms), `memoryLimitBytes`, `maxPtcCalls` (null for unbounded) and `maxResultChars`,
+default 5,000 ms, counted in wall-clock time: time the script spends awaiting host calls counts),
+`memoryLimitBytes`, `maxPtcCalls` (null for unbounded) and `maxResultChars`,
 expressed against the runtime interface so any implementation receives them. Exceeding a quota
 SHALL surface as a script error: a sandbox tool reports it to the model as a tool error, and in a
 code state it fails the state's execution, which the `automated-states` capability routes.
@@ -192,6 +193,13 @@ code state it fails the state's execution, which the `automated-states` capabili
 - **WHEN** a script runs longer than `settings.timeoutMs`
 - **THEN** the evaluation fails with a timeout error the caller reports as a tool error (or, for a
   code state's script, as the failure of the state's execution)
+
+#### Scenario: Evaluation times out while awaiting a host call
+
+- **WHEN** a script awaits a `tools.*` call that is still pending when `settings.timeoutMs` passes
+- **THEN** the evaluation fails with a timeout error at `timeoutMs`, the pending call rejects inside
+  the script with `the evaluation timed out` without waiting for the tool, and a call the script
+  makes from then on is refused the same way before it reaches the tool
 
 ### Requirement: A cancelled turn stops its scripts
 

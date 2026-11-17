@@ -1166,6 +1166,8 @@ await createAgent({ workflow: "…", sandboxRuntime: myWorkerSandbox });
 
 Sandbox quotas (`timeoutMs`, `memoryLimitBytes`, `maxPtcCalls`, `maxResultChars`)
 are expressed against the interface, so any implementation receives them.
+`timeoutMs` bounds an evaluation's wall-clock time, time spent awaiting host calls
+included.
 
 Two more obligations come with the interface:
 

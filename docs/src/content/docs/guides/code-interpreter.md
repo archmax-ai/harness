@@ -93,6 +93,11 @@ settings:
   timeoutMs: 15000
 ```
 
+`timeoutMs` bounds an evaluation in wall-clock time: time spent awaiting `tools.*` calls counts.
+An evaluation also waits for the calls it started without `await`, so they finish within it or the
+evaluation times out. Once it times out, a call still pending fails inside the script with
+`Tool '<name>' failed: the evaluation timed out`, and a call made after that is refused the same way.
+
 ### A script lives as long as its turn
 
 When a host cancels a turn by aborting the `signal` it passed to `send`, every script of that turn
