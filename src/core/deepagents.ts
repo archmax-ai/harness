@@ -279,6 +279,20 @@ export function asCompiledAgentGraph(graph: unknown): CompiledAgentGraph {
   return graph as CompiledAgentGraph;
 }
 
+/**
+ * A session's whole message list, as the graph holds it. Deep Agents keeps
+ * `messages` in a LangGraph delta channel, so a checkpoint's `channel_values`
+ * carries it only at a snapshot; the graph's state replays the ancestors'
+ * writes to rebuild it. Read messages through this, never from a raw checkpoint.
+ */
+export async function sessionMessages(graph: Pick<CompiledAgentGraph, "getState">, sessionId: string): Promise<unknown[]> {
+  const state = (await graph.getState({ configurable: { thread_id: sessionId } })) as
+    | { values?: { messages?: unknown } }
+    | undefined;
+  const messages = state?.values?.messages;
+  return Array.isArray(messages) ? messages : [];
+}
+
 // --- Compiled-graph introspection ------------------------------------------
 
 /** Minimal shape needed to serialize a compiled LangGraph runnable's topology. */

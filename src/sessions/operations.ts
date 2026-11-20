@@ -4,7 +4,7 @@
  * governed or not. Assembly wires them; nothing here knows how the agent was composed.
  */
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
-import { asDecisionGraph, type CompiledAgentGraph } from "../core/deepagents.js";
+import { asDecisionGraph, sessionMessages, type CompiledAgentGraph } from "../core/deepagents.js";
 import type { WorkflowEventEmitter } from "../core/events.js";
 import { SessionStoreIdError, sessionIdRejection, type SessionStore } from "../core/session-store.js";
 import { hasUsage, type UsageTracker } from "../core/usage.js";
@@ -74,13 +74,15 @@ export type EmitRunArtifacts = (
 
 export function createSessionOperations(deps: {
   checkpointer: BaseCheckpointSaver;
+  /** The session's graph — messages are read through its state, not from a raw checkpoint. */
+  graph: Pick<CompiledAgentGraph, "getState">;
   sessionStore: SessionStore;
   /** The agent's workspace — its root, outside a bound session, is the raw store root. */
   workspace: Workspace;
   mountPrefixes: MountPrefixes;
   dispose: (sessionId: string) => void;
 }): SessionOperations {
-  const { checkpointer, sessionStore, workspace, mountPrefixes, dispose } = deps;
+  const { checkpointer, graph, sessionStore, workspace, mountPrefixes, dispose } = deps;
   return {
     list: () =>
       checkpointer instanceof BackendCheckpointSaver && sessionStore.capabilities.list
@@ -90,11 +92,7 @@ export function createSessionOperations(deps: {
     // checkpointer — it must: `null` means "this session has not run yet", and
     // resolution would then treat a live session's next turn as its first.
     get: (sessionId) => summarizeCheckpointedSession(checkpointer, sessionId),
-    messageCount: async (sessionId) => {
-      const tuple = await checkpointer.getTuple({ configurable: { thread_id: sessionId } });
-      const messages = (tuple?.checkpoint.channel_values as { messages?: unknown } | undefined)?.messages;
-      return Array.isArray(messages) ? messages.length : 0;
-    },
+    messageCount: async (sessionId) => (await sessionMessages(graph, sessionId)).length,
     delete: async (sessionId) => {
       // Release and evict first, then mark the session as not to be replayed, so the
       // eviction cannot lift the mark; memory is cleared before the store removes the files.
