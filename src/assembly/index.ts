@@ -23,7 +23,7 @@ import {
   type TurnInput,
   type WorkflowSurface,
 } from "../agent.js";
-import type { CompiledAgentGraph } from "../core/deepagents.js";
+import { sessionMessages, type CompiledAgentGraph } from "../core/deepagents.js";
 import { consoleEventHandler, createWorkflowEventEmitter, type WorkflowEventHandler } from "../core/events.js";
 import type { MountSpec } from "../core/mounts.js";
 import type { SessionStore } from "../core/session-store.js";
@@ -465,7 +465,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
       runtimeContract,
       toolMocks,
       emitRunArtifacts: createArtifactEmitter({ graph, machine, workspace, workflowName, runtimeContract, usage, emit }),
-      sessions: createSessionOperations({ checkpointer, sessionStore, workspace, mountPrefixes, dispose }),
+      sessions: createSessionOperations({ checkpointer, graph, sessionStore, workspace, mountPrefixes, dispose }),
       getSpecSnapshot: createSpecSnapshotReader(workspace),
     };
   };
@@ -590,8 +590,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
         },
       });
       // Where this turn begins, so the outcome's reply is what this turn said.
-      const before = await checkpointer.getTuple({ configurable: { thread_id: sessionId } });
-      const anchor = turnAnchorOf((before?.checkpoint.channel_values as { messages?: unknown } | undefined)?.messages);
+      const anchor = turnAnchorOf(await sessionMessages(composed.graph, sessionId));
       const result = await driver.invoke({ messages: [{ role: "user", content: message }], trigger }, turnConfig);
       return outcomeOf(settle(result, anchor, sessionId), "turn");
     },
