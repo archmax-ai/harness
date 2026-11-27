@@ -43,9 +43,9 @@ describe("the public surface", () => {
     // the park readers and session-id helpers a host restated were, 60 before
     // the five trigger-signature helpers (`SIGNATURE_TYPES`, `normalizeSignature`,
     // `signatureForTrigger`, `signatureJsonSchema`, `signatureValueIssues`), 66
-    // before the two rule vocabularies (`SIGNATURE_FORMATS`, `SIGNATURE_CONTENTS`);
-    // each new runtime export is a deliberate edit here.
-    expect(Object.keys(root).length).toBeLessThanOrEqual(68);
+    // before the two rule vocabularies (`SIGNATURE_FORMATS`, `SIGNATURE_CONTENTS`),
+    // 68 before `ToolConnectionsError`; each new runtime export is a deliberate edit here.
+    expect(Object.keys(root).length).toBeLessThanOrEqual(69);
   });
 
   // Each heavy subpath exists so a production import does not pull in what it

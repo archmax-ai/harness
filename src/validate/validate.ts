@@ -8,6 +8,7 @@
  * offline test cases, and kernel probes that ask the real governance pipeline
  * whether a granted entry would be blocked at run time.
  */
+import { resolveToolConnections } from "../machine/tool-connections.js";
 import { canonicalizeRelPath, normalizeRelPath, type Workspace } from "../core/workspace.js";
 import { isSlug, SLUG_PATTERN } from "../machine/slug.js";
 import { createWorkspaceContext } from "../core/workspace-context.js";
@@ -87,6 +88,12 @@ export interface ValidateWorkflowOptions {
    * in both.
    */
   mounts?: Record<string, MountSpec>;
+  /**
+   * The host tools that take a connection, matching the harness's `toolConnections` option, so a
+   * denial naming a connection is judged as the runtime judges it. Without it, an entry's
+   * `connection` is not read, as at a runtime given no declarations.
+   */
+  toolConnections?: Record<string, string>;
 }
 
 type Add = (
@@ -185,8 +192,9 @@ export async function validateWorkflow(
   }
 
   // Build the machine from the parsed spec so static checks decide through the
-  // same kernel the runtime uses (validator/runtime parity).
-  const machine = WorkflowMachine.fromSpec(spec);
+  // same kernel the runtime uses (validator/runtime parity), with the host's
+  // connection declarations where it passes them.
+  const machine = WorkflowMachine.fromSpec(spec, undefined, undefined, resolveToolConnections(options.toolConnections));
 
   const skillRegistry = await validateSkills(
     workspace,

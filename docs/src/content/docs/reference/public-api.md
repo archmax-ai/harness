@@ -33,7 +33,7 @@ is the same binding, and each light subpath has its own section below.
 
 ### Errors
 
-`WorkflowLoadError` `WorkflowDisabledError` `UnknownTriggerError` `ReservedToolNameError` `ToolPathsError` `InvalidVariableNameError` `MountCollisionError` `SessionStoreRequiredError` `SessionStoreIdError` `SessionStoreCapabilityError` `AuthoringBackendExposedError` `WorkspaceRootRequiredError` `UnsupportedRuntimeContractError` `SessionNotParkedError` `InvalidDecisionTargetError` `EmptyMessageError` `InvalidTurnFileError` `SessionNotAwaitingInputError` `MissingDeliveryTriggerError` `SessionNotResumableError`
+`WorkflowLoadError` `WorkflowDisabledError` `UnknownTriggerError` `ReservedToolNameError` `ToolPathsError` `ToolConnectionsError` `InvalidVariableNameError` `MountCollisionError` `SessionStoreRequiredError` `SessionStoreIdError` `SessionStoreCapabilityError` `AuthoringBackendExposedError` `WorkspaceRootRequiredError` `UnsupportedRuntimeContractError` `SessionNotParkedError` `InvalidDecisionTargetError` `EmptyMessageError` `InvalidTurnFileError` `SessionNotAwaitingInputError` `MissingDeliveryTriggerError` `SessionNotResumableError`
 
 ### Workspace composition
 
@@ -998,6 +998,51 @@ const agent = await createAgent({
 - Outside a turn the handler still runs, and reading `context.workspace` or
   `context.sessionId` throws, saying why. Both properties are non-enumerable
   there, so a deep-equality check or a logger walking the context skips them.
+
+### `toolConnections`: one tool through several connections
+
+A host tool may run through one of several accounts or APIs you hold: a REST tool
+that reaches either of two APIs, a mail tool that sends from either of two
+mailboxes. Declare the argument it takes the connection in, by tool name:
+
+```ts
+const agent = await createAgent({
+  tools: toolsFromMap({ rest__request: restRequest }), // takes `connection` and `path`
+  toolConnections: { rest__request: "connection" },
+});
+```
+
+A state then grants the tool once per connection, each entry with its own guards:
+
+```yaml
+tools:
+  allow:
+    - { tool: rest__request, connection: nominatim }
+    - { tool: rest__request, connection: zaepflefinder, args: { path: [""] } }
+```
+
+- **An entry's `connection` is part of its match.** An entry naming a
+  connection admits a call only when the call's declared argument holds it, and
+  its argument guards then apply. An entry naming none admits only a call that
+  names none. A call is admitted when some entry admits it.
+- **The argument is optional.** A call that leaves it out runs through the one
+  connection the state grants the tool through: the runtime sets the argument
+  before governance, and your handler receives it. Where the state grants the
+  tool through several, such a call is refused (`tool.not-allowed`) with a reason
+  naming them. Where no entry names one, the call goes on without it.
+- **A denial naming a connection** denies only the calls through it:
+  `{ tool: send_email, connection: personal }` in `forbid_always` leaves
+  `send_email` through every other connection. `{ tool: "*", connection: personal }`
+  denies `personal` on every tool that takes a connection.
+- **The model reads it** in the state's allowed list,
+  `rest__request(connection=nominatim)`, and a script's call through `tools.*` is
+  defaulted and governed exactly as the model's.
+- Every machine of the assembly, root and delegated, governs by the same
+  declarations. A tool you do not declare is governed as before: an entry's
+  `connection` is preserved and not read. Declaring one of the runtime's own
+  tools, or an empty argument name, throws `ToolConnectionsError` at assembly.
+  Pass the same declarations to `validateWorkflow` (`toolConnections`) so its
+  checks judge a denial naming a connection as the runtime does.
 
 The governed and the plain (`workflow: false`) agent hand the same context.
 `copy_file`, `move_file` and `remove_file` are the runtime's own tools in every

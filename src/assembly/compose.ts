@@ -53,6 +53,7 @@ import { TASK_TOOL, type WorkflowMachine } from "../machine/machine.js";
 import { WorkflowLoadError } from "../machine/load-spec.js";
 import { TODO_TOOL, workflowToolName } from "../machine/tool-names.js";
 import type { ToolPaths, ToolPathTable } from "../machine/tool-paths.js";
+import type { ToolConnectionTable } from "../machine/tool-connections.js";
 import { resolveTrigger, type TriggerInput } from "../machine/triggers.js";
 import { buildSeededVariables, unguaranteedReferenceWarnings } from "../machine/variables.js";
 import type { ResolvedRuntimeContract } from "../runtime/contract.js";
@@ -136,6 +137,8 @@ export interface AssemblyContext {
    * every machine of this assembly, root and delegated alike, governs by.
    */
   toolPaths: ToolPathTable;
+  /** The host tools that take a connection, which every machine of this assembly governs by. */
+  toolConnections: ToolConnectionTable;
 }
 
 /** What one governed composition is made for. */

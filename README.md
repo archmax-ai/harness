@@ -260,6 +260,7 @@ The refund example needs your two tools, so it runs from your code. See the
 - [Triggers](https://harness.archmax.ai/guides/triggers/): typed inputs and returns, rules on their values, files
 - [Testing](https://harness.archmax.ai/guides/testing/): cases for `archmax test`
 - [Public API](https://harness.archmax.ai/reference/public-api/): `createAgent`, outcomes, events
+- [Tools through several connections](https://harness.archmax.ai/reference/public-api/#toolconnections-one-tool-through-several-connections): one tool, two APIs or mailboxes, each governed on its own
 
 ### Tracing
 

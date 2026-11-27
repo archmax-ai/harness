@@ -64,10 +64,10 @@ describe("normalizeAllowEntry", () => {
     });
   });
 
-  it("ignores `connection` — it selects credentials, not governance", () => {
+  it("carries `connection` beside the guards, for the machine to read where the host declares one", () => {
     expect(
       normalizeAllowEntry({ tool: "microsoft-outlook__reply-email", connection: "outlook-support" }),
-    ).toEqual({ tool: "microsoft-outlook__reply-email", argMatchers: null });
+    ).toEqual({ tool: "microsoft-outlook__reply-email", argMatchers: null, connection: "outlook-support" });
     expect(
       normalizeAllowEntry({
         tool: "microsoft-outlook__reply-email",
@@ -77,7 +77,10 @@ describe("normalizeAllowEntry", () => {
     ).toEqual({
       tool: "microsoft-outlook__reply-email",
       argMatchers: { to: ["*@example.com"] },
+      connection: "outlook-support",
     });
+    // A blank connection names none.
+    expect(normalizeAllowEntry({ tool: "x", connection: " " })).toEqual({ tool: "x", argMatchers: null });
   });
 });
 

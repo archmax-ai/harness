@@ -389,14 +389,20 @@ these keys:
 | --- | --- |
 | `args` | per-argument glob guards |
 | `paths` | globs every path argument the tool declares must match (`file_path` for the file tools, `path` for `ls`, `glob` and `grep`, both `source` and `destination` for `copy_file` and `move_file`); a tool that declares none is guarded on `file_path` |
-| `connection` | the connection slug the tool resolves through, when its collection has more than one; consumer-defined, and governance never resolves it |
+| `connection` | the connection the entry is about, for a tool the host declares to take one ([`toolConnections`](/reference/public-api/#toolconnections-one-tool-through-several-connections)): the entry then admits only calls through that connection, and a state lists the tool once per connection; for any other tool it is preserved and not read |
 | `source` | a free-form label naming where the tool came from, for the host that authored the entry; governance matches on `tool` alone and never reads it |
 
 ```yaml
 tools:
   allow:
     - { tool: microsoft-outlook__reply-email, connection: outlook-support }
+    - { tool: microsoft-outlook__reply-email, connection: outlook-sales, args: { to: ["*@acme.example"] } }
 ```
+
+For a tool that takes a connection, a call names it in the argument the host declared. A call that
+leaves it out runs through the state's one connection, and is refused, naming them, where the
+state grants the tool through several. A denial naming a connection denies only the calls through
+it.
 
 An `args` glob matches an argument according to what the argument is. An
 argument the tool declares as a **path** (`file_path`, `path`, `source`,

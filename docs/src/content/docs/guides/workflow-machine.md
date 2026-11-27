@@ -271,6 +271,30 @@ Host tools declare their paths too, and the same rules govern them (see
 tool's argument may hold a list of paths, each governed like one, and a `paths:` guard tests every
 element.
 
+### One tool through several connections
+
+A host tool may run through one of several connections: a REST tool reaching either of two APIs, a
+mail tool sending from either of two mailboxes. When the host declares the argument the tool takes
+its connection in (see
+[`toolConnections`](/reference/public-api/#toolconnections-one-tool-through-several-connections)),
+an entry's `connection` is part of what it grants, and a state lists the tool once per connection:
+
+```yaml
+lookup:
+  type: code
+  script: scripts/lookup.js
+  tools:
+    allow:
+      - { tool: rest__request, connection: nominatim }
+      - { tool: rest__request, connection: zaepflefinder }
+```
+
+The script names the connection of each call: `tools.rest__request({ connection: "zaepflefinder",
+path: "" })`. A call that leaves it out runs through the state's one connection; here, with two, it
+is refused, and the reason names both. Each entry's guards bind its own connection, and a denial
+naming a connection, `forbid: [{ tool: send_email, connection: personal }]`, denies only the calls
+through it.
+
 ## Skill governance
 
 The same shape, one level up: which **capabilities** a state may use is declared by skill slug.

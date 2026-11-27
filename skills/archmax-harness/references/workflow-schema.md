@@ -433,8 +433,12 @@ block one. What a type withholds, no grant can give.
 - In an allow entry, `paths:` needs every path argument to match. In a forbid entry, one
   match denies.
 - `"*"` as the tool is legal only in a forbid list.
-- An entry may also carry `connection` (the connection a platform tool resolves through)
-  and `source` (a host's label). The runtime matches by `tool` alone.
+- An entry may also carry `connection` and `source` (a host's label, never read). For a tool
+  the host declares to take a connection (`toolConnections`), `connection` is part of the
+  match: list the tool once per connection, each entry with its own guards, and a call names
+  its connection in the declared argument, or leaves it out where the state grants one. A
+  denial naming a connection denies only the calls through it. For any other tool the runtime
+  matches by `tool` alone.
 
 **Path arguments.** Each tool declares how it uses each path argument: `read`, `list`,
 `search`, `write`, `remove` or `execute`. `copy_file` and `move_file` take
