@@ -78,6 +78,7 @@ Deep Agents' own options keep their names: `model`, `tools`, `systemPrompt`,
 | `modelFactory` | `(role, env, requested?) => model`, called per role: `agent`, `judge` (a case's `grade`) and `grader` (a grader state, asked with the state's model id). |
 | `essentialTools` | Host tools that are on in every state, whatever `allow_always` says. A state's entry still narrows one. |
 | `toolPaths` | Each host tool's path arguments and how it uses them (`{ get_markdown: { path: "read" } }`), governed like a built-in tool's. |
+| `toolConnections` | The argument through which a host tool takes the connection a call runs through (`{ rest__request: "connection" }`). An entry's `connection` then guards it, a state grants the tool once per connection, and a call leaving it out runs through the state's one connection. |
 | `images` | Shows a vision model the images it reads with `read_file`. Off by default. |
 | `policyRules`, `sandboxRuntime` | Extra governance rules, and a custom sandbox runtime. |
 | `onEvent` | Receives the event stream, in place of the console subscriber. |

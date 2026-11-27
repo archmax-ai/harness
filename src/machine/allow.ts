@@ -23,6 +23,12 @@ export interface NormalizedAllowEntry {
    * path argument the matched tool declares — see {@link pathMatchers}.
    */
   fromPaths?: true;
+  /**
+   * The connection the entry is about, for a tool the host declares to take one
+   * (`createAgent`'s `toolConnections`); ignored for any other tool. Absent for an
+   * entry naming none, which matches only a call that names none.
+   */
+  connection?: string;
 }
 
 /**
@@ -68,18 +74,20 @@ export function normalizeAllowEntry(entry: AllowEntry): NormalizedAllowEntry {
   if (!entry || typeof entry !== "object") return { tool: undefined, argMatchers: null };
 
   const tool = entry.tool;
+  const connection = typeof entry.connection === "string" && entry.connection.trim() !== "" ? entry.connection : undefined;
+  const named = connection === undefined ? {} : { connection };
   if (entry.args && typeof entry.args === "object") {
     const argMatchers: Record<string, string[]> = {};
     for (const [name, globs] of Object.entries(entry.args)) {
       argMatchers[name] = Array.isArray(globs) ? globs : [globs];
     }
-    return { tool, argMatchers };
+    return { tool, argMatchers, ...named };
   }
   if (entry.paths !== undefined) {
     const globs = Array.isArray(entry.paths) ? entry.paths : [entry.paths];
-    return { tool, argMatchers: { [DEFAULT_PATH_ARG]: globs }, fromPaths: true };
+    return { tool, argMatchers: { [DEFAULT_PATH_ARG]: globs }, fromPaths: true, ...named };
   }
-  return { tool, argMatchers: null };
+  return { tool, argMatchers: null, ...named };
 }
 
 /**

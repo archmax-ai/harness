@@ -129,6 +129,7 @@ export { UnknownTriggerError } from "./machine/triggers.js";
 export { ReservedToolNameError } from "./machine/tool-names.js";
 /** A host path declaration the runtime cannot honour (a built-in tool, an unknown access). */
 export { ToolPathsError } from "./machine/tool-paths.js";
+export { ToolConnectionsError } from "./machine/tool-connections.js";
 /** A seeded variable name that is not a legal identifier. */
 export { InvalidVariableNameError } from "./machine/variables.js";
 /** A mount key shadows a session area. */

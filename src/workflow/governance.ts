@@ -754,6 +754,13 @@ export function createGovernance(ctx: GovernanceContext): Governance {
       args = substituted.args;
       request = { ...request, toolCall: { ...request.toolCall, args } };
     }
+    // A call that leaves its connection out runs through the one connection the state grants the
+    // tool through: set before the verdict, so the kernel judges what the tool will receive.
+    const connected = machine.withConnection(workflowState, toolName, args);
+    if (connected !== args) {
+      args = connected;
+      request = { ...request, toolCall: { ...request.toolCall, args } };
+    }
 
     const verdict = decide(
       machine,

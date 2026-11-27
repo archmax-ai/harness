@@ -218,8 +218,10 @@ export function createPtcToolGateway(opts: PtcToolGatewayOptions): PtcToolGatewa
 
     async function governed(input: unknown, config: RunnableConfig | undefined, callId: string): Promise<unknown> {
       const tool = inner.name;
-      const args = toArgs(input);
       const { state, config: contextConfig, replyOnly, variables = {} } = context;
+      // A call that leaves its connection out runs through the one connection the state grants the
+      // tool through, as on the agent's path: the kernel judges, and the tool receives, the same.
+      const args = machine.withConnection(state, tool, toArgs(input));
       // The tool events mark a programmatic call; a grader's is a model's call, as the agent's is.
       const marked = origin === "script" ? { origin } : {};
 

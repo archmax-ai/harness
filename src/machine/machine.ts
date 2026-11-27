@@ -30,6 +30,7 @@ import {
   type ToolPathTable,
   type ToolPaths,
 } from "./tool-paths.js";
+import { NO_TOOL_CONNECTIONS, connectionOf, type ToolConnectionTable } from "./tool-connections.js";
 import {
   specDisabled,
   type AllowEntry,
@@ -94,6 +95,8 @@ export class WorkflowMachine {
     private readonly extraEssential: ReadonlySet<string> = new Set(),
     /** Every tool's declared path arguments: the built-ins plus the host's. */
     private readonly toolPathTable: ToolPathTable = BUILT_IN_TOOL_PATH_TABLE,
+    /** The host tools that take a connection, and the argument each takes it in. */
+    private readonly toolConnectionTable: ToolConnectionTable = NO_TOOL_CONNECTIONS,
   ) {
     if (!spec.states || Object.keys(spec.states).length === 0) {
       throw new Error("Invalid machine spec: missing states");
@@ -129,8 +132,9 @@ export class WorkflowMachine {
     spec: MachineSpec,
     extraEssentialTools?: Iterable<string>,
     toolPaths: ToolPathTable = BUILT_IN_TOOL_PATH_TABLE,
+    toolConnections: ToolConnectionTable = NO_TOOL_CONNECTIONS,
   ): WorkflowMachine {
-    return new WorkflowMachine(spec, new Set(extraEssentialTools), toolPaths);
+    return new WorkflowMachine(spec, new Set(extraEssentialTools), toolPaths, toolConnections);
   }
 
   /**
@@ -143,7 +147,7 @@ export class WorkflowMachine {
     if (Object.keys(extra).length === 0) return this;
     const table = new Map(this.toolPathTable);
     for (const [tool, paths] of Object.entries(extra)) table.set(tool, Object.freeze({ ...paths }));
-    return new WorkflowMachine(this.spec, this.extraEssential, table);
+    return new WorkflowMachine(this.spec, this.extraEssential, table, this.toolConnectionTable);
   }
 
   /** The path arguments `tool` declares, or `undefined` for a tool with none. */
@@ -159,6 +163,76 @@ export class WorkflowMachine {
   /** The values a `paths:` guard on `tool` tests for a call with `args`. */
   pathValues(tool: string, args: Record<string, unknown>): unknown[] {
     return pathValuesOf(tool, this.toolPaths(tool), args);
+  }
+
+  /**
+   * The argument through which `tool` takes the connection a call runs through, as the host
+   * declared it (`toolConnections`), or `undefined` for a tool that takes none — whose entries'
+   * `connection` the runtime does not read.
+   */
+  connectionArgument(tool: string): string | undefined {
+    return this.toolConnectionTable.get(tool);
+  }
+
+  /**
+   * Whether an entry's `connection` matches the connection a call of `tool` names. A grant naming
+   * a connection matches a call through it, and one naming none only a call naming none. A denial
+   * naming none matches every call, so a bare denial still denies the tool whatever connection it
+   * names. For a tool that takes no connection the entry's `connection` is not read, except that a
+   * `*` denial naming one is about connections, and so matches no call of such a tool.
+   */
+  connectionMatches(
+    entry: Pick<NormalizedAllowEntry, "tool" | "connection">,
+    tool: string,
+    args: Record<string, unknown>,
+    side: "grant" | "deny",
+  ): boolean {
+    const argument = this.connectionArgument(tool);
+    if (argument === undefined) return !(side === "deny" && entry.tool === FORBID_ANY_TOOL && entry.connection !== undefined);
+    const named = connectionOf(args, argument);
+    if (entry.connection === undefined) return side === "deny" || named === undefined;
+    return named === entry.connection;
+  }
+
+  /**
+   * The connections `state` grants `tool` through, each once, in the order its effective entries
+   * name them; none for a tool that takes no connection.
+   */
+  grantedConnections(state: string, tool: string): string[] {
+    if (this.connectionArgument(tool) === undefined) return [];
+    const named = this.effectiveEntries(state).flatMap((entry) =>
+      entry.tool === tool && entry.connection !== undefined ? [entry.connection] : [],
+    );
+    return [...new Set(named)];
+  }
+
+  /**
+   * A call's arguments as the tool receives them: where `tool` takes a connection, the call leaves
+   * it out, and every effective entry of `state` naming the tool names one and the same
+   * connection, that connection set in the declared argument. Otherwise `args` unchanged — a call
+   * that names its connection, a state granting the tool through several (the call is then refused
+   * naming them), or one whose entries name none.
+   */
+  withConnection(state: string, tool: string, args: Record<string, unknown>): Record<string, unknown> {
+    const argument = this.connectionArgument(tool);
+    if (argument === undefined || connectionOf(args, argument) !== undefined) return args;
+    const entries = this.effectiveEntries(state).filter((entry) => entry.tool === tool);
+    if (entries.length === 0 || entries.some((entry) => entry.connection === undefined)) return args;
+    const connections = new Set(entries.map((entry) => entry.connection));
+    if (connections.size !== 1) return args;
+    return { ...args, [argument]: [...connections][0] };
+  }
+
+  /**
+   * Whether a denial entry governs `tool` by name alone: it names the tool and guards neither an
+   * argument nor, for a tool that takes a connection, a connection. Such a denial removes the
+   * tool from the state's surface; any other denies only the calls it matches.
+   */
+  private deniesByName(entry: NormalizedAllowEntry): boolean {
+    const { tool, argMatchers, connection } = entry;
+    if (!tool || argMatchers) return false;
+    if (connection === undefined) return true;
+    return tool !== FORBID_ANY_TOOL && this.connectionArgument(tool) === undefined;
   }
 
   /**
@@ -661,6 +735,7 @@ export class WorkflowMachine {
     return this.effectiveEntries(state).some(
       (entry) => {
         if (entry.tool !== tool) return false;
+        if (!this.connectionMatches(entry, tool, args, "grant")) return false;
         const onUnresolved = (failure: GuardResolutionFailure) => ctx?.onUnresolved?.(failure);
         if (!entry.fromPaths) {
           const kinds = { pathArgs: pathArgNamesOf(tool, this.toolPaths(tool)), side: "grant" } as const;
@@ -694,8 +769,9 @@ export class WorkflowMachine {
     // so the tool stays disclosed and the kernel refuses the call — the same
     // rule the grant side follows for a guarded allow entry.
     for (const entry of this.forbidEntries(state)) {
-      const { tool, argMatchers } = normalizeAllowEntry(entry);
-      if (argMatchers || !tool) continue;
+      const normalized = normalizeAllowEntry(entry);
+      const { tool } = normalized;
+      if (!tool || !this.deniesByName(normalized)) continue;
       if (tool !== FORBID_ANY_TOOL) disclosed.delete(tool);
       else for (const name of disclosed) if (name !== ADVANCE_TOOL) disclosed.delete(name);
     }
@@ -705,10 +781,13 @@ export class WorkflowMachine {
   private renderEntry(entry: NormalizedAllowEntry): string {
     const { tool } = entry;
     const argMatchers = pathMatchers(entry, tool ? this.pathArgs(tool) : []);
-    if (!argMatchers) return tool ?? "";
-    const parts = Object.entries(argMatchers)
-      .map(([name, globs]) => `${name}=${globs.join("|")}`)
-      .join(", ");
+    const argument = tool ? this.connectionArgument(tool) : undefined;
+    const connection = argument !== undefined && entry.connection !== undefined ? [`${argument}=${entry.connection}`] : [];
+    if (!argMatchers && connection.length === 0) return tool ?? "";
+    const parts = [
+      ...connection,
+      ...Object.entries(argMatchers ?? {}).map(([name, globs]) => `${name}=${globs.join("|")}`),
+    ].join(", ");
     return `${tool}(${parts})`;
   }
 
@@ -723,8 +802,8 @@ export class WorkflowMachine {
   describeAllowed(state: string): string {
     const denied = new Set<string>();
     for (const entry of this.forbidEntries(state)) {
-      const { tool, argMatchers } = normalizeAllowEntry(entry);
-      if (tool && !argMatchers) denied.add(tool);
+      const normalized = normalizeAllowEntry(entry);
+      if (normalized.tool && this.deniesByName(normalized)) denied.add(normalized.tool);
     }
     const parts = this.effectiveEntries(state)
       .filter(({ tool }) => !tool || !denied.has(tool))

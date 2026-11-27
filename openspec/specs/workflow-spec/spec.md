@@ -409,8 +409,10 @@ An entry in any of the four tools lists SHALL be a tool name string or a mapping
 root, and an entry's mapping form is
 `{ tool, args?, paths?, connection?, source? }`: `args` maps an argument name (dotted paths
 allowed) to a glob or list of globs — the entry's **argument guards** — and `paths` is
-shorthand for `args: { file_path: … }`. `connection` and `source` are free-form strings the
-runtime preserves and does not read. In a **forbid** entry only, the tool MAY be `*`, meaning every
+shorthand for `args: { file_path: … }`. `source` is a free-form string the runtime preserves and
+does not read. `connection` is a free-form string the runtime preserves, and reads only for a tool
+the host declares to take a connection: there it names the connection the entry is about (see the
+`governance` capability, "Tools declare the argument that carries their connection"). In a **forbid** entry only, the tool MAY be `*`, meaning every
 tool except `archmax_advance` (see the `governance` capability, "Workflow and state denials"):
 `{ tool: "*", paths: [logs/**] }` denies every other tool on those globs. A forbid or
 `forbid_always` entry naming `archmax_advance` without argument guards SHALL be a document-level

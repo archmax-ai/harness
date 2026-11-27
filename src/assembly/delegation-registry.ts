@@ -60,7 +60,7 @@ export function createDelegationRegistry(ctx: AssemblyContext, root: WorkflowMac
     }
     // A child's grader states are its own: it is graded by the standards its
     // own spec declares, never by the caller's.
-    const machine = WorkflowMachine.fromSpec(loaded.spec, ctx.params.essentialTools, ctx.toolPaths);
+    const machine = WorkflowMachine.fromSpec(loaded.spec, ctx.params.essentialTools, ctx.toolPaths, ctx.toolConnections);
     // A caller enters where a host would: the `manual` entry. A machine with
     // none cannot be started at all (fail-closed, as at the host ingress).
     if (!machine.startStateForTrigger(MANUAL_TRIGGER)) {

@@ -9,6 +9,20 @@ Newest first. Each section says what changed and links to the guide that describ
 as it is today; the guides themselves describe only the present. Every release also has
 [GitHub release notes](https://github.com/archmax-ai/harness/releases) listing its pull requests.
 
+## 2.4.0
+
+One tool through several connections.
+
+- **`toolConnections` on `createAgent`.** A host declares the argument a tool takes its connection
+  in, `{ rest__request: "connection" }`. An allow or forbid entry's `connection` is then part of
+  what it matches: a state lists the tool once per connection, each entry with its own guards, and
+  a denial naming a connection denies only the calls through it. A call that leaves the argument
+  out runs through the state's one connection, and is refused, naming them, where the state grants
+  several. Disclosure shows `rest__request(connection=nominatim)`. Declaring one of the runtime's
+  own tools throws the new `ToolConnectionsError`, and `validateWorkflow` takes the same
+  declarations. A tool not declared is governed as before. See
+  [one tool through several connections](/guides/workflow-machine/#one-tool-through-several-connections).
+
 ## 2.3.0
 
 A code state can say something to the person.

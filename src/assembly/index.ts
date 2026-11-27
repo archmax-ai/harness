@@ -48,6 +48,7 @@ import {
 import { WorkflowMachine } from "../machine/machine.js";
 import { assertNoReservedToolNames } from "../machine/tool-names.js";
 import { resolveToolPaths, type ToolPaths } from "../machine/tool-paths.js";
+import { resolveToolConnections } from "../machine/tool-connections.js";
 import { toolPathsFromMetadata } from "../workflow/agent-tools.js";
 import type { ImageReadOptions } from "./image-reads.js";
 import { DEFAULT_TRIGGER_ID, resolveTrigger, type TriggerInput } from "../machine/triggers.js";
@@ -248,6 +249,16 @@ export interface CreateAgentParams {
    */
   toolPaths?: Record<string, ToolPaths>;
   /**
+   * The argument through which host tools take the connection a call runs through, by tool name:
+   * `{ rest__request: "connection" }`. For a declared tool, an allow or forbid entry's
+   * `connection` is part of what the entry matches, so a state grants one tool through several
+   * connections by listing it once per connection, each entry with its own guards; a call that
+   * leaves the argument out runs through the one connection its state grants the tool through.
+   * Declaring a built-in tool, a reserved name or an empty argument throws a
+   * `ToolConnectionsError`. A tool not declared is governed as though no entry named a connection.
+   */
+  toolConnections?: Record<string, string>;
+  /**
    * Show the model the images it reads. Off by default, because a model without
    * vision rejects an image. On (`true`, or `{ maxBytes?, keep? }`), the model's
    * `read_file` of a PNG, JPEG, GIF or WebP answers with one line naming it, and
@@ -353,10 +364,12 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
   // Host tools' path declarations, from their descriptors and the option, resolved
   // once: every machine of this assembly, root and delegated, governs by them.
   const toolPaths = resolveToolPaths({ ...toolPathsFromMetadata(params.tools), ...params.toolPaths });
+  // Likewise the host tools that take a connection, and the argument each takes it in.
+  const toolConnections = resolveToolConnections(params.toolConnections);
 
   const machine =
     loaded.usable && loaded.spec
-      ? WorkflowMachine.fromSpec(loaded.spec, params.essentialTools, toolPaths)
+      ? WorkflowMachine.fromSpec(loaded.spec, params.essentialTools, toolPaths, toolConnections)
       : null;
 
   // Fail closed when governance was requested but cannot be loaded. The plain
@@ -447,6 +460,7 @@ export async function createAgent(params: CreateAgentParams = {}): Promise<Agent
     runtimeContract,
     ...(pricing ? { pricing } : {}),
     toolPaths,
+    toolConnections,
   };
 
   const systemPrompt = await renderSystemPrompt(ctx, machine, loaded.body, { workflow: workflowName });

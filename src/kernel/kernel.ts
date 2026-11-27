@@ -7,6 +7,7 @@ import {
   TASK_TOOL,
 } from "../machine/tool-names.js";
 import type { WorkflowMachine } from "../machine/machine.js";
+import { connectionOf } from "../machine/tool-connections.js";
 import type { ForbidEntry } from "../machine/types.js";
 import { FORBID_ANY_TOOL } from "../machine/spec-schema.js";
 import {
@@ -240,8 +241,25 @@ function notAllowedVerdict(
   const reason =
     `[workflow] BLOCKED: '${tool}'${target}${toHint} is not allowed in state '${state}'.\n` +
     `Allowed in '${state}': ${machine.describeAllowed(state)}.\n` +
+    connectionHint(machine, state, tool, args) +
     closingHint;
   return { decision: "block", ruleId: "tool.not-allowed", reason, warn: true };
+}
+
+/**
+ * For a tool that takes a connection, called through none the state grants it through: which
+ * connections it does, so the next call can name one. Empty otherwise.
+ */
+function connectionHint(machine: WorkflowMachine, state: string, tool: string, args: Record<string, unknown>): string {
+  const argument = machine.connectionArgument(tool);
+  const granted = machine.grantedConnections(state, tool);
+  if (argument === undefined || granted.length === 0) return "";
+  const named = connectionOf(args, argument);
+  if (typeof named === "string" && granted.includes(named)) return "";
+  const list = granted.map((connection) => `'${connection}'`).join(", ");
+  return named === undefined
+    ? `'${tool}' runs through ${list} in '${state}': name one in its '${argument}' argument.\n`
+    : `'${tool}' runs through ${list} in '${state}', not '${String(named)}'.\n`;
 }
 
 /**
@@ -977,7 +995,12 @@ export function compileForbidRules(
       // A state's own denial governs that state's surface, which a read on
       // runtime authority runs outside of; only workflow-wide denials bind it.
       if (scope === "state" && action.origin === "runtime") return null;
-      const guards = argMatchers ? describeGuards(normalized) : null;
+      // A denial naming a connection denies only the calls through it.
+      if (api.machine && !api.machine.connectionMatches(normalized, action.tool, action.args, "deny")) return null;
+      const argument = api.machine?.connectionArgument(action.tool);
+      const through =
+        argument !== undefined && normalized.connection !== undefined ? `${argument}=${normalized.connection}` : null;
+      const guards = [through, argMatchers ? describeGuards(normalized) : null].filter(Boolean).join(", ") || null;
       if (argMatchers && !denialMatches(normalized, action, api)) return null;
       const target = describeTargets(action, api);
       return {
